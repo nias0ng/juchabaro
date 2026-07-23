@@ -1,0 +1,8 @@
+model_name: plate_detector
+base_model: yolov8s.pt
+data: data/samples/plate/data.yaml
+epochs: 50
+imgsz: 640
+batch: 16
+device: ""
+project: smart-parking-ai
