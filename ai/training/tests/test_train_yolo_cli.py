@@ -1,6 +1,7 @@
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from train_yolo import build_arg_parser, run_training
+from train_yolo import build_arg_parser, run_training, main
 
 
 def test_build_arg_parser_parses_required_and_optional_args():
@@ -82,3 +83,35 @@ def test_run_training_generates_version_when_not_given(tmp_path, monkeypatch):
     assert result["best_weights"] == str(expected_weights_dir / "best.pt")
     assert Path(result["meta_path"]).exists()
     assert Path(result["meta_path"]).name == "model_meta.json"
+
+
+def test_main_runs_end_to_end_with_mocked_training(tmp_path, monkeypatch, capsys):
+    config_file = tmp_path / "yolo_vehicle.yaml"
+    config_file.write_text(
+        "model_name: vehicle_detector\n"
+        "base_model: yolov8s.pt\n"
+        "data: coco8.yaml\n"
+        "epochs: 1\n"
+        "imgsz: 640\n"
+        "batch: 16\n"
+        "project: smart-parking-ai\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train_yolo.py", "--config", str(config_file), "--version", "vehicle_detector-yolov8s-20260722-999999"],
+    )
+
+    fake_results = MagicMock()
+    fake_results.results_dict = {}
+    fake_results.save_dir = str(tmp_path / "runs" / "detect" / "vehicle_detector-yolov8s-20260722-999999")
+    fake_model = MagicMock()
+    fake_model.train.return_value = fake_results
+
+    with patch("train_yolo.YOLO", return_value=fake_model), patch("train_yolo.wandb"):
+        main()
+
+    captured = capsys.readouterr()
+    assert "vehicle_detector-yolov8s-20260722-999999" in captured.out
+    assert "best.pt" in captured.out

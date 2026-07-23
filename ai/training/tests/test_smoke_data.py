@@ -1,3 +1,5 @@
+import sys
+
 import yaml
 from pipeline.smoke_data import generate_plate_smoke_dataset
 
@@ -30,3 +32,21 @@ def test_generate_plate_smoke_dataset_label_format_is_valid_yolo(tmp_path):
     assert parts[0] == "0"
     for value in parts[1:]:
         assert 0.0 <= float(value) <= 1.0
+
+
+def test_main_generates_dataset_via_cli(tmp_path, monkeypatch, capsys):
+    output_dir = tmp_path / "plate_cli"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["make_plate_smoke_dataset.py", "--output", str(output_dir), "--num-images", "4"],
+    )
+
+    from make_plate_smoke_dataset import main
+
+    main()
+
+    captured = capsys.readouterr()
+    assert str(output_dir) in captured.out
+    assert (output_dir / "data.yaml").exists()
+    assert len(list((output_dir / "images").glob("*.jpg"))) == 4
