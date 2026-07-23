@@ -63,7 +63,7 @@ class ReadStatus(str, Enum):
 
 @dataclass(frozen=True)
 class CapturedFrame:
-    """촬영 순번, 시각, RGB888 uint8 이미지로 구성된 카메라 프레임."""
+    """촬영 순번, 시각, RGB uint8 이미지로 구성된 카메라 프레임."""
 
     frame_id: int
     captured_at: datetime
@@ -184,7 +184,7 @@ class FrameSource(Protocol):
         """프레임 공급자를 한 번 초기화한다."""
 
     def capture(self) -> CapturedFrame:
-        """RGB888 uint8 프레임 한 장을 촬영한다."""
+        """RGB uint8 프레임 한 장을 촬영한다."""
 
     def close(self) -> None:
         """프레임 공급자의 자원을 해제한다."""
@@ -502,7 +502,7 @@ class Picamera2FrameSource:
             ) from exc
 
     def open(self) -> None:
-        """RGB888 카메라 구성을 만들고 워밍업까지 한 번 수행한다."""
+        """메모리상 RGB 배열을 만드는 BGR888 카메라 구성과 워밍업을 수행한다."""
 
         if self._camera is not None:
             return
@@ -511,7 +511,7 @@ class Picamera2FrameSource:
         try:
             camera = Picamera2(camera_num=self._camera_index)
             config = camera.create_video_configuration(
-                main={"size": (self._width, self._height), "format": "RGB888"}
+                main={"size": (self._width, self._height), "format": "BGR888"}
             )
             camera.configure(config)
             camera.start()
@@ -530,7 +530,7 @@ class Picamera2FrameSource:
             ) from exc
 
     def capture(self) -> CapturedFrame:
-        """현재 카메라에서 RGB888 NumPy 프레임 한 장을 촬영한다."""
+        """현재 카메라에서 RGB NumPy 프레임 한 장을 촬영한다."""
 
         if self._camera is None:
             raise BaselineError(ReadStatus.CAMERA_ERROR, "카메라가 초기화되지 않았습니다.")
@@ -547,7 +547,7 @@ class Picamera2FrameSource:
         if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
             raise BaselineError(
                 ReadStatus.CAMERA_ERROR,
-                f"RGB888 uint8 프레임이 아닙니다: shape={image.shape}, dtype={image.dtype}",
+                f"RGB uint8 프레임이 아닙니다: shape={image.shape}, dtype={image.dtype}",
             )
         frame = CapturedFrame(
             frame_id=self._next_frame_id,
@@ -1550,7 +1550,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--disable-model-download", action="store_true")
     parser.add_argument("--min-rec-score", type=float, default=0.60)
-    parser.add_argument("--min-valid-frames", type=int, default=2)
+    parser.add_argument("--min-valid-frames", type=int, default=3)
     parser.add_argument("--min-vote-ratio", type=float, default=0.50)
     parser.add_argument("--ambiguity-margin", type=float, default=0.15)
     parser.add_argument("--plain", action="store_true")
@@ -1799,7 +1799,7 @@ class BaselineLogicTests(unittest.TestCase):
             frame_count=6,
             frame_interval_ms=0,
             min_rec_score=0.60,
-            min_valid_frames=2,
+            min_valid_frames=3,
             min_vote_ratio=0.50,
             ambiguity_margin=0.15,
         )
@@ -1815,7 +1815,7 @@ class BaselineLogicTests(unittest.TestCase):
         candidates: Sequence[OcrCandidate],
         *,
         min_rec_score: float = 0.60,
-        min_valid_frames: int = 3,  # min_vailid_ratio = 0.5를 넣는 대신 임시 조치로 숫자 2 -> 3
+        min_valid_frames: int = 3,
         min_vote_ratio: float = 0.50,
         ambiguity_margin: float = 0.15,
     ) -> PlateReadResult:
