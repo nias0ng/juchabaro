@@ -7,15 +7,16 @@
 하드웨어 비의존 자체 테스트(`--self-test`)다.
 
 Raspberry Pi OS에서는 Picamera2와 OpenCV를 OS 패키지로 설치하는 방식을 우선한다.
-OCR 모드에는 NumPy, PaddleOCR 3.7.x와 선택한 추론 엔진의 런타임이
-필요하다. 가상환경은 시스템 Picamera2를 볼 수 있도록 다음 형태를 권장한다.
+OCR 모드에는 NumPy와 DBNet18 검출기를 포함한 EasyOCR가 필요하다.
+가상환경은 시스템 Picamera2를 볼 수 있도록 다음 형태를 권장한다.
 
     python3 -m venv --system-site-packages .venv
 
 실제 Raspberry Pi에서는 `uname -m`, `cat /etc/os-release`, `python3 --version`,
 `free -h`, `lsblk`, `rpicam-hello --list-cameras`로 환경과 카메라를 먼저
-확인해야 한다. 이 파일은 고정 ROI, 수동 트리거, PaddleOCR 어댑터, 표준 출력
-발행기를 Protocol 뒤에 두어 각각 객체 검출, 센서, 다른 OCR 런타임, 원격 전송 구현으로 교체할 수 있게 한다.
+확인해야 한다. 이 파일은 DBNet18 영역 검출, 4점 원근 보정, EasyOCR 문자
+인식, 수동 트리거, 표준 출력 발행기를 분리해 이후 YOLO pose, 센서, 다른
+OCR 런타임, 원격 전송 구현으로 교체할 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -57,40 +58,6 @@ class ReadStatus(str, Enum):
     MODEL_ERROR = "MODEL_ERROR"
     DEPENDENCY_ERROR = "DEPENDENCY_ERROR"
     CONFIG_ERROR = "CONFIG_ERROR"
-
-
-@dataclass(frozen=True)
-class NormalizedRoi:
-    """0~1 정규화 좌표로 표현한 고정 번호판 영역."""
-
-    x: float
-    y: float
-    width: float
-    height: float
-
-    def __post_init__(self) -> None:
-        values = (self.x, self.y, self.width, self.height)
-        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in values):
-            raise ValueError("ROI 값은 유한한 숫자여야 합니다.")
-        if not all(0.0 <= value <= 1.0 for value in values):
-            raise ValueError("ROI의 모든 값은 0~1 범위여야 합니다.")
-        if self.width <= 0.0 or self.height <= 0.0:
-            raise ValueError("ROI의 폭과 높이는 0보다 커야 합니다.")
-        if self.x + self.width > 1.0 or self.y + self.height > 1.0:
-            raise ValueError("ROI가 정규화 이미지 범위를 벗어납니다.")
-
-    def to_pixel_bounds(self, image_width: int, image_height: int) -> tuple[int, int, int, int]:
-        """이미지 크기에 맞는 `(x1, y1, x2, y2)` 픽셀 경계로 변환한다."""
-
-        if image_width <= 0 or image_height <= 0:
-            raise ValueError("이미지 폭과 높이는 0보다 커야 합니다.")
-        x1 = math.floor(self.x * image_width)
-        y1 = math.floor(self.y * image_height)
-        x2 = math.ceil((self.x + self.width) * image_width)
-        y2 = math.ceil((self.y + self.height) * image_height)
-        if not (0 <= x1 < x2 <= image_width and 0 <= y1 < y2 <= image_height):
-            raise ValueError("변환된 ROI가 이미지 픽셀 범위를 벗어납니다.")
-        return x1, y1, x2, y2
 
 
 @dataclass(frozen=True)
@@ -254,6 +221,14 @@ def normalize_plate_text(raw_text: str) -> str:
     normalized = unicodedata.normalize("NFKC", raw_text).strip()
     normalized = re.sub(r"\s+", "", normalized)
     return normalized.replace("-", "")
+
+
+def extract_plate_suffix(raw_text: str) -> str:
+    """정규화된 OCR 문자열 끝의 숫자 네 자리를 차량 식별번호로 추출한다."""
+
+    normalized = normalize_plate_text(raw_text)
+    match = re.search(r"([0-9]{4})$", normalized)
+    return match.group(1) if match is not None else normalized
 
 
 def is_valid_plate_number(text: str) -> bool:
@@ -594,39 +569,169 @@ class QualityFrameSelector:
         return rank_frame_qualities(qualities)
 
 
-class FixedRoiRegionDetector:
-    """고정 ROI를 공통 4점 영역 계약으로 변환하는 임시 검출기.
+class EasyOcrRuntime:
+    """DBNet18과 recognizer가 공유하는 EasyOCR Reader 한 인스턴스."""
 
-    현장 측정에서 차량 위치 편차에 따른 ROI 이탈이 주요 실패 원인으로 확인될
-    때 RegionDetector 구현만 학습 기반 검출기로 교체할 수 있다.
-    """
+    def __init__(self, *, model_dir: str | None, download_enabled: bool) -> None:
+        self._model_dir = model_dir
+        self._download_enabled = download_enabled
+        self._reader: Any | None = None
+        self._library_version = "not-initialized"
 
-    def __init__(self, roi: NormalizedRoi) -> None:
-        self._roi = roi
+    @property
+    def model_info(self) -> ModelInfo:
+        """현재 EasyOCR 모델 구성과 확인된 라이브러리 버전을 반환한다."""
+
+        return ModelInfo(
+            library="easyocr",
+            library_version=self._library_version,
+            model_name="dbnet18+standard(en)",
+            model_dir=self._model_dir,
+            engine="torch-cpu",
+        )
+
+    @property
+    def reader(self) -> Any:
+        """초기화된 공유 Reader를 반환한다."""
+
+        if self._reader is None:
+            raise BaselineError(ReadStatus.MODEL_ERROR, "EasyOCR Reader가 초기화되지 않았습니다.")
+        return self._reader
+
+    def open(self) -> None:
+        """DBNet18 검출기와 영문 recognizer를 CPU용으로 한 번만 초기화한다."""
+
+        if self._reader is not None:
+            return
+        command = " ".join(sys.argv)
+        started = time.perf_counter()
+        try:
+            import easyocr
+        except ImportError as exc:
+            missing = getattr(exc, "name", None) or "easyocr"
+            raise BaselineError(
+                ReadStatus.DEPENDENCY_ERROR,
+                f"OCR 의존성 '{missing}' import에 실패했습니다. EasyOCR와 CPU용 "
+                f"PyTorch를 설치해야 합니다. 실행 명령: {command}. 원인: {exc}",
+            ) from exc
+        try:
+            self._library_version = importlib.metadata.version("easyocr")
+        except importlib.metadata.PackageNotFoundError:
+            self._library_version = "unknown"
+
+        kwargs: dict[str, Any] = {
+            "lang_list": ["en"],
+            "gpu": False,
+            "detect_network": "dbnet18",
+            "recog_network": "standard",
+            "download_enabled": self._download_enabled,
+            "detector": True,
+            "recognizer": True,
+            "verbose": False,
+            "quantize": True,
+        }
+        if self._model_dir is not None:
+            kwargs["model_storage_directory"] = self._model_dir
+        try:
+            self._reader = easyocr.Reader(**kwargs)
+        except (ImportError, ModuleNotFoundError) as exc:
+            missing = getattr(exc, "name", None) or "torch"
+            raise BaselineError(
+                ReadStatus.DEPENDENCY_ERROR,
+                f"EasyOCR 런타임 의존성 '{missing}' 초기화에 실패했습니다. "
+                f"실행 명령: {command}. 원인: {exc}",
+            ) from exc
+        except Exception as exc:
+            raise BaselineError(
+                ReadStatus.MODEL_ERROR,
+                f"EasyOCR DBNet18/recognizer 초기화에 실패했습니다(command={command}): {exc}",
+            ) from exc
+        LOGGER.info("EasyOCR 공유 모델 초기화 시간: %.1f ms", (time.perf_counter() - started) * 1000.0)
+
+    def close(self) -> None:
+        """EasyOCR가 별도 close API를 제공하지 않아 Reader 참조를 해제한다."""
+
+        self._reader = None
+
+
+def _as_easyocr_batch(output: Any, name: str) -> Sequence[Any]:
+    """EasyOCR detect의 단일 이미지 배치 출력을 검증해 첫 항목을 반환한다."""
+
+    if not isinstance(output, (list, tuple)) or not output:
+        raise BaselineError(ReadStatus.MODEL_ERROR, f"EasyOCR detect의 {name} 출력 형식이 잘못되었습니다.")
+    batch = output[0]
+    if not isinstance(batch, (list, tuple)):
+        raise BaselineError(ReadStatus.MODEL_ERROR, f"EasyOCR detect의 {name}[0]이 목록이 아닙니다.")
+    return batch
+
+
+def easyocr_regions(
+    horizontal_output: Any,
+    free_output: Any,
+) -> tuple[DetectedRegion, ...]:
+    """EasyOCR의 수평 박스와 자유형 네 점을 공통 영역 계약으로 변환한다."""
+
+    regions: list[DetectedRegion] = []
+    for box in _as_easyocr_batch(horizontal_output, "horizontal_list"):
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise BaselineError(ReadStatus.MODEL_ERROR, "EasyOCR 수평 문자 박스 형식이 잘못되었습니다.")
+        x_min, x_max, y_min, y_max = box
+        try:
+            quad = (
+                (float(x_min), float(y_min)),
+                (float(x_max), float(y_min)),
+                (float(x_max), float(y_max)),
+                (float(x_min), float(y_max)),
+            )
+            ordered = order_quad_points(quad)
+        except (TypeError, ValueError, BaselineError) as exc:
+            raise BaselineError(
+                ReadStatus.MODEL_ERROR,
+                f"EasyOCR 수평 문자 박스 좌표가 잘못되었습니다: {exc}",
+            ) from exc
+        regions.append(DetectedRegion(ordered, None, "dbnet18-horizontal"))
+
+    for box in _as_easyocr_batch(free_output, "free_list"):
+        try:
+            ordered = order_quad_points(box)
+        except BaselineError as exc:
+            raise BaselineError(ReadStatus.MODEL_ERROR, f"EasyOCR 자유형 문자 박스가 잘못되었습니다: {exc}") from exc
+        regions.append(DetectedRegion(ordered, None, "dbnet18-free"))
+    return tuple(regions)
+
+
+class DbNet18RegionDetector:
+    """전체 RGB 프레임에서 DBNet18 문자 영역을 한 번 검출한다."""
+
+    def __init__(
+        self,
+        runtime: EasyOcrRuntime,
+        *,
+        canvas_size: int | None,
+        max_candidates: int = 10,
+    ) -> None:
+        self._runtime = runtime
+        self._canvas_size = canvas_size
+        self._max_candidates = max_candidates
 
     def detect(self, frame: CapturedFrame) -> Sequence[DetectedRegion]:
-        """프레임 크기에 맞춘 고정 ROI를 시계 방향 네 점으로 반환한다."""
+        """RGB 프레임을 EasyOCR 형식으로 한 번 변환해 4점 후보를 반환한다."""
 
-        shape = getattr(frame.image, "shape", None)
-        if shape is None or len(shape) < 2:
-            raise BaselineError(ReadStatus.NO_PLATE_REGION, "프레임 이미지 크기를 확인할 수 없습니다.")
-        image_height, image_width = int(shape[0]), int(shape[1])
+        bgr_image = rgb_to_bgr(frame.image)
         try:
-            x1, y1, x2, y2 = self._roi.to_pixel_bounds(image_width, image_height)
-        except ValueError as exc:
-            raise BaselineError(ReadStatus.NO_PLATE_REGION, str(exc)) from exc
-        return (
-            DetectedRegion(
-                quad=(
-                    (float(x1), float(y1)),
-                    (float(x2 - 1), float(y1)),
-                    (float(x2 - 1), float(y2 - 1)),
-                    (float(x1), float(y2 - 1)),
-                ),
-                detector_score=None,
-                source="fixed-roi",
-            ),
-        )
+            horizontal_list, free_list = self._runtime.reader.detect(
+                bgr_image,
+                min_size=10,
+                canvas_size=self._canvas_size,
+                reformat=True,
+                threshold=0.2,
+                bbox_min_score=0.2,
+                bbox_min_size=3,
+                max_candidates=self._max_candidates,
+            )
+        except Exception as exc:
+            raise BaselineError(ReadStatus.MODEL_ERROR, f"EasyOCR DBNet18 detect 실행에 실패했습니다: {exc}") from exc
+        return easyocr_regions(horizontal_list, free_list)
 
 
 def order_quad_points(
@@ -753,102 +858,66 @@ class MinimalPlatePreprocessor:
             return image
         shape = getattr(image, "shape", None)
         if shape is None or len(shape) < 2 or shape[0] <= 0 or shape[1] <= 0:
-            raise BaselineError(ReadStatus.NO_PLATE_REGION, "전처리할 ROI 이미지 크기가 잘못되었습니다.")
+            raise BaselineError(ReadStatus.NO_PLATE_REGION, "전처리할 문자 영역 이미지 크기가 잘못되었습니다.")
         cv2 = _import_cv2()
         target_width = max(1, round(shape[1] * self._resize_height / shape[0]))
         return cv2.resize(image, (target_width, self._resize_height), interpolation=cv2.INTER_LINEAR)
 
 
-class PaddleOcrTextRecognizer:
-    """PaddleOCR 3.7.x TextRecognition 결과를 내부 후보로 격리하는 어댑터.
+class EasyOcrTextRecognizer:
+    """원근 보정된 번호판 전체를 EasyOCR recognizer로 한 번 읽는 어댑터."""
 
-    같은 PaddleOCR 추론 형식의 파인튜닝 모델은 model_dir 설정만 바꾸며, 다른
-    OCR 라이브러리나 직접 ONNX Runtime 구현은 TextRecognizer 전체를 교체한다.
-    """
-
-    def __init__(self, *, model_name: str, model_dir: str | None, engine: str) -> None:
-        self._model_name = model_name
-        self._model_dir = model_dir
-        self._engine = engine
-        self._model: Any | None = None
-        self._library_version = "not-initialized"
+    def __init__(self, runtime: EasyOcrRuntime) -> None:
+        self._runtime = runtime
 
     @property
     def model_info(self) -> ModelInfo:
-        """현재 PaddleOCR 설정과 확인된 라이브러리 버전을 반환한다."""
+        """공유 EasyOCR 런타임의 재현 정보를 반환한다."""
 
-        return ModelInfo(
-            library="paddleocr",
-            library_version=self._library_version,
-            model_name=self._model_name,
-            model_dir=self._model_dir,
-            engine=self._engine,
-        )
+        return self._runtime.model_info
 
     def open(self) -> None:
-        """TextRecognition 모델을 CPU용으로 한 번만 초기화한다."""
+        """공유 Reader를 애플리케이션 시작 시 한 번 초기화한다."""
 
-        if self._model is not None:
-            return
-        command = " ".join(sys.argv)
-        started = time.perf_counter()
-        try:
-            from paddleocr import TextRecognition
-        except ImportError as exc:
-            missing = getattr(exc, "name", None) or "paddleocr"
-            raise BaselineError(
-                ReadStatus.DEPENDENCY_ERROR,
-                f"OCR 의존성 '{missing}' import에 실패했습니다. PaddleOCR 3.7.x와 "
-                f"'{self._engine}' 엔진 의존성을 실제 Raspberry Pi 환경에 맞게 설치해야 합니다. "
-                f"실행 명령: {command}. 원인: {exc}",
-            ) from exc
-        try:
-            self._library_version = importlib.metadata.version("paddleocr")
-        except importlib.metadata.PackageNotFoundError:
-            self._library_version = "unknown"
-
-        kwargs: dict[str, Any] = {
-            "model_name": self._model_name,
-            "engine": self._engine,
-            "device": "cpu",
-        }
-        if self._model_dir is not None:
-            kwargs["model_dir"] = self._model_dir
-        try:
-            self._model = TextRecognition(**kwargs)
-        except (ImportError, ModuleNotFoundError) as exc:
-            missing = getattr(exc, "name", None) or self._engine
-            raise BaselineError(
-                ReadStatus.DEPENDENCY_ERROR,
-                f"OCR 엔진 의존성 '{missing}' 초기화에 실패했습니다. 실행 명령: "
-                f"{command}. 원인: {exc}",
-            ) from exc
-        except Exception as exc:
-            raise BaselineError(
-                ReadStatus.MODEL_ERROR,
-                f"PaddleOCR 모델 초기화에 실패했습니다(model={self._model_name}, "
-                f"engine={self._engine}, command={command}): {exc}",
-            ) from exc
-        LOGGER.info("OCR 모델 초기화 시간: %.1f ms", (time.perf_counter() - started) * 1000.0)
+        self._runtime.open()
 
     def recognize(self, frame_id: int, image: Any) -> OcrCandidate:
-        """TextRecognition.predict 결과 한 건을 내부 후보로 변환한다."""
+        """보정된 전체 영역을 숫자 allowlist로 한 번 인식한다."""
 
-        if self._model is None:
-            raise BaselineError(ReadStatus.MODEL_ERROR, "OCR 모델이 초기화되지 않았습니다.")
+        gray_image = rgb_to_gray(image)
         try:
-            results = list(self._model.predict(input=image, batch_size=1))
+            results = list(
+                self._runtime.reader.recognize(
+                    gray_image,
+                    horizontal_list=None,
+                    free_list=None,
+                    decoder="greedy",
+                    beamWidth=1,
+                    batch_size=1,
+                    workers=0,
+                    allowlist="0123456789",
+                    blocklist=None,
+                    detail=1,
+                    rotation_info=None,
+                    paragraph=False,
+                    contrast_ths=0.1,
+                    adjust_contrast=0.5,
+                    filter_ths=0.003,
+                    reformat=True,
+                    output_format="standard",
+                )
+            )
         except Exception as exc:
             raise BaselineError(
                 ReadStatus.MODEL_ERROR,
-                f"PaddleOCR TextRecognition.predict 실행에 실패했습니다: {exc}",
+                f"EasyOCR recognize 실행에 실패했습니다: {exc}",
             ) from exc
         if not results:
             return OcrCandidate(frame_id, "", "", 0.0, False)
         if len(results) > 1:
-            LOGGER.warning("단일 ROI 입력에서 OCR 결과 %d건이 반환되어 첫 결과만 사용합니다.", len(results))
-        raw_text, rec_score = _extract_paddle_result(results[0])
-        normalized = normalize_plate_text(raw_text)
+            LOGGER.warning("보정된 단일 영역에서 OCR 결과 %d건이 반환되어 첫 결과만 사용합니다.", len(results))
+        raw_text, rec_score = _extract_easyocr_result(results[0])
+        normalized = extract_plate_suffix(raw_text)
         return OcrCandidate(
             frame_id=frame_id,
             raw_text=raw_text,
@@ -858,9 +927,9 @@ class PaddleOcrTextRecognizer:
         )
 
     def close(self) -> None:
-        """PaddleOCR가 별도 close API를 제공하지 않아 모델 참조를 해제한다."""
+        """공유 EasyOCR Reader 참조를 해제한다."""
 
-        self._model = None
+        self._runtime.close()
 
 
 class StdoutResultPublisher:
@@ -1114,48 +1183,54 @@ def _import_cv2() -> Any:
     return cv2
 
 
-def _extract_paddle_result(result: Any) -> tuple[str, float]:
-    payload: Mapping[str, Any] | None = result if isinstance(result, Mapping) else None
-    if payload is None:
-        try:
-            payload = dict(result)
-        except (TypeError, ValueError):
-            payload = None
-    if payload is None:
-        json_value = getattr(result, "json", None)
-        if callable(json_value):
-            json_value = json_value()
-        if isinstance(json_value, str):
-            try:
-                json_value = json.loads(json_value)
-            except json.JSONDecodeError:
-                json_value = None
-        if isinstance(json_value, Mapping):
-            payload = json_value
-    if payload is None:
+def _extract_easyocr_result(result: Any) -> tuple[str, float]:
+    """EasyOCR standard `(box, text, confidence)` 결과를 검증한다."""
+
+    if not isinstance(result, (list, tuple)) or len(result) < 3:
         raise BaselineError(
             ReadStatus.MODEL_ERROR,
-            f"지원하지 않는 PaddleOCR Result 형식입니다: {type(result).__name__}",
+            f"지원하지 않는 EasyOCR 결과 형식입니다: {type(result).__name__}",
         )
-    nested = payload.get("res")
-    if isinstance(nested, Mapping):
-        payload = nested
-    if "rec_text" not in payload or "rec_score" not in payload:
-        raise BaselineError(
-            ReadStatus.MODEL_ERROR,
-            f"PaddleOCR Result에 rec_text/rec_score가 없습니다: keys={list(payload.keys())}",
-        )
-    raw_text = str(payload["rec_text"] or "")
+    raw_text = str(result[1] or "")
     try:
-        rec_score = float(payload["rec_score"])
+        rec_score = float(result[2])
     except (TypeError, ValueError) as exc:
         raise BaselineError(
             ReadStatus.MODEL_ERROR,
-            f"PaddleOCR rec_score를 숫자로 변환할 수 없습니다: {payload['rec_score']!r}",
+            f"EasyOCR confidence를 숫자로 변환할 수 없습니다: {result[2]!r}",
         ) from exc
     if not math.isfinite(rec_score):
-        raise BaselineError(ReadStatus.MODEL_ERROR, f"PaddleOCR rec_score가 유한하지 않습니다: {rec_score}")
+        raise BaselineError(ReadStatus.MODEL_ERROR, f"EasyOCR confidence가 유한하지 않습니다: {rec_score}")
     return raw_text, rec_score
+
+
+def _validate_rgb_image(image: Any) -> None:
+    """Picamera2부터 보정 단계까지 유지하는 RGB uint8 배열 계약을 검사한다."""
+
+    np = _import_numpy()
+    shape = getattr(image, "shape", None)
+    dtype = getattr(image, "dtype", None)
+    if shape is None or len(shape) != 3 or shape[2] != 3 or dtype != np.uint8:
+        raise BaselineError(
+            ReadStatus.MODEL_ERROR,
+            f"EasyOCR 입력은 RGB uint8 HxWx3 배열이어야 합니다: shape={shape}, dtype={dtype}",
+        )
+
+
+def rgb_to_bgr(image: Any) -> Any:
+    """RGB uint8 이미지를 DBNet18이 받는 OpenCV BGR 배열로 한 번 변환한다."""
+
+    _validate_rgb_image(image)
+    cv2 = _import_cv2()
+    return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+
+def rgb_to_gray(image: Any) -> Any:
+    """RGB uint8 이미지를 recognizer가 받는 단일 채널 배열로 한 번 변환한다."""
+
+    _validate_rgb_image(image)
+    cv2 = _import_cv2()
+    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
 
 def save_rgb_image(path: Path, image: Any) -> None:
@@ -1177,7 +1252,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--probe-camera", action="store_true", help="카메라 목록과 한 프레임을 점검합니다.")
-    modes.add_argument("--capture-frame", metavar="PATH", help="ROI 설정용 전체 프레임을 저장합니다.")
+    modes.add_argument("--capture-frame", metavar="PATH", help="카메라 점검용 전체 프레임을 저장합니다.")
     modes.add_argument("--once", action="store_true", help="인식 이벤트를 한 번 실행합니다.")
     modes.add_argument("--interactive", action="store_true", help="Enter로 반복 인식하고 q로 종료합니다.")
     modes.add_argument("--self-test", action="store_true", help="하드웨어 비의존 순수 로직 테스트를 실행합니다.")
@@ -1186,17 +1261,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--warmup-ms", type=int, default=1000)
-    parser.add_argument("--roi", nargs=4, type=float, metavar=("X", "Y", "WIDTH", "HEIGHT"))
     parser.add_argument("--frame-count", type=int, default=6)
     parser.add_argument("--frame-interval-ms", type=int, default=120)
     parser.add_argument("--resize-height", type=int, default=None)
-    parser.add_argument("--model-name", default="en_PP-OCRv4_mobile_rec")
     parser.add_argument("--model-dir", default=None)
     parser.add_argument(
-        "--engine",
-        choices=("paddle", "paddle_static", "paddle_dynamic", "transformers", "onnxruntime"),
-        default="onnxruntime",
+        "--detector-canvas-size",
+        type=int,
+        default=None,
+        help="DBNet18 입력의 짧은 변 길이입니다. 기본값은 원본 크기를 유지합니다.",
     )
+    parser.add_argument("--disable-model-download", action="store_true")
     parser.add_argument("--min-rec-score", type=float, default=0.60)
     parser.add_argument("--min-valid-frames", type=int, default=2)
     parser.add_argument("--min-vote-ratio", type=float, default=0.50)
@@ -1211,7 +1286,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def validate_args(args: argparse.Namespace) -> NormalizedRoi | None:
+def validate_args(args: argparse.Namespace) -> None:
     """실행 전에 수치 범위와 모드별 필수 옵션을 검증한다."""
 
     if args.width <= 0 or args.height <= 0:
@@ -1219,8 +1294,8 @@ def validate_args(args: argparse.Namespace) -> NormalizedRoi | None:
     if args.camera_index < 0 or args.warmup_ms < 0:
         raise BaselineError(ReadStatus.CONFIG_ERROR, "camera-index와 warmup-ms는 음수일 수 없습니다.")
     if not (args.once or args.interactive):
-        # 카메라 점검과 보정 프레임 저장은 OCR 설정이나 모델 경로에 의존하지 않는다.
-        return None
+        # 카메라 점검과 프레임 저장은 OCR 설정이나 모델 경로에 의존하지 않는다.
+        return
     if args.frame_count <= 0 or args.frame_interval_ms < 0:
         raise BaselineError(ReadStatus.CONFIG_ERROR, "frame-count는 양수, frame-interval-ms는 0 이상이어야 합니다.")
     if args.min_valid_frames <= 0 or args.min_valid_frames > args.frame_count:
@@ -1230,20 +1305,16 @@ def validate_args(args: argparse.Namespace) -> NormalizedRoi | None:
         )
     if args.resize_height is not None and args.resize_height <= 0:
         raise BaselineError(ReadStatus.CONFIG_ERROR, "resize-height는 0보다 커야 합니다.")
+    if args.detector_canvas_size is not None and args.detector_canvas_size <= 0:
+        raise BaselineError(ReadStatus.CONFIG_ERROR, "detector-canvas-size는 0보다 커야 합니다.")
     for name in ("min_rec_score", "min_vote_ratio", "ambiguity_margin"):
         value = getattr(args, name)
         if not 0.0 <= value <= 1.0:
             raise BaselineError(ReadStatus.CONFIG_ERROR, f"{name.replace('_', '-')}는 0~1 범위여야 합니다.")
-    if not args.model_name.strip():
-        raise BaselineError(ReadStatus.CONFIG_ERROR, "model-name은 빈 문자열일 수 없습니다.")
-    if args.model_dir is not None and not Path(args.model_dir).is_dir():
-        raise BaselineError(ReadStatus.CONFIG_ERROR, f"model-dir 디렉터리가 없습니다: {args.model_dir}")
-    if args.roi is None:
-        raise BaselineError(ReadStatus.CONFIG_ERROR, "--once와 --interactive에는 --roi가 필요합니다.")
-    try:
-        return NormalizedRoi(*args.roi)
-    except ValueError as exc:
-        raise BaselineError(ReadStatus.CONFIG_ERROR, f"잘못된 ROI 설정입니다: {exc}") from exc
+    if args.model_dir is not None:
+        model_path = Path(args.model_dir)
+        if model_path.exists() and not model_path.is_dir():
+            raise BaselineError(ReadStatus.CONFIG_ERROR, f"model-dir가 디렉터리가 아닙니다: {args.model_dir}")
 
 
 def create_frame_source(args: argparse.Namespace) -> Picamera2FrameSource:
@@ -1297,22 +1368,19 @@ def capture_calibration_frame(args: argparse.Namespace, path: Path) -> dict[str,
     }
 
 
-def build_plate_reader(
-    args: argparse.Namespace,
-    roi: NormalizedRoi,
-) -> tuple[PlateReader, PaddleOcrTextRecognizer]:
+def build_plate_reader(args: argparse.Namespace) -> tuple[PlateReader, EasyOcrTextRecognizer]:
     """CLI 설정과 교체 가능한 기본 구현체로 PlateReader를 조립한다."""
 
-    recognizer = PaddleOcrTextRecognizer(
-        model_name=args.model_name,
+    runtime = EasyOcrRuntime(
         model_dir=args.model_dir,
-        engine=args.engine,
+        download_enabled=not args.disable_model_download,
     )
+    recognizer = EasyOcrTextRecognizer(runtime)
     debug_writer = DebugArtifactWriter(args.debug_dir) if args.debug_dir is not None else None
     reader = PlateReader(
         frame_source=create_frame_source(args),
         frame_selector=QualityFrameSelector(),
-        detector=FixedRoiRegionDetector(roi),
+        detector=DbNet18RegionDetector(runtime, canvas_size=args.detector_canvas_size),
         rectifier=PerspectiveRegionRectifier(),
         preprocessor=MinimalPlatePreprocessor(args.resize_height),
         recognizer=recognizer,
@@ -1334,7 +1402,7 @@ class BaselineLogicTests(unittest.TestCase):
 
     @staticmethod
     def candidate(frame_id: int, text: str, score: float) -> OcrCandidate:
-        normalized = normalize_plate_text(text)
+        normalized = extract_plate_suffix(text)
         return OcrCandidate(frame_id, text, normalized, score, is_valid_plate_number(normalized))
 
     def aggregate(
@@ -1357,9 +1425,6 @@ class BaselineLogicTests(unittest.TestCase):
             model_info=self.MODEL_INFO,
         )
 
-    def test_normalized_roi_to_pixels(self) -> None:
-        self.assertEqual(NormalizedRoi(0.25, 0.50, 0.50, 0.30).to_pixel_bounds(1280, 720), (320, 360, 960, 576))
-
     def test_frame_qualities_are_ranked_by_score_then_frame_id(self) -> None:
         qualities = [
             FrameQuality(3, 1.0, 1.0, 128.0, 0.0, 0.0, 2.0),
@@ -1374,20 +1439,6 @@ class BaselineLogicTests(unittest.TestCase):
     def test_frame_selector_rejects_nonpositive_target_size(self) -> None:
         with self.assertRaises(ValueError):
             QualityFrameSelector(target_width=0)
-
-    def test_out_of_bounds_roi_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            NormalizedRoi(0.8, 0.5, 0.3, 0.2)
-
-    def test_fixed_roi_is_exposed_as_full_frame_quad(self) -> None:
-        np = _import_numpy()
-        frame = CapturedFrame(1, datetime.now(timezone.utc), np.zeros((12, 20, 3), dtype=np.uint8))
-        regions = FixedRoiRegionDetector(NormalizedRoi(0.25, 0.25, 0.50, 0.50)).detect(frame)
-        self.assertEqual(len(regions), 1)
-        self.assertEqual(
-            regions[0].quad,
-            ((5.0, 3.0), (14.0, 3.0), (14.0, 8.0), (5.0, 8.0)),
-        )
 
     def test_quad_points_are_ordered_clockwise_from_top_left(self) -> None:
         unordered = ((8.0, 6.0), (2.0, 1.0), (1.0, 5.0), (9.0, 2.0))
@@ -1411,6 +1462,74 @@ class BaselineLogicTests(unittest.TestCase):
         rectified = PerspectiveRegionRectifier().rectify(frame, region)
         self.assertEqual(rectified.shape, (5, 7, 3))
 
+    def test_easyocr_boxes_are_converted_to_common_quads(self) -> None:
+        regions = easyocr_regions(
+            [[[2, 8, 1, 5]]],
+            [[[[10, 2], [15, 3], [14, 7], [9, 6]]]],
+        )
+        self.assertEqual(len(regions), 2)
+        self.assertEqual(regions[0].quad, ((2.0, 1.0), (8.0, 1.0), (8.0, 5.0), (2.0, 5.0)))
+        self.assertEqual(regions[0].source, "dbnet18-horizontal")
+        self.assertEqual(regions[1].source, "dbnet18-free")
+
+    def test_dbnet_detector_uses_bgr_once_and_preserves_native_canvas(self) -> None:
+        np = _import_numpy()
+
+        class FakeReader:
+            def __init__(self) -> None:
+                self.image: Any | None = None
+                self.kwargs: dict[str, Any] = {}
+
+            def detect(self, image: Any, **kwargs: Any) -> tuple[Any, Any]:
+                self.image = image
+                self.kwargs = kwargs
+                return [[[1, 3, 1, 2]]], [[]]
+
+        class FakeRuntime:
+            def __init__(self) -> None:
+                self.reader = FakeReader()
+
+        runtime = FakeRuntime()
+        rgb = np.zeros((4, 5, 3), dtype=np.uint8)
+        rgb[0, 0] = (10, 20, 30)
+        frame = CapturedFrame(1, datetime.now(timezone.utc), rgb)
+        regions = DbNet18RegionDetector(runtime, canvas_size=None).detect(frame)  # type: ignore[arg-type]
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(tuple(runtime.reader.image[0, 0]), (30, 20, 10))
+        self.assertIsNone(runtime.reader.kwargs["canvas_size"])
+
+    def test_easyocr_recognizer_reads_rectified_region_as_one_numeric_line(self) -> None:
+        np = _import_numpy()
+
+        class FakeReader:
+            def __init__(self) -> None:
+                self.kwargs: dict[str, Any] = {}
+
+            def recognize(self, image: Any, **kwargs: Any) -> list[Any]:
+                self.kwargs = kwargs
+                return [([[0, 0], [1, 0], [1, 1], [0, 1]], "010785", 0.91)]
+
+        class FakeRuntime:
+            def __init__(self) -> None:
+                self.reader = FakeReader()
+                self.model_info = BaselineLogicTests.MODEL_INFO
+
+            def open(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        runtime = FakeRuntime()
+        recognizer = EasyOcrTextRecognizer(runtime)  # type: ignore[arg-type]
+        image = np.zeros((8, 20, 3), dtype=np.uint8)
+        candidate = recognizer.recognize(7, image)
+        self.assertEqual(candidate.normalized_text, "0785")
+        self.assertTrue(candidate.valid_format)
+        self.assertEqual(runtime.reader.kwargs["allowlist"], "0123456789")
+        self.assertIsNone(runtime.reader.kwargs["horizontal_list"])
+        self.assertIsNone(runtime.reader.kwargs["free_list"])
+
     def test_four_ascii_digits_are_valid(self) -> None:
         self.assertTrue(is_valid_plate_number(normalize_plate_text("1234")))
 
@@ -1423,6 +1542,11 @@ class BaselineLogicTests(unittest.TestCase):
     def test_three_and_five_digits_are_rejected(self) -> None:
         self.assertFalse(is_valid_plate_number("123"))
         self.assertFalse(is_valid_plate_number("12345"))
+
+    def test_last_four_digits_are_extracted_without_character_guessing(self) -> None:
+        self.assertEqual(extract_plate_suffix("010-785"), "0785")
+        self.assertEqual(extract_plate_suffix("12가1128"), "1128")
+        self.assertEqual(extract_plate_suffix("O234"), "O234")
 
     def test_letters_are_rejected(self) -> None:
         self.assertFalse(is_valid_plate_number(normalize_plate_text("12A4")))
@@ -1502,9 +1626,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.self_test:
         return run_self_tests()
 
-    recognizer: PaddleOcrTextRecognizer | None = None
+    recognizer: EasyOcrTextRecognizer | None = None
     try:
-        roi = validate_args(args)
+        validate_args(args)
         if args.probe_camera:
             print(json.dumps(probe_camera(args), ensure_ascii=False, sort_keys=True), flush=True)
             return 0
@@ -1513,9 +1637,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(output, ensure_ascii=False, sort_keys=True), flush=True)
             return 0
 
-        if roi is None:
-            raise BaselineError(ReadStatus.CONFIG_ERROR, "OCR 실행에 필요한 ROI 설정이 없습니다.")
-        reader, recognizer = build_plate_reader(args, roi)
+        reader, recognizer = build_plate_reader(args)
         publisher = StdoutResultPublisher(plain=args.plain)
         with reader:
             if args.once:
@@ -1532,7 +1654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_info = (
             recognizer.model_info
             if recognizer is not None
-            else ModelInfo("paddleocr", "not-initialized", args.model_name, args.model_dir, args.engine)
+            else ModelInfo("easyocr", "not-initialized", "dbnet18+standard(en)", args.model_dir, "torch-cpu")
         )
         result = make_failure_result(exc.status, str(exc), model_info)
         StdoutResultPublisher(plain=args.plain).publish(result)
@@ -1542,7 +1664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_info = (
             recognizer.model_info
             if recognizer is not None
-            else ModelInfo("paddleocr", "not-initialized", args.model_name, args.model_dir, args.engine)
+            else ModelInfo("easyocr", "not-initialized", "dbnet18+standard(en)", args.model_dir, "torch-cpu")
         )
         result = make_failure_result(
             ReadStatus.MODEL_ERROR,
