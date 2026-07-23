@@ -108,6 +108,15 @@ class OcrCandidate:
 
 
 @dataclass(frozen=True)
+class _RegionAttempt:
+    """대표 프레임의 영역·보정 이미지·OCR 후보를 묶은 내부 선택 단위."""
+
+    region: DetectedRegion
+    rectified: Any
+    candidate: OcrCandidate
+
+
+@dataclass(frozen=True)
 class ModelInfo:
     """결과 재현을 위해 기록하는 OCR 라이브러리와 모델 정보."""
 
@@ -235,6 +244,39 @@ def is_valid_plate_number(text: str) -> bool:
     """문자열이 ASCII 숫자 정확히 네 자리인지 검사한다."""
 
     return PLATE_PATTERN.fullmatch(text) is not None
+
+
+def quad_area(region: DetectedRegion) -> float:
+    """영역 후보의 면적을 shoelace 공식으로 계산한다."""
+
+    points = order_quad_points(region.quad)
+    area_twice = sum(
+        points[index][0] * points[(index + 1) % 4][1]
+        - points[(index + 1) % 4][0] * points[index][1]
+        for index in range(4)
+    )
+    return abs(area_twice) / 2.0
+
+
+def best_region_attempt(
+    attempts: Sequence[_RegionAttempt],
+    *,
+    require_valid_format: bool,
+) -> _RegionAttempt | None:
+    """형식·OCR 점수·영역 크기 순으로 대표 문자 영역을 선택한다."""
+
+    pool = [attempt for attempt in attempts if attempt.candidate.valid_format] if require_valid_format else list(attempts)
+    if not pool:
+        return None
+    return max(
+        pool,
+        key=lambda attempt: (
+            attempt.candidate.valid_format,
+            bool(attempt.candidate.raw_text.strip()),
+            attempt.candidate.rec_score,
+            quad_area(attempt.region),
+        ),
+    )
 
 
 def to_jsonable(value: Any) -> Any:
@@ -1051,14 +1093,13 @@ class PlateReader:
             self._opened = False
 
     def read_once(self) -> PlateReadResult:
-        """여러 프레임을 촬영·인식·집계하여 구조화된 결과 한 건을 반환한다."""
+        """대표 프레임에서 영역을 찾고 같은 4점을 전체 프레임에 재사용한다."""
 
         if not self._opened:
             raise BaselineError(ReadStatus.CONFIG_ERROR, "PlateReader는 with 문 안에서 사용해야 합니다.")
         started = time.perf_counter()
         event_id = uuid4().hex
         candidates: list[OcrCandidate] = []
-        missing_regions = 0
         captured_frames = 0
         try:
             frames: list[CapturedFrame] = []
@@ -1087,32 +1128,124 @@ class PlateReader:
                 ),
             )
 
-            for quality in qualities:
-                frame = frame_by_id[quality.frame_id]
+            selected_attempt: _RegionAttempt | None = None
+            selected_frame: CapturedFrame | None = None
+            diagnostic_candidates: list[OcrCandidate] = []
+            detected_region_count = 0
+            anchor_qualities = qualities[: min(2, len(qualities))]
+            for quality in anchor_qualities:
+                anchor_frame = frame_by_id[quality.frame_id]
                 try:
-                    regions = tuple(self._detector.detect(frame))
-                    if not regions:
-                        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역 후보가 없습니다.")
-                    if len(regions) > 1:
-                        LOGGER.warning(
-                            "frame_id=%d 문자 영역 후보 %d개 중 첫 후보만 사용합니다.",
-                            frame.frame_id,
-                            len(regions),
-                        )
-                    rectified = self._rectifier.rectify(frame, regions[0])
+                    regions = tuple(self._detector.detect(anchor_frame))
                 except BaselineError as exc:
                     if exc.status is not ReadStatus.NO_PLATE_REGION:
                         raise
-                    missing_regions += 1
-                    LOGGER.warning("frame_id=%d 문자 영역을 얻지 못했습니다: %s", frame.frame_id, exc)
-                else:
-                    if self._debug_writer is not None:
-                        self._debug_writer.write_frame(event_id, frame, rectified, "rectified")
+                    LOGGER.warning(
+                        "대표 frame_id=%d DBNet18 영역 검출에 실패했습니다: %s",
+                        anchor_frame.frame_id,
+                        exc,
+                    )
+                    continue
+                if not regions:
+                    LOGGER.warning("대표 frame_id=%d에서 DBNet18 문자 영역을 찾지 못했습니다.", anchor_frame.frame_id)
+                    continue
+
+                detected_region_count += len(regions)
+                attempts: list[_RegionAttempt] = []
+                for region in regions:
+                    try:
+                        rectified = self._rectifier.rectify(anchor_frame, region)
+                    except BaselineError as exc:
+                        if exc.status is not ReadStatus.NO_PLATE_REGION:
+                            raise
+                        LOGGER.warning(
+                            "대표 frame_id=%d의 문자 영역 보정에 실패했습니다: %s",
+                            anchor_frame.frame_id,
+                            exc,
+                        )
+                        continue
                     processed = self._preprocessor.process(rectified)
-                    candidate = self._recognizer.recognize(frame.frame_id, processed)
-                    candidates.append(candidate)
-                    if self._debug_writer is not None:
-                        self._debug_writer.write_candidate(event_id, frame, candidate)
+                    candidate = self._recognizer.recognize(anchor_frame.frame_id, processed)
+                    attempts.append(_RegionAttempt(region, rectified, candidate))
+
+                diagnostic_attempt = best_region_attempt(attempts, require_valid_format=False)
+                if diagnostic_attempt is not None:
+                    diagnostic_candidates.append(diagnostic_attempt.candidate)
+                selected_attempt = best_region_attempt(attempts, require_valid_format=True)
+                if selected_attempt is not None:
+                    selected_frame = anchor_frame
+                    LOGGER.info(
+                        "이벤트 %s 대표 frame_id=%d의 %s 영역을 선택했습니다.",
+                        event_id,
+                        anchor_frame.frame_id,
+                        selected_attempt.region.source,
+                    )
+                    break
+                LOGGER.warning(
+                    "대표 frame_id=%d의 문자 영역 %d개에서 유효한 끝 4자리를 얻지 못했습니다.",
+                    anchor_frame.frame_id,
+                    len(regions),
+                )
+
+            if selected_attempt is None or selected_frame is None:
+                latency_ms = (time.perf_counter() - started) * 1000.0
+                if detected_region_count == 0 or not diagnostic_candidates:
+                    return make_failure_result(
+                        ReadStatus.NO_PLATE_REGION,
+                        "품질 상위 2프레임에서 사용 가능한 DBNet18 문자 영역을 얻지 못했습니다.",
+                        self._recognizer.model_info,
+                        total_frames=captured_frames,
+                        candidates=diagnostic_candidates,
+                        latency_ms=latency_ms,
+                    )
+                return aggregate_candidates(
+                    diagnostic_candidates,
+                    total_frames=captured_frames,
+                    min_rec_score=self._min_rec_score,
+                    min_valid_frames=self._min_valid_frames,
+                    min_vote_ratio=self._min_vote_ratio,
+                    ambiguity_margin=self._ambiguity_margin,
+                    latency_ms=latency_ms,
+                    model_info=self._recognizer.model_info,
+                )
+
+            candidate_by_frame_id = {selected_frame.frame_id: selected_attempt.candidate}
+            if self._debug_writer is not None:
+                self._debug_writer.write_frame(
+                    event_id,
+                    selected_frame,
+                    selected_attempt.rectified,
+                    "rectified",
+                )
+                self._debug_writer.write_candidate(event_id, selected_frame, selected_attempt.candidate)
+
+            for frame in frames:
+                if frame.frame_id == selected_frame.frame_id:
+                    continue
+                try:
+                    rectified = self._rectifier.rectify(frame, selected_attempt.region)
+                except BaselineError as exc:
+                    if exc.status is not ReadStatus.NO_PLATE_REGION:
+                        raise
+                    LOGGER.warning(
+                        "frame_id=%d에서 대표 4점 영역을 재사용할 수 없습니다: %s",
+                        frame.frame_id,
+                        exc,
+                    )
+                    continue
+                if self._debug_writer is not None:
+                    self._debug_writer.write_frame(event_id, frame, rectified, "rectified")
+                processed = self._preprocessor.process(rectified)
+                candidate = self._recognizer.recognize(frame.frame_id, processed)
+                candidate_by_frame_id[frame.frame_id] = candidate
+                if self._debug_writer is not None:
+                    self._debug_writer.write_candidate(event_id, frame, candidate)
+
+            candidates = [
+                candidate_by_frame_id[frame.frame_id]
+                for frame in frames
+                if frame.frame_id in candidate_by_frame_id
+            ]
         except BaselineError as exc:
             LOGGER.exception("인식 이벤트가 실패했습니다: %s", exc)
             return make_failure_result(
@@ -1126,15 +1259,6 @@ class PlateReader:
 
         latency_ms = (time.perf_counter() - started) * 1000.0
         LOGGER.info("이벤트 %s 처리 시간: %.1f ms", event_id, latency_ms)
-        if missing_regions == self._frame_count:
-            return make_failure_result(
-                ReadStatus.NO_PLATE_REGION,
-                "모든 프레임에서 문자 영역을 얻지 못했습니다.",
-                self._recognizer.model_info,
-                total_frames=captured_frames,
-                candidates=candidates,
-                latency_ms=latency_ms,
-            )
         return aggregate_candidates(
             candidates,
             total_frames=captured_frames,
@@ -1395,10 +1519,138 @@ def build_plate_reader(args: argparse.Namespace) -> tuple[PlateReader, EasyOcrTe
     return reader, recognizer
 
 
+class _TestFrameSource:
+    """내장 테스트에서 카메라 없이 순번 프레임을 공급한다."""
+
+    def __init__(self, frame_count: int) -> None:
+        self._frames = [
+            CapturedFrame(index, datetime.now(timezone.utc), object())
+            for index in range(1, frame_count + 1)
+        ]
+        self._next_index = 0
+
+    def open(self) -> None:
+        self._next_index = 0
+
+    def capture(self) -> CapturedFrame:
+        frame = self._frames[self._next_index]
+        self._next_index += 1
+        return frame
+
+    def close(self) -> None:
+        return None
+
+
+class _TestFrameSelector:
+    """내장 테스트가 지정한 순서로 대표 프레임을 반환한다."""
+
+    def __init__(self, frame_ids: Sequence[int]) -> None:
+        self._frame_ids = tuple(frame_ids)
+
+    def rank(self, frames: Sequence[CapturedFrame]) -> Sequence[FrameQuality]:
+        del frames
+        return tuple(
+            FrameQuality(frame_id, 1.0, 1.0, 128.0, 0.0, 0.0, float(len(self._frame_ids) - index))
+            for index, frame_id in enumerate(self._frame_ids)
+        )
+
+
+class _TestRegionDetector:
+    """프레임별 준비된 영역과 실제 호출 순서를 기록한다."""
+
+    def __init__(self, regions_by_frame: Mapping[int, Sequence[DetectedRegion]]) -> None:
+        self._regions_by_frame = regions_by_frame
+        self.calls: list[int] = []
+
+    def detect(self, frame: CapturedFrame) -> Sequence[DetectedRegion]:
+        self.calls.append(frame.frame_id)
+        return self._regions_by_frame.get(frame.frame_id, ())
+
+
+class _TestRegionRectifier:
+    """재사용된 영역을 확인할 수 있도록 `(frame_id, source)`를 반환한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str]] = []
+
+    def rectify(self, frame: CapturedFrame, region: DetectedRegion) -> tuple[int, str]:
+        value = (frame.frame_id, region.source)
+        self.calls.append(value)
+        return value
+
+
+class _TestTextRecognizer:
+    """영역 출처별 준비된 문자열을 반환하고 OCR 호출을 기록한다."""
+
+    MODEL_INFO = ModelInfo("test", "1", "test-model", None, "test-engine")
+
+    def __init__(self, texts: Mapping[tuple[int, str], str] | None = None) -> None:
+        self._texts = texts or {}
+        self.calls: list[tuple[int, str]] = []
+
+    @property
+    def model_info(self) -> ModelInfo:
+        return self.MODEL_INFO
+
+    def open(self) -> None:
+        return None
+
+    def recognize(self, frame_id: int, image: Any) -> OcrCandidate:
+        _, source = image
+        key = (frame_id, source)
+        self.calls.append(key)
+        raw_text = self._texts.get(key, "1128")
+        normalized = extract_plate_suffix(raw_text)
+        score = 0.90 if raw_text else 0.0
+        return OcrCandidate(
+            frame_id,
+            raw_text,
+            normalized,
+            score,
+            is_valid_plate_number(normalized),
+        )
+
+    def close(self) -> None:
+        return None
+
+
 class BaselineLogicTests(unittest.TestCase):
     """카메라·OCR·네트워크 없이 실행하는 순수 로직 회귀 테스트."""
 
     MODEL_INFO = ModelInfo("test", "1", "test-model", None, "test-engine")
+
+    @staticmethod
+    def region(source: str) -> DetectedRegion:
+        return DetectedRegion(
+            ((1.0, 1.0), (9.0, 1.0), (9.0, 5.0), (1.0, 5.0)),
+            None,
+            source,
+        )
+
+    def make_pipeline(
+        self,
+        *,
+        regions_by_frame: Mapping[int, Sequence[DetectedRegion]],
+        texts: Mapping[tuple[int, str], str] | None = None,
+    ) -> tuple[PlateReader, _TestRegionDetector, _TestRegionRectifier, _TestTextRecognizer]:
+        detector = _TestRegionDetector(regions_by_frame)
+        rectifier = _TestRegionRectifier()
+        recognizer = _TestTextRecognizer(texts)
+        reader = PlateReader(
+            frame_source=_TestFrameSource(6),
+            frame_selector=_TestFrameSelector((3, 2, 1, 4, 5, 6)),
+            detector=detector,
+            rectifier=rectifier,
+            preprocessor=MinimalPlatePreprocessor(),
+            recognizer=recognizer,
+            frame_count=6,
+            frame_interval_ms=0,
+            min_rec_score=0.60,
+            min_valid_frames=2,
+            min_vote_ratio=0.50,
+            ambiguity_margin=0.15,
+        )
+        return reader, detector, rectifier, recognizer
 
     @staticmethod
     def candidate(frame_id: int, text: str, score: float) -> OcrCandidate:
@@ -1529,6 +1781,47 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(runtime.reader.kwargs["allowlist"], "0123456789")
         self.assertIsNone(runtime.reader.kwargs["horizontal_list"])
         self.assertIsNone(runtime.reader.kwargs["free_list"])
+
+    def test_dbnet_runs_only_on_best_frame_when_it_yields_valid_region(self) -> None:
+        plate_region = self.region("plate")
+        reader, detector, rectifier, recognizer = self.make_pipeline(
+            regions_by_frame={3: (plate_region,)},
+        )
+        with reader:
+            result = reader.read_once()
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(detector.calls, [3])
+        self.assertEqual(len(recognizer.calls), 6)
+        self.assertEqual(recognizer.calls.count((3, "plate")), 1)
+        self.assertTrue(all(source == "plate" for _, source in rectifier.calls))
+
+    def test_dbnet_falls_back_to_second_ranked_frame(self) -> None:
+        plate_region = self.region("plate")
+        reader, detector, _, recognizer = self.make_pipeline(
+            regions_by_frame={2: (plate_region,)},
+        )
+        with reader:
+            result = reader.read_once()
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(detector.calls, [3, 2])
+        self.assertEqual(len(recognizer.calls), 6)
+
+    def test_valid_region_is_selected_and_cached_before_temporal_voting(self) -> None:
+        sign_region = self.region("sign")
+        plate_region = self.region("plate")
+        reader, detector, rectifier, recognizer = self.make_pipeline(
+            regions_by_frame={3: (sign_region, plate_region)},
+            texts={(3, "sign"): "AB"},
+        )
+        with reader:
+            result = reader.read_once()
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(detector.calls, [3])
+        self.assertEqual(recognizer.calls.count((3, "sign")), 1)
+        self.assertEqual(recognizer.calls.count((3, "plate")), 1)
+        self.assertEqual(len(recognizer.calls), 7)
+        reused_sources = [source for frame_id, source in rectifier.calls if frame_id != 3]
+        self.assertEqual(reused_sources, ["plate"] * 5)
 
     def test_four_ascii_digits_are_valid(self) -> None:
         self.assertTrue(is_valid_plate_number(normalize_plate_text("1234")))
