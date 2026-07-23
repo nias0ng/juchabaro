@@ -45,3 +45,11 @@ def test_load_config_raises_on_missing_required_keys(tmp_path):
 
     with pytest.raises(ValueError, match="Missing required config keys"):
         load_config(str(config_file))
+
+
+def test_load_config_raises_value_error_on_empty_yaml_file(tmp_path):
+    config_file = tmp_path / "empty.yaml"
+    config_file.write_text("")
+
+    with pytest.raises(ValueError, match="Missing required config keys"):
+        load_config(str(config_file))

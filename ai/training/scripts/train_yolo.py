@@ -35,42 +35,43 @@ def run_training(
 
     wandb.init(project=config["project"], name=model_version, config=config)
 
-    model = YOLO(config["base_model"])
-    results = model.train(
-        data=config["data"],
-        epochs=config["epochs"],
-        imgsz=config["imgsz"],
-        batch=config["batch"],
-        device=config["device"],
-        project="runs/train",
-        name=model_version,
-    )
+    try:
+        model = YOLO(config["base_model"])
+        results = model.train(
+            data=config["data"],
+            epochs=config["epochs"],
+            imgsz=config["imgsz"],
+            batch=config["batch"],
+            device=config["device"],
+            project="runs/train",
+            name=model_version,
+        )
 
-    results_dict = getattr(results, "results_dict", {})
-    metrics = {
-        "mAP50": results_dict.get("metrics/mAP50(B)", 0.0),
-        "mAP50-95": results_dict.get("metrics/mAP50-95(B)", 0.0),
-    }
+        results_dict = getattr(results, "results_dict", {})
+        metrics = {
+            "mAP50": results_dict.get("metrics/mAP50(B)", 0.0),
+            "mAP50-95": results_dict.get("metrics/mAP50-95(B)", 0.0),
+        }
 
-    weights_dir = Path(results.save_dir) / "weights"
-    meta_path = write_model_meta(
-        weights_dir=str(weights_dir),
-        model_name=config["model_name"],
-        model_version=model_version,
-        base_model=config["base_model"],
-        dataset=config["data"],
-        hyperparams={"epochs": config["epochs"], "imgsz": config["imgsz"], "batch": config["batch"]},
-        metrics=metrics,
-        commit_hash=get_commit_hash(),
-    )
+        weights_dir = Path(results.save_dir) / "weights"
+        meta_path = write_model_meta(
+            weights_dir=str(weights_dir),
+            model_name=config["model_name"],
+            model_version=model_version,
+            base_model=config["base_model"],
+            dataset=config["data"],
+            hyperparams={"epochs": config["epochs"], "imgsz": config["imgsz"], "batch": config["batch"]},
+            metrics=metrics,
+            commit_hash=get_commit_hash(),
+        )
 
-    wandb.finish()
-
-    return {
-        "model_version": model_version,
-        "best_weights": str(weights_dir / "best.pt"),
-        "meta_path": meta_path,
-    }
+        return {
+            "model_version": model_version,
+            "best_weights": str(weights_dir / "best.pt"),
+            "meta_path": meta_path,
+        }
+    finally:
+        wandb.finish()
 
 
 def main() -> None:
