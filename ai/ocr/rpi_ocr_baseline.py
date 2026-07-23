@@ -103,6 +103,19 @@ class CapturedFrame:
 
 
 @dataclass(frozen=True)
+class FrameQuality:
+    """대표 프레임 선정을 위한 저비용 전체 프레임 품질 측정값."""
+
+    frame_id: int
+    sharpness: float
+    contrast: float
+    mean_brightness: float
+    dark_ratio: float
+    bright_ratio: float
+    score: float
+
+
+@dataclass(frozen=True)
 class OcrCandidate:
     """한 프레임의 OCR 원문과 내부 정규화 결과."""
 
@@ -167,6 +180,13 @@ class FrameSource(Protocol):
 
     def close(self) -> None:
         """프레임 공급자의 자원을 해제한다."""
+
+
+class FrameSelector(Protocol):
+    """촬영된 프레임을 OCR 대표성에 유리한 순서로 정렬하는 계약."""
+
+    def rank(self, frames: Sequence[CapturedFrame]) -> Sequence[FrameQuality]:
+        """모든 입력 프레임의 품질을 계산하여 우선순위 순서로 반환한다."""
 
 
 class PlateLocator(Protocol):
@@ -496,6 +516,63 @@ class Picamera2FrameSource:
             LOGGER.exception("Picamera2 장치 해제 중 오류가 발생했습니다.")
 
 
+def rank_frame_qualities(qualities: Sequence[FrameQuality]) -> tuple[FrameQuality, ...]:
+    """품질 점수 내림차순, 동점이면 촬영 순번 오름차순으로 정렬한다."""
+
+    return tuple(sorted(qualities, key=lambda quality: (-quality.score, quality.frame_id)))
+
+
+class QualityFrameSelector:
+    """전체 프레임 축소본의 노출 상태와 선명도로 처리 순서를 정한다."""
+
+    def __init__(self, target_width: int = 320, target_height: int = 180) -> None:
+        if target_width <= 0 or target_height <= 0:
+            raise ValueError("프레임 품질 평가 크기는 0보다 커야 합니다.")
+        self._target_width = target_width
+        self._target_height = target_height
+
+    def rank(self, frames: Sequence[CapturedFrame]) -> Sequence[FrameQuality]:
+        """RGB 프레임마다 저해상도 품질 점수를 계산하여 전체 순위를 반환한다."""
+
+        cv2 = _import_cv2()
+        qualities: list[FrameQuality] = []
+        for frame in frames:
+            shape = getattr(frame.image, "shape", None)
+            if shape is None or len(shape) != 3 or shape[2] != 3:
+                raise BaselineError(
+                    ReadStatus.CAMERA_ERROR,
+                    f"frame_id={frame.frame_id} 품질 평가용 RGB 이미지 형식이 잘못되었습니다.",
+                )
+            resized = cv2.resize(
+                frame.image,
+                (self._target_width, self._target_height),
+                interpolation=cv2.INTER_AREA,
+            )
+            gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+            sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            contrast = float(gray.std())
+            mean_brightness = float(gray.mean())
+            dark_ratio = float((gray <= 32).mean())
+            bright_ratio = float((gray >= 223).mean())
+            clipped_ratio = min(1.0, dark_ratio + bright_ratio)
+            score = (
+                math.log1p(max(0.0, sharpness)) * (1.0 - clipped_ratio)
+                + 0.25 * math.log1p(max(0.0, contrast))
+            )
+            qualities.append(
+                FrameQuality(
+                    frame_id=frame.frame_id,
+                    sharpness=sharpness,
+                    contrast=contrast,
+                    mean_brightness=mean_brightness,
+                    dark_ratio=dark_ratio,
+                    bright_ratio=bright_ratio,
+                    score=score,
+                )
+            )
+        return rank_frame_qualities(qualities)
+
+
 class FixedRoiPlateLocator:
     """고정 게이트 카메라를 전제로 정규화 ROI를 잘라내는 위치 탐색기.
 
@@ -714,6 +791,7 @@ class PlateReader:
         self,
         *,
         frame_source: FrameSource,
+        frame_selector: FrameSelector,
         locator: PlateLocator,
         preprocessor: PlatePreprocessor,
         recognizer: TextRecognizer,
@@ -726,6 +804,7 @@ class PlateReader:
         debug_writer: DebugArtifactWriter | None = None,
     ) -> None:
         self._frame_source = frame_source
+        self._frame_selector = frame_selector
         self._locator = locator
         self._preprocessor = preprocessor
         self._recognizer = recognizer
@@ -775,11 +854,34 @@ class PlateReader:
         missing_regions = 0
         captured_frames = 0
         try:
+            frames: list[CapturedFrame] = []
             for index in range(self._frame_count):
                 frame = self._frame_source.capture()
+                frames.append(frame)
                 captured_frames += 1
                 if self._debug_writer is not None:
                     self._debug_writer.write_frame(event_id, frame, frame.image, "frame")
+                if index + 1 < self._frame_count and self._frame_interval_ms:
+                    time.sleep(self._frame_interval_ms / 1000.0)
+
+            qualities = tuple(self._frame_selector.rank(frames))
+            frame_by_id = {frame.frame_id: frame for frame in frames}
+            ranked_ids = [quality.frame_id for quality in qualities]
+            if len(qualities) != len(frames) or set(ranked_ids) != set(frame_by_id):
+                raise BaselineError(
+                    ReadStatus.CONFIG_ERROR,
+                    "FrameSelector가 입력 프레임 전체에 대한 유효한 순위를 반환하지 않았습니다.",
+                )
+            LOGGER.info(
+                "이벤트 %s 프레임 품질 순위: %s",
+                event_id,
+                ", ".join(
+                    f"f{quality.frame_id}={quality.score:.3f}" for quality in qualities
+                ),
+            )
+
+            for quality in qualities:
+                frame = frame_by_id[quality.frame_id]
                 try:
                     crop = self._locator.locate(frame)
                 except BaselineError as exc:
@@ -795,8 +897,6 @@ class PlateReader:
                     candidates.append(candidate)
                     if self._debug_writer is not None:
                         self._debug_writer.write_candidate(event_id, frame, candidate)
-                if index + 1 < self._frame_count and self._frame_interval_ms:
-                    time.sleep(self._frame_interval_ms / 1000.0)
         except BaselineError as exc:
             LOGGER.exception("인식 이벤트가 실패했습니다: %s", exc)
             return make_failure_result(
@@ -1064,6 +1164,7 @@ def build_plate_reader(
     debug_writer = DebugArtifactWriter(args.debug_dir) if args.debug_dir is not None else None
     reader = PlateReader(
         frame_source=create_frame_source(args),
+        frame_selector=QualityFrameSelector(),
         locator=FixedRoiPlateLocator(roi),
         preprocessor=MinimalPlatePreprocessor(args.resize_height),
         recognizer=recognizer,
@@ -1110,6 +1211,21 @@ class BaselineLogicTests(unittest.TestCase):
 
     def test_normalized_roi_to_pixels(self) -> None:
         self.assertEqual(NormalizedRoi(0.25, 0.50, 0.50, 0.30).to_pixel_bounds(1280, 720), (320, 360, 960, 576))
+
+    def test_frame_qualities_are_ranked_by_score_then_frame_id(self) -> None:
+        qualities = [
+            FrameQuality(3, 1.0, 1.0, 128.0, 0.0, 0.0, 2.0),
+            FrameQuality(2, 1.0, 1.0, 128.0, 0.0, 0.0, 3.0),
+            FrameQuality(1, 1.0, 1.0, 128.0, 0.0, 0.0, 3.0),
+        ]
+        self.assertEqual(
+            [quality.frame_id for quality in rank_frame_qualities(qualities)],
+            [1, 2, 3],
+        )
+
+    def test_frame_selector_rejects_nonpositive_target_size(self) -> None:
+        with self.assertRaises(ValueError):
+            QualityFrameSelector(target_width=0)
 
     def test_out_of_bounds_roi_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
