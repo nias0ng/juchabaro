@@ -33,6 +33,7 @@ import math
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 from types import TracebackType
 from typing import Any, Mapping, Protocol, Sequence
@@ -80,6 +81,21 @@ class FrameQuality:
     dark_ratio: float
     bright_ratio: float
     score: float
+
+
+@dataclass
+class PipelineMetrics:
+    """이벤트별 주요 단계 시간과 모델 호출 횟수."""
+
+    capture_ms: float = 0.0
+    burst_wait_ms: float = 0.0
+    frame_selection_ms: float = 0.0
+    detection_ms: float = 0.0
+    anchor_candidate_ms: float = 0.0
+    temporal_ocr_ms: float = 0.0
+    total_ms: float = 0.0
+    detector_calls: int = 0
+    recognizer_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -1017,11 +1033,60 @@ class DebugArtifactWriter:
         path = self._directory / f"{event_id}_f{frame.frame_id:03d}_{timestamp}_{label}.jpg"
         save_rgb_image(path, image)
 
-    def write_candidate(self, event_id: str, frame: CapturedFrame, candidate: OcrCandidate) -> None:
+    def write_json(self, event_id: str, label: str, value: Any) -> None:
+        """이벤트 수준의 품질·성능 자료를 JSON으로 저장한다."""
+
+        path = self._directory / f"{event_id}_{label}.json"
+        try:
+            path.write_text(
+                json.dumps(to_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            raise BaselineError(ReadStatus.CONFIG_ERROR, f"디버그 JSON 저장에 실패했습니다: {exc}") from exc
+
+    def write_regions_overlay(
+        self,
+        event_id: str,
+        frame: CapturedFrame,
+        regions: Sequence[DetectedRegion],
+        *,
+        selected: DetectedRegion | None = None,
+        label: str,
+    ) -> None:
+        """DBNet18 후보와 최종 선택 영역을 원본 RGB 프레임 위에 표시한다."""
+
+        cv2 = _import_cv2()
+        np = _import_numpy()
+        overlay = frame.image.copy()
+        for index, region in enumerate(regions, start=1):
+            points = np.rint(np.asarray(order_quad_points(region.quad))).astype(np.int32)
+            color = (0, 255, 0) if selected is not None and region == selected else (255, 0, 0)
+            cv2.polylines(overlay, [points.reshape((-1, 1, 2))], True, color, 2)
+            x, y = (int(value) for value in points[0])
+            cv2.putText(
+                overlay,
+                str(index),
+                (x, max(12, y - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+        self.write_frame(event_id, frame, overlay, label)
+
+    def write_candidate(
+        self,
+        event_id: str,
+        frame: CapturedFrame,
+        candidate: OcrCandidate,
+        label: str = "ocr",
+    ) -> None:
         """프레임별 OCR 원문, 정규화 문자열, 점수를 JSON으로 저장한다."""
 
         timestamp = frame.captured_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-        path = self._directory / f"{event_id}_f{frame.frame_id:03d}_{timestamp}_ocr.json"
+        path = self._directory / f"{event_id}_f{frame.frame_id:03d}_{timestamp}_{label}.json"
         try:
             path.write_text(
                 json.dumps(to_jsonable(candidate), ensure_ascii=False, indent=2, sort_keys=True),
@@ -1092,6 +1157,39 @@ class PlateReader:
             self._frame_source.close()
             self._opened = False
 
+    def _finish_metrics(
+        self,
+        event_id: str,
+        metrics: PipelineMetrics,
+        started: float,
+    ) -> float:
+        """총 시간을 확정하고 로그 및 선택적 디버그 JSON으로 남긴다."""
+
+        metrics.total_ms = (time.perf_counter() - started) * 1000.0
+        LOGGER.info(
+            (
+                "이벤트 %s 단계 시간(ms): capture=%.1f, burst_wait=%.1f, frame_selection=%.1f, "
+                "detection=%.1f(%d회), anchor_candidate=%.1f, temporal_ocr=%.1f, "
+                "recognizer=%d회, total=%.1f"
+            ),
+            event_id,
+            metrics.capture_ms,
+            metrics.burst_wait_ms,
+            metrics.frame_selection_ms,
+            metrics.detection_ms,
+            metrics.detector_calls,
+            metrics.anchor_candidate_ms,
+            metrics.temporal_ocr_ms,
+            metrics.recognizer_calls,
+            metrics.total_ms,
+        )
+        if self._debug_writer is not None:
+            try:
+                self._debug_writer.write_json(event_id, "metrics", metrics)
+            except BaselineError as exc:
+                LOGGER.warning("이벤트 %s 성능 디버그 JSON 저장에 실패했습니다: %s", event_id, exc)
+        return metrics.total_ms
+
     def read_once(self) -> PlateReadResult:
         """대표 프레임에서 영역을 찾고 같은 4점을 전체 프레임에 재사용한다."""
 
@@ -1101,18 +1199,25 @@ class PlateReader:
         event_id = uuid4().hex
         candidates: list[OcrCandidate] = []
         captured_frames = 0
+        metrics = PipelineMetrics()
         try:
             frames: list[CapturedFrame] = []
             for index in range(self._frame_count):
+                capture_started = time.perf_counter()
                 frame = self._frame_source.capture()
+                metrics.capture_ms += (time.perf_counter() - capture_started) * 1000.0
                 frames.append(frame)
                 captured_frames += 1
                 if self._debug_writer is not None:
                     self._debug_writer.write_frame(event_id, frame, frame.image, "frame")
                 if index + 1 < self._frame_count and self._frame_interval_ms:
+                    wait_started = time.perf_counter()
                     time.sleep(self._frame_interval_ms / 1000.0)
+                    metrics.burst_wait_ms += (time.perf_counter() - wait_started) * 1000.0
 
+            selection_started = time.perf_counter()
             qualities = tuple(self._frame_selector.rank(frames))
+            metrics.frame_selection_ms = (time.perf_counter() - selection_started) * 1000.0
             frame_by_id = {frame.frame_id: frame for frame in frames}
             ranked_ids = [quality.frame_id for quality in qualities]
             if len(qualities) != len(frames) or set(ranked_ids) != set(frame_by_id):
@@ -1127,14 +1232,20 @@ class PlateReader:
                     f"f{quality.frame_id}={quality.score:.3f}" for quality in qualities
                 ),
             )
+            if self._debug_writer is not None:
+                self._debug_writer.write_json(event_id, "frame_qualities", qualities)
 
             selected_attempt: _RegionAttempt | None = None
             selected_frame: CapturedFrame | None = None
+            selected_regions: tuple[DetectedRegion, ...] = ()
+            selected_anchor_rank = 0
             diagnostic_candidates: list[OcrCandidate] = []
             detected_region_count = 0
             anchor_qualities = qualities[: min(2, len(qualities))]
-            for quality in anchor_qualities:
+            for anchor_rank, quality in enumerate(anchor_qualities, start=1):
                 anchor_frame = frame_by_id[quality.frame_id]
+                detection_started = time.perf_counter()
+                metrics.detector_calls += 1
                 try:
                     regions = tuple(self._detector.detect(anchor_frame))
                 except BaselineError as exc:
@@ -1146,13 +1257,23 @@ class PlateReader:
                         exc,
                     )
                     continue
+                finally:
+                    metrics.detection_ms += (time.perf_counter() - detection_started) * 1000.0
                 if not regions:
                     LOGGER.warning("대표 frame_id=%d에서 DBNet18 문자 영역을 찾지 못했습니다.", anchor_frame.frame_id)
                     continue
 
                 detected_region_count += len(regions)
+                if self._debug_writer is not None:
+                    self._debug_writer.write_regions_overlay(
+                        event_id,
+                        anchor_frame,
+                        regions,
+                        label=f"anchor{anchor_rank}_detected_regions",
+                    )
                 attempts: list[_RegionAttempt] = []
-                for region in regions:
+                for region_index, region in enumerate(regions, start=1):
+                    candidate_started = time.perf_counter()
                     try:
                         rectified = self._rectifier.rectify(anchor_frame, region)
                     except BaselineError as exc:
@@ -1163,10 +1284,27 @@ class PlateReader:
                             anchor_frame.frame_id,
                             exc,
                         )
+                        metrics.anchor_candidate_ms += (time.perf_counter() - candidate_started) * 1000.0
                         continue
                     processed = self._preprocessor.process(rectified)
+                    metrics.recognizer_calls += 1
                     candidate = self._recognizer.recognize(anchor_frame.frame_id, processed)
+                    metrics.anchor_candidate_ms += (time.perf_counter() - candidate_started) * 1000.0
                     attempts.append(_RegionAttempt(region, rectified, candidate))
+                    if self._debug_writer is not None:
+                        label_prefix = f"anchor{anchor_rank}_candidate{region_index:02d}"
+                        self._debug_writer.write_frame(
+                            event_id,
+                            anchor_frame,
+                            rectified,
+                            f"{label_prefix}_rectified",
+                        )
+                        self._debug_writer.write_candidate(
+                            event_id,
+                            anchor_frame,
+                            candidate,
+                            f"{label_prefix}_ocr",
+                        )
 
                 diagnostic_attempt = best_region_attempt(attempts, require_valid_format=False)
                 if diagnostic_attempt is not None:
@@ -1174,6 +1312,8 @@ class PlateReader:
                 selected_attempt = best_region_attempt(attempts, require_valid_format=True)
                 if selected_attempt is not None:
                     selected_frame = anchor_frame
+                    selected_regions = regions
+                    selected_anchor_rank = anchor_rank
                     LOGGER.info(
                         "이벤트 %s 대표 frame_id=%d의 %s 영역을 선택했습니다.",
                         event_id,
@@ -1188,7 +1328,7 @@ class PlateReader:
                 )
 
             if selected_attempt is None or selected_frame is None:
-                latency_ms = (time.perf_counter() - started) * 1000.0
+                latency_ms = self._finish_metrics(event_id, metrics, started)
                 if detected_region_count == 0 or not diagnostic_candidates:
                     return make_failure_result(
                         ReadStatus.NO_PLATE_REGION,
@@ -1211,17 +1351,25 @@ class PlateReader:
 
             candidate_by_frame_id = {selected_frame.frame_id: selected_attempt.candidate}
             if self._debug_writer is not None:
+                self._debug_writer.write_regions_overlay(
+                    event_id,
+                    selected_frame,
+                    selected_regions,
+                    selected=selected_attempt.region,
+                    label=f"anchor{selected_anchor_rank}_selected_region",
+                )
                 self._debug_writer.write_frame(
                     event_id,
                     selected_frame,
                     selected_attempt.rectified,
-                    "rectified",
+                    "selected_rectified",
                 )
                 self._debug_writer.write_candidate(event_id, selected_frame, selected_attempt.candidate)
 
             for frame in frames:
                 if frame.frame_id == selected_frame.frame_id:
                     continue
+                temporal_started = time.perf_counter()
                 try:
                     rectified = self._rectifier.rectify(frame, selected_attempt.region)
                 except BaselineError as exc:
@@ -1232,13 +1380,15 @@ class PlateReader:
                         frame.frame_id,
                         exc,
                     )
+                    metrics.temporal_ocr_ms += (time.perf_counter() - temporal_started) * 1000.0
                     continue
-                if self._debug_writer is not None:
-                    self._debug_writer.write_frame(event_id, frame, rectified, "rectified")
                 processed = self._preprocessor.process(rectified)
+                metrics.recognizer_calls += 1
                 candidate = self._recognizer.recognize(frame.frame_id, processed)
+                metrics.temporal_ocr_ms += (time.perf_counter() - temporal_started) * 1000.0
                 candidate_by_frame_id[frame.frame_id] = candidate
                 if self._debug_writer is not None:
+                    self._debug_writer.write_frame(event_id, frame, rectified, "rectified")
                     self._debug_writer.write_candidate(event_id, frame, candidate)
 
             candidates = [
@@ -1248,17 +1398,17 @@ class PlateReader:
             ]
         except BaselineError as exc:
             LOGGER.exception("인식 이벤트가 실패했습니다: %s", exc)
+            latency_ms = self._finish_metrics(event_id, metrics, started)
             return make_failure_result(
                 exc.status,
                 str(exc),
                 self._recognizer.model_info,
                 total_frames=captured_frames,
                 candidates=candidates,
-                latency_ms=(time.perf_counter() - started) * 1000.0,
+                latency_ms=latency_ms,
             )
 
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        LOGGER.info("이벤트 %s 처리 시간: %.1f ms", event_id, latency_ms)
+        latency_ms = self._finish_metrics(event_id, metrics, started)
         return aggregate_candidates(
             candidates,
             total_frames=captured_frames,
@@ -1822,6 +1972,32 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(recognizer.calls), 7)
         reused_sources = [source for frame_id, source in rectifier.calls if frame_id != 3]
         self.assertEqual(reused_sources, ["plate"] * 5)
+
+    def test_debug_writer_saves_stage_specific_artifacts(self) -> None:
+        np = _import_numpy()
+        frame = CapturedFrame(
+            1,
+            datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            np.zeros((12, 20, 3), dtype=np.uint8),
+        )
+        region = self.region("plate")
+        candidate = self.candidate(1, "1128", 0.90)
+        with tempfile.TemporaryDirectory() as directory:
+            writer = DebugArtifactWriter(Path(directory))
+            writer.write_regions_overlay(
+                "event",
+                frame,
+                (region,),
+                selected=region,
+                label="selected_region",
+            )
+            writer.write_candidate("event", frame, candidate, "candidate01_ocr")
+            writer.write_json("event", "metrics", PipelineMetrics(detector_calls=1))
+            names = sorted(path.name for path in Path(directory).iterdir())
+        self.assertEqual(len(names), 3)
+        self.assertTrue(any(name.endswith("_selected_region.jpg") for name in names))
+        self.assertTrue(any(name.endswith("_candidate01_ocr.json") for name in names))
+        self.assertIn("event_metrics.json", names)
 
     def test_four_ascii_digits_are_valid(self) -> None:
         self.assertTrue(is_valid_plate_number(normalize_plate_text("1234")))
