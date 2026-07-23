@@ -116,6 +116,20 @@ class FrameQuality:
 
 
 @dataclass(frozen=True)
+class DetectedRegion:
+    """원본 프레임 좌표의 네 꼭짓점으로 표현한 문자 영역 후보."""
+
+    quad: tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ]
+    detector_score: float | None
+    source: str
+
+
+@dataclass(frozen=True)
 class OcrCandidate:
     """한 프레임의 OCR 원문과 내부 정규화 결과."""
 
@@ -189,11 +203,18 @@ class FrameSelector(Protocol):
         """모든 입력 프레임의 품질을 계산하여 우선순위 순서로 반환한다."""
 
 
-class PlateLocator(Protocol):
-    """전체 프레임에서 번호판 후보 영역을 추출하는 계약."""
+class RegionDetector(Protocol):
+    """전체 프레임에서 4점 문자 영역 후보를 찾는 계약."""
 
-    def locate(self, frame: CapturedFrame) -> Any:
-        """번호판 후보 이미지 배열을 반환한다."""
+    def detect(self, frame: CapturedFrame) -> Sequence[DetectedRegion]:
+        """원본 프레임 좌표의 문자 영역 후보를 반환한다."""
+
+
+class RegionRectifier(Protocol):
+    """4점 문자 영역을 recognizer가 읽을 정면 이미지로 보정하는 계약."""
+
+    def rectify(self, frame: CapturedFrame, region: DetectedRegion) -> Any:
+        """원본 프레임과 4점 영역으로 원근 보정된 이미지 배열을 반환한다."""
 
 
 class PlatePreprocessor(Protocol):
@@ -573,18 +594,18 @@ class QualityFrameSelector:
         return rank_frame_qualities(qualities)
 
 
-class FixedRoiPlateLocator:
-    """고정 게이트 카메라를 전제로 정규화 ROI를 잘라내는 위치 탐색기.
+class FixedRoiRegionDetector:
+    """고정 ROI를 공통 4점 영역 계약으로 변환하는 임시 검출기.
 
     현장 측정에서 차량 위치 편차에 따른 ROI 이탈이 주요 실패 원인으로 확인될
-    때만 PlateLocator 구현을 YOLO 같은 객체 검출 방식으로 교체한다.
+    때 RegionDetector 구현만 학습 기반 검출기로 교체할 수 있다.
     """
 
     def __init__(self, roi: NormalizedRoi) -> None:
         self._roi = roi
 
-    def locate(self, frame: CapturedFrame) -> Any:
-        """프레임 크기에 맞춘 고정 ROI Crop을 반환한다."""
+    def detect(self, frame: CapturedFrame) -> Sequence[DetectedRegion]:
+        """프레임 크기에 맞춘 고정 ROI를 시계 방향 네 점으로 반환한다."""
 
         shape = getattr(frame.image, "shape", None)
         if shape is None or len(shape) < 2:
@@ -594,10 +615,125 @@ class FixedRoiPlateLocator:
             x1, y1, x2, y2 = self._roi.to_pixel_bounds(image_width, image_height)
         except ValueError as exc:
             raise BaselineError(ReadStatus.NO_PLATE_REGION, str(exc)) from exc
-        crop = frame.image[y1:y2, x1:x2]
-        if getattr(crop, "size", 0) == 0:
-            raise BaselineError(ReadStatus.NO_PLATE_REGION, "고정 ROI Crop이 비어 있습니다.")
-        return crop
+        return (
+            DetectedRegion(
+                quad=(
+                    (float(x1), float(y1)),
+                    (float(x2 - 1), float(y1)),
+                    (float(x2 - 1), float(y2 - 1)),
+                    (float(x1), float(y2 - 1)),
+                ),
+                detector_score=None,
+                source="fixed-roi",
+            ),
+        )
+
+
+def order_quad_points(
+    quad: Sequence[Sequence[float]],
+) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+]:
+    """임의 순서 네 점을 좌상·우상·우하·좌하 순서의 볼록 사각형으로 정렬한다."""
+
+    if len(quad) != 4 or any(len(point) != 2 for point in quad):
+        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역은 (x, y) 꼭짓점 4개여야 합니다.")
+    try:
+        points = tuple((float(point[0]), float(point[1])) for point in quad)
+    except (TypeError, ValueError) as exc:
+        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역 좌표를 숫자로 변환할 수 없습니다.") from exc
+    if not all(math.isfinite(value) for point in points for value in point):
+        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역 좌표는 유한한 숫자여야 합니다.")
+
+    center_x = sum(point[0] for point in points) / 4.0
+    center_y = sum(point[1] for point in points) / 4.0
+    cyclic = sorted(points, key=lambda point: math.atan2(point[1] - center_y, point[0] - center_x))
+    top_left_index = min(range(4), key=lambda index: sum(cyclic[index]))
+    ordered = tuple(cyclic[(top_left_index + offset) % 4] for offset in range(4))
+
+    signed_cross_products: list[float] = []
+    for index in range(4):
+        current = ordered[index]
+        following = ordered[(index + 1) % 4]
+        next_following = ordered[(index + 2) % 4]
+        signed_cross_products.append(
+            (following[0] - current[0]) * (next_following[1] - following[1])
+            - (following[1] - current[1]) * (next_following[0] - following[0])
+        )
+    if any(abs(value) <= 1e-6 for value in signed_cross_products) or not (
+        all(value > 0.0 for value in signed_cross_products)
+        or all(value < 0.0 for value in signed_cross_products)
+    ):
+        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역이 유효한 볼록 사각형이 아닙니다.")
+    return ordered  # type: ignore[return-value]
+
+
+class PerspectiveRegionRectifier:
+    """검출된 네 점을 보존해 1회의 perspective transform으로 정면화한다."""
+
+    def rectify(self, frame: CapturedFrame, region: DetectedRegion) -> Any:
+        """RGB 원본에서 네 점을 잘라 기울기와 원근이 보정된 RGB 이미지를 반환한다."""
+
+        shape = getattr(frame.image, "shape", None)
+        if shape is None or len(shape) < 2:
+            raise BaselineError(ReadStatus.NO_PLATE_REGION, "프레임 이미지 크기를 확인할 수 없습니다.")
+        image_height, image_width = int(shape[0]), int(shape[1])
+        ordered = order_quad_points(region.quad)
+        if any(
+            x < 0.0 or x > image_width - 1 or y < 0.0 or y > image_height - 1
+            for x, y in ordered
+        ):
+            raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역이 원본 프레임 범위를 벗어납니다.")
+
+        top_left, top_right, bottom_right, bottom_left = ordered
+        target_width = max(
+            2,
+            round(
+                max(
+                    math.dist(top_left, top_right),
+                    math.dist(bottom_left, bottom_right),
+                )
+            )
+            + 1,
+        )
+        target_height = max(
+            2,
+            round(
+                max(
+                    math.dist(top_left, bottom_left),
+                    math.dist(top_right, bottom_right),
+                )
+            )
+            + 1,
+        )
+        cv2 = _import_cv2()
+        np = _import_numpy()
+        source = np.asarray(ordered, dtype=np.float32)
+        destination = np.asarray(
+            (
+                (0.0, 0.0),
+                (float(target_width - 1), 0.0),
+                (float(target_width - 1), float(target_height - 1)),
+                (0.0, float(target_height - 1)),
+            ),
+            dtype=np.float32,
+        )
+        try:
+            transform = cv2.getPerspectiveTransform(source, destination)
+            rectified = cv2.warpPerspective(
+                frame.image,
+                transform,
+                (target_width, target_height),
+                flags=cv2.INTER_LINEAR,
+            )
+        except Exception as exc:
+            raise BaselineError(ReadStatus.NO_PLATE_REGION, f"문자 영역 원근 보정에 실패했습니다: {exc}") from exc
+        if getattr(rectified, "size", 0) == 0:
+            raise BaselineError(ReadStatus.NO_PLATE_REGION, "원근 보정된 문자 영역이 비어 있습니다.")
+        return rectified
 
 
 class MinimalPlatePreprocessor:
@@ -785,14 +921,15 @@ class DebugArtifactWriter:
 
 
 class PlateReader:
-    """주입된 카메라·위치 탐색·전처리·OCR 구현을 조합하는 핵심 애플리케이션."""
+    """주입된 카메라·영역 검출·원근 보정·전처리·OCR 구현을 조합한다."""
 
     def __init__(
         self,
         *,
         frame_source: FrameSource,
         frame_selector: FrameSelector,
-        locator: PlateLocator,
+        detector: RegionDetector,
+        rectifier: RegionRectifier,
         preprocessor: PlatePreprocessor,
         recognizer: TextRecognizer,
         frame_count: int,
@@ -805,7 +942,8 @@ class PlateReader:
     ) -> None:
         self._frame_source = frame_source
         self._frame_selector = frame_selector
-        self._locator = locator
+        self._detector = detector
+        self._rectifier = rectifier
         self._preprocessor = preprocessor
         self._recognizer = recognizer
         self._frame_count = frame_count
@@ -883,16 +1021,25 @@ class PlateReader:
             for quality in qualities:
                 frame = frame_by_id[quality.frame_id]
                 try:
-                    crop = self._locator.locate(frame)
+                    regions = tuple(self._detector.detect(frame))
+                    if not regions:
+                        raise BaselineError(ReadStatus.NO_PLATE_REGION, "문자 영역 후보가 없습니다.")
+                    if len(regions) > 1:
+                        LOGGER.warning(
+                            "frame_id=%d 문자 영역 후보 %d개 중 첫 후보만 사용합니다.",
+                            frame.frame_id,
+                            len(regions),
+                        )
+                    rectified = self._rectifier.rectify(frame, regions[0])
                 except BaselineError as exc:
                     if exc.status is not ReadStatus.NO_PLATE_REGION:
                         raise
                     missing_regions += 1
-                    LOGGER.warning("frame_id=%d 번호판 ROI를 얻지 못했습니다: %s", frame.frame_id, exc)
+                    LOGGER.warning("frame_id=%d 문자 영역을 얻지 못했습니다: %s", frame.frame_id, exc)
                 else:
                     if self._debug_writer is not None:
-                        self._debug_writer.write_frame(event_id, frame, crop, "roi")
-                    processed = self._preprocessor.process(crop)
+                        self._debug_writer.write_frame(event_id, frame, rectified, "rectified")
+                    processed = self._preprocessor.process(rectified)
                     candidate = self._recognizer.recognize(frame.frame_id, processed)
                     candidates.append(candidate)
                     if self._debug_writer is not None:
@@ -913,7 +1060,7 @@ class PlateReader:
         if missing_regions == self._frame_count:
             return make_failure_result(
                 ReadStatus.NO_PLATE_REGION,
-                "모든 프레임에서 번호판 ROI를 얻지 못했습니다.",
+                "모든 프레임에서 문자 영역을 얻지 못했습니다.",
                 self._recognizer.model_info,
                 total_frames=captured_frames,
                 candidates=candidates,
@@ -1165,7 +1312,8 @@ def build_plate_reader(
     reader = PlateReader(
         frame_source=create_frame_source(args),
         frame_selector=QualityFrameSelector(),
-        locator=FixedRoiPlateLocator(roi),
+        detector=FixedRoiRegionDetector(roi),
+        rectifier=PerspectiveRegionRectifier(),
         preprocessor=MinimalPlatePreprocessor(args.resize_height),
         recognizer=recognizer,
         frame_count=args.frame_count,
@@ -1230,6 +1378,38 @@ class BaselineLogicTests(unittest.TestCase):
     def test_out_of_bounds_roi_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             NormalizedRoi(0.8, 0.5, 0.3, 0.2)
+
+    def test_fixed_roi_is_exposed_as_full_frame_quad(self) -> None:
+        np = _import_numpy()
+        frame = CapturedFrame(1, datetime.now(timezone.utc), np.zeros((12, 20, 3), dtype=np.uint8))
+        regions = FixedRoiRegionDetector(NormalizedRoi(0.25, 0.25, 0.50, 0.50)).detect(frame)
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(
+            regions[0].quad,
+            ((5.0, 3.0), (14.0, 3.0), (14.0, 8.0), (5.0, 8.0)),
+        )
+
+    def test_quad_points_are_ordered_clockwise_from_top_left(self) -> None:
+        unordered = ((8.0, 6.0), (2.0, 1.0), (1.0, 5.0), (9.0, 2.0))
+        self.assertEqual(
+            order_quad_points(unordered),
+            ((2.0, 1.0), (9.0, 2.0), (8.0, 6.0), (1.0, 5.0)),
+        )
+
+    def test_degenerate_quad_is_rejected(self) -> None:
+        with self.assertRaises(BaselineError):
+            order_quad_points(((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)))
+
+    def test_axis_aligned_quad_keeps_expected_rectified_shape(self) -> None:
+        np = _import_numpy()
+        frame = CapturedFrame(1, datetime.now(timezone.utc), np.zeros((8, 12, 3), dtype=np.uint8))
+        region = DetectedRegion(
+            quad=((2.0, 1.0), (8.0, 1.0), (8.0, 5.0), (2.0, 5.0)),
+            detector_score=None,
+            source="test",
+        )
+        rectified = PerspectiveRegionRectifier().rectify(frame, region)
+        self.assertEqual(rectified.shape, (5, 7, 3))
 
     def test_four_ascii_digits_are_valid(self) -> None:
         self.assertTrue(is_valid_plate_number(normalize_plate_text("1234")))
