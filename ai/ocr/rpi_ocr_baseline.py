@@ -108,6 +108,7 @@ class DetectedRegion:
         tuple[float, float],
         tuple[float, float],
     ]
+    # YOLO 등 번호판 검출기의 신뢰도 기반 후보 선택 확장을 위해 남긴 필드이며, 이후 검출 점수를 채우고 순위 계산에 반영해야 낮은 신뢰도 영역을 배제할 수 있다.
     detector_score: float | None
     source: str
 
@@ -168,6 +169,7 @@ class BaselineError(RuntimeError):
         self.status = status
 
 
+# 초음파·GPIO 센서 트리거 확장을 위해 남긴 계약이며, 이후 센서 자원의 안전한 초기화와 해제를 위해 생명주기 메서드와 주입 가능한 실행 경로를 추가해야 한다.
 class TriggerSource(Protocol):
     """인식 이벤트를 시작하거나 종료할 시점을 제공하는 계약."""
 
@@ -233,6 +235,7 @@ class TextRecognizer(Protocol):
         """OCR 모델이 점유한 참조를 해제한다."""
 
 
+# Jetson HTTP·로컬 Outbox 결과 전송 확장을 위해 남긴 계약이며, 이후 정상·예외 결과를 같은 경로로 전달하려면 발행기를 조립 단계에서 주입하는 실행 경로를 추가해야 한다.
 class ResultPublisher(Protocol):
     """최종 인식 결과를 출력하거나 외부로 전달하는 계약."""
 
