@@ -36,7 +36,7 @@ import sys
 import tempfile
 import time
 from types import TracebackType
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 import unicodedata
 import unittest
 from uuid import uuid4
@@ -1016,19 +1016,43 @@ class StdoutResultPublisher:
         print(json.dumps(to_jsonable(result), ensure_ascii=False, sort_keys=True), flush=True)
 
 
+def _best_effort_debug_write(operation: Callable[..., None]) -> Callable[..., None]:
+    """디버그 저장 예외를 격리하고 같은 writer의 이후 저장을 중단한다."""
+
+    def wrapped(writer: Any, *args: Any, **kwargs: Any) -> None:
+        if not writer._enabled:
+            return
+        try:
+            operation(writer, *args, **kwargs)
+        except Exception as exc:
+            writer._enabled = False
+            LOGGER.warning(
+                "디버그 저장에 실패해 이후 출력을 비활성화하지만 인식은 계속합니다: %s",
+                exc,
+                exc_info=True,
+            )
+
+    return wrapped
+
+
 class DebugArtifactWriter:
     """명시적으로 활성화됐을 때만 개인정보성 디버그 자료를 저장한다."""
 
     def __init__(self, directory: Path) -> None:
         self._directory = directory
+        self._enabled = True
         try:
             directory.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise BaselineError(
-                ReadStatus.CONFIG_ERROR,
-                f"디버그 디렉터리를 준비할 수 없습니다({directory}): {exc}",
-            ) from exc
+        except Exception as exc:
+            self._enabled = False
+            LOGGER.warning(
+                "디버그 디렉터리를 준비할 수 없어 출력을 비활성화하지만 인식은 계속합니다(%s): %s",
+                directory,
+                exc,
+                exc_info=True,
+            )
 
+    @_best_effort_debug_write
     def write_frame(self, event_id: str, frame: CapturedFrame, image: Any, label: str) -> None:
         """이벤트·프레임·촬영시각이 포함된 이름으로 RGB 이미지를 저장한다."""
 
@@ -1036,18 +1060,17 @@ class DebugArtifactWriter:
         path = self._directory / f"{event_id}_f{frame.frame_id:03d}_{timestamp}_{label}.jpg"
         save_rgb_image(path, image)
 
+    @_best_effort_debug_write
     def write_json(self, event_id: str, label: str, value: Any) -> None:
         """이벤트 수준의 품질·성능 자료를 JSON으로 저장한다."""
 
         path = self._directory / f"{event_id}_{label}.json"
-        try:
-            path.write_text(
-                json.dumps(to_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            raise BaselineError(ReadStatus.CONFIG_ERROR, f"디버그 JSON 저장에 실패했습니다: {exc}") from exc
+        path.write_text(
+            json.dumps(to_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
+    @_best_effort_debug_write
     def write_regions_overlay(
         self,
         event_id: str,
@@ -1079,6 +1102,7 @@ class DebugArtifactWriter:
             )
         self.write_frame(event_id, frame, overlay, label)
 
+    @_best_effort_debug_write
     def write_candidate(
         self,
         event_id: str,
@@ -1090,13 +1114,10 @@ class DebugArtifactWriter:
 
         timestamp = frame.captured_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         path = self._directory / f"{event_id}_f{frame.frame_id:03d}_{timestamp}_{label}.json"
-        try:
-            path.write_text(
-                json.dumps(to_jsonable(candidate), ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            raise BaselineError(ReadStatus.CONFIG_ERROR, f"OCR 디버그 JSON 저장에 실패했습니다: {exc}") from exc
+        path.write_text(
+            json.dumps(to_jsonable(candidate), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
 
 class PlateReader:
@@ -1187,10 +1208,7 @@ class PlateReader:
             metrics.total_ms,
         )
         if self._debug_writer is not None:
-            try:
-                self._debug_writer.write_json(event_id, "metrics", metrics)
-            except BaselineError as exc:
-                LOGGER.warning("이벤트 %s 성능 디버그 JSON 저장에 실패했습니다: %s", event_id, exc)
+            self._debug_writer.write_json(event_id, "metrics", metrics)
         return metrics.total_ms
 
     def read_once(self) -> PlateReadResult:
@@ -1785,6 +1803,7 @@ class BaselineLogicTests(unittest.TestCase):
         *,
         regions_by_frame: Mapping[int, Sequence[DetectedRegion]],
         texts: Mapping[tuple[int, str], str] | None = None,
+        debug_writer: DebugArtifactWriter | None = None,
     ) -> tuple[PlateReader, _TestRegionDetector, _TestRegionRectifier, _TestTextRecognizer]:
         detector = _TestRegionDetector(regions_by_frame)
         rectifier = _TestRegionRectifier()
@@ -1802,6 +1821,7 @@ class BaselineLogicTests(unittest.TestCase):
             min_valid_frames=3,
             min_vote_ratio=0.50,
             ambiguity_margin=0.15,
+            debug_writer=debug_writer,
         )
         return reader, detector, rectifier, recognizer
 
@@ -1975,6 +1995,41 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(recognizer.calls), 7)
         reused_sources = [source for frame_id, source in rectifier.calls if frame_id != 3]
         self.assertEqual(reused_sources, ["plate"] * 5)
+
+    def test_debug_write_failure_does_not_change_ocr_result(self) -> None:
+        calls: list[Path] = []
+        original_save_rgb_image = globals()["save_rgb_image"]
+
+        def fail_save(path: Path, image: Any) -> None:
+            del image
+            calls.append(path)
+            raise BaselineError(ReadStatus.CONFIG_ERROR, "disk full")
+
+        with tempfile.TemporaryDirectory() as directory:
+            writer = DebugArtifactWriter(Path(directory))
+            reader, _, _, _ = self.make_pipeline(
+                regions_by_frame={3: (self.region("plate"),)},
+                debug_writer=writer,
+            )
+            globals()["save_rgb_image"] = fail_save
+            try:
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    with reader:
+                        result = reader.read_once()
+            finally:
+                globals()["save_rgb_image"] = original_save_rgb_image
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("비활성화하지만 인식은 계속", "\n".join(logs.output))
+
+    def test_debug_writer_initialization_failure_disables_debug_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("block", encoding="utf-8")
+            with self.assertLogs(LOGGER, level="WARNING") as logs:
+                writer = DebugArtifactWriter(blocker / "debug")
+            writer.write_json("event", "metrics", PipelineMetrics())
+        self.assertIn("비활성화하지만 인식은 계속", "\n".join(logs.output))
 
     def test_debug_writer_saves_stage_specific_artifacts(self) -> None:
         np = _import_numpy()
