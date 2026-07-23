@@ -40,3 +40,13 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# AI training pipeline outputs
+ai/training/runs/
+ai/training/data/raw/
+ai/training/data/samples/
+*.pt
+*.onnx
+
+# W&B local cache
+wandb/
