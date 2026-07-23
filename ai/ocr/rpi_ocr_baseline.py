@@ -1093,7 +1093,7 @@ class BaselineLogicTests(unittest.TestCase):
         candidates: Sequence[OcrCandidate],
         *,
         min_rec_score: float = 0.60,
-        min_valid_frames: int = 2,
+        min_valid_frames: int = 3,  # min_vailid_ratio = 0.5를 넣는 대신 임시 조치로 숫자 2 -> 3
         min_vote_ratio: float = 0.50,
         ambiguity_margin: float = 0.15,
     ) -> PlateReadResult:
