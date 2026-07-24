@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -52,6 +53,71 @@ def test_run_training_orchestrates_config_train_and_metadata(tmp_path, monkeypat
     assert Path(result["meta_path"]).exists()
     assert Path(result["meta_path"]).name == "model_meta.json"
     assert result["best_weights"] == str(expected_weights_dir / "best.pt")
+
+
+def test_run_training_captures_pose_metrics_when_present(tmp_path, monkeypatch):
+    config_file = tmp_path / "yolo_plate.yaml"
+    config_file.write_text(
+        "model_name: plate_detector\n"
+        "base_model: yolov8n-pose.pt\n"
+        "data: data/samples/plate/data.yaml\n"
+        "epochs: 1\n"
+        "imgsz: 640\n"
+        "batch: 16\n"
+        "project: smart-parking-ai\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_results = MagicMock()
+    fake_results.results_dict = {
+        "metrics/mAP50(B)": 0.42,
+        "metrics/mAP50-95(B)": 0.21,
+        "metrics/mAP50(P)": 0.35,
+        "metrics/mAP50-95(P)": 0.18,
+    }
+    fake_results.save_dir = str(tmp_path / "runs" / "train" / "plate_detector-yolov8n-pose-20260724-000000")
+    fake_model = MagicMock()
+    fake_model.train.return_value = fake_results
+
+    with patch("train_yolo.YOLO", return_value=fake_model), \
+         patch("train_yolo.wandb"), \
+         patch("train_yolo.get_commit_hash", return_value="3f3e4b2"):
+        result = run_training(str(config_file), version="plate_detector-yolov8n-pose-20260724-000000")
+
+    meta = json.loads(Path(result["meta_path"]).read_text())
+    assert meta["metrics"]["mAP50"] == 0.42
+    assert meta["metrics"]["mAP50-95"] == 0.21
+    assert meta["metrics"]["pose_mAP50"] == 0.35
+    assert meta["metrics"]["pose_mAP50-95"] == 0.18
+
+
+def test_run_training_omits_pose_metrics_for_plain_detect(tmp_path, monkeypatch):
+    config_file = tmp_path / "yolo_vehicle.yaml"
+    config_file.write_text(
+        "model_name: vehicle_detector\n"
+        "base_model: yolov8s.pt\n"
+        "data: coco8.yaml\n"
+        "epochs: 1\n"
+        "imgsz: 640\n"
+        "batch: 16\n"
+        "project: smart-parking-ai\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    fake_results = MagicMock()
+    fake_results.results_dict = {"metrics/mAP50(B)": 0.42, "metrics/mAP50-95(B)": 0.21}
+    fake_results.save_dir = str(tmp_path / "runs" / "train" / "vehicle_detector-yolov8s-20260724-000000")
+    fake_model = MagicMock()
+    fake_model.train.return_value = fake_results
+
+    with patch("train_yolo.YOLO", return_value=fake_model), \
+         patch("train_yolo.wandb"), \
+         patch("train_yolo.get_commit_hash", return_value="3f3e4b2"):
+        result = run_training(str(config_file), version="vehicle_detector-yolov8s-20260724-000000")
+
+    meta = json.loads(Path(result["meta_path"]).read_text())
+    assert "pose_mAP50" not in meta["metrics"]
+    assert "pose_mAP50-95" not in meta["metrics"]
 
 
 def test_run_training_generates_version_when_not_given(tmp_path, monkeypatch):
