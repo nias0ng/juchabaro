@@ -1567,8 +1567,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="DBNet18 입력의 짧은 변 길이입니다. 기본값은 원본 크기를 유지합니다.",
     )
     parser.add_argument("--disable-model-download", action="store_true")
-    parser.add_argument("--min-rec-score", type=float, default=0.60)
-    parser.add_argument("--min-valid-frames", type=int, default=3)
+    parser.add_argument("--min-rec-score", type=float, default=0.40)
+    parser.add_argument("--min-valid-frames", type=int, default=2)
     parser.add_argument("--min-vote-ratio", type=float, default=0.50)
     parser.add_argument("--ambiguity-margin", type=float, default=0.15)
     parser.add_argument("--plain", action="store_true")
