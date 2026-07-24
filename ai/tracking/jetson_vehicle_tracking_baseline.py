@@ -470,11 +470,14 @@ class ViolationMonitor:
                 )
                 self._tracks[detection.track_id] = state
             else:
+                # state.last_bbox는 "정차 시작 시점의 위치" 기준점으로 유지한다.
+                # 매 프레임 갱신하면 프레임 간 이동량이 매번 movement_epsilon 이하일 때
+                # 누적 이동거리가 커도 계속 "정지 상태"로 남는 문제가 생긴다(리뷰 반영).
                 moved = _centroid_distance(state.last_bbox, detection.bbox) > self._movement_epsilon
                 if moved:
                     state.stationary_since = detection.captured_at
+                    state.last_bbox = detection.bbox
                     state.open_violation = ViolationStatus.NONE
-                state.last_bbox = detection.bbox
                 state.last_seen_at = detection.captured_at
 
             dwell_seconds = (detection.captured_at - state.stationary_since).total_seconds()
@@ -620,6 +623,9 @@ class UltralyticsVehicleTracker:
         if shape is None or len(shape) < 2:
             raise BaselineError("프레임 이미지 크기를 확인할 수 없습니다.")
         image_height, image_width = int(shape[0]), int(shape[1])
+        if image_height <= 0 or image_width <= 0:
+            # 카메라가 순간적으로 빈 프레임을 반환하는 경우(리뷰 반영) 나눗셈 전에 걸러낸다.
+            raise BaselineError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
         try:
             results = self._model.track(
                 source=frame.image,
@@ -813,6 +819,13 @@ def run_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+class _FakeImage:
+    """테스트에서 프레임 크기만 흉내 내는 최소 이미지 스텁."""
+
+    def __init__(self, shape: tuple[int, ...]) -> None:
+        self.shape = shape
+
+
 class BaselineLogicTests(unittest.TestCase):
     """카메라·모델 없이 실행하는 순수 판정 로직 회귀 테스트."""
 
@@ -902,6 +915,38 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_second), 1)
         self.assertEqual(events_second[0].status, ViolationStatus.RESTRICTED_ZONE)
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_slow_continuous_drift_never_reaches_min_dwell(self) -> None:
+        """리뷰 반영: 매 프레임 이동량이 movement_epsilon 이하라도 누적 이동거리가 크면
+        정지 상태로 오판하면 안 된다 (기존에는 last_bbox를 매 프레임 갱신해 이 문제가 있었음)."""
+
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+        events: list[ViolationEvent] = []
+        for index, x1 in enumerate((0.100, 0.106, 0.112, 0.118)):
+            detection = VehicleBox(
+                track_id=1,
+                bbox=BoundingBox(x1, 0.1, x1 + 0.2, 0.3),
+                confidence=0.9,
+                frame_id=index + 1,
+                captured_at=base_time + timedelta(seconds=2 * index),
+            )
+            events.extend(monitor.update([detection]))
+
+        self.assertEqual(len(events), 0)  # 계속 조금씩 움직이는 차량은 위반으로 확정되면 안 됨
+
+    def test_tracker_rejects_zero_sized_frame(self) -> None:
+        """리뷰 반영: 카메라가 순간적으로 빈 프레임을 반환하면 ZeroDivisionError 대신
+        BaselineError로 처리되어야 한다."""
+
+        tracker = UltralyticsVehicleTracker(model_path="unused.pt", tracker_config="bytetrack.yaml", confidence=0.5)
+        tracker._model = object()  # open() 없이 track()의 프레임 크기 검증만 확인
+        frame = CapturedFrame(frame_id=1, captured_at=datetime.now(timezone.utc), image=_FakeImage((0, 0, 3)))
+        with self.assertRaises(BaselineError):
+            tracker.track(frame)
 
     def test_monitor_attach_plate_updates_track_state(self) -> None:
         zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
