@@ -715,6 +715,7 @@ class ViolationMonitor:
         }
 
         for detection in detections:
+            state = self._tracks[detection.track_id]
             dwell_seconds = dwell_by_track[detection.track_id]
             own_home = home_zone_by_track[detection.track_id]
             own_claim = best_claimant_by_zone_id.get(own_home.zone.zone_id) if own_home is not None else None
@@ -1527,6 +1528,54 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_second), 1)
         self.assertEqual(events_second[0].status, ViolationStatus.RESTRICTED_ZONE)
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_monitor_multi_vehicle_frame_does_not_mix_up_track_state(self) -> None:
+        """한 프레임에 차량이 2대 이상 잡혀도, 마지막 차량이 아닌 다른 차량의
+        상태(open_violation, plate_number)를 잘못 참조하면 안 된다."""
+
+        restricted_zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        general_zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.6, 0.0), (0.9, 0.0), (0.9, 0.3), (0.6, 0.3)])
+        registry = ZoneRegistry([restricted_zone, general_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        restricted_bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+
+        for index in range(2):
+            monitor.update(
+                [
+                    VehicleBox(
+                        track_id=1,
+                        bbox=restricted_bbox,
+                        confidence=0.9,
+                        frame_id=index + 1,
+                        captured_at=base_time + timedelta(seconds=2 * index),
+                    )
+                ]
+            )
+        monitor.attach_plate(1, "11가1111")
+
+        # track 1의 RESTRICTED_ZONE 위반이 이미 열려 있는 상태에서, 같은 프레임에
+        # track 2(위반 없는 신규 차량)가 track 1보다 뒤에 detections에 들어온다.
+        events = monitor.update(
+            [
+                VehicleBox(
+                    track_id=1,
+                    bbox=restricted_bbox,
+                    confidence=0.9,
+                    frame_id=3,
+                    captured_at=base_time + timedelta(seconds=4),
+                ),
+                VehicleBox(
+                    track_id=2,
+                    bbox=BoundingBox(0.65, 0.05, 0.85, 0.25),
+                    confidence=0.9,
+                    frame_id=3,
+                    captured_at=base_time + timedelta(seconds=4),
+                ),
+            ]
+        )
+
+        self.assertEqual(len(events), 0)  # track1의 위반은 이미 열려 있으므로 중복 발행되면 안 됨
 
     def test_slow_continuous_drift_never_reaches_min_dwell(self) -> None:
         """리뷰 반영: 매 프레임 이동량이 movement_epsilon 이하라도 누적 이동거리가 크면
