@@ -18,6 +18,8 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate;
+
 @Getter
 @Entity
 @Table(name = "vehicles")
@@ -49,6 +51,9 @@ public class Vehicle extends BaseEntity {
     @Column(name = "owner_type", nullable = false, length = 20)
     private VehicleOwnerType ownerType;
 
+    @Column(name = "visit_date")
+    private LocalDate visitDate;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private VehicleStatus status;
@@ -61,6 +66,7 @@ public class Vehicle extends BaseEntity {
             boolean disabledVehicle,
             boolean electric,
             VehicleOwnerType ownerType,
+            LocalDate visitDate,
             VehicleStatus status
     ) {
         this.user = user;
@@ -69,6 +75,7 @@ public class Vehicle extends BaseEntity {
         this.disabledVehicle = disabledVehicle;
         this.electric = electric;
         this.ownerType = ownerType;
+        this.visitDate = visitDate;
         this.status = status;
     }
 }

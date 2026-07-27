@@ -40,8 +40,8 @@ public class User extends BaseEntity {
     @Column(name = "unit_number", nullable = false, length = 20)
     private String unitNumber;
 
-    @Column(name = "nickname", nullable = false, length = 50)
-    private String nickname;
+    @Column(name = "name", nullable = false, length = 50)
+    private String name;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
@@ -58,7 +58,7 @@ public class User extends BaseEntity {
             String phoneNumber,
             String buildingNumber,
             String unitNumber,
-            String nickname,
+            String name,
             UserRole role,
             UserStatus status
     ) {
@@ -67,7 +67,7 @@ public class User extends BaseEntity {
         this.phoneNumber = phoneNumber;
         this.buildingNumber = buildingNumber;
         this.unitNumber = unitNumber;
-        this.nickname = nickname;
+        this.name = name;
         this.role = role;
         this.status = status;
     }
