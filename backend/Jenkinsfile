@@ -14,12 +14,22 @@ pipeline {
                 }
             }
         }
+
+        stage('Backend Docker Build') {
+            steps {
+                dir('backend') {
+                    sh 'docker build -t parking-backend-ci:${BUILD_NUMBER} .'
+                }
+            }
+        }
     }
 
     post {
         always {
             junit allowEmptyResults: true,
                     testResults: 'backend/build/test-results/test/*.xml'
+
+            sh 'docker image rm parking-backend-ci:${BUILD_NUMBER} || true'
         }
     }
 }
