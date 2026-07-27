@@ -594,6 +594,18 @@ class ViolationMonitor:
             if current_best is None or home.ratio > current_best[1]:
                 best_claimant_by_zone_id[home.zone.zone_id] = (track_id, home.ratio)
 
+        # 누군가의 홈으로 걸려 있지만 아직 아무도 정착 완료하지 못한 구역 —
+        # 비어있는 건지 곧 누군가의 스팟이 될 건지 이번 프레임엔 알 수 없다.
+        # 이런 구역을 침범 판정에 넣으면, 나중에 그 차가 정착하는 순간
+        # LINE_CROSS로 한 번 보고됐다가 DOUBLE_PARK로 다시 보고되는 식으로
+        # 같은 상황이 이벤트만 바뀌며 중복 발행된다(리뷰 반영) — 그래서
+        # 판정을 보류하고 이번 프레임에는 아예 침범 후보에서 제외한다.
+        pending_home_zone_ids = {
+            home.zone.zone_id
+            for home in home_zone_by_track.values()
+            if home is not None and home.zone.zone_id not in best_claimant_by_zone_id
+        }
+
         for detection in detections:
             dwell_seconds = dwell_by_track[detection.track_id]
             own_home = home_zone_by_track[detection.track_id]
@@ -607,6 +619,8 @@ class ViolationMonitor:
             for zone in self._zones.all():
                 if zone.zone_type not in _SPOT_ZONE_TYPES or zone.zone_id == own_zone_id_if_rightful:
                     continue  # 통행로/입출차 구역이거나, 내가 정당한 주인인 내 홈 구역이면 침범이 아니다
+                if zone.zone_id in pending_home_zone_ids:
+                    continue  # 점유 여부가 아직 불확실한 구역은 이번 프레임엔 판정 보류
                 intrusion_ratio = zone_coverage_ratio(zone, detection.bbox)
                 if intrusion_ratio < self._spot_intrusion_ratio:
                     continue
@@ -1156,19 +1170,66 @@ class BaselineLogicTests(unittest.TestCase):
 
         monitor.update([VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
 
-        events = []
-        for seconds in (6, 12):
-            events = monitor.update(
-                [
-                    VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                    VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                ]
-            )
+        # track 2(피해자)는 아직 정착 전(리뷰 반영: 이 프레임엔 GEN-B 점유 여부가
+        # 불확실하므로 LINE_CROSS로 잘못 보고되면 안 되고, 아무 이벤트도 없어야 한다)
+        events_before_victim_settles = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=6, captured_at=base_time + timedelta(seconds=6)),
+                VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=6, captured_at=base_time + timedelta(seconds=6)),
+            ]
+        )
+        self.assertEqual(events_before_victim_settles, [])
+
+        events = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=12, captured_at=base_time + timedelta(seconds=12)),
+                VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=12, captured_at=base_time + timedelta(seconds=12)),
+            ]
+        )
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].track_id, 1)  # 먼저 왔지만 실제로 침범한 쪽(track 1)이 잡힌다
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
         self.assertEqual(events[0].zone_id, "GEN-B")  # 침범당한 구역이 실제로 실린다
+
+    def test_monitor_no_line_cross_to_double_park_flap_while_victim_settles(self) -> None:
+        """리뷰에서 발견된 회귀: 침입자가 피해자보다 먼저 정착 완료(min_dwell 도달)
+        하면, 피해자가 아직 정착 전인 짧은 구간 동안 그 구역이 "비어있는 것"으로
+        오인되어 LINE_CROSS 이벤트가 먼저 발행됐다가, 피해자가 정착하는 순간
+        DOUBLE_PARK로 다시 발행되는 이벤트 중복(플래핑)이 있었다. 이제는 아직
+        아무도 정착하지 못한 구역은 판정을 보류해서, LINE_CROSS 없이 DOUBLE_PARK
+        하나만 발행돼야 한다."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        spot_b = self.make_zone("GEN-B", ZoneType.GENERAL, [(0.20, 0.0), (0.40, 0.0), (0.40, 0.3), (0.20, 0.3)])
+        registry = ZoneRegistry([spot_a, spot_b])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, spot_intrusion_ratio=0.15)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        intruder_bbox = BoundingBox(0.05, 0.0, 0.24, 0.3)  # GEN-A가 홈, GEN-B를 20% 침범
+        victim_bbox = BoundingBox(0.24, 0.0, 0.38, 0.3)
+
+        monitor.update([VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=0, captured_at=base_time)])
+
+        # 침입자는 정착 완료(dwell 6≥5), 피해자는 방금 등장(dwell 0<5) — GEN-B
+        # 점유 여부가 아직 불확실한 구간. LINE_CROSS가 잘못 발행되면 안 된다.
+        events_while_victim_unsettled = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=6, captured_at=base_time + timedelta(seconds=6)),
+                VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=6, captured_at=base_time + timedelta(seconds=6)),
+            ]
+        )
+        self.assertEqual(events_while_victim_unsettled, [])
+
+        events_after_victim_settles = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=12, captured_at=base_time + timedelta(seconds=12)),
+                VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=12, captured_at=base_time + timedelta(seconds=12)),
+            ]
+        )
+        self.assertEqual(len(events_after_victim_settles), 1)  # DOUBLE_PARK 딱 한 번만 발행(LINE_CROSS 거치지 않음)
+        self.assertEqual(events_after_victim_settles[0].track_id, 1)
+        self.assertEqual(events_after_victim_settles[0].status, ViolationStatus.DOUBLE_PARK)
+        self.assertEqual(events_after_victim_settles[0].zone_id, "GEN-B")
 
     def test_monitor_double_park_catches_large_vehicle_intruding_small_spot(self) -> None:
         """리뷰에서 발견된 회귀: 가해 차량이 피해 차량보다 훨씬 크면(트럭이 오토바이
