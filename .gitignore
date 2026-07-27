@@ -50,3 +50,6 @@ ai/training/data/samples/
 
 # W&B local cache
 wandb/
+
+# Local git worktrees (scratch, per-branch isolated workspaces)
+.worktrees/
