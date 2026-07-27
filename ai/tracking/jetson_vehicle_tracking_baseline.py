@@ -209,12 +209,6 @@ def zone_coverage_ratio(zone: ParkingZone, bbox: BoundingBox) -> float:
     return _polygon_area(clipped) / zone_area
 
 
-def _bbox_to_polygon(bbox: BoundingBox) -> NormalizedPolygon:
-    """바운딩박스를 겹침 계산에 재사용할 수 있도록 4점 폴리곤으로 변환한다(이중주차 판정용)."""
-
-    return NormalizedPolygon(((bbox.x1, bbox.y1), (bbox.x2, bbox.y1), (bbox.x2, bbox.y2), (bbox.x1, bbox.y2)))
-
-
 @dataclass(frozen=True)
 class ParkingZone:
     """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0)."""
@@ -483,11 +477,14 @@ class ViolationMonitor:
 
     통행로를 막는 "일반적인 이중주차"(차 여러 대의 진출입로를 막는 경우)는
     AISLE_BLOCK이 담당한다(구역 폴리곤만 있으면 판정 가능). 여기서 말하는
-    DOUBLE_PARK는 그보다 좁은 케이스로, 차량이 이미 정차 중인 다른 차량
-    바로 위·바로 옆에 겹치도록 주차하는 상황이다. 두 차량의 겹침은 실제
-    카메라 기준으로는 구역 겹침보다 훨씬 작게 나타나는 경우가 많아서(범퍼만
-    살짝 겹치는 정도), `min_overlap_ratio`(구역 판정용, §5.1 확정치)를
-    그대로 재사용하지 않고 `double_park_overlap_ratio`를 별도로 둔다.
+    DOUBLE_PARK는 그보다 좁은 케이스로, 차량이 이미 정차 중인 다른 차량이
+    점유한 주차구역(스팟 폴리곤)을 침범하도록 주차하는 상황이다. 판정은
+    시간순(누가 먼저 왔는지)이 아니라 순수하게 공간 정보(누구 자리를
+    침범했는지)로만 한다 — 자기 홈 구역이 아닌, 이미 다른 차가 점유(§5.0
+    캘리브레이션된 스팟)한 구역을 `double_park_overlap_ratio` 이상 덮으면
+    그 차가 침범자로 판정된다. 이 방식은 피해 차량이 스팟 구역(zone) 안에
+    있어야 동작한다 — 구역 밖(비주차구역)에 정차한 차량을 다른 차가 막는
+    경우는 잡지 못한다(NO_PARKING_ZONE 미구현과 연결된 별도 한계).
     """
 
     def __init__(
@@ -516,10 +513,11 @@ class ViolationMonitor:
     def update(self, detections: Sequence[VehicleBox]) -> list[ViolationEvent]:
         """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다.
 
-        정차 상태 갱신(1차)과 위반 판정(2차)을 나눠서 처리한다 — 이중주차
-        판정이 같은 프레임 안의 다른 차량들 정차 시간을 참조하는데, 갱신
-        순서에 따라 결과가 달라지지 않도록 모든 트랙의 정차 상태를 먼저
-        확정한 뒤에 판정한다.
+        정차 상태 갱신(1차) → 구역 겹침·홈 구역 계산(2차) → 위반 판정(3차)
+        순으로 나눠서 처리한다. 이중주차 판정이 같은 프레임 안의 다른
+        차량들이 점유한 구역을 참조하는데, 갱신/계산 순서에 따라 결과가
+        달라지지 않도록 모든 트랙의 정차 상태와 구역 정보를 먼저 확정한
+        뒤에 판정한다.
         """
 
         events: list[ViolationEvent] = []
@@ -547,34 +545,42 @@ class ViolationMonitor:
                     state.open_violation = ViolationStatus.NONE
                 state.last_seen_at = detection.captured_at
 
+        zone_overlaps_by_track: dict[int, list[ZoneOverlap]] = {}
+        home_zone_by_track: dict[int, ZoneOverlap | None] = {}
+        for detection in detections:
+            overlaps = classify_zone_overlaps(
+                detection.bbox, self._zones.all(), min_overlap_ratio=self._min_overlap_ratio
+            )
+            zone_overlaps_by_track[detection.track_id] = overlaps
+            home_zone_by_track[detection.track_id] = _home_zone_overlap(overlaps)
+
         for detection in detections:
             state = self._tracks[detection.track_id]
             dwell_seconds = (detection.captured_at - state.stationary_since).total_seconds()
 
-            blocked_ratio: float | None = None
+            blocked_zone: ZoneOverlap | None = None
             for other in detections:
                 if other.track_id == detection.track_id:
                     continue
+                other_home = home_zone_by_track[other.track_id]
+                if other_home is None:
+                    continue  # 그 차가 특정 스팟에 안정적으로 속해 있지 않으면 피해자 기준으로 못 삼는다
                 other_state = self._tracks[other.track_id]
-                # 나중에 정차한 차량만 "이중주차 중"으로 판정한다 — 먼저 자리
-                # 잡은 차는 피해자이지 가해자가 아니다.
-                if other_state.stationary_since >= state.stationary_since:
-                    continue
                 other_dwell = (detection.captured_at - other_state.stationary_since).total_seconds()
                 if other_dwell < self._min_dwell_seconds:
-                    continue
-                ratio = overlap_ratio(_bbox_to_polygon(other.bbox), detection.bbox)
-                if ratio >= self._double_park_overlap_ratio and (blocked_ratio is None or ratio > blocked_ratio):
-                    blocked_ratio = ratio
+                    continue  # 그 차가 아직 확실히 자리잡은 상태가 아니면 침범 대상으로 안 본다
+                intrusion_ratio = zone_coverage_ratio(other_home.zone, detection.bbox)
+                if intrusion_ratio >= self._double_park_overlap_ratio and (
+                    blocked_zone is None or intrusion_ratio > blocked_zone.ratio
+                ):
+                    blocked_zone = ZoneOverlap(other_home.zone, intrusion_ratio)
 
-            overlaps = classify_zone_overlaps(
-                detection.bbox, self._zones.all(), min_overlap_ratio=self._min_overlap_ratio
-            )
+            overlaps = zone_overlaps_by_track[detection.track_id]
             status, zone, ratio = classify_violation(
                 overlaps,
                 dwell_seconds=dwell_seconds,
                 min_dwell_seconds=self._min_dwell_seconds,
-                blocked_vehicle_overlap_ratio=blocked_ratio,
+                blocked_zone=blocked_zone,
             )
 
             if status not in (ViolationStatus.NONE, ViolationStatus.OBSERVING) and status != state.open_violation:
@@ -1055,94 +1061,115 @@ class BaselineLogicTests(unittest.TestCase):
         assert zone is not None
         self.assertEqual(zone.zone_id, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
 
-    def test_monitor_double_park_flags_later_arrival_not_earlier_car(self) -> None:
-        registry = ZoneRegistry([])  # 구역을 아예 없애서 순수하게 이중주차 판정만 검증한다.
-        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, movement_epsilon=0.01)
+    def test_monitor_double_park_flags_whoever_intrudes_regardless_of_arrival_order(self) -> None:
+        """리뷰에서 발견된 회귀: 먼저 온 차가 실제로 옆 칸(나중에 온 차의 자리)을
+        침범했다면, 시간순이 아니라 누가 실제로 침범했는지로 판정해야 한다.
+        옛 로직은 '나중에 온 차만 가해자'였어서, 제대로 주차한 나중 차가 억울하게
+        잡히고 실제 침범자(먼저 온 차)는 절대 안 잡혔다."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        spot_b = self.make_zone("GEN-B", ZoneType.GENERAL, [(0.20, 0.0), (0.40, 0.0), (0.40, 0.3), (0.20, 0.3)])
+        registry = ZoneRegistry([spot_a, spot_b])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.15)
         base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
 
-        car_b_bbox = BoundingBox(0.10, 0.10, 0.30, 0.30)
-        car_a_bbox = BoundingBox(0.15, 0.10, 0.35, 0.30)  # car_b와 크게 겹침
+        # 먼저 온 차(track 1)가 자기 칸(GEN-A)을 벗어나 GEN-B로 침범해서 나쁘게 주차
+        intruder_bbox = BoundingBox(0.05, 0.0, 0.24, 0.3)
+        # 나중에 온 차(track 2)는 자기 칸(GEN-B) 안에 올바르게 주차
+        victim_bbox = BoundingBox(0.24, 0.0, 0.38, 0.3)
 
-        events_t0 = monitor.update(
-            [VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)]
-        )
+        monitor.update([VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
 
-        events_t6 = monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-            ]
-        )
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
 
-        events_t12 = monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-            ]
-        )
-
-        self.assertEqual(len(events_t0), 0)
-        self.assertEqual(len(events_t6), 0)  # car_a는 방금 도착해 아직 OBSERVING
-        self.assertEqual(len(events_t12), 1)
-        self.assertEqual(events_t12[0].track_id, 2)  # 나중에 온 car_a만 이중주차로 판정
-        self.assertEqual(events_t12[0].status, ViolationStatus.DOUBLE_PARK)
-
-    def test_double_park_default_threshold_catches_small_realistic_overlap(self) -> None:
-        """리뷰 반영: 실제 이중주차는 범퍼만 살짝 겹치는 정도(예: 20%)라, §5.1의
-        구역 겹침 임계값(40%)을 그대로 쓰면 거의 발동하지 않는 문제가 있었다.
-        double_park_overlap_ratio를 별도 기본값(0.15)으로 분리했다."""
-
-        registry = ZoneRegistry([])
-        monitor = ViolationMonitor(registry, min_dwell_seconds=5.0)  # double_park_overlap_ratio 기본값(0.15) 사용
-        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
-
-        car_b_bbox = BoundingBox(0.00, 0.00, 0.34, 0.20)
-        car_a_bbox = BoundingBox(0.30, 0.00, 0.50, 0.20)  # car_a 기준 겹침 비율 정확히 0.20
-
-        overlap = overlap_ratio(_bbox_to_polygon(car_b_bbox), car_a_bbox)
-        self.assertAlmostEqual(overlap, 0.20)  # 옛 구역 임계값(0.40)보다 작음을 확인
-
-        monitor.update([VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
-        events = monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-            ]
-        )
-        events = monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-            ]
-        )
         self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].track_id, 1)  # 먼저 왔지만 실제로 침범한 쪽(track 1)이 잡힌다
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
+        self.assertEqual(events[0].zone_id, "GEN-B")  # 침범당한 구역이 실제로 실린다
 
-    def test_double_park_custom_threshold_can_restore_old_behavior(self) -> None:
-        """double_park_overlap_ratio를 명시적으로 0.40으로 올리면, 위 20% 겹침
-        시나리오는 더 이상 잡히지 않는다 — 두 임계값이 실제로 독립적임을 확인."""
-
-        registry = ZoneRegistry([])
-        monitor = ViolationMonitor(registry, min_dwell_seconds=5.0, double_park_overlap_ratio=0.40)
+    def test_monitor_double_park_catches_large_vehicle_intruding_small_spot(self) -> None:
+        """리뷰에서 발견된 회귀: 가해 차량이 피해 차량보다 훨씬 크면(트럭이 오토바이
+        스팟을 덮는 경우), 옛 방식(차량 대 차량 비교, 가해 차량 자신이 분모)은
+        가해 차량 면적이 커서 비율이 낮게 나와 못 잡았다. 이제는 피해 차량이
+        점유한 구역 면적이 분모라 가해 차량 크기와 무관하게 잡힌다."""
+        moto_spot = self.make_zone("GEN-MOTO", ZoneType.GENERAL, [(0.10, 0.10), (0.15, 0.10), (0.15, 0.20), (0.10, 0.20)])
+        registry = ZoneRegistry([moto_spot])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.15)
         base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
 
-        car_b_bbox = BoundingBox(0.00, 0.00, 0.34, 0.20)
-        car_a_bbox = BoundingBox(0.30, 0.00, 0.50, 0.20)
+        moto_bbox = BoundingBox(0.10, 0.10, 0.15, 0.20)  # 자기 스팟에 정확히 주차
+        truck_bbox = BoundingBox(0.06, 0.05, 0.40, 0.25)  # 몸집이 훨씬 큰 트럭이 스팟을 완전히 덮음
 
-        monitor.update([VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
-        monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
-            ]
-        )
-        events = monitor.update(
-            [
-                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
-            ]
-        )
-        self.assertEqual(len(events), 0)
+        monitor.update([VehicleBox(track_id=1, bbox=moto_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=moto_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=truck_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].track_id, 2)
+        self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
+        self.assertEqual(events[0].zone_id, "GEN-MOTO")
+
+    def test_monitor_double_park_not_flagged_when_victim_has_no_home_zone(self) -> None:
+        """피해 후보가 어떤 스팟 구역과도 40% 이상 안 겹치는 애매한 위치에 있으면
+        (홈 구역이 없으면), 그 차를 기준으로 다른 차를 이중주차로 판정하지 않는다."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        registry = ZoneRegistry([spot_a])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.15)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        ambiguous_bbox = BoundingBox(0.50, 0.50, 0.70, 0.70)  # 어떤 구역과도 안 겹침
+        overlapping_bbox = BoundingBox(0.55, 0.55, 0.75, 0.75)  # ambiguous_bbox와 상당히 겹침
+
+        monitor.update([VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=overlapping_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+
+        self.assertEqual(events, [])
+
+    def test_monitor_double_park_respects_custom_threshold(self) -> None:
+        """double_park_overlap_ratio를 높이면 약한 침범(20%)은 더 이상 안 잡힌다 —
+        임계값이 실제로 동작함을 확인."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        spot_b = self.make_zone("GEN-B", ZoneType.GENERAL, [(0.20, 0.0), (0.40, 0.0), (0.40, 0.3), (0.20, 0.3)])
+        registry = ZoneRegistry([spot_a, spot_b])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.40)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        intruder_bbox = BoundingBox(0.05, 0.0, 0.24, 0.3)  # GEN-B를 20%만 침범(0.40 임계값 미달)
+        victim_bbox = BoundingBox(0.24, 0.0, 0.38, 0.3)
+
+        monitor.update([VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=intruder_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=victim_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+
+        self.assertEqual(events, [])
 
     def test_entry_exit_zone_ignored_for_parking_violation(self) -> None:
         entry = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
