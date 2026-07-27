@@ -4,9 +4,10 @@
 
 ## 실행 환경
 
-- Python 3.11 기준
+- Python 3.10.12
+- JetPack 6.2.1
+- Ubuntu 22.04.5
 - FastAPI
-- JetPack 6.2
 
 ## 주요 기능
 

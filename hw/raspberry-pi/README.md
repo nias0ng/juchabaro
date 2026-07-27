@@ -4,8 +4,8 @@
 
 ## 실행 환경
 
-- Python 3.11 기준
-- 실제 보드 세부 버전은 추후 확인 후 갱신
+- Python 3.13.5
+- Debian GNU/Linux 13 (trixie)
 
 ## 처리 흐름
 
