@@ -445,6 +445,14 @@ class ViolationMonitor:
     새로 나타난 트랙은 첫 프레임부터 정차 중인 것으로 간주하는 단순화를
     적용했다. 실제로는 진입 직후 잠깐의 움직임을 무시해야 할 수 있으니
     현장 데이터로 검증 후 조정이 필요하다.
+
+    통행로를 막는 "일반적인 이중주차"(차 여러 대의 진출입로를 막는 경우)는
+    AISLE_BLOCK이 담당한다(구역 폴리곤만 있으면 판정 가능). 여기서 말하는
+    DOUBLE_PARK는 그보다 좁은 케이스로, 차량이 이미 정차 중인 다른 차량
+    바로 위·바로 옆에 겹치도록 주차하는 상황이다. 두 차량의 겹침은 실제
+    카메라 기준으로는 구역 겹침보다 훨씬 작게 나타나는 경우가 많아서(범퍼만
+    살짝 겹치는 정도), `min_overlap_ratio`(구역 판정용, §5.1 확정치)를
+    그대로 재사용하지 않고 `double_park_overlap_ratio`를 별도로 둔다.
     """
 
     def __init__(
@@ -454,11 +462,13 @@ class ViolationMonitor:
         min_overlap_ratio: float = 0.40,
         min_dwell_seconds: float = 600.0,
         movement_epsilon: float = 0.01,
+        double_park_overlap_ratio: float = 0.15,
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
         self._min_dwell_seconds = min_dwell_seconds
         self._movement_epsilon = movement_epsilon
+        self._double_park_overlap_ratio = double_park_overlap_ratio
         self._tracks: dict[int, TrackState] = {}
 
     def attach_plate(self, track_id: int, plate_number: str) -> None:
@@ -519,7 +529,7 @@ class ViolationMonitor:
                 if other_dwell < self._min_dwell_seconds:
                     continue
                 ratio = overlap_ratio(_bbox_to_polygon(other.bbox), detection.bbox)
-                if ratio >= self._min_overlap_ratio and (blocked_ratio is None or ratio > blocked_ratio):
+                if ratio >= self._double_park_overlap_ratio and (blocked_ratio is None or ratio > blocked_ratio):
                     blocked_ratio = ratio
 
             overlaps = classify_zone_overlaps(
@@ -758,6 +768,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--min-overlap-ratio", type=float, default=0.40, help="주차선 침범 판정 임계값(§5.1 확정치).")
+    parser.add_argument("--double-park-overlap-ratio", type=float, default=0.15, help="다른 차량과의 겹침 기반 이중주차 판정 임계값(구역 겹침보다 낮게 잡음).")
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
@@ -779,6 +790,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("camera-index는 음수일 수 없습니다.")
     if not (0.0 <= args.min_overlap_ratio <= 1.0):
         raise BaselineError("min-overlap-ratio는 0~1 범위여야 합니다.")
+    if not (0.0 <= args.double_park_overlap_ratio <= 1.0):
+        raise BaselineError("double-park-overlap-ratio는 0~1 범위여야 합니다.")
     if args.min_dwell_seconds < 0:
         raise BaselineError("min-dwell-seconds는 0 이상이어야 합니다.")
     if args.movement_epsilon < 0:
@@ -841,6 +854,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         min_overlap_ratio=args.min_overlap_ratio,
         min_dwell_seconds=args.min_dwell_seconds,
         movement_epsilon=args.movement_epsilon,
+        double_park_overlap_ratio=args.double_park_overlap_ratio,
     )
     publisher = StdoutResultPublisher(plain=args.plain)
 
@@ -993,6 +1007,63 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_t12), 1)
         self.assertEqual(events_t12[0].track_id, 2)  # 나중에 온 car_a만 이중주차로 판정
         self.assertEqual(events_t12[0].status, ViolationStatus.DOUBLE_PARK)
+
+    def test_double_park_default_threshold_catches_small_realistic_overlap(self) -> None:
+        """리뷰 반영: 실제 이중주차는 범퍼만 살짝 겹치는 정도(예: 20%)라, §5.1의
+        구역 겹침 임계값(40%)을 그대로 쓰면 거의 발동하지 않는 문제가 있었다.
+        double_park_overlap_ratio를 별도 기본값(0.15)으로 분리했다."""
+
+        registry = ZoneRegistry([])
+        monitor = ViolationMonitor(registry, min_dwell_seconds=5.0)  # double_park_overlap_ratio 기본값(0.15) 사용
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        car_b_bbox = BoundingBox(0.00, 0.00, 0.34, 0.20)
+        car_a_bbox = BoundingBox(0.30, 0.00, 0.50, 0.20)  # car_a 기준 겹침 비율 정확히 0.20
+
+        overlap = overlap_ratio(_bbox_to_polygon(car_b_bbox), car_a_bbox)
+        self.assertAlmostEqual(overlap, 0.20)  # 옛 구역 임계값(0.40)보다 작음을 확인
+
+        monitor.update([VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        events = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+            ]
+        )
+        events = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+            ]
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
+
+    def test_double_park_custom_threshold_can_restore_old_behavior(self) -> None:
+        """double_park_overlap_ratio를 명시적으로 0.40으로 올리면, 위 20% 겹침
+        시나리오는 더 이상 잡히지 않는다 — 두 임계값이 실제로 독립적임을 확인."""
+
+        registry = ZoneRegistry([])
+        monitor = ViolationMonitor(registry, min_dwell_seconds=5.0, double_park_overlap_ratio=0.40)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        car_b_bbox = BoundingBox(0.00, 0.00, 0.34, 0.20)
+        car_a_bbox = BoundingBox(0.30, 0.00, 0.50, 0.20)
+
+        monitor.update([VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+            ]
+        )
+        events = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+            ]
+        )
+        self.assertEqual(len(events), 0)
 
     def test_entry_exit_zone_ignored_for_parking_violation(self) -> None:
         entry = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
