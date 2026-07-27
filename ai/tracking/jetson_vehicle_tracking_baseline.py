@@ -195,6 +195,20 @@ def overlap_ratio(polygon: NormalizedPolygon, bbox: BoundingBox) -> float:
     return _polygon_area(clipped) / bbox_area
 
 
+def zone_coverage_ratio(zone: ParkingZone, bbox: BoundingBox) -> float:
+    """차량 바운딩박스가 구역 폴리곤 면적의 몇 %를 덮고 있는지(구역 기준) 계산한다.
+
+    `overlap_ratio`(차체 기준)와 반대로 분모가 구역 자신의 면적이라, 차량 크기와
+    무관하게 "이 구역이 얼마나 침범당했는지"를 일관되게 잴 수 있다(이중주차 판정용).
+    """
+
+    zone_area = _polygon_area(zone.polygon.points)
+    if zone_area <= 0.0:
+        return 0.0
+    clipped = clip_polygon_to_bbox(zone.polygon.points, bbox)
+    return _polygon_area(clipped) / zone_area
+
+
 def _bbox_to_polygon(bbox: BoundingBox) -> NormalizedPolygon:
     """바운딩박스를 겹침 계산에 재사용할 수 있도록 4점 폴리곤으로 변환한다(이중주차 판정용)."""
 
@@ -909,6 +923,24 @@ class BaselineLogicTests(unittest.TestCase):
         zone = self.make_zone("GEN-02", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2)])
         bbox = BoundingBox(0.1, 0.0, 0.3, 0.2)
         self.assertAlmostEqual(overlap_ratio(zone.polygon, bbox), 0.5)
+
+    def test_zone_coverage_ratio_full_containment_regardless_of_bbox_size(self) -> None:
+        """리뷰에서 발견된 회귀 시나리오: 작은 구역을 훨씬 큰 바운딩박스가 완전히
+        덮어도(트럭이 오토바이 스팟을 덮는 경우), 구역 자기 면적 기준이므로
+        100%로 나와야 한다 — 기존 overlap_ratio(차체 기준)로는 7.1%밖에 안 됐다."""
+        moto_spot = self.make_zone("GEN-MOTO", ZoneType.GENERAL, [(0.10, 0.10), (0.15, 0.10), (0.15, 0.20), (0.10, 0.20)])
+        truck_bbox = BoundingBox(0.06, 0.05, 0.40, 0.25)  # moto_spot을 완전히 포함
+        self.assertAlmostEqual(zone_coverage_ratio(moto_spot, truck_bbox), 1.0)
+
+    def test_zone_coverage_ratio_partial_overlap(self) -> None:
+        spot = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        intruding_bbox = BoundingBox(0.05, 0.0, 0.24, 0.3)  # spot 안쪽 0.15 + 바깥쪽 0.04
+        self.assertAlmostEqual(zone_coverage_ratio(spot, intruding_bbox), 0.75)
+
+    def test_zone_coverage_ratio_no_overlap(self) -> None:
+        spot = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
+        far_bbox = BoundingBox(0.50, 0.50, 0.70, 0.70)
+        self.assertEqual(zone_coverage_ratio(spot, far_bbox), 0.0)
 
     def test_restricted_zone_flagged_after_min_dwell(self) -> None:
         zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
