@@ -12,9 +12,10 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 않도록 격리한다.
 
 아직 다루지 않은 부분(팀 검토 후 이어서 구현 필요):
-- 입차 게이트 OCR과의 트랙 매칭(§2.2): `ViolationMonitor.attach_plate`가
-  결과를 반영하는 훅만 제공하며, 실제 매칭 로직(시간·공간 근접도 계산)은
-  이 파일 밖(입차-트래킹 매칭 단계)에서 구현되어야 한다.
+- 입차 게이트 OCR과의 트랙 매칭(§2.2)은 초안으로 구현했다
+  (`ViolationMonitor.add_entry_event` + ENTRY_EXIT 구역 진입 시 FIFO
+  매칭). 실제 entryEvent 필드 형식·시간창·공간 조건은 게이트 OCR 팀과
+  확정이 필요하다.
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
@@ -359,6 +360,14 @@ class ViolationEvent:
     detected_at: datetime
 
 
+@dataclass(frozen=True)
+class EntryEvent:
+    """게이트 OCR이 인식한 입차 이벤트(§2.2). 실제 필드 형식은 OCR 팀과 확정 필요."""
+
+    plate_number: str
+    captured_at: datetime
+
+
 def to_jsonable(value: Any) -> Any:
     """결과 데이터 모델을 외부 객체 없이 JSON 직렬화 가능한 값으로 바꾼다."""
 
@@ -432,6 +441,23 @@ class ViolationMonitor:
     `track_grace_seconds` 이내에서는 상태(정차 시작 시각 등)를 그대로
     유지한다 — 매 프레임 최소 하나의 탐지가 있어야 경과 시간을 계산할 수
     있어, 프레임이 통째로 비는 동안에는 유예 판정이 지연될 수 있다.
+
+    §2.2 입차-트래킹 매칭(초안): `add_entry_event`로 게이트 OCR 이벤트를
+    받아두면, ENTRY_EXIT 구역 안에 있고 아직 plate_number가 없는 트랙에
+    시간창 내 가장 오래된(촬영 시각 기준) 이벤트를 매 프레임 재시도로
+    연결한다(`attach_plate` 직접 호출도 여전히 가능). 트랙 생성 시점
+    한 번만 시도하지 않는 이유(리뷰 반영): OCR 이벤트가 늦게 도착하거나
+    첫 프레임의 구역 겹침이 임계값에 못 미치는 경우가 드물지 않아서다.
+    실제 entryEvent 필드 형식·시간창·공간 조건은 게이트 OCR 팀과 맞춰서
+    조정이 필요한 초안이다. 매칭에 끝내 실패한 트랙은 plate_number가
+    None으로 남고, 그 상태로 위반이 발생하면 ViolationEvent.plate_number도
+    None으로 발행된다 — 서버가 이를 UNREGISTERED와 구분되는
+    PLATE_UNMATCHED로 처리한다(§2.2).
+
+    알려진 한계(리뷰 반영, 아직 미해결): 같은 프레임에 여러 차량이 동시에
+    새로 나타나면 `detections` 순서가 실제 물리적 입차 순서와 다를 수
+    있어 번호판이 뒤바뀔 위험이 있다. 파일럿에서 동시 입차 빈도를 보고
+    공간적 근접도까지 반영할지 결정해야 한다.
     """
 
     def __init__(
@@ -442,26 +468,86 @@ class ViolationMonitor:
         min_dwell_seconds: float = 600.0,
         movement_epsilon: float = 0.01,
         track_grace_seconds: float = 2.0,
+        entry_match_window_seconds: float = 10.0,
+        entry_zone_min_overlap_ratio: float = 0.40,
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
         self._min_dwell_seconds = min_dwell_seconds
         self._movement_epsilon = movement_epsilon
         self._track_grace_seconds = track_grace_seconds
+        self._entry_match_window_seconds = entry_match_window_seconds
+        self._entry_zone_min_overlap_ratio = entry_zone_min_overlap_ratio
         self._tracks: dict[int, TrackState] = {}
+        self._pending_entry_events: list[EntryEvent] = []
 
     def attach_plate(self, track_id: int, plate_number: str) -> None:
-        """§2.2 입차-트래킹 매칭 결과를 트랙에 연결한다 (실제 매칭 로직은 이 파일 밖에서 구현)."""
+        """트랙에 직접 번호판을 연결한다 (자동 매칭 없이 수동으로 붙일 때 사용)."""
 
         state = self._tracks.get(track_id)
         if state is not None:
             state.plate_number = plate_number
+
+    def add_entry_event(self, event: EntryEvent) -> None:
+        """§2.2 게이트 OCR의 입차 이벤트를 매칭 대기열에 추가한다."""
+
+        self._pending_entry_events.append(event)
+
+    def _prune_expired_entry_events(self, now: datetime) -> None:
+        """시간창을 넘긴 대기 이벤트를 버린다. 매칭 시도 여부와 무관하게 매 update()마다 호출한다.
+
+        (리뷰 반영) 예전에는 `_try_match_entry_event`가 호출될 때만 정리했는데,
+        그 구역 근처로 신규 트랙이 한동안 안 생기면 오래된 미매칭 이벤트가
+        대기열에 무한정 쌓이는 문제가 있었다(§264 트랙 상태와 같은 종류의 누수).
+        """
+
+        self._pending_entry_events = [
+            event
+            for event in self._pending_entry_events
+            if (now - event.captured_at).total_seconds() <= self._entry_match_window_seconds
+        ]
+
+    def _try_match_entry_event(self, detection: VehicleBox) -> None:
+        """ENTRY_EXIT 구역 안에 있는 미매칭 트랙에 대기 이벤트를 시간순으로 매칭한다.
+
+        (리뷰 반영) 트랙이 처음 생성되는 프레임에서만 시도하면, OCR 이벤트가
+        늦게 도착하거나 첫 프레임의 구역 겹침이 임계값에 못 미치는 흔한
+        경우에 영구히 매칭이 안 되는 문제가 있었다. 그래서 이제
+        `plate_number`가 아직 없는 트랙이면 매 프레임 재시도한다.
+        """
+
+        entry_zones = [zone for zone in self._zones.all() if zone.zone_type is ZoneType.ENTRY_EXIT]
+        if not entry_zones:
+            return
+        near_entrance = any(
+            overlap_ratio(zone.polygon, detection.bbox) >= self._entry_zone_min_overlap_ratio
+            for zone in entry_zones
+        )
+        if not near_entrance:
+            return
+
+        now = detection.captured_at
+        # (리뷰 반영) 삽입 순서가 아니라 실제 촬영 시각(captured_at) 순으로 골라야
+        # add_entry_event 호출 순서가 실제 입차 순서와 어긋나도(비동기 처리 등)
+        # "가장 먼저 들어온" 이벤트가 정확히 매칭된다.
+        eligible = sorted(
+            (event for event in self._pending_entry_events if event.captured_at <= now),
+            key=lambda event: event.captured_at,
+        )
+        if not eligible:
+            return
+        matched = eligible[0]
+        self._pending_entry_events.remove(matched)
+        self._tracks[detection.track_id].plate_number = matched.plate_number
 
     def update(self, detections: Sequence[VehicleBox]) -> list[ViolationEvent]:
         """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다."""
 
         events: list[ViolationEvent] = []
         seen_ids: set[int] = set()
+
+        if detections:
+            self._prune_expired_entry_events(max(detection.captured_at for detection in detections))
 
         for detection in detections:
             seen_ids.add(detection.track_id)
@@ -484,6 +570,12 @@ class ViolationMonitor:
                     state.last_bbox = detection.bbox
                     state.open_violation = ViolationStatus.NONE
                 state.last_seen_at = detection.captured_at
+
+            if state.plate_number is None:
+                # (리뷰 반영) 신규 트랙 생성 시점에만 시도하면 늦게 도착한
+                # OCR 이벤트나 첫 프레임의 낮은 구역 겹침 때문에 영구 미매칭이
+                # 되는 경우가 있어서, 매칭 전까지는 매 프레임 재시도한다.
+                self._try_match_entry_event(detection)
 
             dwell_seconds = (detection.captured_at - state.stationary_since).total_seconds()
             overlaps = classify_zone_overlaps(
@@ -732,6 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
     parser.add_argument("--track-grace-seconds", type=float, default=2.0, help="트랙이 잠깐 안 보여도 상태를 유지하는 유예 시간.")
+    parser.add_argument("--entry-match-window-seconds", type=float, default=10.0, help="게이트 OCR 입차 이벤트와 신규 트랙을 매칭하는 시간창(§2.2).")
+    parser.add_argument("--entry-zone-min-overlap-ratio", type=float, default=0.40, help="ENTRY_EXIT 구역 진입 판정 임계값.")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
     parser.add_argument("--plain", action="store_true")
     parser.add_argument(
@@ -757,6 +851,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("movement-epsilon은 0 이상이어야 합니다.")
     if args.track_grace_seconds < 0:
         raise BaselineError("track-grace-seconds는 0 이상이어야 합니다.")
+    if args.entry_match_window_seconds < 0:
+        raise BaselineError("entry-match-window-seconds는 0 이상이어야 합니다.")
+    if not (0.0 <= args.entry_zone_min_overlap_ratio <= 1.0):
+        raise BaselineError("entry-zone-min-overlap-ratio는 0~1 범위여야 합니다.")
     if args.frame_interval_ms < 0:
         raise BaselineError("frame-interval-ms는 0 이상이어야 합니다.")
     if args.run:
@@ -816,6 +914,8 @@ def run_monitor(args: argparse.Namespace) -> int:
         min_dwell_seconds=args.min_dwell_seconds,
         movement_epsilon=args.movement_epsilon,
         track_grace_seconds=args.track_grace_seconds,
+        entry_match_window_seconds=args.entry_match_window_seconds,
+        entry_zone_min_overlap_ratio=args.entry_zone_min_overlap_ratio,
     )
     publisher = StdoutResultPublisher(plain=args.plain)
 
@@ -1038,6 +1138,180 @@ class BaselineLogicTests(unittest.TestCase):
         )
         monitor.attach_plate(5, "1234")
         self.assertEqual(monitor._tracks[5].plate_number, "1234")
+
+    def test_entry_event_matches_new_track_in_entry_zone(self) -> None:
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        self.assertEqual(monitor._tracks[1].plate_number, "1234")
+
+    def test_entry_event_not_matched_outside_entry_zone(self) -> None:
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.6, 0.6, 0.8, 0.8), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        self.assertIsNone(monitor._tracks[1].plate_number)
+
+    def test_entry_event_expires_outside_time_window(self) -> None:
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=20),  # 시간창(10초) 초과
+                )
+            ]
+        )
+        self.assertIsNone(monitor._tracks[1].plate_number)
+
+    def test_multiple_entry_events_matched_fifo_in_order(self) -> None:
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(EntryEvent(plate_number="1111", captured_at=base_time))
+        monitor.add_entry_event(EntryEvent(plate_number="2222", captured_at=base_time + timedelta(seconds=1)))
+
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=2),
+                )
+            ]
+        )
+        self.assertEqual(monitor._tracks[1].plate_number, "1111")  # 먼저 들어온 이벤트부터 매칭
+
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=2, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=2,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        self.assertEqual(monitor._tracks[2].plate_number, "2222")
+
+    def test_entry_event_matches_on_later_frame_when_event_arrives_late(self) -> None:
+        """리뷰 반영: OCR 이벤트가 트랙 생성 이후에 도착해도, 다음 프레임에서 매칭돼야 한다."""
+
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+
+        # 트랙이 먼저 생기고, 이 시점엔 대기열이 비어 있어 매칭 실패.
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        self.assertIsNone(monitor._tracks[1].plate_number)
+
+        # 그 다음에야 OCR 이벤트가 도착(시간창 안).
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+
+        # 같은 트랙이 다음 프레임에도 여전히 구역 안에 있으면 재시도로 매칭돼야 한다.
+        monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=1))]
+        )
+        self.assertEqual(monitor._tracks[1].plate_number, "1234")
+
+    def test_entry_event_matches_once_zone_overlap_increases_on_later_frame(self) -> None:
+        """리뷰 반영: 첫 프레임의 구역 겹침이 임계값 미만이어도, 다음 프레임에 임계값을 넘으면 매칭돼야 한다."""
+
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+
+        # 첫 프레임: 구역 겹침이 임계값(40%) 미만 (막 진입 중).
+        low_overlap_bbox = BoundingBox(0.20, 0.20, 0.50, 0.50)
+        monitor.update(
+            [VehicleBox(track_id=1, bbox=low_overlap_bbox, confidence=0.9, frame_id=1, captured_at=base_time)]
+        )
+        self.assertIsNone(monitor._tracks[1].plate_number)
+
+        # 다음 프레임: 완전히 진입해서 겹침이 임계값을 넘음 → 재시도로 매칭돼야 한다.
+        high_overlap_bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=high_overlap_bbox, confidence=0.9, frame_id=2,
+                    captured_at=base_time + timedelta(seconds=1),
+                )
+            ]
+        )
+        self.assertEqual(monitor._tracks[1].plate_number, "1234")
+
+    def test_entry_events_matched_in_captured_at_order_not_insertion_order(self) -> None:
+        """리뷰 반영: add_entry_event 호출 순서가 아니라 captured_at 순으로 매칭돼야 한다."""
+
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        # 나중에(시간상) 입차한 차의 이벤트를 먼저 추가하고, 더 이른 이벤트를 나중에 추가한다.
+        monitor.add_entry_event(EntryEvent(plate_number="LATER", captured_at=base_time + timedelta(seconds=5)))
+        monitor.add_entry_event(EntryEvent(plate_number="EARLIER", captured_at=base_time))
+
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=6),
+                )
+            ]
+        )
+        # 삽입 순서(LATER가 먼저)가 아니라 촬영 시각 순(EARLIER가 더 이름)으로 매칭돼야 한다.
+        self.assertEqual(monitor._tracks[1].plate_number, "EARLIER")
+
+    def test_pending_entry_events_pruned_even_without_matching_attempt(self) -> None:
+        """리뷰 반영: 매칭 시도가 한 번도 없어도(구역 근처에 트랙이 안 생겨도) 대기열이 계속 정리돼야 한다."""
+
+        registry = ZoneRegistry([])  # ENTRY_EXIT 구역 자체가 없어서 매칭 시도가 전혀 발생하지 않는다.
+        monitor = ViolationMonitor(registry, entry_match_window_seconds=5.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(EntryEvent(plate_number="1234", captured_at=base_time))
+        self.assertEqual(len(monitor._pending_entry_events), 1)
+
+        # 시간창(5초)을 넘긴 뒤에도, 아무 트랙도 없이 update()만 호출되면 정리돼야 한다.
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=99, bbox=BoundingBox(0.6, 0.6, 0.8, 0.8), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=10),
+                )
+            ]
+        )
+        self.assertEqual(len(monitor._pending_entry_events), 0)
 
     def test_zone_registry_from_file_parses_valid_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
