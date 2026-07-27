@@ -1,0 +1,35 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Backend Test') {
+            steps {
+                dir('backend') {
+                    sh 'chmod +x gradlew'
+                    sh './gradlew clean test'
+                }
+            }
+        }
+
+        stage('Backend Docker Build') {
+            steps {
+                dir('backend') {
+                    sh 'docker build -t parking-backend-ci:${BUILD_NUMBER} .'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true,
+                    testResults: 'backend/build/test-results/test/*.xml'
+
+            sh 'docker image rm parking-backend-ci:${BUILD_NUMBER} || true'
+        }
+    }
+}

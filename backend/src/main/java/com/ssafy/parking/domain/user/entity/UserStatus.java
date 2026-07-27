@@ -1,7 +1,9 @@
 package com.ssafy.parking.domain.user.entity;
 
 public enum UserStatus {
+    PENDING,
     ACTIVE,
-    DELETED,
-    SUSPENDED
+    REJECTED,
+    SUSPENDED,
+    DELETED
 }
