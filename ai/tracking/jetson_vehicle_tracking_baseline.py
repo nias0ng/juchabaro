@@ -809,7 +809,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--min-overlap-ratio", type=float, default=0.40, help="주차선 침범 판정 임계값(§5.1 확정치).")
-    parser.add_argument("--double-park-overlap-ratio", type=float, default=0.15, help="다른 차량과의 겹침 기반 이중주차 판정 임계값(구역 겹침보다 낮게 잡음).")
+    parser.add_argument("--double-park-overlap-ratio", type=float, default=0.15, help="이중주차 판정 임계값 — 다른 차량이 점유한 주차구역을 이 비율 이상 침범하면 위반(구역 겹침 임계값보다 낮게 잡음, 현장 데이터로 재검증 필요).")
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
