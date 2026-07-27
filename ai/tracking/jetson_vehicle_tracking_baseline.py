@@ -292,6 +292,25 @@ def classify_zone_overlaps(
     return overlaps
 
 
+# 이중주차 판정에서 "내 자리"로 볼 수 있는 구역 타입. 통행로(AISLE)는 주차
+# 스팟이 아니므로 홈 구역 후보에서 제외한다(AISLE_BLOCK이 별도로 처리).
+_SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_FAST, ZoneType.EV_SLOW})
+
+
+def _home_zone_overlap(overlaps: Sequence[ZoneOverlap]) -> ZoneOverlap | None:
+    """겹치는 구역들 중 차량의 '홈 구역'으로 볼 수 있는 스팟형 구역을 고른다.
+
+    `overlaps`는 이미 비율 내림차순으로 정렬돼 있다고 가정한다
+    (`classify_zone_overlaps`의 반환값). AISLE 같은 비-스팟 구역이 더 높은
+    비율로 앞에 있어도 건너뛰고 스팟형 구역 중 가장 비율이 높은 것을 고른다.
+    """
+
+    for item in overlaps:
+        if item.zone.zone_type in _SPOT_ZONE_TYPES:
+            return item
+    return None
+
+
 def classify_violation(
     overlaps: Sequence[ZoneOverlap],
     *,
@@ -975,6 +994,24 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
         assert zone_hit is not None
         self.assertEqual(zone_hit.zone_id, "AISLE-01")
+
+    def test_home_zone_overlap_picks_spot_type_ignoring_aisle(self) -> None:
+        aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        spot = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)])
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        overlaps = classify_zone_overlaps(bbox, [aisle, spot], min_overlap_ratio=0.40)
+        home = _home_zone_overlap(overlaps)
+        assert home is not None
+        self.assertEqual(home.zone.zone_id, "GEN-01")
+
+    def test_home_zone_overlap_none_when_only_aisle(self) -> None:
+        aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        overlaps = classify_zone_overlaps(bbox, [aisle], min_overlap_ratio=0.40)
+        self.assertIsNone(_home_zone_overlap(overlaps))
+
+    def test_home_zone_overlap_none_when_no_overlaps(self) -> None:
+        self.assertIsNone(_home_zone_overlap([]))
 
     def test_double_park_priority_between_aisle_and_restricted(self) -> None:
         # 통행로 겹침이 있으면 이중주차보다 AISLE_BLOCK이 우선한다.
