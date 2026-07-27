@@ -18,8 +18,6 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
-- 이중주차는 현재 통행로(AISLE) 폴리곤 겹침으로만 판정한다. 다른 차량
-  바운딩박스와의 겹침으로 판정하는 방식은 아직 없다.
 - 트랙이 한두 프레임 잠깐 사라졌다가 같은 차량으로 복귀하는 경우의 유예
   처리는 없다(사라지면 즉시 상태를 초기화한다).
 
@@ -78,6 +76,7 @@ class ViolationStatus(str, Enum):
     RESTRICTED_ZONE = "RESTRICTED_ZONE"
     LINE_CROSS = "LINE_CROSS"
     AISLE_BLOCK = "AISLE_BLOCK"
+    DOUBLE_PARK = "DOUBLE_PARK"
 
 
 @dataclass(frozen=True)
@@ -196,6 +195,12 @@ def overlap_ratio(polygon: NormalizedPolygon, bbox: BoundingBox) -> float:
     return _polygon_area(clipped) / bbox_area
 
 
+def _bbox_to_polygon(bbox: BoundingBox) -> NormalizedPolygon:
+    """바운딩박스를 겹침 계산에 재사용할 수 있도록 4점 폴리곤으로 변환한다(이중주차 판정용)."""
+
+    return NormalizedPolygon(((bbox.x1, bbox.y1), (bbox.x2, bbox.y1), (bbox.x2, bbox.y2), (bbox.x1, bbox.y2)))
+
+
 @dataclass(frozen=True)
 class ParkingZone:
     """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0)."""
@@ -278,14 +283,19 @@ def classify_violation(
     *,
     dwell_seconds: float,
     min_dwell_seconds: float,
+    blocked_vehicle_overlap_ratio: float | None = None,
 ) -> tuple[ViolationStatus, ParkingZone | None, float]:
-    """§5.1 규칙으로 겹침 구역과 정차 시간을 종합해 위반 상태를 판정한다.
+    """§5.1 규칙으로 겹침 구역·다른 차량과의 겹침·정차 시간을 종합해 위반 상태를 판정한다.
 
-    여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 전용구역 점유
-    (RESTRICTED_ZONE) > 선 침범(LINE_CROSS) 순으로 하나만 보고한다.
+    여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
+    전용구역 점유(RESTRICTED_ZONE) > 선 침범(LINE_CROSS) 순으로 하나만 보고한다.
+    `blocked_vehicle_overlap_ratio`는 이미 정차 중인 다른 차량과 40% 이상
+    겹칠 때(§5.1) 그 비율을 전달받는다 — 어떤 차량이 다른 차량을 막고
+    있는지는 이 함수가 아니라 호출부(ViolationMonitor)가 정차 시작 시각을
+    비교해 결정한다(나중에 자리 잡은 차만 가해자로 판정).
     """
 
-    if not overlaps:
+    if not overlaps and blocked_vehicle_overlap_ratio is None:
         return ViolationStatus.NONE, None, 0.0
 
     aisle = next((item for item in overlaps if item.zone.zone_type is ZoneType.AISLE), None)
@@ -293,16 +303,22 @@ def classify_violation(
 
     if dwell_seconds < min_dwell_seconds:
         # 정차는 감지됐지만 최소 정차 시간(FR-PARK-008, 확정치 10분)에 미달
-        candidate = aisle or restricted or overlaps[0]
-        return ViolationStatus.OBSERVING, candidate.zone, candidate.ratio
+        candidate = aisle or restricted or (overlaps[0] if overlaps else None)
+        if candidate is not None:
+            return ViolationStatus.OBSERVING, candidate.zone, candidate.ratio
+        return ViolationStatus.OBSERVING, None, blocked_vehicle_overlap_ratio or 0.0
     if aisle is not None:
         return ViolationStatus.AISLE_BLOCK, aisle.zone, aisle.ratio
+    if blocked_vehicle_overlap_ratio is not None:
+        return ViolationStatus.DOUBLE_PARK, None, blocked_vehicle_overlap_ratio
     if restricted is not None:
         return ViolationStatus.RESTRICTED_ZONE, restricted.zone, restricted.ratio
     if len(overlaps) >= 2:
         # 일반 구역 2곳 이상에 임계값 이상 걸쳐 있음 = 선 침범
         return ViolationStatus.LINE_CROSS, overlaps[0].zone, overlaps[0].ratio
-    return ViolationStatus.NONE, overlaps[0].zone, overlaps[0].ratio
+    if overlaps:
+        return ViolationStatus.NONE, overlaps[0].zone, overlaps[0].ratio
+    return ViolationStatus.NONE, None, 0.0
 
 
 @dataclass(frozen=True)
@@ -453,7 +469,13 @@ class ViolationMonitor:
             state.plate_number = plate_number
 
     def update(self, detections: Sequence[VehicleBox]) -> list[ViolationEvent]:
-        """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다."""
+        """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다.
+
+        정차 상태 갱신(1차)과 위반 판정(2차)을 나눠서 처리한다 — 이중주차
+        판정이 같은 프레임 안의 다른 차량들 정차 시간을 참조하는데, 갱신
+        순서에 따라 결과가 달라지지 않도록 모든 트랙의 정차 상태를 먼저
+        확정한 뒤에 판정한다.
+        """
 
         events: list[ViolationEvent] = []
         seen_ids: set[int] = set()
@@ -480,12 +502,34 @@ class ViolationMonitor:
                     state.open_violation = ViolationStatus.NONE
                 state.last_seen_at = detection.captured_at
 
+        for detection in detections:
+            state = self._tracks[detection.track_id]
             dwell_seconds = (detection.captured_at - state.stationary_since).total_seconds()
+
+            blocked_ratio: float | None = None
+            for other in detections:
+                if other.track_id == detection.track_id:
+                    continue
+                other_state = self._tracks[other.track_id]
+                # 나중에 정차한 차량만 "이중주차 중"으로 판정한다 — 먼저 자리
+                # 잡은 차는 피해자이지 가해자가 아니다.
+                if other_state.stationary_since >= state.stationary_since:
+                    continue
+                other_dwell = (detection.captured_at - other_state.stationary_since).total_seconds()
+                if other_dwell < self._min_dwell_seconds:
+                    continue
+                ratio = overlap_ratio(_bbox_to_polygon(other.bbox), detection.bbox)
+                if ratio >= self._min_overlap_ratio and (blocked_ratio is None or ratio > blocked_ratio):
+                    blocked_ratio = ratio
+
             overlaps = classify_zone_overlaps(
                 detection.bbox, self._zones.all(), min_overlap_ratio=self._min_overlap_ratio
             )
             status, zone, ratio = classify_violation(
-                overlaps, dwell_seconds=dwell_seconds, min_dwell_seconds=self._min_dwell_seconds
+                overlaps,
+                dwell_seconds=dwell_seconds,
+                min_dwell_seconds=self._min_dwell_seconds,
+                blocked_vehicle_overlap_ratio=blocked_ratio,
             )
 
             if status not in (ViolationStatus.NONE, ViolationStatus.OBSERVING) and status != state.open_violation:
@@ -885,6 +929,70 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
         assert zone_hit is not None
         self.assertEqual(zone_hit.zone_id, "AISLE-01")
+
+    def test_double_park_priority_between_aisle_and_restricted(self) -> None:
+        # 통행로 겹침이 있으면 이중주차보다 AISLE_BLOCK이 우선한다.
+        aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        overlaps = classify_zone_overlaps(BoundingBox(0.2, 0.2, 0.5, 0.5), [aisle], min_overlap_ratio=0.40)
+        status, _zone, _ratio = classify_violation(
+            overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_vehicle_overlap_ratio=0.9
+        )
+        self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
+
+        # 전용구역 겹침만 있으면 이중주차가 그보다 우선한다(막힌 차량이 실존 피해자이므로).
+        disabled = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        overlaps = classify_zone_overlaps(BoundingBox(0.2, 0.2, 0.5, 0.5), [disabled], min_overlap_ratio=0.40)
+        status, _zone, ratio = classify_violation(
+            overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_vehicle_overlap_ratio=0.9
+        )
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+        self.assertAlmostEqual(ratio, 0.9)
+
+        # 구역 겹침이 전혀 없어도 다른 차량과 겹치면 이중주차로 판정한다.
+        status, zone, ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_vehicle_overlap_ratio=0.6
+        )
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+        self.assertIsNone(zone)
+        self.assertAlmostEqual(ratio, 0.6)
+
+        # 최소 정차 시간 미달이면 겹침이 있어도 아직 OBSERVING이다.
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=10.0, min_dwell_seconds=600.0, blocked_vehicle_overlap_ratio=0.6
+        )
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+
+    def test_monitor_double_park_flags_later_arrival_not_earlier_car(self) -> None:
+        registry = ZoneRegistry([])  # 구역을 아예 없애서 순수하게 이중주차 판정만 검증한다.
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        car_b_bbox = BoundingBox(0.10, 0.10, 0.30, 0.30)
+        car_a_bbox = BoundingBox(0.15, 0.10, 0.35, 0.30)  # car_b와 크게 겹침
+
+        events_t0 = monitor.update(
+            [VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=1, captured_at=base_time)]
+        )
+
+        events_t6 = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=6)),
+            ]
+        )
+
+        events_t12 = monitor.update(
+            [
+                VehicleBox(track_id=1, bbox=car_b_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+                VehicleBox(track_id=2, bbox=car_a_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12)),
+            ]
+        )
+
+        self.assertEqual(len(events_t0), 0)
+        self.assertEqual(len(events_t6), 0)  # car_a는 방금 도착해 아직 OBSERVING
+        self.assertEqual(len(events_t12), 1)
+        self.assertEqual(events_t12[0].track_id, 2)  # 나중에 온 car_a만 이중주차로 판정
+        self.assertEqual(events_t12[0].status, ViolationStatus.DOUBLE_PARK)
 
     def test_entry_exit_zone_ignored_for_parking_violation(self) -> None:
         entry = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
