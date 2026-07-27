@@ -320,6 +320,12 @@ def classify_violation(
     차량이 얼마나 침범했는지를 담는다 — 어떤 차량이 어느 구역의 주인인지,
     누가 침범자인지는 이 함수가 아니라 호출부(ViolationMonitor)가 구역
     점유 정보로 결정한다(시간순이 아니라 공간 정보 기준).
+
+    참고: 이제 DOUBLE_PARK가 구역 면적 기준으로 넓게 잡히다 보니, 전용구역
+    (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
+    우선순위 때문에 RESTRICTED_ZONE 대신 DOUBLE_PARK로 보고된다. 옛 방식
+    (차체 접촉 필요)에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가
+    여전히 의도한 동작인지 팀 확인이 필요하다.
     """
 
     if not overlaps and blocked_zone is None:
@@ -394,7 +400,13 @@ class ModelInfo:
 
 @dataclass(frozen=True)
 class ViolationEvent:
-    """서버로 발행할 위반(의심) 이벤트 한 건. 최종 확정은 관리자 몫이다(OR-001/002)."""
+    """서버로 발행할 위반(의심) 이벤트 한 건. 최종 확정은 관리자 몫이다(OR-001/002).
+
+    status가 DOUBLE_PARK인 경우 zone_id/zone_type은 가해 차량 자신이 아니라
+    침범당한 상대(피해) 차량의 주차구역을 가리키며, overlap_ratio도 그 구역
+    면적 대비 침범 비율(구역 기준)이다. 다른 status에서는 overlap_ratio가
+    이 차량 자신의 몸체 면적 기준(차체 기준)이라 의미가 다르다.
+    """
 
     track_id: int
     plate_number: str | None
@@ -495,6 +507,10 @@ class ViolationMonitor:
         min_dwell_seconds: float = 600.0,
         movement_epsilon: float = 0.01,
         double_park_overlap_ratio: float = 0.15,
+        # 이 0.15는 옛 차량 대 차량 지표(가해 차량 자신의 면적이 분모)에서 물려받은
+        # 값으로, 새 구역 면적 기준 지표(피해 차량 스팟 면적이 분모)에 대해서는
+        # 아직 재검증되지 않은 임시값이다 — 물리적 의미가 달라져 같은 숫자라도
+        # 실질적인 기준(허들)이 훨씬 낮아졌다.
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
@@ -558,6 +574,8 @@ class ViolationMonitor:
             state = self._tracks[detection.track_id]
             dwell_seconds = (detection.captured_at - state.stationary_since).total_seconds()
 
+            own_home = home_zone_by_track[detection.track_id]
+
             blocked_zone: ZoneOverlap | None = None
             for other in detections:
                 if other.track_id == detection.track_id:
@@ -565,6 +583,14 @@ class ViolationMonitor:
                 other_home = home_zone_by_track[other.track_id]
                 if other_home is None:
                     continue  # 그 차가 특정 스팟에 안정적으로 속해 있지 않으면 피해자 기준으로 못 삼는다
+                if (
+                    own_home is not None
+                    and own_home.zone.zone_id == other_home.zone.zone_id
+                    and own_home.ratio >= other_home.ratio
+                ):
+                    # 같은 스팟을 두 차가 공유하는 상황(경계선 타이/실제 겹주차)인데
+                    # 내 쪽 점유율이 더 크거나 같으면(더 정당한 주인이면) 나는 침범자가 아니다
+                    continue
                 other_state = self._tracks[other.track_id]
                 other_dwell = (detection.captured_at - other_state.stationary_since).total_seconds()
                 if other_dwell < self._min_dwell_seconds:
@@ -1170,6 +1196,65 @@ class BaselineLogicTests(unittest.TestCase):
             )
 
         self.assertEqual(events, [])
+
+    def test_monitor_double_park_correctly_parked_vehicle_not_blamed_when_sharing_home_zone(self) -> None:
+        """리뷰에서 발견된 Critical 회귀: 두 차량의 홈 구역 판정이 우연히 같은
+        스팟(경계선 근처 타이)으로 겹칠 때, 그 스팟에 제대로(거의 전부) 주차한
+        차량까지 침범자로 몰리면 안 된다 — 점유율이 더 낮은 쪽(track 1, 경계선에
+        걸친 차)만 침범자여야 하고, 점유율이 더 높은 쪽(track 2, 자기 자리에
+        똑바로 주차)은 절대 잡히면 안 된다."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.3), (0.0, 0.3)])
+        spot_b = self.make_zone("GEN-B", ZoneType.GENERAL, [(0.2, 0.0), (0.4, 0.0), (0.4, 0.3), (0.2, 0.3)])
+        registry = ZoneRegistry([spot_a, spot_b])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.15)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        straddler_bbox = BoundingBox(0.14, 0.0, 0.26, 0.3)  # GEN-A/GEN-B 경계에 걸쳐 있음(사실상 타이)
+        correct_bbox = BoundingBox(0.28, 0.0, 0.38, 0.3)  # GEN-B 안에 온전히 들어간 정상 주차
+
+        monitor.update([VehicleBox(track_id=1, bbox=straddler_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=straddler_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=correct_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+
+        flagged_ids = {event.track_id for event in events}
+        self.assertNotIn(2, flagged_ids, "제대로 주차한 차량은 절대 침범자로 잡히면 안 된다")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].track_id, 1)
+        self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
+        self.assertEqual(events[0].zone_id, "GEN-B")
+
+    def test_monitor_double_park_only_lower_occupancy_side_blamed_when_sharing_one_spot(self) -> None:
+        """한 스팟을 두 차가 나눠 점유하는 상황(진짜 겹주차)에서는, 그 스팟을 거의
+        온전히 차지한 차(occupancy ratio ~1.0)가 아니라 절반만 걸친 차(occupancy
+        ratio ~0.5)만 침범자로 잡혀야 한다 — 둘 다 잡히거나 둘 다 안 잡히면 안 된다."""
+        spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([spot_a])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, double_park_overlap_ratio=0.15)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        mostly_inside_bbox = BoundingBox(0.02, 0.02, 0.28, 0.28)  # 스팟 안에 거의 전부(ratio ~1.0)
+        half_inside_bbox = BoundingBox(0.15, 0.0, 0.45, 0.3)  # 스팟에 절반만(ratio ~0.5)
+
+        monitor.update([VehicleBox(track_id=1, bbox=mostly_inside_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        events = []
+        for seconds in (6, 12):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=mostly_inside_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=half_inside_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].track_id, 2)  # 점유율이 더 낮은 쪽만 침범자
+        self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
+        self.assertEqual(events[0].zone_id, "GEN-A")
 
     def test_entry_exit_zone_ignored_for_parking_violation(self) -> None:
         entry = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
