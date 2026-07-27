@@ -18,8 +18,6 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
-- 트랙이 한두 프레임 잠깐 사라졌다가 같은 차량으로 복귀하는 경우의 유예
-  처리는 없다(사라지면 즉시 상태를 초기화한다).
 
 CLI 모드: 웹캠 점검(`--probe-camera`), 캘리브레이션용 프레임 저장
 (`--capture-frame`), 실시간 루프(`--run`), 하드웨어 비의존 자체 테스트
@@ -446,6 +444,11 @@ class ViolationMonitor:
     적용했다. 실제로는 진입 직후 잠깐의 움직임을 무시해야 할 수 있으니
     현장 데이터로 검증 후 조정이 필요하다.
 
+    트랙이 한두 프레임 잠깐 안 보였다가 같은 track_id로 복귀하면
+    `track_grace_seconds` 이내에서는 상태(정차 시작 시각 등)를 그대로
+    유지한다 — 매 프레임 최소 하나의 탐지가 있어야 경과 시간을 계산할 수
+    있어, 프레임이 통째로 비는 동안에는 유예 판정이 지연될 수 있다.
+
     통행로를 막는 "일반적인 이중주차"(차 여러 대의 진출입로를 막는 경우)는
     AISLE_BLOCK이 담당한다(구역 폴리곤만 있으면 판정 가능). 여기서 말하는
     DOUBLE_PARK는 그보다 좁은 케이스로, 차량이 이미 정차 중인 다른 차량
@@ -462,12 +465,14 @@ class ViolationMonitor:
         min_overlap_ratio: float = 0.40,
         min_dwell_seconds: float = 600.0,
         movement_epsilon: float = 0.01,
+        track_grace_seconds: float = 2.0,
         double_park_overlap_ratio: float = 0.15,
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
         self._min_dwell_seconds = min_dwell_seconds
         self._movement_epsilon = movement_epsilon
+        self._track_grace_seconds = track_grace_seconds
         self._double_park_overlap_ratio = double_park_overlap_ratio
         self._tracks: dict[int, TrackState] = {}
 
@@ -558,9 +563,19 @@ class ViolationMonitor:
             if status != ViolationStatus.OBSERVING:
                 state.open_violation = status
 
-        # 이번 프레임에 보이지 않는 트랙은 화면 밖으로 나간 것으로 보고 상태를 정리한다.
-        for missing_id in set(self._tracks) - seen_ids:
-            del self._tracks[missing_id]
+        # 이번 프레임에 안 보인 트랙은 track_grace_seconds를 넘겨야 삭제한다.
+        # "지금 시각"은 이번 프레임에 실제로 탐지된 차량의 시각으로만 알 수
+        # 있어서, detections가 완전히 비어 있는 프레임에서는 정리를 건너뛴다.
+        if detections:
+            now = max(detection.captured_at for detection in detections)
+            stale_ids = [
+                track_id
+                for track_id, state in self._tracks.items()
+                if track_id not in seen_ids
+                and (now - state.last_seen_at).total_seconds() > self._track_grace_seconds
+            ]
+            for track_id in stale_ids:
+                del self._tracks[track_id]
 
         return events
 
@@ -771,6 +786,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--double-park-overlap-ratio", type=float, default=0.15, help="다른 차량과의 겹침 기반 이중주차 판정 임계값(구역 겹침보다 낮게 잡음).")
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
+    parser.add_argument("--track-grace-seconds", type=float, default=2.0, help="트랙이 잠깐 안 보여도 상태를 유지하는 유예 시간.")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
     parser.add_argument("--plain", action="store_true")
     parser.add_argument(
@@ -796,6 +812,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("min-dwell-seconds는 0 이상이어야 합니다.")
     if args.movement_epsilon < 0:
         raise BaselineError("movement-epsilon은 0 이상이어야 합니다.")
+    if args.track_grace_seconds < 0:
+        raise BaselineError("track-grace-seconds는 0 이상이어야 합니다.")
     if args.frame_interval_ms < 0:
         raise BaselineError("frame-interval-ms는 0 이상이어야 합니다.")
     if args.run:
@@ -854,6 +872,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         min_overlap_ratio=args.min_overlap_ratio,
         min_dwell_seconds=args.min_dwell_seconds,
         movement_epsilon=args.movement_epsilon,
+        track_grace_seconds=args.track_grace_seconds,
         double_park_overlap_ratio=args.double_park_overlap_ratio,
     )
     publisher = StdoutResultPublisher(plain=args.plain)
@@ -1126,6 +1145,67 @@ class BaselineLogicTests(unittest.TestCase):
         frame = CapturedFrame(frame_id=1, captured_at=datetime.now(timezone.utc), image=_FakeImage((0, 0, 3)))
         with self.assertRaises(BaselineError):
             tracker.track(frame)
+
+    def test_track_survives_brief_disappearance_within_grace_period(self) -> None:
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0, 0), (1, 0), (1, 1), (0, 1)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0, track_grace_seconds=5.0
+        )
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        other_bbox = BoundingBox(0.5, 0.5, 0.6, 0.6)
+
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+
+        # 3초간 안 보임 — 유예 시간(5초) 이내라 트랙이 살아있어야 한다.
+        # "지금 시각"을 전달하기 위해 이 프레임엔 다른 차량을 하나 넣는다.
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=99, bbox=other_bbox, confidence=0.9, frame_id=2,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        self.assertIn(1, monitor._tracks)
+
+        # 다시 나타남 — 정차 시작 시각(base_time)이 유지되어 dwell이 끊기지 않아야 한다.
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=12))]
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].status, ViolationStatus.RESTRICTED_ZONE)
+        self.assertAlmostEqual(events[0].dwell_seconds, 12.0)
+
+    def test_track_purged_after_grace_period_exceeded(self) -> None:
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0, 0), (1, 0), (1, 1), (0, 1)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0, track_grace_seconds=2.0
+        )
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        other_bbox = BoundingBox(0.5, 0.5, 0.6, 0.6)
+
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+
+        # 유예 시간(2초)을 훨씬 넘겨서 사라짐 → 트랙이 삭제되어야 한다.
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=99, bbox=other_bbox, confidence=0.9, frame_id=2,
+                    captured_at=base_time + timedelta(seconds=10),
+                )
+            ]
+        )
+        self.assertNotIn(1, monitor._tracks)
+
+        # 다시 나타나면 완전히 새 트랙으로 취급되어 dwell이 0부터 다시 시작한다.
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=11))]
+        )
+        self.assertEqual(len(events), 0)
 
     def test_monitor_attach_plate_updates_track_state(self) -> None:
         zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
