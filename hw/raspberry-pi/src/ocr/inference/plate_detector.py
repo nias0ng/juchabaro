@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from .types import (
+from ..types import (
     CapturedFrame,
     DetectedPlate,
     Quad,
