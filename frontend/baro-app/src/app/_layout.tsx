@@ -1,6 +1,8 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { useColorScheme } from 'react-native';
 
+import '@/styles/global.css';
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
