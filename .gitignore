@@ -58,3 +58,6 @@ hw/**/models/
 hw/**/weights/
 *.pth
 *.engine
+
+# Local git worktrees (scratch, per-branch isolated workspaces)
+.worktrees/
