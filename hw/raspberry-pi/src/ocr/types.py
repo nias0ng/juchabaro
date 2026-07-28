@@ -13,12 +13,26 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+# 타입별칭
 BgrImage: TypeAlias = NDArray[np.uint8]
 Point: TypeAlias = tuple[float, float]
 Quad: TypeAlias = tuple[Point, Point, Point, Point]
 
 
+# OCR 파이프라인 최종 처리 상태 Enum
+# 로그나 디버깅 시 상태 표시용
 class ReadStatus(str, Enum):
+    '''
+    SUCCESS: 번호판 읽기 성공, 최종 번호 확정
+    INVALID_INPUT: 입력 이미지 수, 자료형, 해상도, shape 등이 요구 조건과 다름
+    NO_PLATE_REGION: 번호판을 찾지 못했거나, 사용할 수 있는 번호판 영역을 만들지 못함
+    OCR_EMPTY: OCR 결과가 모두 빈 문자열
+    INVALID_FORMAT: 한국 번호판 형식에 맞는 결과가 없음
+    LOW_SCORE: 번호판 형식은 맞지만 OCR 신뢰 점수가 기준보다 낮음
+    AMBIGUOUS: 여러 프레임의 결과가 서로 달라 최종 번호를 확정하기 어려움
+    MODEL_ERROR: 모델 실행 자체에서 오류가 발생함
+    INTERNAL_ERROR: 모델 외의 파이프라인 내부 로직에서 예상하지 못한 오류가 발생함
+    '''
     SUCCESS = "SUCCESS"
     INVALID_INPUT = "INVALID_INPUT"
     NO_PLATE_REGION = "NO_PLATE_REGION"
@@ -30,13 +44,22 @@ class ReadStatus(str, Enum):
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
+# 프레임의 꼭짓점 좌표를 얻은 방식 Enum
+# 로그 및 디버깅용
 class QuadSource(str, Enum):
+    '''
+    DETECTED: 해당 프레임에서 YOLO가 직접 검출
+    INTERPOLATED: 앞·뒤 두 검출 좌표 사이(안쪽)을 선형 보간
+    EXTRAPOLATED: 이동 추세를 검출 구간 바깥까지 연장해서 계산
+    REUSED: 검출 좌표 하나를 인접 프레임에 그대로 복사
+    '''
     DETECTED = "DETECTED"
     INTERPOLATED = "INTERPOLATED"
     EXTRAPOLATED = "EXTRAPOLATED"
     REUSED = "REUSED"
 
 
+# 사진 데이터용 프레임들
 @dataclass(frozen=True, slots=True)
 class CapturedFrame:
     """
@@ -45,7 +68,6 @@ class CapturedFrame:
     frame_index는 촬영 시간순 인덱스
     image는 BGR uint8 HxWx3 배열
     """
-
     frame_index: int
     image: BgrImage
 

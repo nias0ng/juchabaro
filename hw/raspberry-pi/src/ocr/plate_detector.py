@@ -1,8 +1,10 @@
 '''
-사진 6장 파일 받아서 -> 품질 좋은 걸로 객체 탐지하고 -> 객체 탐지한 영역 기준으로 영역 6개 영역 뽑으면 -> 그렇게 파싱한거 reader로 넘기기 
-Yolo 임시로 기본 Yolo 넣어놔야겠다.
+YOLO 모델 동작 총괄.
+이 곳엔 오로지 두 클래스 밖에 없다.
+DetectorContractError:
+YoloPlateDetector: 
 
-Yolo 로딩이랑 작동이랑 두 개... 할 거 많네...
+YoloPlateDetector의 메서드를 이용하여...
 '''
 
 from __future__ import annotations
@@ -22,7 +24,6 @@ from .types import (
 
 class DetectorContractError(RuntimeError):
     pass
-
 
 class YoloPlateDetector:
     def __init__(
