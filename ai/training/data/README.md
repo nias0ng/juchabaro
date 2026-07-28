@@ -2,9 +2,21 @@
 
 ## 차량 탐지 (`configs/yolo_vehicle.yaml`)
 
-기본값은 Ultralytics 내장 `coco8.yaml`(이미지 8장)이며 최초 실행 시 자동 다운로드된다.
-실데이터로 전환하려면 `configs/yolo_vehicle.yaml`의 `data:` 값을 Ultralytics 표준 형식
-(`path`, `train`, `val`, `nc`, `names`)의 데이터셋 YAML 경로로 바꾼다.
+CVAT `vehicle-detection` 프로젝트에서 Task 단위로 **`Ultralytics YOLO Detection 1.0`** 포맷 +
+이미지 포함으로 export한 zip들을 `data/raw/vehicle/`(gitignore됨)에 모아두고,
+`scripts/build_vehicle_dataset.py`로 하나의 train/val 데이터셋(`data/processed/vehicle/`,
+gitignore됨)으로 합친다. 여러 Task가 같은 영상에서 나온 경우가 있어 **Task(영상) 단위로
+통째로 train 또는 val에 배정**한다 — 인접 프레임이 양쪽에 섞이는 data leakage를 막기 위해
+([차량 탐지 라벨링 가이드 §5](../../../docs/차량%20탐지%20라벨링%20가이드.md#5-데이터-분할)).
+
+```
+uv run --with-requirements requirements.txt python scripts/build_vehicle_dataset.py \
+  --raw-dir data/raw/vehicle --output data/processed/vehicle --val-tasks 8
+```
+
+`--val-tasks`는 val로 뺄 CVAT task id 목록(쉼표 구분). `configs/yolo_vehicle.yaml`의 `data:`는
+이 스크립트가 만든 `data/processed/vehicle/data.yaml`을 가리킨다. 실데이터가 없으면
+Ultralytics 내장 `coco8.yaml`(이미지 8장, 최초 실행 시 자동 다운로드)로 되돌려 스모크 테스트용으로 쓸 수 있다.
 
 ## 번호판 검출 (`configs/yolo_plate.yaml`)
 
