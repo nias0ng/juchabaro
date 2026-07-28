@@ -67,9 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
     const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
 
-    // keepSignedIn이 true일 때만 기기에 저장한다. false면 이번 앱 실행 동안(메모리)만
-    // 로그인 상태가 유지되고, 앱을 완전히 껐다 켜면 위 useEffect가 저장된 세션을 못 찾아서
-    // 자동으로 guest가 된다 — 이게 "로그인 유지 체크 해제"의 실제 동작이다.
+    // keepSignedIn이 true일 때 만, 로그인 성공 시 서버가 내려준 accessToken/refreshToken을 기기에 저장한다.
     if (keepSignedIn) {
       await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken });
     }
