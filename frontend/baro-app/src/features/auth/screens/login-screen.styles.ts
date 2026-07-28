@@ -16,6 +16,10 @@ export const styles = StyleSheet.create({
     fontSize: 13.5,
     color: Palette.gray500,
   },
+  formError: {
+    fontSize: 13,
+    textAlign: 'center',
+  },
   footerRow: {
     alignItems: 'center',
   },

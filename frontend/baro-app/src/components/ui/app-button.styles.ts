@@ -5,7 +5,6 @@ import { ControlHeight, FontWeight, Radius, Spacing, Typography } from '@/styles
 export const styles = StyleSheet.create({
   base: {
     minWidth: 0,
-    borderWidth: 1,
     borderRadius: Radius.full,
     flexDirection: 'row',
     alignItems: 'center',
