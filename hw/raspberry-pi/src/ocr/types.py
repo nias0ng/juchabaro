@@ -1,7 +1,11 @@
-'''
-OCR 모듈 사이에서 왔다갔다 할 데이터 타입만 정리해놨음!
-촬영시간은 넣을까 말까 하다가 카메라 쪽 데이터라서 일단은 빼놨는데, 좀 고민중.
-'''
+"""
+OCR 파이프라인 모듈 사이에서 전달되는 공통 데이터 타입을 정의한다.
+
+이 파일은 촬영된 프레임부터 최종 번호판 판정까지의 데이터 계약만
+담당한다. 모델 실행, 영상 처리, 문자열 판정 로직은 포함하지 않는다.
+촬영 시각은 카메라·입차 이벤트 계층의 책임이므로 현재 계약에서 제외한다.
+데이터 클래스는 경량 전달 객체이며 유효성은 각 처리 단계 입구에서 검증한다.
+"""
 
 from __future__ import annotations
 
@@ -13,26 +17,21 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# 타입별칭
+# [공통 타입 별칭]
+
+
 BgrImage: TypeAlias = NDArray[np.uint8]
 Point: TypeAlias = tuple[float, float]
 Quad: TypeAlias = tuple[Point, Point, Point, Point]
+BBox: TypeAlias = tuple[float, float, float, float]
 
 
-# OCR 파이프라인 최종 처리 상태 Enum
-# 로그나 디버깅 시 상태 표시용
+# [처리 상태와 좌표 출처]
+
+
 class ReadStatus(str, Enum):
-    '''
-    SUCCESS: 번호판 읽기 성공, 최종 번호 확정
-    INVALID_INPUT: 입력 이미지 수, 자료형, 해상도, shape 등이 요구 조건과 다름
-    NO_PLATE_REGION: 번호판을 찾지 못했거나, 사용할 수 있는 번호판 영역을 만들지 못함
-    OCR_EMPTY: OCR 결과가 모두 빈 문자열
-    INVALID_FORMAT: 한국 번호판 형식에 맞는 결과가 없음
-    LOW_SCORE: 번호판 형식은 맞지만 OCR 신뢰 점수가 기준보다 낮음
-    AMBIGUOUS: 여러 프레임의 결과가 서로 달라 최종 번호를 확정하기 어려움
-    MODEL_ERROR: 모델 실행 자체에서 오류가 발생함
-    INTERNAL_ERROR: 모델 외의 파이프라인 내부 로직에서 예상하지 못한 오류가 발생함
-    '''
+    """OCR 파이프라인이 반환할 수 있는 최종 처리 상태."""
+
     SUCCESS = "SUCCESS"
     INVALID_INPUT = "INVALID_INPUT"
     NO_PLATE_REGION = "NO_PLATE_REGION"
@@ -44,40 +43,40 @@ class ReadStatus(str, Enum):
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
-# 프레임의 꼭짓점 좌표를 얻은 방식 Enum
-# 로그 및 디버깅용
 class QuadSource(str, Enum):
-    '''
-    DETECTED: 해당 프레임에서 YOLO가 직접 검출
-    INTERPOLATED: 앞·뒤 두 검출 좌표 사이(안쪽)을 선형 보간
-    EXTRAPOLATED: 이동 추세를 검출 구간 바깥까지 연장해서 계산
-    REUSED: 검출 좌표 하나를 인접 프레임에 그대로 복사
-    '''
+    """프레임의 번호판 4점 좌표를 얻은 방법."""
+
     DETECTED = "DETECTED"
     INTERPOLATED = "INTERPOLATED"
     EXTRAPOLATED = "EXTRAPOLATED"
     REUSED = "REUSED"
 
 
-# 사진 데이터용 프레임들
+# [입력 프레임과 품질 정보]
+
+
 @dataclass(frozen=True, slots=True)
 class CapturedFrame:
     """
-    사진 데이터 프레임
+    한 번의 촬영 burst에 포함된 시간순 프레임.
 
-    frame_index는 촬영 시간순 인덱스
-    image는 BGR uint8 HxWx3 배열
+    ``frame_index``는 burst 내부 인덱스 0~5이고, ``image``는
+    BGR uint8 HxWx3 배열이다.
     """
+
     frame_index: int
     image: BgrImage
 
 
 @dataclass(frozen=True, slots=True)
 class FrameQuality:
-    '''
-    사진 데이터 정보
-    있다가 다른 파일 다 만들고 나서 어떤 파일 용인지도 적어놔야겠네.
-    '''
+    """
+    전체 프레임에서 계산한 저비용 품질 지표.
+
+    번호판 crop이 생기기 전에 계산하므로 번호판 자체 품질이 아닌
+    전체 프레임 품질의 근사치라는 한계가 있다.
+    """
+
     frame_index: int
     sharpness: float
     contrast: float
@@ -89,26 +88,34 @@ class FrameQuality:
 
 @dataclass(frozen=True, slots=True)
 class AnchorSelection:
-    """YOLO를 실행할 앞쪽 프레임과 마지막 프레임. earlier 프레임이 0, 1 중에 선택해서 들어갈 예정이라 필요할 듯? """
+    """YOLO를 실행할 앞쪽 anchor와 마지막 anchor 선택 결과."""
 
     earlier_frame_index: int
     later_frame_index: int
     qualities: tuple[FrameQuality, ...]
 
 
+# [번호판 검출과 기하 처리 결과]
+
+
 @dataclass(frozen=True, slots=True)
 class DetectedPlate:
-    """한 anchor 프레임에서 YOLO가 특정한 번호판 위치"""
+    """
+    YOLO pose가 한 anchor 프레임에서 검출한 번호판 후보.
+
+    ``quad``의 점 순서는 좌상→우상→우하→좌하이며,
+    ``bbox_xyxy``는 좌상·우하 좌표 순서다.
+    """
 
     frame_index: int
-    bbox_xyxy: tuple[float, float, float, float]
+    bbox_xyxy: BBox
     quad: Quad
     detector_score: float
 
 
 @dataclass(frozen=True, slots=True)
 class EstimatedQuad:
-    """특정 프레임에서 사용할 검출·보간된 4점 좌표."""
+    """특정 프레임에 적용할 검출·보간·재사용된 번호판 4점 좌표."""
 
     frame_index: int
     quad: Quad
@@ -118,7 +125,7 @@ class EstimatedQuad:
 
 @dataclass(frozen=True, slots=True)
 class RectifiedPlate:
-    """원근 보정이 끝난 PaddleOCR 입력."""
+    """4점 원근 보정이 끝난 번호판 이미지."""
 
     frame_index: int
     image: BgrImage
@@ -126,7 +133,31 @@ class RectifiedPlate:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedPlate:
+    """화질 전처리를 마친 PaddleOCR 입력 이미지."""
+
+    frame_index: int
+    image: BgrImage
+    quad_estimate: EstimatedQuad
+    preprocessing_applied: bool
+
+
+# [OCR 인식과 문자열 처리 결과]
+
+
+@dataclass(frozen=True, slots=True)
+class RawOcrResult:
+    """PaddleOCR가 직접 반환한 아직 정규화되지 않은 인식 결과."""
+
+    frame_index: int
+    raw_text: str
+    rec_score: float
+
+
+@dataclass(frozen=True, slots=True)
 class OcrCandidate:
+    """문자열 정규화와 지원 번호판 형식 검사를 마친 OCR 후보."""
+
     frame_index: int
     raw_text: str
     normalized_text: str
@@ -134,9 +165,12 @@ class OcrCandidate:
     valid_format: bool
 
 
+# [최종 판정과 파이프라인 진단]
+
+
 @dataclass(frozen=True, slots=True)
 class PlateDecision:
-    """aggregator가 내린 번호판 집계 결과."""
+    """후처리 집계기가 내린 번호판 판정."""
 
     status: ReadStatus
     plate_number: str | None
@@ -144,15 +178,19 @@ class PlateDecision:
     vote_count: int
     vote_ratio: float
     mean_rec_score: float
-    error_message: str | None
+    error_message: str | None = None
 
 
 @dataclass(slots=True)
 class PipelineMetrics:
+    """단일 차량 이벤트의 단계별 실행 시간과 모델 호출 횟수."""
+
     frame_selection_ms: float = 0.0
     detection_ms: float = 0.0
     geometry_ms: float = 0.0
+    preprocessing_ms: float = 0.0
     recognition_ms: float = 0.0
+    postprocessing_ms: float = 0.0
     total_ms: float = 0.0
     detector_calls: int = 0
     recognizer_calls: int = 0
@@ -160,6 +198,8 @@ class PipelineMetrics:
 
 @dataclass(frozen=True, slots=True)
 class StageFailure:
+    """일부 프레임 처리 실패를 최종 결과에 남기는 진단 정보."""
+
     stage: str
     frame_index: int | None
     message: str
@@ -167,6 +207,8 @@ class StageFailure:
 
 @dataclass(frozen=True, slots=True)
 class PlateReadResult:
+    """상위 입차 서비스에 반환하는 OCR 파이프라인 최종 결과."""
+
     status: ReadStatus
     plate_number: str | None
     total_frames: int
@@ -177,10 +219,12 @@ class PlateReadResult:
     candidates: tuple[OcrCandidate, ...]
     failures: tuple[StageFailure, ...]
     metrics: PipelineMetrics
-    error_message: str | None
+    error_message: str | None = None
 
     @property
     def succeeded(self) -> bool:
+        """전체 번호판이 성공적으로 확정되었는지 반환한다."""
+
         return (
             self.status is ReadStatus.SUCCESS
             and self.plate_number is not None
