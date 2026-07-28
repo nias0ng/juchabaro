@@ -10,11 +10,13 @@ export const Palette = {
   gray100: '#f0f0f3',
   gray200: '#e1e1e8',
   gray300: '#d1d2dc',
+  gray400: '#b6bac7',
   gray500: '#7b8091',
   gray600: '#60646c',
   gray700: '#474554',
   gray900: '#212225',
   gray950: '#1b1b23',
+  gray975: '#14161c',
 
   violet50: '#fcf8ff',
   violet100: '#e3dfff',
@@ -23,6 +25,8 @@ export const Palette = {
   violet600: '#5144d3',
 
   red500: '#e5484d',
+  orange400: '#ff8f6b',
+  orange600: '#d4553a',
 } as const;
 
 /**
@@ -33,28 +37,34 @@ export const Colors = {
   light: {
     text: Palette.black,
     textSecondary: Palette.gray600,
+    placeholder: Palette.gray400,
     background: Palette.white,
     backgroundElement: Palette.gray100,
     backgroundSelected: Palette.gray200,
     surface: Palette.white,
+    surfaceMuted: Palette.gray50,
     border: Palette.gray200,
     primary: Palette.violet600,
     primarySoft: Palette.violet100,
     onPrimary: Palette.white,
-    danger: Palette.red500,
+    danger: Palette.orange600,
+    dangerBorder: Palette.orange400,
   },
   dark: {
     text: Palette.white,
     textSecondary: '#b0b4ba',
+    placeholder: '#6b6f78',
     background: Palette.black,
     backgroundElement: Palette.gray900,
     backgroundSelected: '#2e3135',
     surface: Palette.gray900,
+    surfaceMuted: '#1f2024',
     border: '#3a3d43',
     primary: Palette.violet300,
     primarySoft: '#302d55',
     onPrimary: Palette.gray950,
     danger: '#ff6369',
+    dangerBorder: '#a83f31',
   },
 } as const;
 

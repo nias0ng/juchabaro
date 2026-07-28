@@ -22,4 +22,6 @@ export const Radius = {
   xl: 24,
   xxl: 32,
   full: 999,
+  /** 폼 인풋 필드 전용 (18~20px 사이 값을 20으로 통일) */
+  input: 20,
 } as const;

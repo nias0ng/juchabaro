@@ -43,7 +43,7 @@ export function AppButton({
     },
     secondary: {
       backgroundColor: theme.surface,
-      borderColor: theme.primary,
+      borderColor: theme.primarySoft,
       textColor: theme.primary,
     },
     neutral: {
