@@ -23,7 +23,9 @@ type AuthUser = {
 type AuthContextValue = {
   status: AuthStatus;
   user: AuthUser | null;
-  login: (loginId: string, password: string) => Promise<void>;
+  // 다른 기능(차량/알림 등)에서 인증이 필요한 API를 부를 때 쓸 수 있게 현재 accessToken을 노출한다.
+  accessToken: string | null;
+  login: (loginId: string, password: string, keepSignedIn: boolean) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -35,10 +37,13 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   // 앱이 처음 켜질 때 기기에 저장된 세션이 있는지 확인해서 로그인 상태를 복원
+  // "로그인 유지"를 체크 안 하고 로그인했으면 애초에 기기에 저장이 안 됐을 것이므로,
+  // 여기서 세션이 없으면 자연스럽게 guest로 시작한다 — 이게 "로그인 유지"의 실제 동작 지점이다.
   useEffect(() => {
-    getSession().then(async (session) => { 
+    getSession().then(async (session) => {
       if (!session) { // 세션 가져왔는데, 없으면 guest 상태
         setStatus('guest');
         return;
@@ -47,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         // 토큰만 있고 user 정보는 없으니, GET /api/users/me로 다시 조회해서 채움
         const profile = await getMyProfile(session.accessToken);
+        setAccessToken(session.accessToken);
         setUser({ userId: profile.userId, nickname: profile.nickname, role: profile.role });
         setStatus('authenticated');
       } catch {
@@ -58,21 +64,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   //화면에서 사용할 longin() 함수 -> 여기서 API 호출/토큰 저장/상태 변경을 처리
-  const login = useCallback(async (loginId: string, password: string) => {
+  const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
     const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
-    await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken }); // 토큰 저장
+
+    // keepSignedIn이 true일 때만 기기에 저장한다. false면 이번 앱 실행 동안(메모리)만
+    // 로그인 상태가 유지되고, 앱을 완전히 껐다 켜면 위 useEffect가 저장된 세션을 못 찾아서
+    // 자동으로 guest가 된다 — 이게 "로그인 유지 체크 해제"의 실제 동작이다.
+    if (keepSignedIn) {
+      await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken });
+    }
+
+    setAccessToken(result.accessToken);
     setUser({ userId: result.userId, nickname: result.nickname, role: result.role }); // 사용자 정보 state에 저장
     setStatus('authenticated');
   }, []);
 
   const logout = useCallback(async () => {
+    // keepSignedIn 여부와 상관없이 로그아웃할 땐 항상 기기에 남아있을 수 있는 세션까지 전부 지운다.
     await clearSession();
+    setAccessToken(null);
     setUser(null);
     setStatus('guest');
   }, []);
 
   return (
-    <AuthContext.Provider value={{ status, user, login, logout }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ status, user, accessToken, login, logout }}>
+      {children}
+    </AuthContext.Provider>
   );
 }
 

@@ -62,7 +62,7 @@ useEffect(() => {
     // 로그인 요청 실제 로직 -> 실패하면 error를 던지고(catch), 성공하면 router.replace()로 화면 전환
     try {
 
-      await login(username.trim(), password); // await : login이라는 api 호출을 기다렸다가 결과가 오면 다음 동작 실행
+      await login(username.trim(), password, keepSignedIn); // keepSignedIn: 체크 안 하면 기기에 세션을 저장하지 않는다
 
       // TODO(auth-role): role(RESIDENT/ADMIN)에 따른 분기가 필요하면 여기서 처리.
       router.replace('/resident');
