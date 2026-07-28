@@ -1,5 +1,5 @@
 model_name: plate_detector
-base_model: yolov8s.pt
+base_model: yolov8n-pose.pt
 data: data/samples/plate/data.yaml
 epochs: 50
 imgsz: 640

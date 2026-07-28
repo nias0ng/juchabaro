@@ -31,8 +31,19 @@ def generate_plate_smoke_dataset(output_dir: str, num_images: int = 8, img_size:
         w = box_w / img_size
         h = box_h / img_size
 
+        # corner order: top-left, top-right, bottom-right, bottom-left
+        left, right = x0 / img_size, (x0 + box_w) / img_size
+        top, bottom = y0 / img_size, (y0 + box_h) / img_size
+        keypoints = [
+            (left, top),
+            (right, top),
+            (right, bottom),
+            (left, bottom),
+        ]
+        kpt_str = " ".join(f"{x:.6f} {y:.6f}" for x, y in keypoints)
+
         image.save(images_dir / f"{name}.jpg")
-        (labels_dir / f"{name}.txt").write_text(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+        (labels_dir / f"{name}.txt").write_text(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f} {kpt_str}\n")
 
     train_files = filenames[:-num_val]
     val_files = filenames[-num_val:]
@@ -45,6 +56,7 @@ def generate_plate_smoke_dataset(output_dir: str, num_images: int = 8, img_size:
         "val": "val.txt",
         "nc": 1,
         "names": ["plate"],
+        "kpt_shape": [4, 2],
     }
     data_yaml_path = output_path / "data.yaml"
     with open(data_yaml_path, "w", encoding="utf-8") as f:

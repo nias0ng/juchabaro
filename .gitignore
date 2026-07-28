@@ -38,6 +38,7 @@ coverage/
 # Python cache and virtual environments
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
 
@@ -50,3 +51,10 @@ ai/training/data/samples/
 
 # W&B local cache
 wandb/
+
+# Hardware runtime outputs
+hw/**/captures/
+hw/**/models/
+hw/**/weights/
+*.pth
+*.engine

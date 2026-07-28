@@ -52,6 +52,9 @@ def run_training(
             "mAP50": results_dict.get("metrics/mAP50(B)", 0.0),
             "mAP50-95": results_dict.get("metrics/mAP50-95(B)", 0.0),
         }
+        if "metrics/mAP50(P)" in results_dict or "metrics/mAP50-95(P)" in results_dict:
+            metrics["pose_mAP50"] = results_dict.get("metrics/mAP50(P)", 0.0)
+            metrics["pose_mAP50-95"] = results_dict.get("metrics/mAP50-95(P)", 0.0)
 
         weights_dir = Path(results.save_dir) / "weights"
         meta_path = write_model_meta(
