@@ -1,0 +1,23 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Frontend CI') {
+            steps {
+                dir('frontend/baro-app') {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/app -w /app \
+                          -e HOME=/tmp \
+                          node:20-bookworm \
+                          sh -lc "npm ci && npm run typecheck"
+                    '''
+                }
+            }
+        }
+    }
+}
