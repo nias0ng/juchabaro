@@ -61,3 +61,52 @@ def test_build_vehicle_dataset_raises_on_unrecognized_filename(tmp_path):
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_build_vehicle_dataset_sanitizes_path_traversal_zip_entries(tmp_path):
+    """Regression pin: a zip entry name is never used as-is for the output write path.
+
+    Only `Path(name).stem` (the final path segment) feeds the output filename, so
+    `../` segments in a malicious entry name have no effect on where the file lands.
+    """
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    zip_path = raw_dir / "dataset_task_3.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("images/train/../../../../evil.jpg", b"payload")
+        archive.writestr("labels/train/../../../../evil.txt", "0 0.1 0.1 0.1 0.1\n")
+
+    output_dir = tmp_path / "processed"
+    build_vehicle_dataset(str(raw_dir), str(output_dir), val_tasks=[])
+
+    # entry is sanitized to its basename and written inside output_dir/images, not
+    # traversed up to tmp_path or beyond.
+    assert (output_dir / "images" / "task3_evil.jpg").read_bytes() == b"payload"
+    assert (output_dir / "labels" / "task3_evil.txt").read_text() == "0 0.1 0.1 0.1 0.1\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["processed", "raw"]
+
+
+def test_build_vehicle_dataset_handles_empty_raw_dir(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    output_dir = tmp_path / "processed"
+
+    data_yaml_path = build_vehicle_dataset(str(raw_dir), str(output_dir), val_tasks=[8])
+
+    assert (output_dir / "train.txt").read_text() == "\n"
+    assert (output_dir / "val.txt").read_text() == "\n"
+    with open(data_yaml_path) as f:
+        data_yaml = yaml.safe_load(f)
+    assert data_yaml["nc"] == 1
+
+
+def test_build_vehicle_dataset_val_tasks_with_no_matching_task_goes_to_train(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _write_task_zip(raw_dir / "dataset_task_2.zip", images={"a.jpg": b"imgA"}, labels={})
+
+    output_dir = tmp_path / "processed"
+    build_vehicle_dataset(str(raw_dir), str(output_dir), val_tasks=[999])
+
+    assert (output_dir / "train.txt").read_text().splitlines() == ["./images/task2_a.jpg"]
+    assert (output_dir / "val.txt").read_text() == "\n"
