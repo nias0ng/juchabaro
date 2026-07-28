@@ -5,9 +5,9 @@
 
 ## 기술 기준
 
-- 이 프로젝트는 Expo SDK 57, React Native, Expo Router, TypeScript를 사용한다.
-- 코드를 작성하기 전에 Expo 57 버전 문서를 확인한다.
-  - https://docs.expo.dev/versions/v57.0.0/
+- 이 프로젝트는 Expo SDK 54, React Native, Expo Router, TypeScript를 사용한다.
+- 코드를 작성하기 전에 Expo 54 버전 문서를 확인한다.
+  - https://docs.expo.dev/versions/v54.0.0/
 - 최신 버전이나 다른 Expo 버전의 예제를 그대로 적용하지 않는다.
 - Android, iOS, Web에서 함께 동작하는 코드를 기본으로 작성한다.
 - 플랫폼별 코드가 필요하면 이유를 명확히 하고 `.ios.ts`, `.android.ts`, `.web.ts` 확장자 또는 `Platform.select`를 사용한다.
