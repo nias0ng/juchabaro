@@ -49,6 +49,8 @@ export const Colors = {
     onPrimary: Palette.white,
     danger: Palette.orange600,
     dangerBorder: Palette.orange400,
+    disabledSurface: Palette.violet100,
+    disabledText: Palette.gray400,
   },
   dark: {
     text: Palette.white,
@@ -65,6 +67,8 @@ export const Colors = {
     onPrimary: Palette.gray950,
     danger: '#ff6369',
     dangerBorder: '#a83f31',
+    disabledSurface: '#302d55',
+    disabledText: '#6b6f78',
   },
 } as const;
 
