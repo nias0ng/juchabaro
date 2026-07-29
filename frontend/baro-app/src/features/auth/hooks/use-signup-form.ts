@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 
+import { ApiError } from '@/services/api-error';
+
+import { signup } from '../api/auth-api';
 import type {
   SignupAccountFormValues,
   SignupConfirmFormValues,
@@ -40,6 +43,8 @@ export function useSignupForm() {
   const [accountValues, setAccountValues] = useState(INITIAL_ACCOUNT_VALUES);
   const [householdValues, setHouseholdValues] = useState(INITIAL_HOUSEHOLD_VALUES);
   const [confirmValues, setConfirmValues] = useState(INITIAL_CONFIRM_VALUES);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string>();
 
   const canSubmitStep = useMemo(() => {
     if (step === 1) return isAccountFormValid(accountValues);
@@ -69,18 +74,38 @@ export function useSignupForm() {
     [],
   );
 
-  const goToStep = useCallback((target: SignupStep) => setStep(target), []);
+  const goToStep = useCallback((target: SignupStep) => {
+    setErrorMessage(undefined);
+    setStep(target);
+  }, []);
 
   // 첫 단계에서는 이전 단계가 없어 헤더의 뒤로 가기가 기본 동작을 사용하도록 비워 둔다.
   const goToPreviousStep =
     step === 1 ? undefined : () => goToStep((step - 1) as SignupStep);
 
-  const goToNextStep = () => {
-    if (!canSubmitStep) return;
+  const goToNextStep = async () => {
+    if (!canSubmitStep || isSubmitting) return;
 
     if (step === 3) {
-      // TODO(#291): 계정 생성 API가 준비되면 features/auth/api로 가입 신청을 제출한 뒤 이동한다.
-      goToStep(4);
+      setErrorMessage(undefined);
+      setIsSubmitting(true);
+
+      try {
+        await signup({
+          loginId: accountValues.username,
+          password: accountValues.password,
+          phoneNumber: accountValues.phone,
+          name: accountValues.name,
+          buildingNumber: householdValues.buildingNumber,
+          unitNumber: householdValues.unitNumber,
+        });
+        setStep(4);
+      } catch (error) {
+        // ApiError면 서버 메시지(예: "이미 사용 중인 로그인 아이디입니다")를 그대로 보여준다.
+        setErrorMessage(error instanceof ApiError ? error.message : '회원가입에 실패했습니다.');
+      } finally {
+        setIsSubmitting(false);
+      }
       return;
     }
 
@@ -95,6 +120,8 @@ export function useSignupForm() {
     accountValues,
     householdValues,
     confirmValues,
+    isSubmitting,
+    errorMessage,
     canSubmitStep,
     changeAccountValue,
     changeHouseholdValue,

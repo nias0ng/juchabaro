@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
 import { Palette, Spacing } from '@/styles';
 
+import { AuthErrorBanner } from '../components/auth-error-banner';
 import { AuthHeader } from '../components/auth-header';
 import { SignupProgress } from '../components/signup/signup-progress';
 import { SignupStepActions } from '../components/signup/signup-step-actions';
@@ -31,17 +32,19 @@ export default function SignupScreen() {
 
           {!isCompleteStep && <SignupProgress step={signup.step} />}
 
-          // SignupSteps로 회원 가입 단계 각각을 진행
           <SignupSteps
             signup={signup}
             onRegisterVehicle={() => router.replace('/resident/vehicles')}
             onGoHome={() => router.replace('/resident')}
           />
 
+          {signup.errorMessage ? <AuthErrorBanner message={signup.errorMessage} /> : null}
+
           {!isCompleteStep && (
             <SignupStepActions
               step={signup.step}
               canSubmit={signup.canSubmitStep}
+              isSubmitting={signup.isSubmitting}
               onNext={signup.goToNextStep}
               onPrevious={signup.goToPreviousStep}
             />

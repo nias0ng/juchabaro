@@ -33,3 +33,21 @@ export type UserProfile = {
   status: UserStatus;
   createdAt: string;
 };
+
+export type SignupRequest = {
+  loginId: string;
+  password: string;
+  phoneNumber: string;
+  name: string;
+  buildingNumber: string;
+  unitNumber: string;
+};
+
+// POST /auth/signup 응답의 result. 토큰은 내려오지 않는다 (가입 후 자동 로그인 없음).
+export type SignupResult = {
+  userId: number;
+  phoneNumber: string;
+  name: string;
+  role: UserRole;
+  status: UserStatus;
+};
