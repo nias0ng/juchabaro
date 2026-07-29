@@ -9,6 +9,14 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: Spacing.md,
   },
+  iconShadow: {
+    borderRadius: 40,
+    shadowColor: Palette.gray975,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.09,
+    shadowRadius: 17,
+    elevation: 4,
+  },
   iconCircle: {
     width: 80,
     height: 80,
@@ -16,11 +24,6 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.white,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.09,
-    shadowRadius: 17,
-    elevation: 4,
   },
   carIcon: {
     width: 44,

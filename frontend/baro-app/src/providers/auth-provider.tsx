@@ -12,11 +12,14 @@ import { clearSession, getSession, saveSession } from '@/services/session-storag
 // 앱을 키면,SecureStore에서 세션을 읽어오는 동안(비동기)에는 로그인을 한지 안한지 몰라서. 
 type AuthStatus = 'loading' | 'guest' | 'authenticated';
 
-// AuthUser의 타입 정의 : 로그인한 사용자 정보 
+// AuthUser의 타입 정의 : 로그인한 사용자 정보
+// buildingNumber/unitNumber는 GET /api/users/me 명세 기준 관리자는 null일 수 있다.
 type AuthUser = {
   userId: number;
   nickname: string;
   role: UserRole;
+  buildingNumber: string | null;
+  unitNumber: string | null;
 };
 
 // AuthContextValue의 타입 정의 : 로그인 상태, 사용자 정보, 로그인/로그아웃 함수
@@ -53,7 +56,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // 토큰만 있고 user 정보는 없으니, GET /api/users/me로 다시 조회해서 채움
         const profile = await getMyProfile(session.accessToken);
         setAccessToken(session.accessToken);
-        setUser({ userId: profile.userId, nickname: profile.nickname, role: profile.role });
+        setUser({
+          userId: profile.userId,
+          nickname: profile.name,
+          role: profile.role,
+          buildingNumber: profile.buildingNumber,
+          unitNumber: profile.unitNumber,
+        });
         setStatus('authenticated');
       } catch {
         // 토큰이 만료/무효(401)거나 사용자를 못 찾으면(404), 반쪽짜리 세션으로 두지 않고 guest로 되돌린다.
@@ -72,8 +81,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken });
     }
 
+    // 로그인 응답에는 동/호수 같은 상세 프로필이 없어서, 성공 직후 한 번 더 조회해서 채운다.
+    // 이렇게 하면 세션 복원 때(위 useEffect)와 user를 채우는 방식이 하나로 통일된다.
+    const profile = await getMyProfile(result.accessToken);
     setAccessToken(result.accessToken);
-    setUser({ userId: result.userId, nickname: result.nickname, role: result.role }); // 사용자 정보 state에 저장
+    setUser({
+      userId: profile.userId,
+      nickname: profile.name,
+      role: profile.role,
+      buildingNumber: profile.buildingNumber,
+      unitNumber: profile.unitNumber,
+    });
     setStatus('authenticated');
   }, []);
 

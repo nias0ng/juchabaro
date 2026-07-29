@@ -13,7 +13,7 @@ const mockProfile: UserProfile = {
   phoneNumber: '010-0000-0000',
   buildingNumber: '101',
   unitNumber: '1001',
-  nickname: '테스트 사용자',
+  name: '테스트 사용자',
   role: 'RESIDENT',
   status: 'ACTIVE',
   createdAt: '2026-01-01T00:00:00Z',
@@ -46,7 +46,7 @@ export async function loginMock(request: LoginRequest): Promise<LoginResult> {
     tokenType: 'Bearer',
     expiresIn: 3600,
     userId: mockProfile.userId,
-    nickname: mockProfile.nickname,
+    nickname: mockProfile.name,
     role: mockProfile.role,
   };
 }
