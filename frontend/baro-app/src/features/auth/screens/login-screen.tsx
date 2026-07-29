@@ -109,12 +109,7 @@ useEffect(() => {
               />
             </Stack>
 
-            {errorMessage ? (
-              <View style={[styles.formError, { backgroundColor: theme.dangerSurface }]}>
-                <Text style={[styles.formErrorIcon, { color: theme.danger }]}>⚠️</Text>
-                <Text style={[styles.formErrorText, { color: theme.danger }]}>{errorMessage}</Text>
-              </View>
-            ) : null}
+            {errorMessage ? <AuthErrorBanner message={errorMessage} /> : null}
 
             <Stack direction="row" gap={Spacing.lg}>
               <CheckboxOption label="로그인 유지" checked={keepSignedIn} onChange={setKeepSignedIn} />
