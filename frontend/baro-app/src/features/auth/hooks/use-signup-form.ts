@@ -94,7 +94,8 @@ export function useSignupForm() {
         await signup({
           loginId: accountValues.username,
           password: accountValues.password,
-          phoneNumber: accountValues.phone,
+          // 백엔드 명세는 하이픈 없는 숫자만 받는다. 화면 표시용 포맷(010-1234-5678)과 분리한다.
+          phoneNumber: accountValues.phone.replace(/-/g, ''),
           name: accountValues.name,
           buildingNumber: householdValues.buildingNumber,
           unitNumber: householdValues.unitNumber,
