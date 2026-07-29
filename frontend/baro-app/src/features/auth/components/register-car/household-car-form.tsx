@@ -1,5 +1,4 @@
-import { LinearGradient } from 'expo-linear-gradient';
-import { Text, View } from 'react-native';
+import type { ColorValue } from 'react-native';
 
 import { Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
@@ -8,11 +7,13 @@ import type { HouseholdCarFormValues, RegisterCarType } from '../../types/regist
 import { isCarModelValid, isPlateNumberValid } from '../../validation/register-car';
 
 import { TextField } from '../text-field';
-import { RegisterCarToggleRow } from './register-car-toggle-row';
+import { RegisterCarAvailabilitySection } from './register-car-availability-section';
+import { RegisterCarSectionLabel } from './register-car-section-label';
+import { RegisterCarSummaryCard } from './register-car-summary-card';
 import { RegisterCarTypeSelector } from './register-car-type-selector';
-import { styles } from './household-car-form.styles';
+import { VehicleNumberField } from './vehicle-number-field';
 
-const SUMMARY_CARD_GRADIENT = ['#dcd7fb', '#c9ece7'] as const;
+const SUMMARY_CARD_GRADIENT: readonly [ColorValue, ColorValue] = ['#dcd7fb', '#c9ece7'];
 
 type HouseholdCarFormProps = {
   carType: RegisterCarType;
@@ -27,30 +28,21 @@ export function HouseholdCarForm({ carType, onChangeCarType, values, onChange }:
 
   return (
     <Stack gap={Spacing.base}>
-      <LinearGradient
-        colors={SUMMARY_CARD_GRADIENT}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.summaryCard}
-      >
-        <View style={styles.summaryBadge}>
-          <Text style={styles.summaryBadgeText}>세대 차량</Text>
-        </View>
-        <Text style={styles.summaryPlate}>{values.plateNumber.trim() || '차량 번호를 입력해 주세요'}</Text>
-      </LinearGradient>
+      <RegisterCarSummaryCard
+        badgeLabel="세대 차량"
+        gradientColors={SUMMARY_CARD_GRADIENT}
+        plateNumber={values.plateNumber}
+      />
 
       <Stack gap={Spacing.xs}>
-        <Text style={styles.sectionLabel}>차량 성격</Text>
+        <RegisterCarSectionLabel>차량 성격</RegisterCarSectionLabel>
         <RegisterCarTypeSelector value={carType} onChange={onChangeCarType} />
       </Stack>
 
-      <TextField
-        label="차량 번호"
+      <VehicleNumberField
         value={values.plateNumber}
         onChangeText={(text) => onChange('plateNumber', text)}
-        placeholder="12가 3456"
-        rightAdornment={<Text style={styles.cameraIcon}>{'📷'}</Text>}
-        error={values.plateNumber.length > 0 && !plateValid ? '차량 번호 형식을 확인해 주세요' : undefined}
+        errorMessage={values.plateNumber.length > 0 && !plateValid ? '차량 번호 형식을 확인해 주세요' : undefined}
       />
 
       <TextField
@@ -61,18 +53,12 @@ export function HouseholdCarForm({ carType, onChangeCarType, values, onChange }:
         error={values.carModel.length > 0 && !carModelValid ? '차종을 입력해 주세요' : undefined}
       />
 
-      <RegisterCarToggleRow
-        label="전기차 여부"
-        description="전기차 전용 구역 이용 가능"
-        value={values.isElectric}
-        onChange={(checked) => onChange('isElectric', checked)}
-      />
-
-      <RegisterCarToggleRow
-        label="장애인 등록 차량"
-        description="장애인 전용 구역 이용 가능"
-        value={values.isDisabled}
-        onChange={(checked) => onChange('isDisabled', checked)}
+      <RegisterCarAvailabilitySection
+        title="이용 가능 구역"
+        isElectric={values.isElectric}
+        onChangeElectric={(checked) => onChange('isElectric', checked)}
+        isDisabled={values.isDisabled}
+        onChangeDisabled={(checked) => onChange('isDisabled', checked)}
       />
     </Stack>
   );
