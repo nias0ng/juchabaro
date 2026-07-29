@@ -3,10 +3,7 @@ package com.ssafy.parking.domain.vehicle.service;
 import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.domain.user.repository.UserRepository;
-import com.ssafy.parking.domain.vehicle.dto.VehicleCreateRequest;
-import com.ssafy.parking.domain.vehicle.dto.VehicleCreateResponse;
-import com.ssafy.parking.domain.vehicle.dto.VehicleDetailResponse;
-import com.ssafy.parking.domain.vehicle.dto.VehicleListResponse;
+import com.ssafy.parking.domain.vehicle.dto.*;
 import com.ssafy.parking.domain.vehicle.entity.Vehicle;
 import com.ssafy.parking.domain.vehicle.entity.VehicleOwnerType;
 import com.ssafy.parking.domain.vehicle.entity.VehicleStatus;
@@ -64,5 +61,52 @@ public class VehicleService {
             throw new BusinessException(ErrorCode.VEHICLE_ACCESS_DENIED);
         }
         return VehicleDetailResponse.from(vehicle);
+    }
+
+    @Transactional
+    public VehicleUpdateResponse update(Long userId, Long vehicleId, VehicleUpdateRequest request) {
+        if (request.isEmpty()) {
+            throw new BusinessException(ErrorCode.VEHICLE_UPDATE_INVALID);
+        }
+
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.VEHICLE_NOT_FOUND));
+        if (!vehicle.getUser().getId().equals(userId)) {
+            throw new BusinessException(ErrorCode.VEHICLE_UPDATE_ACCESS_DENIED);
+        }
+
+        if (request.plateNumber() != null
+                && !request.plateNumber().equals(vehicle.getPlateNumber())) {
+            if (vehicleRepository.existsByPlateNumber(request.plateNumber())) {
+                throw new BusinessException(ErrorCode.DUPLICATE_PLATE_NUMBER);
+            }
+            vehicle.changePlateNumber(request.plateNumber());
+        }
+        if (request.vehicleModel() != null) vehicle.changeVehicleModel(request.vehicleModel());
+        if (request.isDisabledVehicle() != null) vehicle.changeDisabledVehicle(request.isDisabledVehicle());
+        if (request.isElectric() != null) vehicle.changeElectric(request.isElectric());
+        if (request.ownerType() != null) vehicle.changeOwnerType(request.ownerType());
+
+        vehicleRepository.saveAndFlush(vehicle);   // updatedAt 갱신 반영
+        return VehicleUpdateResponse.from(vehicle);
+    }
+
+    @Transactional
+    public VehicleDeleteResponse delete(Long userId, Long vehicleId) {
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.VEHICLE_NOT_FOUND));
+        if (vehicle.getStatus() == VehicleStatus.DELETED) {
+            throw new BusinessException(ErrorCode.VEHICLE_NOT_FOUND);   // 이미 삭제됨 → 404
+        }
+        if (!vehicle.getUser().getId().equals(userId)) {
+            throw new BusinessException(ErrorCode.VEHICLE_DELETE_ACCESS_DENIED);
+        }
+
+        // TODO(409): 진행 중 주차세션/이동요청 있으면 VEHICLE_HAS_ACTIVE_RECORD 예외
+        //   (주차세션/이동요청 도메인 구현 후 체크 추가)
+
+        vehicle.markDeleted();                     // 소프트 삭제 (status = DELETED)
+        vehicleRepository.saveAndFlush(vehicle);
+        return VehicleDeleteResponse.from(vehicle);
     }
 }
