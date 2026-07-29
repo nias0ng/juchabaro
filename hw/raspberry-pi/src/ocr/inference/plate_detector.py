@@ -74,9 +74,6 @@ def _validate_bgr_image(image: BgrImage) -> None:
 def _to_numpy(value: Any, *, name: str) -> np.ndarray:
     """
     torch tensor 또는 배열형 YOLO 출력을 numpy 배열로 변환한다.
-
-    ``torch``를 직접 import하지 않아 Raspberry Pi 프로세스 시작 시
-    runtime dependency를 불필요하게 로드하지 않는다.
     """
 
     try:

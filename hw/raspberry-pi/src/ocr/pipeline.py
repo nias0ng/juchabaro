@@ -1,7 +1,7 @@
 """
 촬영된 여섯 프레임을 전체 번호판 문자열로 변환하는 OCR 흐름을 조율한다.
 
-파이프라인 위치:
+파이프라인 순서:
     frame selection → YOLO → geometry → image preprocessing
     → PaddleOCR → text postprocessing → aggregation
 
