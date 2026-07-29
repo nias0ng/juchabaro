@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { Keyboard } from 'react-native';
 
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
@@ -10,7 +11,7 @@ import type {
   RegisterCarType,
   VisitorCarFormValues,
 } from '../types/register-car';
-import { isHouseholdCarFormValid, isVisitorCarFormValid } from '../validation/register-car';
+import { isHouseholdCarFormValid, isVisitorCarFormValid, toVisitDateString } from '../validation/register-car';
 
 const INITIAL_HOUSEHOLD_VALUES: HouseholdCarFormValues = {
   plateNumber: '',
@@ -39,6 +40,7 @@ export function useRegisterCarForm(onRegistered: () => void) {
   const [visitorValues, setVisitorValues] = useState(INITIAL_VISITOR_VALUES);
   const [isRegistering, setIsRegistering] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
+  const [isVisitDatePickerOpen, setIsVisitDatePickerOpen] = useState(false);
 
   const canSubmitStep = useMemo(() => {
     if (step === 'household') return isHouseholdCarFormValid(householdValues);
@@ -59,6 +61,26 @@ export function useRegisterCarForm(onRegistered: () => void) {
     },
     [],
   );
+
+  /** 같은 필드를 여러 번 눌러도 picker가 중복으로 열리지 않게 막고, 열려있던 키보드는 먼저 닫는다. */
+  const openVisitDatePicker = useCallback(() => {
+    setIsVisitDatePickerOpen((prev) => {
+      if (prev) return prev;
+      Keyboard.dismiss();
+      return true;
+    });
+  }, []);
+
+  /** "닫기"로 취소할 때만 쓰인다. 값은 그대로 두고 picker만 닫는다. */
+  const closeVisitDatePicker = useCallback(() => {
+    setIsVisitDatePickerOpen(false);
+  }, []);
+
+  /** 캘린더에서 날짜를 탭했을 때 호출된다. 값 반영과 picker 닫기를 함께 처리한다. */
+  const selectVisitDate = useCallback((date: Date) => {
+    setVisitorValues((prev) => ({ ...prev, visitDate: toVisitDateString(date) }));
+    setIsVisitDatePickerOpen(false);
+  }, []);
 
   const selectCarType = useCallback((type: RegisterCarType) => {
     setErrorMessage(undefined);
@@ -125,11 +147,15 @@ export function useRegisterCarForm(onRegistered: () => void) {
     isRegistering,
     errorMessage,
     canSubmitStep,
+    isVisitDatePickerOpen,
     changeHouseholdValue,
     changeVisitorValue,
     selectCarType,
     goToConfirm,
     goToInputStep,
+    openVisitDatePicker,
+    closeVisitDatePicker,
+    selectVisitDate,
     handleCompleteRegistration,
   };
 }

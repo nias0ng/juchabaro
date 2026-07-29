@@ -9,9 +9,11 @@ import { AuthHeader } from '../components/auth-header';
 import { HouseholdCarForm } from '../components/register-car/household-car-form';
 import { RegisterCarConfirmView } from '../components/register-car/register-car-confirm-view';
 import { RegisterCarLoadingView } from '../components/register-car/register-car-loading-view';
+import { RegisterCarVisitDatePickerModal } from '../components/register-car/register-car-visit-date-picker-modal';
 import { VisitorCarForm } from '../components/register-car/visitor-car-form';
 import { useRegisterCarForm } from '../hooks/use-register-car-form';
 import type { RegisterCarStep } from '../types/register-car';
+import { parseVisitDateString } from '../validation/register-car';
 
 import { styles } from './register-car-screen.styles';
 
@@ -69,6 +71,7 @@ export default function RegisterCarScreen() {
                 onChangeCarType={registerCar.selectCarType}
                 values={registerCar.visitorValues}
                 onChange={registerCar.changeVisitorValue}
+                onOpenVisitDatePicker={registerCar.openVisitDatePicker}
               />
             )}
 
@@ -104,6 +107,13 @@ export default function RegisterCarScreen() {
           <RegisterCarLoadingView />
         </View>
       ) : null}
+
+      <RegisterCarVisitDatePickerModal
+        visible={registerCar.isVisitDatePickerOpen}
+        selectedDate={parseVisitDateString(registerCar.visitorValues.visitDate)}
+        onSelectDate={registerCar.selectVisitDate}
+        onClose={registerCar.closeVisitDatePicker}
+      />
     </View>
   );
 }

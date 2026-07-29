@@ -1,9 +1,5 @@
 const PLATE_NUMBER_PATTERN = /^[0-9]{2,3}\s?[가-힣]\s?[0-9]{4}$/;
 const VISIT_DATE_PATTERN = /^\d{4}\.\d{2}\.\d{2}$/;
-const VISIT_DATE_DIGIT_COUNT = 8;
-
-/** 숫자 8자리 + 마침표 2개 */
-export const VISIT_DATE_MAX_LENGTH = VISIT_DATE_DIGIT_COUNT + 2;
 
 export function isPlateNumberValid(value: string) {
   return PLATE_NUMBER_PATTERN.test(value.trim());
@@ -17,19 +13,22 @@ export function isVisitDateValid(value: string) {
   return VISIT_DATE_PATTERN.test(value);
 }
 
-/** 입력 중에도 형식이 흔들리지 않도록 숫자만 남긴 뒤 4-2-2(YYYY.MM.DD)로 다시 끊는다. */
-export function formatVisitDate(input: string) {
-  const digits = input.replace(/\D/g, '').slice(0, VISIT_DATE_DIGIT_COUNT);
+/** 캘린더에서 선택한 Date를 form에 저장하는 형식(YYYY.MM.DD)으로 변환한다. */
+export function toVisitDateString(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
 
-  if (digits.length <= 4) {
-    return digits;
-  }
+  return `${year}.${month}.${day}`;
+}
 
-  if (digits.length <= 6) {
-    return `${digits.slice(0, 4)}.${digits.slice(4)}`;
-  }
+/** form에 저장된 YYYY.MM.DD 문자열을 캘린더가 사용할 Date로 되돌린다. 형식이 안 맞으면 null. */
+export function parseVisitDateString(value: string): Date | null {
+  if (!isVisitDateValid(value)) return null;
 
-  return `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6)}`;
+  const [year, month, day] = value.split('.').map(Number);
+
+  return new Date(year, month - 1, day);
 }
 
 export function isHouseholdCarFormValid(values: { plateNumber: string; carModel: string }) {
