@@ -23,6 +23,15 @@ public enum ErrorCode {
             "이미 사용 중인 로그인 아이디입니다."
     ),
 
+    INVALID_CREDENTIALS(
+            HttpStatus.UNAUTHORIZED,
+            "아이디 또는 비밀번호가 올바르지 않습니다."
+    ),
+    ACCOUNT_DISABLED(
+            HttpStatus.FORBIDDEN,
+            "사용할 수 없는 계정입니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."

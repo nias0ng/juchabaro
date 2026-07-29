@@ -31,16 +31,20 @@ pipeline {
         stage('Backend Deploy') {
             steps {
                 withCredentials([
-                    usernamePassword(
-                        credentialsId: 'parking-prod-mysql-app',
-                        usernameVariable: 'DB_USERNAME',
-                        passwordVariable: 'DB_PASSWORD'
-                    ),
-                    string(
-                        credentialsId: 'parking-prod-mysql-root-password',
-                        variable: 'MYSQL_ROOT_PASSWORD'
-                    )
-                ]) {
+                        usernamePassword(
+                            credentialsId: 'parking-prod-mysql-app',
+                            usernameVariable: 'DB_USERNAME',
+                            passwordVariable: 'DB_PASSWORD'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-mysql-root-password',
+                            variable: 'MYSQL_ROOT_PASSWORD'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-jwt-secret',
+                            variable: 'JWT_SECRET'
+                        )
+                    ]) {
                     dir('backend') {
                         sh '''
                             export MYSQL_USER="$DB_USERNAME"
@@ -82,7 +86,7 @@ pipeline {
     post {
         always {
             junit allowEmptyResults: true,
-                    testResults: 'backend/build/test-results/test/*.xml'
+            testResults: 'backend/build/test-results/test/*.xml'
         }
 
         failure {
