@@ -42,6 +42,16 @@ public enum ErrorCode {
             "이미 등록된 차량 번호입니다."
     ),
 
+    VEHICLE_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "차량 정보를 찾을 수 없습니다."
+    ),
+
+    VEHICLE_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 차량에 접근할 권한이 없습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
