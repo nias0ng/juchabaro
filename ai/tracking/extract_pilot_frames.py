@@ -1,33 +1,11 @@
 from __future__ import annotations
 import argparse
-import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-
-def load_calibration(path: str) -> tuple[np.ndarray, np.ndarray, tuple[int, int]]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    K = np.array(data["K"], dtype=np.float64)
-    D = np.array(data["D"], dtype=np.float64).reshape(4, 1)
-    image_size = tuple(data["image_size"])
-    return K, D, image_size
-
-
-def scale_K(K: np.ndarray, from_size: tuple[int, int], to_size: tuple[int, int]) -> np.ndarray:
-    """Rescale intrinsics computed at `from_size` (e.g. calibration photos) to `to_size`
-    (e.g. the pilot video's resolution). Only valid when both share the same aspect ratio."""
-    if from_size == to_size:
-        return K
-    sx = to_size[0] / from_size[0]
-    sy = to_size[1] / from_size[1]
-    scaled = K.copy()
-    scaled[0, 0] *= sx  # fx
-    scaled[1, 1] *= sy  # fy
-    scaled[0, 2] *= sx  # cx
-    scaled[1, 2] *= sy  # cy
-    return scaled
+from calibration_utils import DEFAULT_REMAP_BALANCE, load_calibration, scale_K
 
 
 def main() -> None:
@@ -38,7 +16,13 @@ def main() -> None:
     parser.add_argument("--start-seconds", type=float, default=0.0)
     parser.add_argument("--end-seconds", type=float, required=True, help="only extract frames up to this timestamp (valid footage cutoff)")
     parser.add_argument("--interval-seconds", type=float, default=1.0)
-    parser.add_argument("--balance", type=float, default=0.5, help="0=crop to valid pixels only, 1=keep full FOV with black borders")
+    parser.add_argument(
+        "--balance",
+        type=float,
+        default=DEFAULT_REMAP_BALANCE,
+        help="0=crop to valid pixels only, 1=keep full FOV with black borders. Must match the "
+        "value used at inference time (--remap-balance in jetson_vehicle_tracking_baseline.py).",
+    )
     args = parser.parse_args()
 
     K_cal, D, cal_size = load_calibration(args.calibration)

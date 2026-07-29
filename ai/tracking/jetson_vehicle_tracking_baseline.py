@@ -31,6 +31,12 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 CLI 모드: 웹캠 점검(`--probe-camera`), 캘리브레이션용 프레임 저장
 (`--capture-frame`), 실시간 루프(`--run`), 하드웨어 비의존 자체 테스트
 (`--self-test`).
+
+배포 시 주의: 이 스크립트는 단독 실행 파일이 아니다. 같은 디렉터리의
+`calibration_utils.py`(왜곡 보정 파라미터 로딩)와 `camera_calibration.json`을
+함께 복사해야 `--calibration`이 동작한다. remap 관련 테스트는 이 파일의
+`--self-test`가 아니라 `ai/training/tests/`(pytest)에 있다 — cv2/numpy가 필요해
+"하드웨어·의존성 없이 도는 자체 테스트"라는 `--self-test`의 성격과 맞지 않기 때문.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ import argparse
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import hashlib
 import json
 import logging
 import math
@@ -51,6 +58,10 @@ import unittest
 
 
 LOGGER = logging.getLogger("jetson_vehicle_tracking_baseline")
+
+# 왜곡 보정 시 crop(0)~풀 화각 유지(1) 비율. 학습 데이터를 만든 extract_pilot_frames.py와
+# 반드시 같은 값이어야 한다 — 다르면 같은 K/D로도 다른 좌표계가 나온다.
+DEFAULT_REMAP_BALANCE = 0.5
 
 
 class BaselineError(RuntimeError):
@@ -841,6 +852,125 @@ class OpenCvWebcamFrameSource:
             capture.release()
 
 
+def calibration_fingerprint(calibration_path: Path | None, balance: float) -> dict[str, Any]:
+    """zone 폴리곤이 어떤 보정 좌표계에서 찍혔는지 식별하는 지문.
+
+    remap은 1080p/balance 0.5에서 픽셀을 평균 44px, 최대 133px 옮긴다. 보정 없이 찍은
+    구 zone 파일을 `--calibration`과 함께 쓰면 아무 에러 없이 폴리곤이 그만큼 어긋나
+    위반 판정이 전부 틀어지므로, 캡처 시점의 설정을 기록해두고 실행 시 비교한다.
+    """
+
+    if calibration_path is None:
+        return {"remap": False}
+    try:
+        digest = hashlib.sha256(calibration_path.read_bytes()).hexdigest()[:16]
+    except OSError as exc:
+        raise BaselineError(f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}") from exc
+    return {"remap": True, "calibration_sha256": digest, "balance": round(float(balance), 6)}
+
+
+def _import_calibration_utils() -> Any:
+    try:
+        import calibration_utils
+    except ImportError as exc:
+        raise BaselineError(
+            f"calibration_utils import에 실패했습니다(ai/tracking/calibration_utils.py 확인). 원인: {exc}"
+        ) from exc
+    return calibration_utils
+
+
+class RemapFrameSource:
+    """다른 FrameSource가 공급하는 프레임에 fisheye remap(왜곡 보정)을 씌운다.
+
+    `ai/tracking/calibrate_camera.py`(#301)로 계산한 캘리브레이션 값을 실시간
+    캡처 루프에 적용하는 역할이다. 학습 데이터도 `extract_pilot_frames.py`
+    (#313)로 동일하게 remap 보정된 프레임을 썼으므로, 추론 시에도 같은 보정을
+    거치지 않으면 모델이 학습 때 본 적 없는 원본(왜곡) 화면을 받게 된다.
+
+    보정 맵은 첫 프레임의 실제 크기를 확인한 뒤 한 번만 계산해 재사용한다
+    (캘리브레이션 사진 해상도와 카메라 해상도가 다르면 자동으로 스케일링). 스트림
+    중간에 해상도가 바뀌면(USB 재연결·v4l2 재협상) 캐시된 맵이 조용히 잘못된 좌표를
+    만들기 때문에 — cv2.remap은 크기가 달라도 예외를 던지지 않고 원본 맵 크기의
+    이미지를 반환한다 — 매 프레임 크기를 확인하고 달라지면 맵을 다시 만든다.
+    """
+
+    def __init__(self, *, inner: Any, calibration_path: str, balance: float = DEFAULT_REMAP_BALANCE) -> None:
+        self._inner = inner
+        self._calibration_path = calibration_path
+        self._balance = balance
+        self._map1: Any | None = None
+        self._map2: Any | None = None
+        self._map_size: tuple[int, int] | None = None
+        self._dst: Any | None = None
+
+    def open(self) -> None:
+        self._inner.open()
+
+    def capture(self) -> CapturedFrame:
+        frame = self._inner.capture()
+        cv2 = _import_cv2()
+        frame_size = self._frame_size(frame.image)
+        if self._map1 is None or frame_size != self._map_size:
+            if self._map_size is not None:
+                LOGGER.warning(
+                    "프레임 해상도가 %s에서 %s로 바뀌어 보정 맵을 다시 만듭니다.", self._map_size, frame_size
+                )
+            self._map1, self._map2 = self._build_maps(frame_size, cv2)
+            self._map_size = frame_size
+            self._dst = None
+        # dst 버퍼를 재사용해 프레임당 수 MB 할당을 없앤다(측정상 30% 이상 빠름).
+        undistorted = cv2.remap(
+            frame.image,
+            self._map1,
+            self._map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            dst=self._dst,
+        )
+        self._dst = undistorted
+        return CapturedFrame(frame_id=frame.frame_id, captured_at=frame.captured_at, image=undistorted)
+
+    @staticmethod
+    def _frame_size(image: Any) -> tuple[int, int]:
+        """(width, height)를 돌려주되, 보정 맵을 만들 수 없는 프레임은 미리 걸러낸다.
+
+        하류 트래커에도 같은 가드가 있지만(빈 프레임에서 ZeroDivisionError 방지),
+        remap은 그보다 상류라 여기서 막지 않으면 cv2.remap이 생짜 cv2.error를 던진다.
+        """
+
+        shape = getattr(image, "shape", None)
+        if shape is None or len(shape) < 2:
+            raise BaselineError("프레임 이미지 크기를 확인할 수 없습니다.")
+        height, width = int(shape[0]), int(shape[1])
+        if height <= 0 or width <= 0:
+            raise BaselineError(f"프레임 크기가 올바르지 않아 왜곡 보정을 할 수 없습니다: shape={shape}")
+        return width, height
+
+    def _build_maps(self, frame_size: tuple[int, int], cv2: Any) -> tuple[Any, Any]:
+        calibration_utils = _import_calibration_utils()
+        import numpy as np
+
+        try:
+            K_cal, D, cal_size = calibration_utils.load_calibration(self._calibration_path)
+            K = calibration_utils.scale_K(K_cal, cal_size, frame_size)
+        except calibration_utils.CalibrationError as exc:
+            raise BaselineError(str(exc)) from exc
+        if cal_size != frame_size:
+            LOGGER.info("캘리브레이션 해상도 %s를 프레임 해상도 %s로 스케일링했습니다.", cal_size, frame_size)
+        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            K, D, frame_size, np.eye(3), balance=self._balance
+        )
+        return cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, frame_size, cv2.CV_16SC2)
+
+    def close(self) -> None:
+        # 맵/버퍼는 1080p에서 12~22MB라, 재연결 루프가 추가될 경우를 대비해 여기서 놓아준다.
+        self._map1 = None
+        self._map2 = None
+        self._map_size = None
+        self._dst = None
+        self._inner.close()
+
+
 class UltralyticsVehicleTracker:
     """Ultralytics YOLO + ByteTrack 결과를 정규화 VehicleBox로 변환하는 어댑터.
 
@@ -898,9 +1028,15 @@ class UltralyticsVehicleTracker:
         if image_height <= 0 or image_width <= 0:
             # 카메라가 순간적으로 빈 프레임을 반환하는 경우(리뷰 반영) 나눗셈 전에 걸러낸다.
             raise BaselineError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
+        cv2 = _import_cv2()
+        # CapturedFrame.image는 RGB인데 Ultralytics는 ndarray source를 BGR로 해석한다
+        # (ultralytics/data/loaders.py: "NumPy color inputs are assumed to use
+        # OpenCV-compatible BGR order"). 학습 데이터는 cv2.imwrite로 BGR 저장 → BGR로
+        # 로드되므로, 여기서 되돌리지 않으면 R/B가 뒤바뀐 입력으로 추론하게 된다.
+        source_bgr = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
         try:
             results = self._model.track(
-                source=frame.image,
+                source=source_bgr,
                 persist=True,
                 tracker=self._tracker_config,
                 conf=self._confidence,
@@ -982,6 +1118,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--zones-file", type=Path, default=None, help="ParkingZone 목록 JSON (--run에 필수).")
+    parser.add_argument(
+        "--calibration",
+        type=Path,
+        default=None,
+        help="camera_calibration.json 경로. 캡처된 프레임에 fisheye remap 보정을 적용한다(#323). --run에는 필수.",
+    )
+    parser.add_argument(
+        "--remap-balance",
+        type=float,
+        default=DEFAULT_REMAP_BALANCE,
+        help="remap 시 crop(0)~풀 화각 유지(1) 비율. 학습 데이터 생성 시 쓴 값과 같아야 한다.",
+    )
     parser.add_argument("--model-path", default="yolov8n.pt")
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
@@ -1025,17 +1173,52 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("entry-zone-min-overlap-ratio는 0~1 범위여야 합니다.")
     if args.frame_interval_ms < 0:
         raise BaselineError("frame-interval-ms는 0 이상이어야 합니다.")
+    if not (0.0 <= args.remap_balance <= 1.0):
+        # OpenCV는 범위를 벗어난 balance도 조용히 받아들여 엉뚱한 new_K를 만든다.
+        raise BaselineError("remap-balance는 0~1 범위여야 합니다.")
+    # 캘리브레이션 파일은 첫 프레임에서야 읽히므로, 여기서 미리 확인하지 않으면 Jetson에서
+    # TensorRT 엔진 로딩을 다 기다린 뒤에 경로 오타를 발견하게 된다.
+    if args.calibration is not None and not args.calibration.is_file():
+        raise BaselineError(f"calibration 파일을 찾을 수 없습니다: {args.calibration}")
     if args.run:
         if args.zones_file is None:
             raise BaselineError("--run에는 --zones-file이 필요합니다.")
         if not args.zones_file.is_file():
             raise BaselineError(f"zones-file을 찾을 수 없습니다: {args.zones_file}")
+        if args.calibration is None:
+            # 모델은 remap 보정된 프레임으로 학습됐다. 보정 없이 추론하면 조용히 정확도만
+            # 떨어져 원인 파악이 어려우므로 실행 자체를 막는다.
+            raise BaselineError(
+                "--run에는 --calibration이 필요합니다(모델이 remap 보정된 프레임으로 학습됨). "
+                "ai/tracking/camera_calibration.json 경로를 지정하세요."
+            )
+
+
+def _build_frame_source(args: argparse.Namespace) -> FrameSource:
+    """웹캠 FrameSource를 만들고, `--calibration`이 지정되면 remap 보정을 씌운다.
+
+    zone 폴리곤 캘리브레이션(`--capture-frame`)도 실시간 탐지(`--run`)와 같은
+    보정된 좌표계를 봐야 폴리곤과 탐지 bbox가 어긋나지 않으므로, 세 진입점
+    (probe/capture-frame/run) 모두 이 헬퍼를 통해 FrameSource를 만든다.
+    """
+
+    source: FrameSource = OpenCvWebcamFrameSource(
+        camera_index=args.camera_index, width=args.width, height=args.height
+    )
+    if args.calibration is None:
+        # --run은 validate_args에서 이미 막혔으므로, 여기 오는 건 probe/capture-frame뿐이다.
+        LOGGER.warning("--calibration이 없어 왜곡 보정 없이 원본 프레임을 사용합니다.")
+        return source
+    LOGGER.info("왜곡 보정을 적용합니다(calibration=%s, balance=%s).", args.calibration, args.remap_balance)
+    return RemapFrameSource(
+        inner=source, calibration_path=str(args.calibration), balance=args.remap_balance
+    )
 
 
 def probe_camera(args: argparse.Namespace) -> dict[str, Any]:
     """모델 없이 웹캠 초기화와 한 프레임 촬영만 점검한다."""
 
-    source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    source = _build_frame_source(args)
     source.open()
     try:
         frame = source.capture()
@@ -1053,26 +1236,59 @@ def probe_camera(args: argparse.Namespace) -> dict[str, Any]:
 def capture_calibration_frame(args: argparse.Namespace, path: Path) -> dict[str, Any]:
     """모델 없이 전체 웹캠 프레임을 지정한 경로에 저장한다(구역 폴리곤 좌표 산출용)."""
 
-    source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    source = _build_frame_source(args)
     source.open()
     try:
         frame = source.capture()
         save_rgb_image(path, frame.image)
     finally:
         source.close()
+    fingerprint = calibration_fingerprint(args.calibration, args.remap_balance)
+    # 이 프레임 위에 폴리곤을 찍어 zones.json을 만들 사람이 그대로 복사해 넣도록 남긴다.
+    # zones.json의 최상위에 "calibration" 키로 넣으면 --run이 좌표계 일치를 검증한다.
+    sidecar = path.with_suffix(path.suffix + ".provenance.json")
+    sidecar.write_text(json.dumps({"calibration": fingerprint}, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "status": "SUCCESS",
         "path": str(path),
+        "provenance_path": str(sidecar),
+        "calibration": fingerprint,
         "frame_shape": list(frame.image.shape),
         "captured_at": frame.captured_at.isoformat(),
     }
+
+
+def verify_zone_calibration(args: argparse.Namespace) -> None:
+    """zones 파일이 현재 보정 설정과 같은 좌표계에서 찍혔는지 확인한다.
+
+    `--capture-frame`이 남긴 `calibration` 지문을 zones.json에 복사해둔 경우에만 검증할 수
+    있다. 없으면 경고만 하고 통과시킨다(기존 zones 파일과의 호환).
+    """
+
+    payload = json.loads(args.zones_file.read_text(encoding="utf-8"))
+    recorded = payload.get("calibration")
+    expected = calibration_fingerprint(args.calibration, args.remap_balance)
+    if recorded is None:
+        LOGGER.warning(
+            "zones 파일에 calibration 지문이 없어 좌표계 일치를 검증할 수 없습니다(%s). "
+            "보정 없이 캡처한 폴리곤이면 최대 130px 어긋날 수 있습니다 — "
+            "--capture-frame으로 다시 캡처하고 생성된 provenance를 zones에 복사하세요.",
+            args.zones_file,
+        )
+        return
+    if recorded != expected:
+        raise BaselineError(
+            f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones={recorded}, 현재={expected}. "
+            f"같은 --calibration/--remap-balance로 --capture-frame을 다시 실행해 폴리곤을 재작성하세요."
+        )
 
 
 def run_monitor(args: argparse.Namespace) -> int:
     """웹캠 → 트래커 → 위반 판정 → 발행까지 이어지는 실시간 루프를 실행한다."""
 
     zones = ZoneRegistry.from_file(args.zones_file)
-    frame_source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    verify_zone_calibration(args)
+    frame_source = _build_frame_source(args)
     tracker = UltralyticsVehicleTracker(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence
     )
