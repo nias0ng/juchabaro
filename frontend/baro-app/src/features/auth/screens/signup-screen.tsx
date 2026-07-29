@@ -34,7 +34,7 @@ export default function SignupScreen() {
 
           <SignupSteps
             signup={signup}
-            onRegisterVehicle={() => router.replace('/resident/vehicles')}
+            onRegisterVehicle={() => router.push('/auth/register-car')}
             onGoHome={() => router.replace('/resident')}
           />
 
