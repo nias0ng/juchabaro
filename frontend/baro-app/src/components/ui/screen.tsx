@@ -1,7 +1,11 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import type { ReactNode } from 'react';
 import {
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   View,
+  type ColorValue,
   type ScrollViewProps,
   type StyleProp,
   type ViewStyle,
@@ -16,6 +20,9 @@ type ScreenProps = {
   children: ReactNode;
   scroll?: boolean;
   backgroundColor?: string;
+  backgroundGradient?: readonly [ColorValue, ColorValue, ...ColorValue[]];
+
+  avoidKeyboard?: boolean;
   edges?: Edge[];
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
@@ -26,6 +33,8 @@ export function Screen({
   children,
   scroll = false,
   backgroundColor,
+  backgroundGradient,
+  avoidKeyboard = false,
   edges = ['top', 'right', 'bottom', 'left'],
   style,
   contentContainerStyle,
@@ -34,13 +43,13 @@ export function Screen({
   const theme = useTheme();
   const screenStyle = [
     styles.safeArea,
-    { backgroundColor: backgroundColor ?? theme.background },
+    { backgroundColor: backgroundGradient ? 'transparent' : backgroundColor ?? theme.background },
     style,
   ];
 
-  if (scroll) {
-    return (
-      <SafeAreaView style={screenStyle} edges={edges}>
+  const body = (
+    <SafeAreaView style={screenStyle} edges={edges}>
+      {scroll ? (
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={[styles.content, contentContainerStyle]}
@@ -49,13 +58,30 @@ export function Screen({
         >
           {children}
         </ScrollView>
-      </SafeAreaView>
-    );
+      ) : (
+        <View style={[styles.content, contentContainerStyle]}>{children}</View>
+      )}
+    </SafeAreaView>
+  );
+
+  const background = backgroundGradient ? (
+    <LinearGradient colors={backgroundGradient} style={styles.fill}>
+      {body}
+    </LinearGradient>
+  ) : (
+    body
+  );
+
+  if (!avoidKeyboard) {
+    return background;
   }
 
   return (
-    <SafeAreaView style={screenStyle} edges={edges}>
-      <View style={[styles.content, contentContainerStyle]}>{children}</View>
-    </SafeAreaView>
+    <KeyboardAvoidingView
+      style={styles.fill}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      {background}
+    </KeyboardAvoidingView>
   );
 }
