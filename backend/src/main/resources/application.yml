@@ -1,3 +1,7 @@
+jwt:
+  secret: ${JWT_SECRET:local-dev-secret-change-me-please-32byte-min!!}
+  access-token-validity-seconds: 3600
+
 spring:
   application:
     name: parking

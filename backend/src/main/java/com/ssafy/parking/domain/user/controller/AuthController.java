@@ -1,6 +1,8 @@
 package com.ssafy.parking.domain.user.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
+import com.ssafy.parking.domain.user.dto.LoginRequest;
+import com.ssafy.parking.domain.user.dto.LoginResponse;
 import com.ssafy.parking.domain.user.dto.SignupRequest;
 import com.ssafy.parking.domain.user.dto.SignupResponse;
 import com.ssafy.parking.domain.user.service.UserService;
@@ -28,5 +30,15 @@ public class AuthController {
         return ResponseEntity
                 .status(HttpStatus.CREATED)
                 .body(ApiResponse.success(HttpStatus.CREATED, "회원가입이 완료되었습니다.", result));
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<ApiResponse<LoginResponse>> login(
+            @Valid @RequestBody LoginRequest request
+    ) {
+        LoginResponse result = userService.login(request);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "로그인에 성공했습니다.", result)
+        );
     }
 }
