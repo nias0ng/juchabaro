@@ -1,3 +1,8 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  forward-headers-strategy: framework
+
 jwt:
   secret: ${JWT_SECRET:local-dev-secret-change-me-please-32byte-min!!}
   access-token-validity-seconds: 3600
@@ -24,10 +29,6 @@ spring:
       hibernate:
         jdbc:
           time_zone: Asia/Seoul
-
-server:
-  port: ${SERVER_PORT:8080}
-  shutdown: graceful
 
 management:
   endpoints:
