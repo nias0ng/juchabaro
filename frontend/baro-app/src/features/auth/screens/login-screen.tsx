@@ -79,11 +79,10 @@ useEffect(() => {
 
   // return 밑이 UI를 정의하는 영역
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <Screen scroll backgroundColor={Palette.gray50}>
-        <ResponsiveContainer>
-          <Stack gap={Spacing.xl}>
-            <AuthHeader title="로그인" />
+    <Screen scroll avoidKeyboard backgroundColor={Palette.gray50}>
+      <ResponsiveContainer>
+        <Stack gap={Spacing.xl}>
+          <AuthHeader title="로그인" />
 
             <Stack gap={Spacing.xs}>
               <Text style={styles.heading}>반가워요!</Text>
@@ -141,8 +140,49 @@ useEffect(() => {
               </Text>
             </Pressable>
           </Stack>
-        </ResponsiveContainer>
-      </Screen>
-    </KeyboardAvoidingView>
+
+          <Stack gap={Spacing.base}>
+            <TextField
+              label="아이디"
+              value={username}
+              onChangeText={setUsername}
+              placeholder="아이디를 입력해 주세요"
+              autoComplete="username"
+            />
+            <TextField
+              label="비밀번호"
+              value={password}
+              onChangeText={setPassword}
+              placeholder="비밀번호를 입력해 주세요"
+              secureTextEntry
+              autoComplete="password"
+            />
+          </Stack>
+
+          <Stack direction="row" gap={Spacing.lg}>
+            <CheckboxOption label="로그인 유지" checked={keepSignedIn} onChange={setKeepSignedIn} />
+            <CheckboxOption label="아이디 저장" checked={saveUsername} onChange={setSaveUsername} />
+          </Stack>
+
+          <AppButton
+            label="로그인"
+            variant="neutral"
+            size="lg"
+            fullWidth
+            disabled={!canSubmit}
+            onPress={handleSubmit}
+          />
+
+          <Pressable
+            accessibilityRole="button"
+            style={styles.footerRow}
+            onPress={() => router.push('/auth/signup')}
+          >
+            <Text style={styles.footerText}>
+              아직 계정이 없으신가요? <Text style={styles.footerLink}>회원가입</Text>
+            </Text>
+          </Pressable>
+      </ResponsiveContainer>
+    </Screen>
   );
 }

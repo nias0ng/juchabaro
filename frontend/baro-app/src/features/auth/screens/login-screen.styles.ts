@@ -3,9 +3,6 @@ import { StyleSheet } from 'react-native';
 import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
   heading: {
     fontSize: 24,
     fontWeight: FontWeight.bold,

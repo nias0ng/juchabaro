@@ -11,7 +11,7 @@ import { Palette } from '@/styles';
 
 import { styles } from './app-button.styles';
 
-type AppButtonVariant = 'primary' | 'secondary' | 'neutral';
+type AppButtonVariant = 'primary' | 'secondary' | 'neutral' | 'muted';
 type AppButtonSize = 'sm' | 'md' | 'lg';
 
 type AppButtonProps = Omit<PressableProps, 'children'> & {
@@ -50,6 +50,11 @@ export function AppButton({
       backgroundColor: Palette.gray950,
       borderColor: Palette.gray950,
       textColor: Palette.white,
+    },
+    muted: {
+      backgroundColor: theme.surface,
+      borderColor: theme.surface,
+      textColor: theme.textSecondary,
     },
   }[variant];
 
