@@ -3,7 +3,6 @@ import { getJson, postJson } from '@/services/http-client';
 import { getMyProfileMock, loginMock, signupMock } from './auth-api.mock';
 import type { LoginRequest, LoginResult, SignupRequest, SignupResult, UserProfile } from './types';
 
-// TODO(auth-api): 백엔드 인증 API가 준비되면 이 값을 false로 전환하고 실제 API를 검증한다.
 const useMockAuth = __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_AUTH === 'true';
 
 // 로그인 API 호출
@@ -30,5 +29,5 @@ export function signup(request: SignupRequest): Promise<SignupResult> {
     return signupMock(request);
   }
 
-  return postJson<SignupResult>('/auth/signup', request);
+  return postJson<SignupResult>('/api/auth/signup', request);
 }

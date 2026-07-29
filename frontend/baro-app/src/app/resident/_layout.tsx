@@ -1,12 +1,30 @@
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
+import { ActivityIndicator, View } from 'react-native';
 
+import { useAuth } from '@/providers/auth-provider';
 import { FontWeight, Palette } from '@/styles';
 
 /*
   ResidentLayout : 입주민 앱의 탭바 레이아웃
   - 홈, 요청, 알림, 내 정보 탭으로 구성
+  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/알림/내정보/차량 등)에 들어올 수 없다.
 */
 export default function ResidentLayout() {
+  const { status } = useAuth();
+
+  // 세션 복원이 끝나기 전에는 guest로 단정할 수 없으므로 로딩 상태로 대기한다.
+  if (status === 'loading') {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Palette.white }}>
+        <ActivityIndicator color={Palette.violet600} />
+      </View>
+    );
+  }
+
+  if (status === 'guest') {
+    return <Redirect href="/auth/login" />;
+  }
+
   return (
     <Tabs
       screenOptions={{
