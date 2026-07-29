@@ -11,10 +11,16 @@ gitignore됨)으로 합친다. 여러 Task가 같은 영상에서 나온 경우�
 
 ```
 uv run --with-requirements requirements.txt python scripts/build_vehicle_dataset.py \
-  --raw-dir data/raw/vehicle --output data/processed/vehicle --val-tasks 8
+  --raw-dir data/raw/vehicle --output data/processed/vehicle --val-tasks 8,9
 ```
 
-`--val-tasks`는 val로 뺄 CVAT task id 목록(쉼표 구분). `configs/yolo_vehicle.yaml`의 `data:`는
+`--val-tasks`는 val로 뺄 CVAT task id 목록(쉼표 구분, 기본값 `8,9`). Task는 프레임당 차량 수
+기준으로 한쪽에 쏠려있는 경우가 많다(예: task4/7/8은 90%+가 2대 이상, task9/10은 90%+가 1대) —
+val을 task8 하나로만 잡으면 검증셋이 거의 전부 "2대 이상" 프레임이 되어 "1대(정상주차)" 조건의
+성능을 사실상 검증하지 못한다. task8(2대 위주) + task9(1대 위주)를 같이 val로 묶어야 전체
+풀의 1대:2대 비율(약 33:65)에 가까운, 대표성 있는 val이 나온다.
+
+`configs/yolo_vehicle.yaml`의 `data:`는
 이 스크립트가 만든 `data/processed/vehicle/data.yaml`을 가리킨다. 실데이터가 없으면
 Ultralytics 내장 `coco8.yaml`(이미지 8장, 최초 실행 시 자동 다운로드)로 되돌려 스모크 테스트용으로 쓸 수 있다.
 
