@@ -37,6 +37,11 @@ public enum ErrorCode {
             "사용자 정보를 찾을 수 없습니다."
     ),
 
+    DUPLICATE_PLATE_NUMBER(
+            HttpStatus.CONFLICT,
+            "이미 등록된 차량 번호입니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
