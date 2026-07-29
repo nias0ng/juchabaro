@@ -18,6 +18,11 @@ public enum ErrorCode {
             "요청한 리소스를 찾을 수 없습니다."
     ),
 
+    DUPLICATE_LOGIN_ID(
+            HttpStatus.CONFLICT,
+            "이미 사용 중인 로그인 아이디입니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
