@@ -43,6 +43,8 @@ def main() -> None:
                 logger.info("Vehicle entry detected.")
 
             time.sleep(MEASUREMENT_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        pass
     finally:
         sensor.cleanup()
         logger.info("Raspberry Pi entry service stopped.")
