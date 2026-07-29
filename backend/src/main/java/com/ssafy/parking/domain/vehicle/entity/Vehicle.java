@@ -78,4 +78,11 @@ public class Vehicle extends BaseEntity {
         this.visitDate = visitDate;
         this.status = status;
     }
+
+    public void changePlateNumber(String plateNumber) { this.plateNumber = plateNumber; }
+    public void changeVehicleModel(String vehicleModel) { this.vehicleModel = vehicleModel; }
+    public void changeDisabledVehicle(boolean disabledVehicle) { this.disabledVehicle = disabledVehicle; }
+    public void changeElectric(boolean electric) { this.electric = electric; }
+    public void changeOwnerType(VehicleOwnerType ownerType) { this.ownerType = ownerType; }
+    public void markDeleted() { this.status = VehicleStatus.DELETED; }
 }

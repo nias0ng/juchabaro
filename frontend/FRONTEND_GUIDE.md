@@ -80,37 +80,52 @@ const { width } = useWindowDimensions();
 
 ```text
 src/
-├─ app/                           # Expo Router 경로만 배치
-│  ├─ _layout.tsx                 # 앱 전체 화면 구조
-│  ├─ index.tsx                   # /
+├─ app/                            # Expo Router 경로만 배치
+│  ├─ _layout.tsx                  # 앱 전체 화면 구조 (AuthProvider로 감쌈)
+│  ├─ index.tsx                    # /
 │  ├─ auth/
 │  │  ├─ _layout.tsx
-│  │  ├─ index.tsx                # /auth
-│  │  ├─ login.tsx                # /auth/login
-│  │  └─ signup.tsx               # /auth/signup
+│  │  ├─ index.tsx                 # /auth
+│  │  ├─ login.tsx                 # /auth/login
+│  │  └─ signup.tsx                # /auth/signup
 │  └─ resident/
-│     ├─ _layout.tsx
-│     ├─ index.tsx                # /resident
+│     ├─ _layout.tsx               # 하단 탭바: 홈·요청·알림·내 정보
+│     ├─ index.tsx                 # /resident
+│     ├─ requests.tsx
 │     ├─ notifications.tsx
-│     ├─ vehicles.tsx
+│     ├─ vehicles.tsx              # 탭바엔 없지만 라우트는 유지(홈의 바로가기로 진입)
 │     └─ my-page.tsx
 │
-├─ features/                      # 실제 기능과 화면
+├─ features/                       # 실제 기능과 화면
 │  ├─ auth/
-│  │  └─ screens/
-│  │     ├─ auth-welcome-screen.tsx
-│  │     ├─ auth-welcome-screen.styles.ts
-│  │     ├─ login-screen.tsx
-│  │     └─ signup-screen.tsx
+│  │  ├─ api/                      # 로그인 API 요청/응답
+│  │  │  ├─ auth-api.ts
+│  │  │  ├─ auth-api.mock.ts       # 백엔드 준비 전 쓰는 목 데이터
+│  │  │  └─ types.ts
+│  │  ├─ components/               # 인증 화면 전용 컴포넌트
+│  │  │  ├─ auth-header.tsx
+│  │  │  ├─ checkbox-option.tsx
+│  │  │  └─ text-field.tsx
+│  │  ├─ hooks/
+│  │  │  └─ use-saved-username.ts
+│  │  ├─ screens/
+│  │  │  ├─ auth-welcome-screen.tsx
+│  │  │  ├─ login-screen.tsx
+│  │  │  └─ signup-screen.tsx
+│  │  └─ services/
+│  │     └─ saved-username-storage.ts
 │  └─ resident/
+│     ├─ components/
+│     │  └─ tab-bar-icon.tsx
 │     └─ screens/
 │        ├─ home-screen.tsx
+│        ├─ requests-screen.tsx
 │        ├─ notifications-screen.tsx
 │        ├─ vehicles-screen.tsx
 │        └─ my-page-screen.tsx
 │
 ├─ components/
-│  └─ ui/                         # 여러 기능에서 사용하는 공통 UI
+│  └─ ui/                          # 여러 기능에서 사용하는 공통 UI
 │     ├─ app-button.tsx
 │     ├─ responsive-container.tsx
 │     ├─ screen.tsx
@@ -118,16 +133,30 @@ src/
 │     ├─ themed-text.tsx
 │     └─ themed-view.tsx
 │
-├─ hooks/                         # 앱 전체에서 사용하는 공통 Hook
+├─ providers/                      # 앱 전체 Provider
+│  └─ auth-provider.tsx            # 로그인 상태(loading/guest/authenticated) 관리
 │
-└─ styles/                        # 전역 디자인 시스템
-   ├─ colors.ts                   # 색상과 라이트/다크 테마
-   ├─ spacing.ts                  # 간격과 border radius
-   ├─ typography.ts               # 폰트 크기, 굵기, 줄 높이
-   ├─ layout.ts                   # breakpoint, 최대 폭, 버튼 높이
-   ├─ global.css                  # 브라우저 전용 전역 CSS
-   └─ index.ts                    # 스타일 통합 export
+├─ services/                       # 공통 API 클라이언트와 저장소
+│  ├─ http-client.ts               # 공통 fetch, 응답 포맷 해석, ApiError 변환
+│  ├─ api-error.ts
+│  └─ session-storage.ts           # accessToken/refreshToken 저장 (SecureStore/AsyncStorage)
+│
+├─ hooks/                          # 앱 전체에서 사용하는 공통 Hook
+│  └─ use-theme.ts
+│
+├─ types/
+│  └─ env.d.ts                     # process.env.EXPO_PUBLIC_* 타입 선언
+│
+└─ styles/                         # 전역 디자인 시스템
+   ├─ colors.ts                    # 색상과 라이트/다크 테마
+   ├─ spacing.ts                   # 간격과 border radius
+   ├─ typography.ts                # 폰트 크기, 굵기, 줄 높이
+   ├─ layout.ts                    # breakpoint, 최대 폭, 버튼 높이
+   ├─ global.css                   # 브라우저 전용 전역 CSS
+   └─ index.ts                     # 스타일 통합 export
 ```
+
+로컬 스타일이 있는 화면·컴포넌트는 위 목록에 안 적었어도 옆에 같은 이름의 `.styles.ts`가 나란히 있습니다 (3장 참고). 예를 들어 `home-screen.tsx` 옆에는 `home-screen.styles.ts`가 있습니다.
 
 ### 왜 `app`과 `features`를 나누나요?
 
@@ -615,7 +644,181 @@ npm.cmd run lint
 
 ---
 
-## 10. AI를 사용할 때 지켜야 할 규칙
+## 10. 환경 변수 이해하기
+
+서버 주소처럼 실행 환경마다 달라질 수 있는 값은 코드에 직접 적지 않고 환경 변수로 분리합니다.
+
+### `EXPO_PUBLIC_` 접두사
+
+Expo는 `EXPO_PUBLIC_`으로 시작하는 환경 변수만 앱 번들에 포함시킵니다. 이 접두사가 없는 값은 앱 코드에서 읽을 수 없습니다.
+
+```text
+EXPO_PUBLIC_API_BASE_URL=http://localhost:8080
+```
+
+이 규칙 덕분에 접두사 없는 환경 변수(서버 전용 비밀 키 등)를 실수로 앱에 포함시키는 사고를 막을 수 있습니다.
+
+### `.env.local`과 `.env.example`
+
+- `.env.local`: 실제 값을 넣는 파일. git에 커밋되지 않습니다.
+- `.env.example`: 어떤 값이 필요한지 보여주는 견본. 실제 값 대신 예시만 넣고 커밋합니다.
+
+새로 프로젝트를 받으면 다음처럼 시작합니다.
+
+```powershell
+cd frontend\baro-app
+copy .env.example .env.local
+```
+
+그리고 `.env.local` 안의 값을 실제 서버 주소로 바꿉니다.
+
+### 값을 바꿨는데 반영이 안 돼요
+
+환경 변수는 앱을 번들링하는 시점에 코드 안에 값이 그대로 박혀 들어갑니다. `.env.local`을 새로 만들거나 값을 바꾼 뒤에는 실행 중인 개발 서버를 껐다가 다시 켜야 합니다.
+
+```powershell
+# Ctrl+C로 끄고 다시
+npm start
+```
+
+### 타입 체크가 되게 하려면
+
+`process.env.EXPO_PUBLIC_API_BASE_URL`처럼 새 환경 변수를 코드에서 쓰려면 `src/types/env.d.ts`에 선언을 추가합니다.
+
+```ts
+declare namespace NodeJS {
+  interface ProcessEnv {
+    EXPO_PUBLIC_API_BASE_URL?: string;
+  }
+}
+```
+
+---
+
+## 11. 목(mock) 데이터로 개발하기
+
+백엔드 API가 아직 배포되지 않았어도, 목(mock) 데이터를 사용하면 화면을 미리 개발하고 테스트할 수 있습니다.
+
+### 기본 형태
+
+실제 API 함수와 같은 반환 타입을 가진 목 함수를 별도 파일에 만듭니다.
+
+```ts
+// auth-api.mock.ts
+export async function loginMock(request: LoginRequest): Promise<LoginResult> {
+  await delay(800); // 실제 네트워크처럼 약간의 지연을 흉내낸다
+
+  if (request.loginId === 'fail') {
+    throw new ApiError('아이디 또는 비밀번호가 올바르지 않습니다.', 401, 1001);
+  }
+
+  return { accessToken: 'mock-access-token' /* ... */ };
+}
+```
+
+실제 API 파일에서는 환경 변수로 분기합니다.
+
+```ts
+// auth-api.ts
+const useMockAuth = __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_AUTH === 'true';
+
+export function login(request: LoginRequest): Promise<LoginResult> {
+  if (useMockAuth) {
+    return loginMock(request);
+  }
+  return postJson<LoginResult>('/api/auth/login', request);
+}
+```
+
+### 왜 `__DEV__`를 같이 확인하나요?
+
+`__DEV__`는 개발 모드에서만 `true`입니다. 이 조건이 없으면 실수로 목 모드 플래그가 켜진 채로 앱스토어에 배포될 위험이 있습니다. `__DEV__ && 환경변수` 조합은 "개발 중이고, 그리고 명시적으로 목 모드를 켰을 때만" 목 데이터를 쓰게 하는 이중 안전장치입니다.
+
+### 실제 API가 준비되면
+
+목 파일과 분기 코드를 지우고, 관련 환경 변수도 `.env.example`에서 제거합니다.
+
+---
+
+## 12. 토큰과 민감한 값은 어디에 저장하나요?
+
+로그인하면 서버가 accessToken, refreshToken을 내려줍니다. 이 값들은 앱을 껐다 켜도 유지되어야 하지만, 아무 곳에나 저장하면 안 됩니다.
+
+### 저장소 두 가지
+
+| 저장소 | 특징 | 용도 |
+| --- | --- | --- |
+| `AsyncStorage` | 평문 저장 (암호화 안 됨) | 민감하지 않은 값 (저장된 아이디 등) |
+| `expo-secure-store` | 기기의 암호화 저장소 사용 | 민감한 값 (accessToken, refreshToken) |
+
+### 웹에서는 SecureStore가 동작하지 않아요
+
+`expo-secure-store`는 iOS/Android 전용이고, 웹에서는 빈 구현체만 있어서 호출하면 에러가 납니다. 브라우저에는 애초에 OS 수준 보안 저장소가 없기 때문입니다. 그래서 웹에서만 `AsyncStorage`로 대체합니다.
+
+```ts
+const isWeb = Platform.OS === 'web';
+
+const storage = {
+  getItem: (key: string) => (isWeb ? AsyncStorage.getItem(key) : SecureStore.getItemAsync(key)),
+  setItem: (key: string, value: string) =>
+    isWeb ? AsyncStorage.setItem(key, value) : SecureStore.setItemAsync(key, value),
+};
+```
+
+### 화면에서 직접 호출하지 않기
+
+화면이나 Hook이 `AsyncStorage`/`SecureStore`를 직접 부르지 않고, `services/session-storage.ts` 같은 파일이 감싼 함수(`saveSession`, `getSession`, `clearSession`)만 사용합니다. 저장 방식이 바뀌어도 이 파일만 고치면 되기 때문입니다.
+
+---
+
+## 13. API 호출은 어떻게 구조화하나요?
+
+로그인 API를 예로 들면, 실제로 파일 4개가 관여합니다.
+
+```text
+화면 (login-screen.tsx)
+  → Provider/Hook (auth-provider.tsx)
+    → API 함수 (features/auth/api/auth-api.ts)
+      → 공통 클라이언트 (services/http-client.ts)
+        → fetch()
+```
+
+### `services/http-client.ts`가 하는 일
+
+모든 API가 같은 응답 형태(`httpStatus`, `isSuccess`, `message`, `code`, `result`)를 쓴다면, 이 형태를 해석하는 코드를 한 곳에만 둡니다.
+
+```ts
+if (!response.ok || !body?.isSuccess) {
+  throw new ApiError(body?.message ?? '요청을 처리하지 못했습니다.', response.status, body?.code);
+}
+return body.result;
+```
+
+### `features/<기능>/api/*.ts`가 하는 일
+
+이 파일은 "어떤 주소에 뭘 보내는지"만 담당하고, fetch나 응답 해석 로직은 없습니다.
+
+```ts
+export function login(request: LoginRequest): Promise<LoginResult> {
+  return postJson<LoginResult>('/api/auth/login', request);
+}
+```
+
+### 새 기능(차량, 알림 등) API를 추가할 때
+
+같은 구조를 그대로 따릅니다.
+
+```text
+features/vehicles/api/
+├─ types.ts         # 요청/응답 타입
+└─ vehicle-api.ts    # http-client를 부르는 얇은 함수들
+```
+
+새로운 응답 형식을 발견하면 `services/http-client.ts`의 공통 타입부터 확인하고, 다르면 그 부분만 조정합니다.
+
+---
+
+## 14. AI를 사용할 때 지켜야 할 규칙
 
 AI에게 작업을 요청할 때는 다음 내용을 함께 전달합니다.
 
@@ -655,7 +858,7 @@ AI가 작성한 코드도 반드시 사람이 확인해야 합니다.
 
 ---
 
-## 11. 기본 작업 순서
+## 15. 기본 작업 순서
 
 ```text
 1. 관련 파일과 공통 컴포넌트 확인
@@ -679,7 +882,7 @@ npm.cmd run lint
 
 ---
 
-## 12. 작업 완료 체크리스트
+## 16. 작업 완료 체크리스트
 
 ### 구조
 
@@ -701,6 +904,13 @@ npm.cmd run lint
 - [ ] 오류 상태를 처리했는가?
 - [ ] 버튼 중복 제출을 막았는가?
 - [ ] 개인정보와 토큰을 로그에 출력하지 않았는가?
+
+### API·저장소
+
+- [ ] API 호출이 `services/http-client.ts`를 거치는가? (fetch를 직접 부르지 않았는가?)
+- [ ] 목 데이터를 쓴다면 `__DEV__` 조건과 함께 분기했는가?
+- [ ] 민감한 값(토큰)은 `expo-secure-store`(웹은 `AsyncStorage`로 대체)에 저장했는가?
+- [ ] 새 환경 변수를 추가했다면 `.env.example`과 `src/types/env.d.ts`도 같이 갱신했는가?
 
 ### 검증
 

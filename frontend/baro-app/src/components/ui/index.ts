@@ -1,4 +1,5 @@
 export * from './app-button';
+export * from './avatar';
 export * from './responsive-container';
 export * from './screen';
 export * from './stack';

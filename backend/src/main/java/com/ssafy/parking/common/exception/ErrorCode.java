@@ -37,6 +37,41 @@ public enum ErrorCode {
             "사용자 정보를 찾을 수 없습니다."
     ),
 
+    DUPLICATE_PLATE_NUMBER(
+            HttpStatus.CONFLICT,
+            "이미 등록된 차량 번호입니다."
+    ),
+
+    VEHICLE_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "차량 정보를 찾을 수 없습니다."
+    ),
+
+    VEHICLE_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 차량에 접근할 권한이 없습니다."
+    ),
+
+    VEHICLE_UPDATE_INVALID(
+            HttpStatus.BAD_REQUEST,
+            "차량 수정 요청 값이 올바르지 않습니다."
+    ),
+
+    VEHICLE_UPDATE_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 차량을 수정할 권한이 없습니다."
+    ),
+
+    VEHICLE_DELETE_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 차량을 삭제할 권한이 없습니다."
+    ),
+
+    VEHICLE_HAS_ACTIVE_RECORD(
+            HttpStatus.CONFLICT,
+            "처리 중인 주차 기록이 있어 차량을 삭제할 수 없습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
