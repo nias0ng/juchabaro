@@ -41,15 +41,4 @@ export const styles = StyleSheet.create({
     borderBottomLeftRadius: 3,
     borderBottomRightRadius: 3,
   },
-  notificationDot: {
-    position: 'absolute',
-    top: 8,
-    right: 9,
-    width: 10,
-    height: 10,
-    borderRadius: Radius.full,
-    backgroundColor: Palette.coral500,
-    borderWidth: 1,
-    borderColor: Palette.white,
-  },
 });

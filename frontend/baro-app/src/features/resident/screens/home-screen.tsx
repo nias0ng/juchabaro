@@ -8,7 +8,9 @@ import { ParkingStatusCard } from '@/features/resident/components/parking-status
 import { QuickActionGrid, type QuickAction } from '@/features/resident/components/quick-action-grid';
 import { VehicleStatusCard } from '@/features/resident/components/vehicle-status-card';
 import { useParkingSessions } from '@/features/resident/hooks/use-parking-sessions';
+import { useParkingZoneSummary } from '@/features/resident/hooks/use-parking-zone-summary';
 import { pickPrimarySession, toVehicleStatusDisplay } from '@/features/resident/utils/parking-session';
+import { toParkingStatusDisplay } from '@/features/resident/utils/parking-zone';
 import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
 
@@ -16,9 +18,15 @@ import { styles } from './home-screen.styles';
 
 const DEFAULT_AVATAR_INITIAL = '바';
 const DEFAULT_UNIT_LABEL = '동/호수 정보 없음';
+const PARKING_STATUS_TITLE = '주차 현황 · 지하 1층';
 
 const quickActions: QuickAction[] = [
-  { label: '이동\n요청', background: Palette.mint100, iconColor: Palette.emerald500 },
+  {
+    label: '이동\n요청',
+    background: Palette.mint100,
+    iconColor: Palette.emerald500,
+    onPress: () => router.push('/resident/requests'),
+  },
   {
     label: '내\n차량',
     background: Palette.lavender100,
@@ -38,9 +46,22 @@ export default function HomeScreen() {
       ? `${user.buildingNumber}동 ${user.unitNumber}호`
       : DEFAULT_UNIT_LABEL;
 
-  const { sessions } = useParkingSessions();
+  const {
+    sessions,
+    isLoading: isSessionsLoading,
+    error: sessionsError,
+  } = useParkingSessions();
   const primarySession = pickPrimarySession(sessions);
   const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
+  const additionalSessionCount = Math.max(sessions.length - 1, 0);
+  const mySpotCodes = sessions.map((session) => session.spotCode);
+
+  const {
+    summary,
+    isLoading: isSummaryLoading,
+    error: summaryError,
+  } = useParkingZoneSummary();
+  const parkingStatus = summary ? toParkingStatusDisplay(summary, mySpotCodes) : null;
 
   return (
     <LinearGradient
@@ -60,9 +81,19 @@ export default function HomeScreen() {
 
           <QuickActionGrid actions={quickActions} />
 
-          <VehicleStatusCard session={vehicleStatus} />
+          <VehicleStatusCard
+            session={vehicleStatus}
+            additionalCount={additionalSessionCount}
+            isLoading={isSessionsLoading}
+            hasError={Boolean(sessionsError)}
+          />
 
-          <ParkingStatusCard title="주차 현황 · 지하 1층" congestionLabel="혼잡도 보통 · 62%" />
+          <ParkingStatusCard
+            title={PARKING_STATUS_TITLE}
+            status={parkingStatus}
+            isLoading={isSummaryLoading}
+            hasError={Boolean(summaryError)}
+          />
 
         </ResponsiveContainer>
       </Screen>

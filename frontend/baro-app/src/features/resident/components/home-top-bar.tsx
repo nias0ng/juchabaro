@@ -27,7 +27,6 @@ export function HomeTopBar({ unitLabel, avatarInitial, onPressNotification }: Ho
         onPress={onPressNotification}
       >
         <View style={styles.bellShape} />
-        <View style={styles.notificationDot} />
       </Pressable>
     </View>
   );

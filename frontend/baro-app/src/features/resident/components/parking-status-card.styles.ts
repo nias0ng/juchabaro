@@ -17,22 +17,20 @@ export const styles = StyleSheet.create({
   },
   congestionPill: {
     alignSelf: 'flex-start',
-    backgroundColor: Palette.amber50,
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.sm + 1,
-    paddingVertical: 3,
   },
   congestionText: {
     fontSize: 10.5,
     fontWeight: FontWeight.bold,
+  },
+  congestionTextLow: {
+    color: Palette.emerald500,
+  },
+  congestionTextMedium: {
     color: Palette.amber500,
   },
-  viewAllText: {
-    marginLeft: 'auto',
-    fontSize: 12.5,
-    color: Palette.violet500,
+  congestionTextHigh: {
+    color: Palette.red500,
   },
-
   card: {
     width: '100%',
     backgroundColor: Palette.white,
@@ -46,39 +44,6 @@ export const styles = StyleSheet.create({
     elevation: 2,
   },
 
-  mapPreview: {
-    width: '100%',
-    height: 112,
-    borderRadius: Radius.md + 6,
-    backgroundColor: '#f5f4fb',
-    padding: Spacing.sm,
-    gap: Spacing.xs,
-  },
-  mapRow: {
-    flexDirection: 'row',
-    gap: Spacing.xs,
-  },
-  mapCell: {
-    flex: 1,
-    height: 19,
-    borderRadius: 7,
-    backgroundColor: '#e7e5f3',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mapCellAlt: {
-    backgroundColor: '#d9d5ee',
-  },
-  mapCellViolation: {
-    backgroundColor: Palette.peach100,
-  },
-  mapCellMine: {
-    backgroundColor: Palette.mint100,
-  },
-  mapCellLabel: {
-    fontSize: 9,
-    fontWeight: FontWeight.bold,
-  },
   legendRow: {
     flexDirection: 'row',
     gap: Spacing.md,
@@ -92,6 +57,10 @@ export const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 3,
+  },
+  legendDotOutline: {
+    backgroundColor: Palette.white,
+    borderWidth: 1.5,
   },
   legendText: {
     fontSize: 10.5,

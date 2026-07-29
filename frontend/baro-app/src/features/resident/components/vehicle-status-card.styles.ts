@@ -81,4 +81,14 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
+  additionalCountBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: Radius.full,
+    backgroundColor: Palette.violet50,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    fontSize: 11,
+    fontWeight: FontWeight.bold,
+    color: Palette.violet600,
+  },
 });

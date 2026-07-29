@@ -20,6 +20,8 @@ export function QuickActionGrid({ actions }: QuickActionGridProps) {
         <Pressable
           key={action.label}
           accessibilityRole="button"
+          accessibilityState={{ disabled: !action.onPress }}
+          disabled={!action.onPress}
           style={[styles.action, { backgroundColor: action.background }]}
           onPress={action.onPress}
         >

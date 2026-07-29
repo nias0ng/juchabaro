@@ -1,68 +1,78 @@
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
+import type { ParkingStatusDisplay } from '@/features/resident/utils/parking-zone';
 import { Palette } from '@/styles';
 
+import { ParkingSpotMap } from './parking-spot-map';
 import { styles } from './parking-status-card.styles';
 
 type ParkingStatusCardProps = {
   title: string;
-  congestionLabel: string;
-  onPressViewAll?: () => void;
+  status: ParkingStatusDisplay | null;
+  isLoading?: boolean;
+  hasError?: boolean;
 };
 
-// 주차 맵 미리보기용 장식 그리드. 실제 주차면 데이터가 아니라 Figma의 축소 미리보기를 흉내낸 것이다.
-const mapRows: Array<Array<'empty' | 'altEmpty' | 'mine' | 'violation'>> = [
-  ['empty', 'altEmpty', 'empty', 'altEmpty', 'violation'],
-  ['mine', 'altEmpty', 'empty'],
-];
+export function ParkingStatusCard({
+  title,
+  status,
+  isLoading = false,
+  hasError = false,
+}: ParkingStatusCardProps) {
+  const congestionColorStyle =
+    status?.congestionLevel === 'LOW'
+      ? styles.congestionTextLow
+      : status?.congestionLevel === 'HIGH'
+        ? styles.congestionTextHigh
+        : styles.congestionTextMedium;
 
-export function ParkingStatusCard({ title, congestionLabel, onPressViewAll }: ParkingStatusCardProps) {
+  const mapMessage = isLoading
+    ? '주차 현황을 불러오는 중입니다'
+    : hasError
+      ? '주차 현황을 불러오지 못했습니다'
+      : !status
+        ? '표시할 주차 현황이 없습니다'
+        : undefined;
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>{title}</Text>
       </View>
       <View style={styles.card}>
-        <View style={styles.congestionPill}>
-          <Text style={styles.congestionText}>{congestionLabel}</Text>
-        </View>
+        {status ? (
+          <View style={styles.congestionPill}>
+            <Text style={[styles.congestionText, congestionColorStyle]}>
+              {status.congestionLabel}
+            </Text>
+          </View>
+        ) : null}
 
-        <View style={styles.mapPreview}>
-          {mapRows.map((row, rowIndex) => (
-            <View key={rowIndex} style={styles.mapRow}>
-              {row.map((cell, cellIndex) => (
-                <View
-                  key={cellIndex}
-                  style={[
-                    styles.mapCell,
-                    cell === 'altEmpty' && styles.mapCellAlt,
-                    cell === 'violation' && styles.mapCellViolation,
-                    cell === 'mine' && styles.mapCellMine,
-                  ]}
-                >
-                  {cell === 'violation' && (
-                    <Text style={[styles.mapCellLabel, { color: '#e05f38' }]}>위반</Text>
-                  )}
-                  {cell === 'mine' && <Text style={[styles.mapCellLabel, { color: '#1e8d80' }]}>내 차</Text>}
-                </View>
-              ))}
-            </View>
-          ))}
-        </View>
+        <ParkingSpotMap cells={status?.cells ?? []} message={mapMessage} />
 
         <View style={styles.legendRow}>
-
           <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#d9d5ee' }]} />
-            <Text style={styles.legendText}>주차 중</Text>
+            <View style={[styles.legendDot, { backgroundColor: Palette.violet300 }]} />
+            <Text style={styles.legendText}>{status ? status.occupiedLabel : '주차 중 -'}</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#e7e5f3' }]} />
-            <Text style={styles.legendText}>비어 있음 42</Text>
+            <View style={[styles.legendDot, { backgroundColor: Palette.gray100 }]} />
+            <Text style={styles.legendText}>{status ? status.availableLabel : '비어 있음 -'}</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: Palette.peach100 }]} />
-            <Text style={styles.legendText}>위반 1</Text>
+            <Text style={styles.legendText}>{status ? status.violationLabel : '위반 -'}</Text>
+          </View>
+        </View>
+
+        <View style={styles.legendRow}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, styles.legendDotOutline, { borderColor: Palette.blue500 }]} />
+            <Text style={styles.legendText}>장애인</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, styles.legendDotOutline, { borderColor: Palette.emerald500 }]} />
+            <Text style={styles.legendText}>전기차</Text>
           </View>
         </View>
       </View>

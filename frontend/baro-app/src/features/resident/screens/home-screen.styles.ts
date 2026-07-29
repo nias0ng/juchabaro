@@ -7,7 +7,7 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingBottom: Spacing.xxl,
+    paddingBottom: Spacing.lg,
     gap: Spacing.base,
   },
   greeting: {

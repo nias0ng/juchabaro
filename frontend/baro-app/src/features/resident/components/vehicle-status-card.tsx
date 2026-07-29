@@ -8,13 +8,27 @@ import { styles } from './vehicle-status-card.styles';
 
 type VehicleStatusCardProps = {
   session: VehicleStatusDisplay | null;
+  additionalCount?: number;
+  isLoading?: boolean;
+  hasError?: boolean;
 };
 
-export function VehicleStatusCard({ session }: VehicleStatusCardProps) {
-  if (!session) {
+export function VehicleStatusCard({
+  session,
+  additionalCount = 0,
+  isLoading = false,
+  hasError = false,
+}: VehicleStatusCardProps) {
+  if (isLoading || hasError || !session) {
+    const statusMessage = isLoading
+      ? '주차 정보를 불러오는 중입니다'
+      : hasError
+        ? '주차 정보를 불러오지 못했습니다'
+        : '주차된 차량이 없습니다';
+
     return (
       <View style={[styles.card, styles.emptyCard]}>
-        <Text style={styles.emptyText}>주차된 차량이 없습니다</Text>
+        <Text style={styles.emptyText}>{statusMessage}</Text>
       </View>
     );
   }
@@ -42,6 +56,10 @@ export function VehicleStatusCard({ session }: VehicleStatusCardProps) {
         <Text style={styles.fieldLabel}>위치</Text>
         <Text style={styles.fieldValue}>{session.location}</Text>
       </Stack>
+
+      {additionalCount > 0 ? (
+        <Text style={styles.additionalCountBadge}>+{additionalCount}대 더 주차 중</Text>
+      ) : null}
     </View>
   );
 }
