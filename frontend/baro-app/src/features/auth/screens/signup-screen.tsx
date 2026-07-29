@@ -15,6 +15,9 @@ const COMPLETE_BACKGROUND_GRADIENT = ['#eae7fb', '#f7f6fb'] as const;
 export default function SignupScreen() {
   const signup = useSignupForm();
   const isCompleteStep = signup.step === 4;
+  const goToAuthenticatedArea = (href: '/resident' | '/resident/vehicles') => {
+    router.replace(signup.autoLoginFailed ? '/auth/login' : href);
+  };
 
   return (
     <Screen
@@ -34,8 +37,8 @@ export default function SignupScreen() {
 
           <SignupSteps
             signup={signup}
-            onRegisterVehicle={() => router.replace('/resident/vehicles')}
-            onGoHome={() => router.replace('/resident')}
+            onRegisterVehicle={() => goToAuthenticatedArea('/resident/vehicles')}
+            onGoHome={() => goToAuthenticatedArea('/resident')}
           />
 
           {signup.errorMessage ? <AuthErrorBanner message={signup.errorMessage} /> : null}

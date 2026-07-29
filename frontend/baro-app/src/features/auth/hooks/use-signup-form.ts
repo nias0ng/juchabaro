@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 
+import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 
 import { signup } from '../api/auth-api';
@@ -31,7 +32,6 @@ const INITIAL_CONFIRM_VALUES: SignupConfirmFormValues = {
   agreePrivacy: false,
 };
 
-// TODO(#291): 단지 정보 API가 준비되면 로그인 초대 코드 또는 설정값에서 가져온다.
 const COMPLEX_NAME = 'SSAFY 아파트';
 
 /**
@@ -39,12 +39,14 @@ const COMPLEX_NAME = 'SSAFY 아파트';
  * 화면은 프레임만 담당하고 단계별 상태 판단은 이 훅에서 끝낸다.
  */
 export function useSignupForm() {
+  const { login } = useAuth();
   const [step, setStep] = useState<SignupStep>(1);
   const [accountValues, setAccountValues] = useState(INITIAL_ACCOUNT_VALUES);
   const [householdValues, setHouseholdValues] = useState(INITIAL_HOUSEHOLD_VALUES);
   const [confirmValues, setConfirmValues] = useState(INITIAL_CONFIRM_VALUES);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
+  const [autoLoginFailed, setAutoLoginFailed] = useState(false);
 
   const canSubmitStep = useMemo(() => {
     if (step === 1) return isAccountFormValid(accountValues);
@@ -79,7 +81,6 @@ export function useSignupForm() {
     setStep(target);
   }, []);
 
-  // 첫 단계에서는 이전 단계가 없어 헤더의 뒤로 가기가 기본 동작을 사용하도록 비워 둔다.
   const goToPreviousStep =
     step === 1 ? undefined : () => goToStep((step - 1) as SignupStep);
 
@@ -94,12 +95,20 @@ export function useSignupForm() {
         await signup({
           loginId: accountValues.username,
           password: accountValues.password,
-          // 백엔드 명세는 하이픈 없는 숫자만 받는다. 화면 표시용 포맷(010-1234-5678)과 분리한다.
           phoneNumber: accountValues.phone.replace(/-/g, ''),
           name: accountValues.name,
           buildingNumber: householdValues.buildingNumber,
           unitNumber: householdValues.unitNumber,
         });
+
+        // 입력한 아이디 비번으로 바로 로그인 해서 세션을 만듦
+        try {
+          await login(accountValues.username, accountValues.password, true);
+        } catch {
+          // 가입 이후 실패시 로그인 화면으로 리다이렉트
+          setAutoLoginFailed(true);
+        }
+
         setStep(4);
       } catch (error) {
         // ApiError면 서버 메시지(예: "이미 사용 중인 로그인 아이디입니다")를 그대로 보여준다.
@@ -123,6 +132,7 @@ export function useSignupForm() {
     confirmValues,
     isSubmitting,
     errorMessage,
+    autoLoginFailed,
     canSubmitStep,
     changeAccountValue,
     changeHouseholdValue,

@@ -1,3 +1,4 @@
+
 export type ParkingSessionStatus = 'PARKED' | 'VIOLATION';
 
 export type ParkingSession = {
