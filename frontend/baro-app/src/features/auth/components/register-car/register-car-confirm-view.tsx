@@ -70,7 +70,7 @@ export function RegisterCarConfirmView({
 
       <View style={styles.noticeBanner}>
         <Text style={styles.noticeText}>
-          등록 완료 후에도 내 정보 화면에서 언제든지 차량 정보를 수정할 수 있습니다.
+          내 정보 화면에서 차량 정보를 수정할 수 있습니다.
         </Text>
       </View>
 
