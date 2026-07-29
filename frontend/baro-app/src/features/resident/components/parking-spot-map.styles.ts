@@ -45,12 +45,10 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.mint100,
   },
   mapCellDisabled: {
-    borderWidth: 1.5,
-    borderColor: Palette.blue500,
+    backgroundColor: Palette.sky100,
   },
   mapCellEv: {
-    borderWidth: 1.5,
-    borderColor: Palette.emerald500,
+    backgroundColor: Palette.teal100,
   },
   mapCellLabel: {
     fontSize: 9,
@@ -61,5 +59,12 @@ export const styles = StyleSheet.create({
   },
   mineLabel: {
     color: Palette.emerald500,
+  },
+  disabledLabel: {
+    color: Palette.blue600,
+  },
+  evLabel: {
+    color: Palette.teal600,
+    fontWeight: FontWeight.regular,
   },
 });

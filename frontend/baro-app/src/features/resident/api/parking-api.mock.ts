@@ -10,7 +10,7 @@ const mockSessions: ParkingSession[] = [
     status: 'PARKED', // VIOLATION 으로 바꾸면 위반중으로 뜸
     zoneId: 3,
     zoneName: 'B1',
-    spotCode: 'EV-01',
+    spotCode: 'A-01',
     enteredAt: new Date().toISOString(),
   },
 ];
@@ -23,12 +23,12 @@ const mockZoneSummary: ParkingZoneSummary = {
   congestionRate: 50,
   congestionLevel: 'MEDIUM',
   spots: [
-    { spotCode: 'A-01', spotType: 'EV_CHARGING', status: 'OCCUPIED' },
+    { spotCode: 'EV-01', spotType: 'EV_CHARGING', status: 'EMPTY' },
     { spotCode: 'A-02', spotType: 'GENERAL', status: 'EMPTY' },
     { spotCode: 'A-03', spotType: 'GENERAL', status: 'VIOLATION' },
-    { spotCode: 'A-04', spotType: 'GENERAL', status: 'EMPTY' },
-    { spotCode: 'D-01', spotType: 'DISABLED', status: 'EMPTY' },
-    { spotCode: 'EV-01', spotType: 'EV_CHARGING', status: 'OCCUPIED' }, // mockSessions의 spotCode와 동일 -> '내 차' 칸으로 표시됨
+    { spotCode: 'A-04', spotType: 'DISABLED', status: 'EMPTY' },
+    { spotCode: 'D-01', spotType: 'GENERAL', status: 'OCCUPIED' },
+    { spotCode: 'A-01', spotType: 'GENERAL', status: 'OCCUPIED' }, // mockSessions의 spotCode와 동일 -> '내 차' 칸으로 표시됨
   ],
 };
 

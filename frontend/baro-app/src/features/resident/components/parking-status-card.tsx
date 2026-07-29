@@ -60,19 +60,16 @@ export function ParkingStatusCard({
             <Text style={styles.legendText}>{status ? status.availableLabel : '비어 있음 -'}</Text>
           </View>
           <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: Palette.teal100 }]} />
+            <Text style={styles.legendText}>충전구역</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: Palette.sky100 }]} />
+            <Text style={styles.legendText}>장애인구역</Text>
+          </View>
+          <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: Palette.peach100 }]} />
             <Text style={styles.legendText}>{status ? status.violationLabel : '위반 -'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.legendRow}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.legendDotOutline, { borderColor: Palette.blue500 }]} />
-            <Text style={styles.legendText}>장애인</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.legendDotOutline, { borderColor: Palette.emerald500 }]} />
-            <Text style={styles.legendText}>전기차</Text>
           </View>
         </View>
       </View>

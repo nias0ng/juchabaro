@@ -38,8 +38,13 @@ export const Palette = {
   peach100: '#ffdccd',
   sky100: '#d5e6ff',
   blue500: '#4f8ff0',
+  blue600: '#3f7bd6',
   amber50: '#fff4e0',
   amber500: '#f5a524',
+
+  // 주차 도면 - 장애인/전기차 구역
+  teal100: '#dff3ef',
+  teal600: '#1e8d80',
 } as const;
 
 /**

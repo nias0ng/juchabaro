@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 import { Avatar } from '@/components/ui';
 import { Spacing } from '@/styles';
 
+import { BellIcon } from './bell-icon';
 import { styles } from './home-top-bar.styles';
 
 type HomeTopBarProps = {
@@ -26,7 +27,7 @@ export function HomeTopBar({ unitLabel, avatarInitial, onPressNotification }: Ho
         style={styles.notificationButton}
         onPress={onPressNotification}
       >
-        <View style={styles.bellShape} />
+        <BellIcon size={20} />
       </Pressable>
     </View>
   );

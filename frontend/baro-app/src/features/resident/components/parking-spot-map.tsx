@@ -21,6 +21,33 @@ function chunkCells(cells: SpotCell[]): SpotCell[][] {
   return rows;
 }
 
+// 위반/내 차가 구역 유형(장애인/전기차) 표시보다 우선한다.
+type CellVariant = 'violation' | 'mine' | 'disabled' | 'ev' | 'occupied' | 'empty';
+
+function toCellVariant(cell: SpotCell): CellVariant {
+  if (cell.kind === 'violation') return 'violation';
+  if (cell.kind === 'mine') return 'mine';
+  if (cell.spotType === 'DISABLED') return 'disabled';
+  if (cell.spotType === 'EV_CHARGING') return 'ev';
+  if (cell.kind === 'occupied') return 'occupied';
+  return 'empty';
+}
+
+const CELL_STYLE: Partial<Record<CellVariant, object>> = {
+  violation: styles.mapCellViolation,
+  mine: styles.mapCellMine,
+  disabled: styles.mapCellDisabled,
+  ev: styles.mapCellEv,
+  occupied: styles.mapCellOccupied,
+};
+
+const CELL_LABEL: Partial<Record<CellVariant, { text: string; style: object }>> = {
+  violation: { text: '위반', style: styles.violationLabel },
+  mine: { text: '내 차', style: styles.mineLabel },
+  disabled: { text: '장애인', style: styles.disabledLabel },
+  ev: { text: 'EV', style: styles.evLabel },
+};
+
 export function ParkingSpotMap({ cells, message }: ParkingSpotMapProps) {
   const rows = chunkCells(cells);
 
@@ -31,26 +58,16 @@ export function ParkingSpotMap({ cells, message }: ParkingSpotMapProps) {
       ) : (
         rows.map((row, rowIndex) => (
           <View key={rowIndex} style={styles.mapRow}>
-            {row.map((cell) => (
-              <View
-                key={cell.spotCode}
-                style={[
-                  styles.mapCell,
-                  cell.kind === 'occupied' && styles.mapCellOccupied,
-                  cell.kind === 'violation' && styles.mapCellViolation,
-                  cell.kind === 'mine' && styles.mapCellMine,
-                  cell.spotType === 'DISABLED' && styles.mapCellDisabled,
-                  cell.spotType === 'EV_CHARGING' && styles.mapCellEv,
-                ]}
-              >
-                {cell.kind === 'violation' ? (
-                  <Text style={[styles.mapCellLabel, styles.violationLabel]}>위반</Text>
-                ) : null}
-                {cell.kind === 'mine' ? (
-                  <Text style={[styles.mapCellLabel, styles.mineLabel]}>내 차</Text>
-                ) : null}
-              </View>
-            ))}
+            {row.map((cell) => {
+              const variant = toCellVariant(cell);
+              const label = CELL_LABEL[variant];
+
+              return (
+                <View key={cell.spotCode} style={[styles.mapCell, CELL_STYLE[variant]]}>
+                  {label ? <Text style={[styles.mapCellLabel, label.style]}>{label.text}</Text> : null}
+                </View>
+              );
+            })}
           </View>
         ))
       )}

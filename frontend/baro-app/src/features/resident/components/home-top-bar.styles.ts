@@ -31,14 +31,4 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  bellShape: {
-    width: 15,
-    height: 16,
-    borderWidth: 1.3,
-    borderColor: Palette.gray975,
-    borderTopLeftRadius: 6,
-    borderTopRightRadius: 6,
-    borderBottomLeftRadius: 3,
-    borderBottomRightRadius: 3,
-  },
 });
