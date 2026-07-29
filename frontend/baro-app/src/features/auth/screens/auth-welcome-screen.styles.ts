@@ -26,7 +26,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: Spacing.md,
-    shadowColor: '#14161c',
+    shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 14 },
     shadowOpacity: 0.1,
     shadowRadius: 34,

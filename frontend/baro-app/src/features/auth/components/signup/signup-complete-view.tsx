@@ -2,13 +2,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Text, View } from 'react-native';
 
 import { AppButton } from '@/components/ui';
+import { Gradients } from '@/styles';
 
 import type { SignupAccountFormValues, SignupHouseholdFormValues } from '../../types/signup';
 
 import { styles } from './signup-complete-view.styles';
-
-const COMPLETE_ICON_GRADIENT = ['#8b7ff0', '#6fcfc4'] as const;
-const PROFILE_AVATAR_GRADIENT = ['#6fcfc4', '#8b7ff0'] as const;
 
 type SignupCompleteViewProps = {
   account: SignupAccountFormValues;
@@ -31,7 +29,7 @@ export function SignupCompleteView({
     <View style={styles.container}>
       <View style={styles.iconCircle}>
         <LinearGradient
-          colors={COMPLETE_ICON_GRADIENT}
+          colors={Gradients.signupCompleteIcon}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.iconGradient}
@@ -45,7 +43,7 @@ export function SignupCompleteView({
 
       <View style={styles.profileCard}>
         <LinearGradient
-          colors={PROFILE_AVATAR_GRADIENT}
+          colors={Gradients.avatar}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.profileAvatar}

@@ -2,14 +2,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Stack } from '@/components/ui';
-import { Palette, Spacing } from '@/styles';
+import { Gradients, Palette, Spacing } from '@/styles';
 
 import type { SignupHouseholdFormValues } from '../../types/signup';
 
 import { SignupStepHeading } from './signup-step-heading';
 import { styles } from './signup-household-form.styles';
 
-const COMPLEX_CARD_GRADIENT = ['#dcd7fb', '#d5e6ff'] as const;
 const UNIT_NUMBER_MAX_LENGTH = 4;
 
 type SignupHouseholdFormProps = {
@@ -30,7 +29,7 @@ export function SignupHouseholdForm({ complexName, values, onChange }: SignupHou
       />
 
       <LinearGradient
-        colors={COMPLEX_CARD_GRADIENT}
+        colors={Gradients.signupHouseholdCard}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.complexCard}
