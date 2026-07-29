@@ -178,6 +178,32 @@ minHeight: ControlHeight.lg,
   - empty
   - error
 
+## 환경 변수
+
+- `EXPO_PUBLIC_` 접두사가 붙은 환경 변수만 클라이언트 번들에 포함된다. 민감하지 않은 값(서버 주소 등)에만 사용한다.
+- 실제 값은 `.env.local`(git에 커밋하지 않음)에 두고, `.env.example`에는 플레이스홀더만 남긴다.
+- 환경 변수를 새로 추가하거나 값을 바꾸면 개발 서버를 재시작해야 반영된다.
+- `process.env.EXPO_PUBLIC_*`를 타입 체크하려면 `src/types/env.d.ts`에 선언을 추가한다.
+
+## 목(mock) 데이터
+
+- 백엔드 API가 아직 없는 기능은 `<feature>-api.mock.ts`에 목 구현을 두고, `__DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_*==='true'` 같은 조건으로 실제 API 호출과 분기한다.
+- 목 모드 조건에는 반드시 `__DEV__`를 함께 써서 프로덕션 빌드에서 자동으로 꺼지게 한다.
+- 실제 API가 준비되면 목 파일과 분기 코드, 관련 환경 변수를 정리한다.
+
+## 저장소 사용 구분
+
+- accessToken, refreshToken 등 민감한 값은 `expo-secure-store`를 사용한다.
+- 웹은 SecureStore를 지원하지 않으므로, `Platform.OS === 'web'`일 때만 `AsyncStorage`로 대체한다.
+- 아이디 저장처럼 민감하지 않은 값은 `AsyncStorage`를 사용한다.
+- 화면이나 훅에서 `AsyncStorage`/`SecureStore`를 직접 호출하지 않고, `services/*-storage.ts`로 감싼 함수만 사용한다.
+
+## API 클라이언트 구조
+
+- 모든 API 호출은 `services/http-client.ts`의 공통 요청 함수를 거친다. 이 파일이 응답 포맷(`httpStatus`/`isSuccess`/`message`/`code`/`result`)을 해석하고 실패를 `ApiError`(`services/api-error.ts`)로 변환한다.
+- 기능별 API 파일(`features/<기능>/api/*.ts`)은 이 공통 함수를 부르는 얇은 함수와 요청/응답 타입만 둔다. `fetch`를 직접 호출하지 않는다.
+- 새 서비스(차량, 알림 등) API를 추가할 때도 이 구조를 그대로 따른다.
+
 ## 주석
 
 - 모든 파일이나 모든 함수에 설명 주석을 의무적으로 작성하지 않는다.

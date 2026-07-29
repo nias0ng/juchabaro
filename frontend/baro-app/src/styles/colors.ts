@@ -1,9 +1,10 @@
 /**
- * 앱 전체에서 사용하는 원시 색상 팔레트입니다.
- * 화면에서는 가능한 한 Colors의 의미 기반 색상을 사용하세요.
+ * 색상 팔레트 
  */
 export const Palette = {
   white: '#ffffff',
+  white72: 'rgba(255, 255, 255, 0.72)',
+  white80: 'rgba(255, 255, 255, 0.8)',
   black: '#000000',
 
   gray50: '#f8f8fa',
@@ -25,14 +26,29 @@ export const Palette = {
   violet600: '#5144d3',
 
   red500: '#e5484d',
+  coral500: '#ff6b57',
   orange50: '#fff2ef',
   orange400: '#ff8f6b',
   orange600: '#d4553a',
+
+  // 홈 대시보드
+  mint100: '#c9ece7',
+  emerald500: '#2fae9e',
+  lavender100: '#dcd7fb',
+  peach100: '#ffdccd',
+  sky100: '#d5e6ff',
+  blue500: '#4f8ff0',
+  blue600: '#3f7bd6',
+  amber50: '#fff4e0',
+  amber500: '#f5a524',
+
+  // 주차 도면 - 장애인/전기차 구역
+  teal100: '#dff3ef',
+  teal600: '#1e8d80',
 } as const;
 
 /**
- * 테마에 따라 달라지는 의미 기반 색상입니다.
- * 컴포넌트는 구체적인 색상명보다 text, background, primary 같은 역할을 참조합니다.
+ * 테마 색상
  */
 export const Colors = {
   light: {

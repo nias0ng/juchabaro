@@ -1,10 +1,3 @@
-// AsyncStorage(아이디 저장에 쓴 것)와 달리, SecureStore는 기기의 암호화 저장소를 쓴다.
-// accessToken/refreshToken은 유출되면 남의 계정으로 로그인당할 수 있는 민감한 값이라
-// 평문으로 저장되는 AsyncStorage 대신 이걸 쓴다.
-//
-// 다만 expo-secure-store는 웹에서 실제 구현이 없다(브라우저엔 Keychain/Keystore 같은 게 없어서).
-// 그래서 웹에서만 AsyncStorage로 대체한다 — 웹은 원래 브라우저 저장소 자체가
-// 네이티브의 보안 수준을 못 따라가므로, 이 대체가 새로운 약점을 만드는 건 아니다.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
@@ -38,7 +31,7 @@ export async function getSession(): Promise<Session | null> {
     storage.getItem(REFRESH_TOKEN_KEY),
   ]);
 
-  // 둘 중 하나라도 없으면 세션이 없는 것으로 취급한다 (반쪽짜리 세션은 의미가 없다).
+  // 둘 중 하나라도 없으면 세션이 없는 것으로 취급
   if (!accessToken || !refreshToken) return null;
   return { accessToken, refreshToken };
 }
