@@ -1,21 +1,26 @@
 pipeline {
     agent any
 
+    tools {
+        nodejs 'node20'
+    }
+
     options {
         disableConcurrentBuilds()
     }
 
     stages {
-        stage('Frontend CI') {
+        stage('Install') {
             steps {
                 dir('frontend/baro-app') {
-                    sh '''
-                        docker run --rm \
-                          -v "$PWD":/app -w /app \
-                          -e HOME=/tmp \
-                          node:20-bookworm \
-                          sh -lc "npm ci && npm run typecheck"
-                    '''
+                    sh 'npm ci'
+                }
+            }
+        }
+        stage('Typecheck') {
+            steps {
+                dir('frontend/baro-app') {
+                    sh 'npm run typecheck'
                 }
             }
         }
