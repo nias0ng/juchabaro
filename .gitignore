@@ -46,6 +46,7 @@ venv/
 ai/training/runs/
 ai/training/data/raw/
 ai/training/data/samples/
+ai/training/data/processed/
 *.pt
 *.onnx
 
