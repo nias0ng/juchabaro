@@ -25,8 +25,8 @@ const HEADER_TITLE: Record<RegisterCarStep, string> = {
 
 export default function RegisterCarScreen() {
   const handleRegistrationSuccess = () => {
-    // TODO: H-01. 내 차량 관리 화면 및 route 구현 후 연결
-    // router.replace('/resident/my-vehicles');
+    // TODO: 'H-01. 내 차량 관리' 화면이 아직 없다. 화면과 라우트가 만들어지면
+    // 여기서 router.replace로 그 화면으로 이동시킨다.
   };
 
   const registerCar = useRegisterCarForm(handleRegistrationSuccess);

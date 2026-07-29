@@ -21,6 +21,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Palette.gray100,
+    transform: [{ translateY: -2 }],
   },
   navIcon: {
     width: 28,
