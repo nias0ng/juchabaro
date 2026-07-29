@@ -1,10 +1,7 @@
 package com.ssafy.parking.domain.vehicle.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
-import com.ssafy.parking.domain.vehicle.dto.VehicleCreateRequest;
-import com.ssafy.parking.domain.vehicle.dto.VehicleCreateResponse;
-import com.ssafy.parking.domain.vehicle.dto.VehicleDetailResponse;
-import com.ssafy.parking.domain.vehicle.dto.VehicleListResponse;
+import com.ssafy.parking.domain.vehicle.dto.*;
 import com.ssafy.parking.domain.vehicle.entity.VehicleOwnerType;
 import com.ssafy.parking.domain.vehicle.entity.VehicleStatus;
 import com.ssafy.parking.domain.vehicle.service.VehicleService;
@@ -80,5 +77,45 @@ public class VehicleController {
         VehicleDetailResponse result = vehicleService.getVehicle(userId, vehicleId);
         return ResponseEntity.ok(
                 ApiResponse.success(HttpStatus.OK, "차량 상세 조회에 성공했습니다.", result));
+    }
+
+    @Operation(summary = "차량 수정", description = "본인 차량의 정보를 부분 수정합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "수정 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "수정 필드 없음/값 오류"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "수정 권한 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "차량 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "차량 번호 중복")
+    })
+    @PatchMapping("/{vehicleId}")
+    public ResponseEntity<ApiResponse<VehicleUpdateResponse>> update(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @PathVariable Long vehicleId,
+            @RequestBody VehicleUpdateRequest request
+    ) {
+        VehicleUpdateResponse result = vehicleService.update(userId, vehicleId, request);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "차량 정보가 수정되었습니다.", result));
+    }
+
+    @Operation(summary = "차량 삭제", description = "본인 차량을 소프트 삭제합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "삭제 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "삭제 권한 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "차량 없음/이미 삭제됨"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "처리 중 주차 기록 존재")
+    })
+    @DeleteMapping("/{vehicleId}")
+    public ResponseEntity<ApiResponse<VehicleDeleteResponse>> delete(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @PathVariable Long vehicleId
+    ) {
+        VehicleDeleteResponse result = vehicleService.delete(userId, vehicleId);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "차량 등록이 삭제되었습니다.", result));
     }
 }
