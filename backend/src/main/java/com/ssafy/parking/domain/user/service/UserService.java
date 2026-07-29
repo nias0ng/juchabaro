@@ -3,10 +3,7 @@ package com.ssafy.parking.domain.user.service;
 import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.common.security.JwtTokenProvider;
-import com.ssafy.parking.domain.user.dto.LoginRequest;
-import com.ssafy.parking.domain.user.dto.LoginResponse;
-import com.ssafy.parking.domain.user.dto.SignupRequest;
-import com.ssafy.parking.domain.user.dto.SignupResponse;
+import com.ssafy.parking.domain.user.dto.*;
 import com.ssafy.parking.domain.user.entity.User;
 import com.ssafy.parking.domain.user.entity.UserRole;
 import com.ssafy.parking.domain.user.entity.UserStatus;
@@ -67,5 +64,12 @@ public class UserService {
                 user.getName(),
                 user.getRole().name()
         );
+    }
+
+    @Transactional(readOnly = true)
+    public MeResponse getMe(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+        return MeResponse.from(user);
     }
 }
