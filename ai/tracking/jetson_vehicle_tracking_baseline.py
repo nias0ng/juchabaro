@@ -27,6 +27,24 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
   누적되지 않으면, 그 스팟은 계속 "미확정" 상태로 남아 침범 판정 자체가
   무기한 보류될 수 있다 — 현장 데이터로 실제 발생 빈도를 확인하고, 필요하면
   "N초 이상 미확정이면 미점유로 간주" 같은 타임아웃을 추가해야 할 수 있다.
+- OUT_OF_ZONE(리뷰 반영, 317번 MR 코드리뷰 I-1/I-2/I-4) 관련, 알려진 한계:
+  · AISLE(통행로) 폴리곤은 보통 길고 얇게 그려지는데, OUT_OF_ZONE의
+    "구역 없음" 판단이 몸체 겹침 40%(min_overlap_ratio) 기준이라, 통행로
+    입구를 앞머리로만 살짝 막은 흔한 통행 방해 상황은 몸체 겹침이 40%에
+    못 미쳐 AISLE_BLOCK 대신 OUT_OF_ZONE으로 잘못 분류될 수 있다. AISLE도
+    구역 면적 기준(zone_coverage_ratio) 판정을 도입하는 게 정석이나 이번
+    MR 범위에서는 보류했다.
+  · 관리자가 카메라 화면 전체를 폴리곤으로 덮을 의무는 없으므로(§5.0),
+    인접 도로·주차장 밖 노면처럼 "감시 영역이지만 등록 안 된 곳"에 있는
+    차량도 전부 OUT_OF_ZONE으로 잡힌다. 다른 위반들은 폴리곤 겹침이
+    있어야 발동해 미등록 구역에서는 미탐(안전) 쪽으로 기우는데, 이
+    판정만 반대로 오탐(위험) 쪽으로 기운다. 주차장 외곽 경계 폴리곤
+    도입이나 CLI 온/오프 플래그로 파일럿 기간 리스크를 낮추는 방안이
+    필요하다(팀 확인 필요).
+  · `min_dwell_seconds=0`이면 이동 중인 차량도 프레임마다 즉시
+    OUT_OF_ZONE이 확정되고, 이동 감지 시 상태가 리셋되어 매 프레임
+    이벤트가 발행될 수 있다(다른 위반 판정도 동일한 구조적 한계를
+    공유하나, OUT_OF_ZONE은 대상 면적이 훨씬 넓어 영향이 커진다).
 
 CLI 모드: 웹캠 점검(`--probe-camera`), 캘리브레이션용 프레임 저장
 (`--capture-frame`), 실시간 루프(`--run`), 하드웨어 비의존 자체 테스트
@@ -313,6 +331,28 @@ def _home_zone_overlap(overlaps: Sequence[ZoneOverlap]) -> ZoneOverlap | None:
     return None
 
 
+def _ignored_zone_overlap(
+    bbox: BoundingBox, zones: Sequence[ParkingZone], *, min_overlap_ratio: float
+) -> ZoneOverlap | None:
+    """차량이 판정 제외 구역(§IGNORED_ZONE_TYPES_FOR_PARKING, 예: ENTRY_EXIT)에
+    min_overlap_ratio 이상 겹치는지 확인한다(리뷰 반영, C-1).
+
+    `classify_zone_overlaps`는 이 구역들을 애초에 후보에서 제외하므로, 그
+    결과만으로는 "판정 제외 구역 안에 있다"와 "정말 아무 구역도 없다"를
+    구분할 수 없다. OUT_OF_ZONE 판정이 게이트에서 대기 중인 차량까지
+    "구역 외 주차"로 오인하지 않으려면 이 구분이 반드시 필요하다.
+    """
+
+    best: ZoneOverlap | None = None
+    for zone in zones:
+        if zone.zone_type not in IGNORED_ZONE_TYPES_FOR_PARKING:
+            continue
+        ratio = overlap_ratio(zone.polygon, bbox)
+        if ratio >= min_overlap_ratio and (best is None or ratio > best.ratio):
+            best = ZoneOverlap(zone, ratio)
+    return best
+
+
 def classify_violation(
     overlaps: Sequence[ZoneOverlap],
     *,
@@ -320,14 +360,16 @@ def classify_violation(
     min_dwell_seconds: float,
     blocked_zone: ZoneOverlap | None = None,
     intruded_zone: ZoneOverlap | None = None,
+    in_ignored_zone: bool = False,
+    deferred_intrusion: bool = False,
 ) -> tuple[ViolationStatus, ParkingZone | None, float]:
     """§5.1 규칙으로 겹침 구역·스팟 침범·정차 시간을 종합해 위반 상태를 판정한다.
 
     여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
     전용구역 점유(RESTRICTED_ZONE) > 선 침범(LINE_CROSS) > 구역 외 주차
-    (OUT_OF_ZONE) 순으로 하나만 보고한다. OUT_OF_ZONE은 등록된 구역 중
-    어디에도 겹치지 않고(통행로 포함) 스팟 침범도 아닌, 순수하게 "어느 구역과도
-    매핑되지 않는" 경우에만 해당하므로 항상 최하위 우선순위다.
+    (OUT_OF_ZONE) 순으로 하나만 보고한다. OUT_OF_ZONE은 다른 어떤 위반 신호도
+    없을 때만 성립하는 배타적 폴백이며(우선순위표가 아니라 아래 early-return의
+    배타 조건), 새 위반 신호를 추가하면 그 조건도 함께 확장해야 한다.
 
     `blocked_zone`/`intruded_zone`은 둘 다 "내 홈 구역이 아닌 스팟을 얼마나
     덮었는가"라는 같은 계산(구역 면적 기준, `zone_coverage_ratio`)에서 나오며,
@@ -335,6 +377,14 @@ def classify_violation(
     `intruded_zone`(LINE_CROSS)으로 나뉜다 — 어떤 차량이 어느 구역의 진짜
     주인인지는 이 함수가 아니라 호출부(ViolationMonitor)가 구역별 최고
     점유자 정보로 결정한다(시간순이 아니라 공간 정보 기준).
+
+    `in_ignored_zone`/`deferred_intrusion`(리뷰 반영, C-1/C-2): `overlaps`가
+    비어 있는 이유는 최소 세 가지로 서로 다르다 — ① 정말 어느 구역과도
+    안 겹침(OUT_OF_ZONE 대상), ② ENTRY_EXIT 같은 판정 제외 구역 안에 있음
+    (`in_ignored_zone`), ③ 다른 트랙이 아직 정착 확정 못 해 해당 구역이
+    `pending_home_zone_ids`로 보류 중이라 이번 프레임엔 침범 여부를 알 수
+    없음(`deferred_intrusion`). ②·③은 "구역 없음"이 아니라 "판정 보류"이므로
+    OUT_OF_ZONE으로 확정하면 안 되고, 기존과 동일하게 NONE으로 둔다.
 
     참고: 이제 DOUBLE_PARK가 구역 면적 기준으로 넓게 잡히다 보니, 전용구역
     (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
@@ -344,9 +394,14 @@ def classify_violation(
     """
 
     if not overlaps and blocked_zone is None and intruded_zone is None:
-        # 어떤 구역(통행로 포함)에도 겹치지 않고 스팟 침범도 아니다 — 등록된
-        # 주차구역 밖에 서 있다는 뜻이다. 최소 정차 시간을 채우기 전에는
-        # 다른 위반들과 동일하게 OBSERVING으로만 표시한다.
+        if in_ignored_zone or deferred_intrusion:
+            # 판정 제외 구역(게이트 등) 안에 있거나, 다른 트랙의 정착 미확정으로
+            # 이번 프레임엔 침범 여부를 알 수 없다 — "구역 없음"이 아니므로
+            # OUT_OF_ZONE으로 확정하지 않고 기존과 동일하게 NONE으로 둔다.
+            return ViolationStatus.NONE, None, 0.0
+        # 어떤 구역(통행로 포함)에도 겹치지 않고 스팟 침범도, 판정 제외/보류
+        # 대상도 아니다 — 등록된 주차구역 밖에 서 있다는 뜻이다. 최소 정차
+        # 시간을 채우기 전에는 다른 위반들과 동일하게 OBSERVING으로만 표시한다.
         if dwell_seconds < min_dwell_seconds:
             return ViolationStatus.OBSERVING, None, 0.0
         return ViolationStatus.OUT_OF_ZONE, None, 0.0
@@ -429,6 +484,8 @@ class ViolationEvent:
     overlap_ratio도 그 구역 면적 대비 침범 비율(구역 기준)이다. AISLE_BLOCK/
     RESTRICTED_ZONE에서는 zone_id가 이 차량 자신이 있는 구역을 가리키고
     overlap_ratio도 이 차량 자신의 몸체 면적 기준(차체 기준)이라 의미가 다르다.
+    OUT_OF_ZONE(리뷰 반영)은 애초에 매핑되는 구역이 없으므로 zone_id/
+    zone_type은 항상 None이고 overlap_ratio도 항상 0.0으로 발행된다.
     """
 
     track_id: int
@@ -536,8 +593,9 @@ class ViolationMonitor:
     차량이 스팟 구역(zone) 안에 있어야 동작한다.
 
     등록된 구역 어디에도 매핑되지 않는 차량은 `classify_violation`이
-    최소 정차 시간 이후 OUT_OF_ZONE으로 별도 판정한다(§5.0, ERD
-    `event_type.OUT_OF_ZONE`과 대응). 다만 "구역 밖에 정차한 차량을 다른
+    최소 정차 시간 이후 OUT_OF_ZONE으로 별도 판정한다(리뷰 반영 - 인용 정정:
+    요구사항 정의서.md:25 주차 상태 분류, ERD.md:119-125 event_type과 대응).
+    다만 "구역 밖에 정차한 차량을 다른
     차가 막는" 복합 상황까지는 다루지 않는다 — 그 경우 피해 차량은
     독립적으로 OUT_OF_ZONE만 보고되고, 막은 차량 쪽에서 별도 판정이
     나오지 않는 한 "누가 누구를 막았는지"는 연결되지 않는다.
@@ -687,6 +745,7 @@ class ViolationMonitor:
         zone_overlaps_by_track: dict[int, list[ZoneOverlap]] = {}
         home_zone_by_track: dict[int, ZoneOverlap | None] = {}
         dwell_by_track: dict[int, float] = {}
+        ignored_overlap_by_track: dict[int, ZoneOverlap | None] = {}
         for detection in detections:
             state = self._tracks[detection.track_id]
             if state.plate_number is None:
@@ -700,6 +759,9 @@ class ViolationMonitor:
             )
             zone_overlaps_by_track[detection.track_id] = overlaps
             home_zone_by_track[detection.track_id] = _home_zone_overlap(overlaps)
+            ignored_overlap_by_track[detection.track_id] = _ignored_zone_overlap(
+                detection.bbox, self._zones.all(), min_overlap_ratio=self._min_overlap_ratio
+            )
             state = self._tracks[detection.track_id]
             dwell_by_track[detection.track_id] = (detection.captured_at - state.stationary_since).total_seconds()
 
@@ -739,11 +801,19 @@ class ViolationMonitor:
 
             blocked_zone: ZoneOverlap | None = None
             intruded_zone: ZoneOverlap | None = None
+            deferred_intrusion = False
             for zone in self._zones.all():
                 if zone.zone_type not in _SPOT_ZONE_TYPES or zone.zone_id == own_zone_id_if_rightful:
                     continue  # 통행로/입출차 구역이거나, 내가 정당한 주인인 내 홈 구역이면 침범이 아니다
                 if zone.zone_id in pending_home_zone_ids:
-                    continue  # 점유 여부가 아직 불확실한 구역은 이번 프레임엔 판정 보류
+                    # 점유 여부가 아직 불확실한 구역은 이번 프레임엔 판정 보류.
+                    # 다만 보류 중인 구역을 이미 침범 기준(spot_intrusion_ratio)
+                    # 이상 덮고 있다면(리뷰 반영, C-2), 그건 "구역 없음"이 아니라
+                    # "판정 보류"이므로 OUT_OF_ZONE으로 확정되면 안 된다는 신호를
+                    # classify_violation에 넘겨야 한다.
+                    if zone_coverage_ratio(zone, detection.bbox) >= self._spot_intrusion_ratio:
+                        deferred_intrusion = True
+                    continue
                 intrusion_ratio = zone_coverage_ratio(zone, detection.bbox)
                 if intrusion_ratio < self._spot_intrusion_ratio:
                     continue
@@ -762,6 +832,8 @@ class ViolationMonitor:
                 min_dwell_seconds=self._min_dwell_seconds,
                 blocked_zone=blocked_zone,
                 intruded_zone=intruded_zone,
+                in_ignored_zone=ignored_overlap_by_track[detection.track_id] is not None,
+                deferred_intrusion=deferred_intrusion,
             )
 
             if status not in (ViolationStatus.NONE, ViolationStatus.OBSERVING) and status != state.open_violation:
@@ -1190,7 +1262,7 @@ class BaselineLogicTests(unittest.TestCase):
 
     def test_out_of_zone_flagged_after_min_dwell_with_no_zone_overlap(self) -> None:
         """등록된 구역 어디에도 겹치지 않고 스팟 침범도 아니면, 최소 정차
-        시간 이후 OUT_OF_ZONE으로 판정한다(§5.0, ERD event_type.OUT_OF_ZONE)."""
+        시간 이후 OUT_OF_ZONE으로 판정한다(요구사항 정의서.md:25, ERD.md:119-125)."""
         status, zone_hit, ratio = classify_violation([], dwell_seconds=700.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.OUT_OF_ZONE)
         self.assertIsNone(zone_hit)
@@ -1221,6 +1293,33 @@ class BaselineLogicTests(unittest.TestCase):
             [], dwell_seconds=700.0, min_dwell_seconds=600.0, intruded_zone=intruded_zone
         )
         self.assertEqual(status, ViolationStatus.LINE_CROSS)
+
+    def test_out_of_zone_not_flagged_when_blocked_zone_present(self) -> None:
+        """리뷰 반영(I-5): intruded_zone과 대칭 — overlaps가 비어도 blocked_zone이
+        있으면 OUT_OF_ZONE이 아니라 DOUBLE_PARK여야 한다."""
+        gen = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.3), (0.0, 0.3)])
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_zone=ZoneOverlap(gen, 0.5)
+        )
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+
+    def test_out_of_zone_not_flagged_when_in_ignored_zone(self) -> None:
+        """리뷰 반영(C-1): 판정 제외 구역(ENTRY_EXIT 등) 안에 있다는 신호가
+        오면, overlaps가 비어 있어도 OUT_OF_ZONE이 아니라 기존과 동일하게
+        NONE으로 유지한다."""
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, in_ignored_zone=True
+        )
+        self.assertEqual(status, ViolationStatus.NONE)
+
+    def test_out_of_zone_not_flagged_when_intrusion_deferred(self) -> None:
+        """리뷰 반영(C-2): 다른 트랙의 정착 미확정으로 침범 판정이 보류
+        중이라는 신호가 오면, overlaps가 비어 있어도 OUT_OF_ZONE으로
+        확정하지 않고 기존과 동일하게 NONE으로 유지한다."""
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, deferred_intrusion=True
+        )
+        self.assertEqual(status, ViolationStatus.NONE)
 
     def test_line_cross_uses_intruded_zone(self) -> None:
         """LINE_CROSS는 이제 classify_zone_overlaps의 len(overlaps)>=2가 아니라
@@ -1443,9 +1542,12 @@ class BaselineLogicTests(unittest.TestCase):
         """피해 후보가 어떤 스팟 구역과도 40% 이상 안 겹치는 애매한 위치에 있으면
         (홈 구역이 없으면), 그 차를 기준으로 다른 차를 이중주차로 판정하지 않는다.
 
-        (참고) 두 차량 다 등록 구역 밖에 정착하므로 OUT_OF_ZONE 자체는 각자
-        정상적으로 발행된다 — 여기서 검증하려는 건 DOUBLE_PARK가 잘못
-        나오지 않는다는 것뿐이라, DOUBLE_PARK 유무만 확인한다."""
+        (리뷰 반영, I-3) 두 차량 다 등록 구역(GEN-A)과 전혀 안 겹치는 위치라
+        각자 독립적으로 정착 시점에 OUT_OF_ZONE이 한 번씩 발행된다(track 1은
+        6초째, track 2는 자신의 정착 시점인 12초째) — 루프의 마지막
+        `update()` 반환값만 보면 track 2 것만 보이므로, 전체 프레임에 걸쳐
+        발행된 이벤트를 다 모아서 정확히 단정한다. 핵심은 어느 프레임에서도
+        DOUBLE_PARK는 절대 나오면 안 된다는 것이다."""
         spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
         registry = ZoneRegistry([spot_a])
         monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, spot_intrusion_ratio=0.15)
@@ -1456,17 +1558,21 @@ class BaselineLogicTests(unittest.TestCase):
 
         monitor.update([VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
 
-        events = []
+        all_events: list[ViolationEvent] = []
         for seconds in (6, 12):
-            events = monitor.update(
-                [
-                    VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                    VehicleBox(track_id=2, bbox=overlapping_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                ]
+            all_events.extend(
+                monitor.update(
+                    [
+                        VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                        VehicleBox(track_id=2, bbox=overlapping_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    ]
+                )
             )
 
-        statuses = [event.status for event in events]
-        self.assertNotIn(ViolationStatus.DOUBLE_PARK, statuses)
+        self.assertEqual(
+            [(event.track_id, event.status) for event in all_events],
+            [(1, ViolationStatus.OUT_OF_ZONE), (2, ViolationStatus.OUT_OF_ZONE)],
+        )
 
     def test_monitor_double_park_respects_custom_threshold(self) -> None:
         """spot_intrusion_ratio를 높이면 약한 침범(20%)은 더 이상 안 잡힌다 —
@@ -1583,7 +1689,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
 
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
-        """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(§5.0), 최소 정차 시간
+        """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
         이후 OUT_OF_ZONE 이벤트가 한 번 발행되고 중복 발행되지 않는다."""
         zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2)])
         registry = ZoneRegistry([zone])
@@ -1634,8 +1740,49 @@ class BaselineLogicTests(unittest.TestCase):
                 [VehicleBox(track_id=1, bbox=aisle_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
             )
         self.assertEqual(len(events_at[6]), 0)  # 이동 직후 정차 타이머 리셋, 1초 미달로 OBSERVING
-        self.assertEqual([e.status for e in events_at[8]], [ViolationStatus.AISLE_BLOCK])  # 재정착 -> AISLE_BLOCK 1회 발행(OUT_OF_ZONE은 자동으로 닫힘)
+        # 재정착 -> AISLE_BLOCK 1회 발행. 이전 OUT_OF_ZONE이 "자동으로 닫히는" 게
+        # 아니라, 이동 감지 시 open_violation이 NONE으로 리셋되기 때문이다(위 이동 시점 코드 참고).
+        self.assertEqual([e.status for e in events_at[8]], [ViolationStatus.AISLE_BLOCK])
         self.assertEqual(len(events_at[10]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
+
+    def test_monitor_vehicle_inside_entry_exit_zone_is_not_out_of_zone(self) -> None:
+        """리뷰 반영(C-1): 게이트(ENTRY_EXIT) 구역 안에 대기 중인 차량은 판정
+        제외 구역 안에 있으므로 OUT_OF_ZONE이 아니어야 한다(§74-75 판정 제외
+        불변식, §5.1)."""
+        ent = self.make_zone("ENT-1", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
+        monitor = ViolationMonitor(ZoneRegistry([ent]), min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        at_gate = BoundingBox(0.1, 0.1, 0.4, 0.4)  # ENTRY_EXIT 안에 100% 포함
+
+        monitor.update([VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=0, captured_at=base_time)])
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=1, captured_at=base_time + timedelta(seconds=2))]
+        )
+        self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events])
+
+    def test_monitor_out_of_zone_not_flagged_while_neighbor_home_zone_pending(self) -> None:
+        """리뷰 반영(C-2): 옆 트랙이 홈 구역에 정착하지 못해 그 구역이
+        pending_home_zone_ids로 보류 중이면, 그 구역을 침범 기준 이상 덮고
+        있는 다른 트랙도 OUT_OF_ZONE으로 잘못 확정되면 안 된다(판정 보류 유지)."""
+        gen_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([gen_a]), min_overlap_ratio=0.40, min_dwell_seconds=5.0, spot_intrusion_ratio=0.15, movement_epsilon=0.01
+        )
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        # track1: 매 프레임 살짝 위치가 바뀌어(움직임 감지) 계속 정착 실패 -> GEN-A가 pending으로 남음
+        track1_positions = [BoundingBox(0.0, 0.0, 0.25, 0.25), BoundingBox(0.02, 0.02, 0.27, 0.27)]
+        # track2: GEN-A 몸겹침은 40% 미만(overlaps=[])이지만, 구역 면적 기준으로는 침범 후보(>=15%)
+        track2_bbox = BoundingBox(0.15, 0.0, 0.55, 0.3)
+
+        events: list[ViolationEvent] = []
+        for i, seconds in enumerate((0, 3, 6, 9, 12)):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=track1_positions[i % 2], confidence=0.9, frame_id=i, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=track2_bbox, confidence=0.9, frame_id=i, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+            self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events if e.track_id == 2])
 
     def test_monitor_multi_vehicle_frame_does_not_mix_up_track_state(self) -> None:
         """한 프레임에 차량이 2대 이상 잡혀도, 마지막 차량이 아닌 다른 차량의
