@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text } from 'react-native';
+import { Pressable, Text } from 'react-native';
 
 import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
 import { useAuth } from '@/providers/auth-provider';
@@ -78,11 +78,10 @@ useEffect(() => {
 
   // return 밑이 UI를 정의하는 영역
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <Screen scroll backgroundColor={Palette.gray50}>
-        <ResponsiveContainer>
-          <Stack gap={Spacing.xl}>
-            <AuthHeader title="로그인" />
+    <Screen scroll avoidKeyboard backgroundColor={Palette.gray50}>
+      <ResponsiveContainer>
+        <Stack gap={Spacing.xl}>
+          <AuthHeader title="로그인" />
 
             <Stack gap={Spacing.xs}>
               <Text style={styles.heading}>반가워요!</Text>
@@ -134,9 +133,8 @@ useEffect(() => {
                 아직 계정이 없으신가요? <Text style={styles.footerLink}>회원가입</Text>
               </Text>
             </Pressable>
-          </Stack>
-        </ResponsiveContainer>
-      </Screen>
-    </KeyboardAvoidingView>
+        </Stack>
+      </ResponsiveContainer>
+    </Screen>
   );
 }
