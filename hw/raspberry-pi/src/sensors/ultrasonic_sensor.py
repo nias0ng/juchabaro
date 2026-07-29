@@ -32,7 +32,12 @@ class UltrasonicSensor:
         self._sleep = sleep
 
         self._validate_settings()
-        self._initialize_gpio()
+
+        try:
+            self._initialize_gpio()
+        except BaseException:
+            self.cleanup()
+            raise
 
     @staticmethod
     def _validate_settings() -> None:

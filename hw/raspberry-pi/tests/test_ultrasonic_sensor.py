@@ -83,6 +83,52 @@ def test_constructor_waits_for_sensor_stabilization() -> None:
     )
 
 
+def test_constructor_cleans_up_and_reraises_gpio_initialization_error() -> None:
+    gpio = make_gpio()
+    initialization_error = RuntimeError("Echo 핀 초기화 실패")
+    gpio.setup.side_effect = [
+        None,
+        initialization_error,
+    ]
+
+    with pytest.raises(RuntimeError) as captured:
+        ultrasonic_sensor.UltrasonicSensor(
+            gpio=gpio,
+            monotonic=MagicMock(),
+            sleep=MagicMock(),
+        )
+
+    gpio.cleanup.assert_called_once_with(
+        (
+            ultrasonic_sensor.TRIGGER_PIN,
+            ultrasonic_sensor.ECHO_PIN,
+        )
+    )
+    assert captured.value is initialization_error
+
+
+def test_constructor_cleans_up_and_reraises_keyboard_interrupt_during_stabilization(
+) -> None:
+    gpio = make_gpio()
+    interruption = KeyboardInterrupt()
+    sleep = MagicMock(side_effect=interruption)
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        ultrasonic_sensor.UltrasonicSensor(
+            gpio=gpio,
+            monotonic=MagicMock(),
+            sleep=sleep,
+        )
+
+    gpio.cleanup.assert_called_once_with(
+        (
+            ultrasonic_sensor.TRIGGER_PIN,
+            ultrasonic_sensor.ECHO_PIN,
+        )
+    )
+    assert captured.value is interruption
+
+
 def test_measure_returns_expected_distance_for_valid_echo_duration() -> None:
     sensor, _, _ = make_sensor()
     echo_start_time = 1.0
