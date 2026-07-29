@@ -1203,6 +1203,15 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(status, ViolationStatus.OBSERVING)
         self.assertIsNone(zone_hit)
 
+    def test_out_of_zone_boundary_at_exact_min_dwell(self) -> None:
+        """dwell_seconds가 min_dwell_seconds와 정확히 같으면(리뷰 반영, 경계값
+        테스트), 다른 위반 판정들과 동일하게 '미달'이 아니므로 OUT_OF_ZONE으로 확정한다."""
+        status, _zone, _ratio = classify_violation([], dwell_seconds=600.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OUT_OF_ZONE)
+
+        status, _zone, _ratio = classify_violation([], dwell_seconds=599.999, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+
     def test_out_of_zone_not_flagged_when_intruded_zone_present(self) -> None:
         """구역 겹침(overlaps)은 없어도 spot_intrusion_ratio 기준 침범(intruded_zone)이
         있으면, 그건 OUT_OF_ZONE이 아니라 LINE_CROSS 판정으로 이어져야 한다."""
@@ -1599,6 +1608,34 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(events_second[0].status, ViolationStatus.OUT_OF_ZONE)
         self.assertIsNone(events_second[0].zone_id)
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_monitor_out_of_zone_transitions_to_aisle_block_after_moving(self) -> None:
+        """리뷰 반영: 구역 외(OUT_OF_ZONE)에 정착해있던 차량이 이동해서 통행로에
+        들어가면, 이전 OUT_OF_ZONE 상태는 자동으로 닫히고 AISLE_BLOCK이 새로
+        (중복 없이 한 번만) 발행돼야 한다."""
+        aisle = self.make_zone("AISLE-1", ZoneType.AISLE, [(0.5, 0.0), (0.9, 0.0), (0.9, 0.3), (0.5, 0.3)])
+        registry = ZoneRegistry([aisle])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        outside_bbox = BoundingBox(0.0, 0.5, 0.2, 0.7)  # 등록 구역과 안 겹침
+        aisle_bbox = BoundingBox(0.55, 0.05, 0.85, 0.25)  # AISLE 구역 안
+
+        events_at = {}
+        for seconds in (0, 2, 4):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=outside_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+        self.assertEqual(len(events_at[0]), 0)  # 정착 전(1초 미달), OBSERVING
+        self.assertEqual([e.status for e in events_at[2]], [ViolationStatus.OUT_OF_ZONE])  # 정착 -> OUT_OF_ZONE 1회 발행
+        self.assertEqual(len(events_at[4]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
+
+        for seconds in (6, 8, 10):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=aisle_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+        self.assertEqual(len(events_at[6]), 0)  # 이동 직후 정차 타이머 리셋, 1초 미달로 OBSERVING
+        self.assertEqual([e.status for e in events_at[8]], [ViolationStatus.AISLE_BLOCK])  # 재정착 -> AISLE_BLOCK 1회 발행(OUT_OF_ZONE은 자동으로 닫힘)
+        self.assertEqual(len(events_at[10]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
 
     def test_monitor_multi_vehicle_frame_does_not_mix_up_track_state(self) -> None:
         """한 프레임에 차량이 2대 이상 잡혀도, 마지막 차량이 아닌 다른 차량의
