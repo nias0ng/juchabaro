@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 
 import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
@@ -97,6 +97,7 @@ useEffect(() => {
                 onChangeText={setUsername}
                 placeholder="아이디를 입력해 주세요"
                 autoComplete="username"
+                invalid={Boolean(errorMessage)}
               />
               <TextField
                 label="비밀번호"
@@ -105,20 +106,23 @@ useEffect(() => {
                 placeholder="비밀번호를 입력해 주세요"
                 secureTextEntry
                 autoComplete="password"
+                invalid={Boolean(errorMessage)}
               />
             </Stack>
+
+            {errorMessage ? (
+              <View style={[styles.formError, { backgroundColor: theme.dangerSurface }]}>
+                <Text style={[styles.formErrorIcon, { color: theme.danger }]}>⚠️</Text>
+                <Text style={[styles.formErrorText, { color: theme.danger }]}>{errorMessage}</Text>
+              </View>
+            ) : null}
 
             <Stack direction="row" gap={Spacing.lg}>
               <CheckboxOption label="로그인 유지" checked={keepSignedIn} onChange={setKeepSignedIn} />
               <CheckboxOption label="아이디 저장" checked={saveUsername} onChange={setSaveUsername} />
             </Stack>
-
-            {errorMessage ? (
-              <Text style={[styles.formError, { color: theme.danger }]}>{errorMessage}</Text>
-            ) : null}
-
             <AppButton
-              label="로그인"
+              label={errorMessage ? '↻ 다시 로그인' : '로그인'}
               variant="neutral"
               size="lg"
               fullWidth

@@ -25,6 +25,7 @@ export const Palette = {
   violet600: '#5144d3',
 
   red500: '#e5484d',
+  orange50: '#fff2ef',
   orange400: '#ff8f6b',
   orange600: '#d4553a',
 } as const;
@@ -49,6 +50,7 @@ export const Colors = {
     onPrimary: Palette.white,
     danger: Palette.orange600,
     dangerBorder: Palette.orange400,
+    dangerSurface: Palette.orange50,
     disabledSurface: Palette.violet100,
     disabledText: Palette.gray400,
   },
@@ -67,6 +69,7 @@ export const Colors = {
     onPrimary: Palette.gray950,
     danger: '#ff6369',
     dangerBorder: '#a83f31',
+    dangerSurface: '#3a1f1a',
     disabledSurface: '#302d55',
     disabledText: '#6b6f78',
   },

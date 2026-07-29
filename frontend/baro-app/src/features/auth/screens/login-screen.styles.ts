@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   flex: {
@@ -17,8 +17,20 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
   },
   formError: {
-    fontSize: 13,
-    textAlign: 'center',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.base,
+    marginTop: -(Spacing.xl - Spacing.base),
+  },
+  formErrorIcon: {
+    fontSize: 12,
+  },
+  formErrorText: {
+    flex: 1,
+    fontSize: 12,
   },
   footerRow: {
     alignItems: 'center',

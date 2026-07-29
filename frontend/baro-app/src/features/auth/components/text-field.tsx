@@ -11,6 +11,8 @@ type TextFieldProps = {
   onChangeText: (text: string) => void;
   placeholder?: string;
   error?: string;
+
+  invalid?: boolean;
   secureTextEntry?: TextInputProps['secureTextEntry'];
   autoCapitalize?: TextInputProps['autoCapitalize'];
   keyboardType?: TextInputProps['keyboardType'];
@@ -23,17 +25,24 @@ export function TextField({
   onChangeText,
   placeholder,
   error,
+  invalid = false,
   secureTextEntry,
   autoCapitalize = 'none',
   keyboardType,
   autoComplete,
 }: TextFieldProps) {
   const theme = useTheme();
+  const showErrorBorder = Boolean(error) || invalid;
 
   return (
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
-      <View style={[styles.field, error && [styles.fieldError, { borderColor: theme.dangerBorder }]]}>
+      <View
+        style={[
+          styles.field,
+          showErrorBorder && [styles.fieldError, { borderColor: theme.dangerBorder }],
+        ]}
+      >
         <TextInput
           value={value}
           onChangeText={onChangeText}
