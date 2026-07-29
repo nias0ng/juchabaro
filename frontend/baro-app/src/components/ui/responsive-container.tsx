@@ -16,7 +16,7 @@ export function ResponsiveContainer({
   ...props
 }: ResponsiveContainerProps) {
   const { width } = useWindowDimensions();
-  const horizontalPadding = width < Breakpoints.compact ? Spacing.md : gutter;
+  const horizontalPadding = width < Breakpoints.compact ? Spacing.lg : gutter;
 
   return (
     <View
