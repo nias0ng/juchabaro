@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAccessToken(session.accessToken);
         setUser({
           userId: profile.userId,
-          nickname: profile.nickname,
+          nickname: profile.name,
           role: profile.role,
           buildingNumber: profile.buildingNumber,
           unitNumber: profile.unitNumber,
@@ -87,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccessToken(result.accessToken);
     setUser({
       userId: profile.userId,
-      nickname: profile.nickname,
+      nickname: profile.name,
       role: profile.role,
       buildingNumber: profile.buildingNumber,
       unitNumber: profile.unitNumber,

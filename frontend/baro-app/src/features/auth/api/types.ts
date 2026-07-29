@@ -28,7 +28,7 @@ export type UserProfile = {
   phoneNumber: string;
   buildingNumber: string | null;
   unitNumber: string | null;
-  nickname: string;
+  name: string;
   role: UserRole;
   status: UserStatus;
   createdAt: string;
