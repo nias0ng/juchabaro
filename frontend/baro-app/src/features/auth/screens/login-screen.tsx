@@ -1,13 +1,13 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, Text } from 'react-native';
 
 import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
-import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 import { Palette, Spacing } from '@/styles';
 
+import { AuthErrorBanner } from '../components/auth-error-banner';
 import { AuthHeader } from '../components/auth-header';
 import { CheckboxOption } from '../components/checkbox-option';
 import { TextField } from '../components/text-field';
@@ -17,7 +17,6 @@ import { styles } from './login-screen.styles';
 
 export default function LoginScreen() {
   // hooks에서 가져오는 값들 -> 이전에 저장한 값들을 다시 가져오는것.
-  const theme = useTheme();
   const { login } = useAuth();
   // 저장소 접근
   const { savedUsername, isLoaded, persistUsername, clearUsername } = useSavedUsername();
@@ -79,10 +78,11 @@ useEffect(() => {
 
   // return 밑이 UI를 정의하는 영역
   return (
-    <Screen scroll avoidKeyboard backgroundColor={Palette.gray50}>
-      <ResponsiveContainer>
-        <Stack gap={Spacing.xl}>
-          <AuthHeader title="로그인" />
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Screen scroll backgroundColor={Palette.gray50}>
+        <ResponsiveContainer>
+          <Stack gap={Spacing.xl}>
+            <AuthHeader title="로그인" />
 
             <Stack gap={Spacing.xs}>
               <Text style={styles.heading}>반가워요!</Text>
@@ -140,49 +140,8 @@ useEffect(() => {
               </Text>
             </Pressable>
           </Stack>
-
-          <Stack gap={Spacing.base}>
-            <TextField
-              label="아이디"
-              value={username}
-              onChangeText={setUsername}
-              placeholder="아이디를 입력해 주세요"
-              autoComplete="username"
-            />
-            <TextField
-              label="비밀번호"
-              value={password}
-              onChangeText={setPassword}
-              placeholder="비밀번호를 입력해 주세요"
-              secureTextEntry
-              autoComplete="password"
-            />
-          </Stack>
-
-          <Stack direction="row" gap={Spacing.lg}>
-            <CheckboxOption label="로그인 유지" checked={keepSignedIn} onChange={setKeepSignedIn} />
-            <CheckboxOption label="아이디 저장" checked={saveUsername} onChange={setSaveUsername} />
-          </Stack>
-
-          <AppButton
-            label="로그인"
-            variant="neutral"
-            size="lg"
-            fullWidth
-            disabled={!canSubmit}
-            onPress={handleSubmit}
-          />
-
-          <Pressable
-            accessibilityRole="button"
-            style={styles.footerRow}
-            onPress={() => router.push('/auth/signup')}
-          >
-            <Text style={styles.footerText}>
-              아직 계정이 없으신가요? <Text style={styles.footerLink}>회원가입</Text>
-            </Text>
-          </Pressable>
-      </ResponsiveContainer>
-    </Screen>
+        </ResponsiveContainer>
+      </Screen>
+    </KeyboardAvoidingView>
   );
 }
