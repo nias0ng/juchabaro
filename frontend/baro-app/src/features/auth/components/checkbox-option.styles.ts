@@ -27,6 +27,7 @@ export const styles = StyleSheet.create({
     height: 12,
   },
   label: {
+    flexShrink: 1,
     fontSize: 14,
     fontWeight: FontWeight.medium,
     color: Palette.gray400,

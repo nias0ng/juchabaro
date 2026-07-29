@@ -1,7 +1,7 @@
 import { getJson, postJson } from '@/services/http-client';
 
-import { getMyProfileMock, loginMock } from './auth-api.mock';
-import type { LoginRequest, LoginResult, UserProfile } from './types';
+import { getMyProfileMock, loginMock, signupMock } from './auth-api.mock';
+import type { LoginRequest, LoginResult, SignupRequest, SignupResult, UserProfile } from './types';
 
 // TODO(auth-api): 백엔드 인증 API가 준비되면 이 값을 false로 전환하고 실제 API를 검증한다.
 const useMockAuth = __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_AUTH === 'true';
@@ -22,4 +22,13 @@ export function getMyProfile(accessToken: string): Promise<UserProfile> {
   }
 
   return getJson<UserProfile>('/api/users/me', accessToken);
+}
+
+// 회원가입 API 호출. 성공해도 토큰은 내려오지 않아 자동 로그인은 하지 않는다.
+export function signup(request: SignupRequest): Promise<SignupResult> {
+  if (useMockAuth) {
+    return signupMock(request);
+  }
+
+  return postJson<SignupResult>('/auth/signup', request);
 }

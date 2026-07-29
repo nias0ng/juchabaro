@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Text, TextInput, View, type TextInputProps } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
@@ -11,12 +12,14 @@ type TextFieldProps = {
   onChangeText: (text: string) => void;
   placeholder?: string;
   error?: string;
-
   invalid?: boolean;
+  helperText?: string;
+  rightAdornment?: ReactNode;
   secureTextEntry?: TextInputProps['secureTextEntry'];
   autoCapitalize?: TextInputProps['autoCapitalize'];
   keyboardType?: TextInputProps['keyboardType'];
   autoComplete?: TextInputProps['autoComplete'];
+  maxLength?: TextInputProps['maxLength'];
 };
 
 export function TextField({
@@ -26,10 +29,13 @@ export function TextField({
   placeholder,
   error,
   invalid = false,
+  helperText,
+  rightAdornment,
   secureTextEntry,
   autoCapitalize = 'none',
   keyboardType,
   autoComplete,
+  maxLength,
 }: TextFieldProps) {
   const theme = useTheme();
   const showErrorBorder = Boolean(error) || invalid;
@@ -52,10 +58,16 @@ export function TextField({
           autoCapitalize={autoCapitalize}
           keyboardType={keyboardType}
           autoComplete={autoComplete}
+          maxLength={maxLength}
           style={styles.input}
         />
+        {rightAdornment}
       </View>
-      {error ? <Text style={[styles.errorText, { color: theme.danger }]}>{error}</Text> : null}
+      {error ? (
+        <Text style={[styles.errorText, { color: theme.danger }]}>{error}</Text>
+      ) : helperText ? (
+        <Text style={[styles.errorText, { color: Palette.gray500 }]}>{helperText}</Text>
+      ) : null}
     </View>
   );
 }

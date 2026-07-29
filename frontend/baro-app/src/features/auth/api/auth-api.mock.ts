@@ -1,6 +1,6 @@
 import { ApiError } from '@/services/api-error';
 
-import type { LoginRequest, LoginResult, UserProfile } from './types';
+import type { LoginRequest, LoginResult, SignupRequest, SignupResult, UserProfile } from './types';
 
 const MOCK_RESPONSE_DELAY_MS = 800;
 const MOCK_PROFILE_DELAY_MS = 300;
@@ -59,4 +59,30 @@ export async function getMyProfileMock(accessToken: string): Promise<UserProfile
   }
 
   return mockProfile;
+}
+
+export async function signupMock(request: SignupRequest): Promise<SignupResult> {
+  await delay(MOCK_RESPONSE_DELAY_MS);
+
+  const loginId = request.loginId.trim().toLowerCase();
+
+  if (loginId === 'server-error') {
+    throw new ApiError('서버에 일시적인 문제가 발생했습니다.', 500);
+  }
+
+  if (loginId === 'network-error') {
+    throw new Error('Mock network error');
+  }
+
+  if (loginId === mockProfile.loginId) {
+    throw new ApiError('이미 사용 중인 로그인 아이디입니다.', 409);
+  }
+
+  return {
+    userId: mockProfile.userId + 1,
+    phoneNumber: request.phoneNumber,
+    name: request.name,
+    role: 'RESIDENT',
+    status: 'ACTIVE',
+  };
 }

@@ -13,6 +13,10 @@ export const styles = StyleSheet.create({
     color: Palette.gray600,
   },
   field: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
     width: '100%',
     borderRadius: Radius.input,
     backgroundColor: Palette.white,
@@ -28,6 +32,7 @@ export const styles = StyleSheet.create({
     borderWidth: 1,
   },
   input: {
+    flex: 1,
     fontSize: 14,
     color: Palette.gray975,
     padding: 0,
