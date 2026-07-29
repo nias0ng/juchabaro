@@ -11,19 +11,21 @@ class ApiResponseTest {
     void successWithData() {
         ApiResponse<String> response = ApiResponse.success("data");
 
-        assertThat(response.success()).isTrue();
-        assertThat(response.code()).isEqualTo("SUCCESS");
+        assertThat(response.isSuccess()).isTrue();
+        assertThat(response.httpStatus()).isEqualTo("OK");
+        assertThat(response.code()).isEqualTo(200);
         assertThat(response.message()).isEqualTo("요청에 성공했습니다.");
-        assertThat(response.data()).isEqualTo("data");
+        assertThat(response.result()).isEqualTo("data");
     }
 
     @Test
     void successWithoutData() {
         ApiResponse<Void> response = ApiResponse.successWithoutData();
 
-        assertThat(response.success()).isTrue();
-        assertThat(response.code()).isEqualTo("SUCCESS");
-        assertThat(response.data()).isNull();
+        assertThat(response.isSuccess()).isTrue();
+        assertThat(response.httpStatus()).isEqualTo("OK");
+        assertThat(response.code()).isEqualTo(200);
+        assertThat(response.result()).isNull();
     }
 
     @Test
@@ -31,11 +33,12 @@ class ApiResponseTest {
         ApiResponse<Void> response =
                 ApiResponse.failure(ErrorCode.RESOURCE_NOT_FOUND);
 
-        assertThat(response.success()).isFalse();
-        assertThat(response.code()).isEqualTo("RESOURCE_NOT_FOUND");
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.httpStatus()).isEqualTo("NOT_FOUND");
+        assertThat(response.code()).isEqualTo(404);
         assertThat(response.message())
                 .isEqualTo(ErrorCode.RESOURCE_NOT_FOUND.getMessage());
-        assertThat(response.data()).isNull();
+        assertThat(response.result()).isNull();
     }
 
     @Test
@@ -45,8 +48,9 @@ class ApiResponseTest {
                 "차량 번호는 필수입니다."
         );
 
-        assertThat(response.success()).isFalse();
-        assertThat(response.code()).isEqualTo("INVALID_INPUT_VALUE");
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.httpStatus()).isEqualTo("BAD_REQUEST");
+        assertThat(response.code()).isEqualTo(400);
         assertThat(response.message()).isEqualTo("차량 번호는 필수입니다.");
     }
 }

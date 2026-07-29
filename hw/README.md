@@ -2,11 +2,6 @@
 
 스마트 주차장 시스템의 Raspberry Pi 및 Jetson Orin Nano 소스 코드를 관리한다.
 
-## 실행 환경
-
-- Python 3.11 기준
-- 실제 보드의 세부 버전은 장치 확인 후 갱신한다.
-
 ## 장치 구성
 
 ### Raspberry Pi
