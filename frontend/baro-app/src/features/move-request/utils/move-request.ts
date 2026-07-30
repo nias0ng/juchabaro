@@ -48,3 +48,36 @@ export function toRequestDetailDisplay(detail: MoveRequestDetail): RequestDetail
       .map((image) => ({ imageId: image.imageId, imageUrl: image.imageUrl })),
   };
 }
+
+export type RequestWaitingDisplay = {
+  dueTimeLabel: string;
+  respondedTimeLabel: string;
+};
+
+// 24시간제 "HH:mm" (예정 시간용)
+function formatTime24(iso: string): string {
+  const date = new Date(iso);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+// 오전/오후 12시간제 (응답 완료 시각용)
+function formatTime12(iso: string): string {
+  const date = new Date(iso);
+  const hours24 = date.getHours();
+  const period = hours24 < 12 ? '오전' : '오후';
+  const hours12 = hours24 % 12 || 12;
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${period} ${hours12}:${minutes}`;
+}
+
+// 응답 완료(RESPONDED) 이후 화면(E-12)에서 표시할 문자열로 변환
+export function toRequestWaitingDisplay(detail: MoveRequestDetail): RequestWaitingDisplay {
+  const latestResponse = detail.responses[detail.responses.length - 1];
+
+  return {
+    dueTimeLabel: detail.dueAt ? formatTime24(detail.dueAt) : '--:--',
+    respondedTimeLabel: latestResponse ? formatTime12(latestResponse.respondedAt) : '--',
+  };
+}

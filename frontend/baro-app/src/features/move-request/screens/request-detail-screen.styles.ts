@@ -28,6 +28,48 @@ export const styles = StyleSheet.create({
   aiRequestText: {
     color: Palette.teal600,
   },
+  saveLink: {
+    fontSize: 12.5,
+    fontWeight: FontWeight.bold,
+    color: '#7a6ff0',
+  },
+  waitingContent: {
+    flex: 1,
+    alignItems: 'center',
+    gap: Spacing.base + 2,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
+  },
+  waitingPill: {
+    backgroundColor: Palette.white,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm + 4,
+    paddingVertical: Spacing.xs + 1,
+  },
+  waitingPillText: {
+    fontSize: 10.5,
+    fontWeight: FontWeight.bold,
+    color: '#5c4fe0',
+  },
+  waitingLabel: {
+    fontSize: 14,
+    fontWeight: FontWeight.bold,
+    color: '#5c6070',
+  },
+  statusButton: {
+    width: '100%',
+    marginTop: 'auto',
+    backgroundColor: Palette.gray975,
+    borderRadius: Radius.full,
+    paddingVertical: Spacing.base + 3,
+    alignItems: 'center',
+  },
+  statusButtonText: {
+    fontSize: 14,
+    fontWeight: FontWeight.bold,
+    color: Palette.white,
+  },
   statusContainer: {
     flex: 1,
     alignItems: 'center',
