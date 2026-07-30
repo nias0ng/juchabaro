@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import math
+from numbers import Real
 from pathlib import Path
 from threading import Lock
 from typing import Any, Sequence
 
 import numpy as np
 
+from ..errors import OcrComponentError
 from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, PreparedPlate, RawOcrResult
 
@@ -37,7 +39,7 @@ DEFAULT_RECOGNITION_BATCH_SIZE = 6
 # [예외]
 
 
-class PaddleResultError(RuntimeError):
+class PaddleResultError(OcrComponentError, RuntimeError):
     """PaddleOCR 입력 또는 결과가 recognition adapter 계약을 위반한 경우."""
 
 
@@ -104,8 +106,17 @@ def _parse_paddle_result(result: Any) -> tuple[str, float]:
             "PaddleOCR Result.json의 res는 dict여야 합니다."
         )
 
-    raw_text_value = payload.get("rec_text", "")
-    raw_text = "" if raw_text_value is None else str(raw_text_value)
+    if "rec_text" not in payload:
+        raise PaddleResultError(
+            "PaddleOCR Result.json에 rec_text가 없습니다."
+        )
+
+    raw_text_value = payload["rec_text"]
+    if not isinstance(raw_text_value, str):
+        raise PaddleResultError(
+            "PaddleOCR rec_text는 문자열이어야 합니다."
+        )
+    raw_text = raw_text_value
 
     score_value = payload.get("rec_score")
     if score_value is None or (
@@ -114,16 +125,19 @@ def _parse_paddle_result(result: Any) -> tuple[str, float]:
     ):
         # 빈 인식 결과는 일부 Paddle 버전에서 score를 생략한다.
         # 후처리에서 안전하게 제외할 수 있도록 0.0으로 통일한다.
-        return raw_text, 0.0
-
-    try:
-        score = float(score_value)
-    except (TypeError, ValueError) as exc:
+        if not raw_text:
+            return "", 0.0
         raise PaddleResultError(
-            "PaddleOCR rec_score를 실수로 변환할 수 없습니다: "
-            f"{score_value!r}"
-        ) from exc
+            "비어 있지 않은 PaddleOCR rec_text에는 rec_score가 필요합니다."
+        )
 
+    if isinstance(score_value, bool) or not isinstance(score_value, Real):
+        raise PaddleResultError(
+            "PaddleOCR rec_score는 숫자여야 합니다: "
+            f"{score_value!r}"
+        )
+
+    score = float(score_value)
     if not math.isfinite(score) or not 0.0 <= score <= 1.0:
         raise PaddleResultError(
             "PaddleOCR rec_score는 유한한 0.0~1.0 값이어야 합니다: "
@@ -153,7 +167,7 @@ class PaddlePlateReader:
     실패:
         중복 frame_index, 잘못된 BGR 이미지, 결과 개수 불일치 또는
         비정상 Result.json이면 PaddleResultError를 발생시킨다.
-        실제 모델 실행 오류는 원래 예외를 그대로 전달한다.
+        실제 모델 실행 오류도 원인을 보존한 PaddleResultError로 변환한다.
     """
 
     def __init__(
@@ -275,13 +289,18 @@ class PaddlePlateReader:
     ) -> list[Any]:
         """PaddleOCR 호출과 lazy 결과 소비를 같은 lock 안에서 수행한다."""
 
-        with self._lock:
-            return list(
-                self._model.predict(
-                    input=images,
-                    batch_size=self._batch_size,
+        try:
+            with self._lock:
+                return list(
+                    self._model.predict(
+                        input=images,
+                        batch_size=self._batch_size,
+                    )
                 )
-            )
+        except Exception as exc:
+            raise PaddleResultError(
+                "PaddleOCR 모델 실행에 실패했습니다."
+            ) from exc
 
 
 # [모델 로더]

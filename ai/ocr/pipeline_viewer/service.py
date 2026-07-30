@@ -72,6 +72,7 @@ from .tracing import (  # noqa: E402
     TracedPlatePreprocessor,
     TracedPlateReader,
     TracedTextProcessor,
+    run_traced_pipeline,
 )
 
 
@@ -170,11 +171,15 @@ class DecodedBurst:
 
 @dataclass(slots=True)
 class DebugRun:
-    """한 번의 실제 파이프라인 결과와 해당 호출 trace."""
+    """한 번의 pipeline 결과와 예외에서도 보존되는 호출 trace.
+
+    ``result``는 pipeline이 정상 판독 결과를 반환했을 때만 존재한다.
+    실행 예외의 타입과 메시지는 ``trace.pipeline_call``에 남는다.
+    """
 
     request_signature: str
     file_names: tuple[str, ...]
-    result: PlateReadResult
+    result: PlateReadResult | None
     trace: PipelineTrace
 
 
@@ -441,7 +446,16 @@ def run_debug_pipeline(
     # 모델별 lock과 별개로 이벤트 전체를 직렬화해 trace와 시간 측정을
     # 다른 Streamlit 세션의 추론이 교란하지 않도록 한다.
     with runtime.run_lock:
-        result = pipeline.read_plate(captured_frames)
+        try:
+            result = run_traced_pipeline(
+                trace=trace,
+                frames=captured_frames,
+                operation=lambda: pipeline.read_plate(captured_frames),
+            )
+        except Exception:
+            # 운영 pipeline의 예외 계약은 유지하되, viewer 경계에서는
+            # 실패한 호출의 trace도 화면에서 조사할 수 있게 보존한다.
+            result = None
 
     return DebugRun(
         request_signature=burst.signature,

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
+from src.ocr.vision import geometry as geometry_module
 from src.ocr.types import (
     CapturedFrame,
     DetectedPlate,
@@ -13,7 +15,11 @@ from src.ocr.types import (
     Quad,
     QuadSource,
 )
-from src.ocr.vision.geometry import GeometryError, PlateGeometry
+from src.ocr.vision.geometry import (
+    GeometryError,
+    GeometryProcessingError,
+    PlateGeometry,
+)
 
 
 PLATE_QUAD: Quad = (
@@ -39,6 +45,20 @@ def _detection(frame_index: int) -> DetectedPlate:
         frame_index=frame_index,
         bbox_xyxy=(5.0, 5.0, 25.0, 15.0),
         quad=PLATE_QUAD,
+        detector_score=0.9,
+    )
+
+
+def _invalid_scene_detection(frame_index: int) -> DetectedPlate:
+    return DetectedPlate(
+        frame_index=frame_index,
+        bbox_xyxy=(-10.0, -10.0, -1.0, -1.0),
+        quad=(
+            (-10.0, -10.0),
+            (-1.0, -10.0),
+            (-1.0, -1.0),
+            (-10.0, -1.0),
+        ),
         detector_score=0.9,
     )
 
@@ -136,8 +156,56 @@ class PlateGeometryCharacterizationTests(unittest.TestCase):
             image=object(),
         )
 
-        with self.assertRaises(GeometryError):
+        with self.assertRaises(GeometryProcessingError):
             PlateGeometry().rectify(frame, estimate)
+
+    def test_scene_invalid_anchor_preserves_rejection_reason(self) -> None:
+        with self.assertRaises(GeometryError) as raised:
+            PlateGeometry().estimate_quads(
+                _frames(),
+                (_invalid_scene_detection(1),),
+            )
+
+        self.assertIn("frame_index=1", str(raised.exception))
+        self.assertIn("경계를 벗어납니다", str(raised.exception))
+
+    def test_malformed_anchor_quad_is_runtime_contract_error(self) -> None:
+        detection = DetectedPlate(
+            frame_index=1,
+            bbox_xyxy=(5.0, 5.0, 25.0, 15.0),
+            quad=((5.0, 5.0),),  # type: ignore[arg-type]
+            detector_score=0.9,
+        )
+
+        with self.assertRaises(GeometryProcessingError):
+            PlateGeometry().estimate_quads(
+                _frames(),
+                (detection,),
+            )
+
+    def test_opencv_failure_is_runtime_error_and_preserves_cause(
+        self,
+    ) -> None:
+        frame = _frames(1)[0]
+        estimate = EstimatedQuad(
+            frame_index=0,
+            quad=PLATE_QUAD,
+            source=QuadSource.DETECTED,
+            source_anchor_indices=(0,),
+        )
+        opencv_error = geometry_module.cv2.error(
+            "의도한 perspective transform 실패"
+        )
+
+        with patch.object(
+            geometry_module.cv2,
+            "getPerspectiveTransform",
+            side_effect=opencv_error,
+        ):
+            with self.assertRaises(GeometryProcessingError) as raised:
+                PlateGeometry().rectify(frame, estimate)
+
+        self.assertIs(raised.exception.__cause__, opencv_error)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ import math
 
 import cv2
 
+from ..errors import OcrComponentError
 from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, PreparedPlate, RectifiedPlate
 
@@ -33,7 +34,7 @@ from ..types import BgrImage, PreparedPlate, RectifiedPlate
 # [예외]
 
 
-class PlatePreprocessError(ValueError):
+class PlatePreprocessError(OcrComponentError, ValueError):
     """번호판 이미지가 전처리 입력 계약을 만족하지 않는 경우."""
 
 
@@ -137,7 +138,8 @@ class PlatePreprocessor:
             비활성화된 경우에도 원본과 별개의 배열을 반환한다.
 
         실패:
-            이미지 계약이 잘못되면 PlatePreprocessError가 발생한다.
+            이미지 계약이 잘못되거나 OpenCV 처리가 실패하면 원인을
+            보존한 PlatePreprocessError가 발생한다.
         """
 
         image = self._validate_image(plate.image)

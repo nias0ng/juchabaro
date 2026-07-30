@@ -81,14 +81,20 @@ streamlit run ai/ocr/pipeline_viewer/app.py
 
 ## 화면
 
-- 최종 판정, 후보, 단계 실패
+- 최종 판정, trace에서 복원한 후보와 단계 실패
 - 전체 프레임 품질과 선택된 두 anchor
 - YOLO bbox, 네 keypoint와 confidence
 - 프레임별 검출·보간·외삽·재사용 quad
 - 원근 보정 및 OCR 전처리 전후 이미지
 - PaddleOCR 원문, confidence, 정규화 문자열과 형식 검사
 - 최종 투표 결과
-- 파이프라인 metrics와 실제 함수별 입출력 요약
+- trace 기반 단계별 함수 실행 시간과 실제 함수별 입출력 요약
+
+운영용 `PlateReadResult`에는 상태와 성공 번호판만 남긴다. 후보, 투표 상세,
+단계별 오류와 timing은 viewer의 실행별 `PipelineTrace`에서만 읽는다.
+Pipeline 실행이 예외로 끝나도 완료 전까지 기록된 component 호출과 전체
+실행 오류를 같은 trace에서 확인할 수 있다. Adapter가 감싼 예외도
+root부터 원인까지 type과 message chain을 보존한다.
 
 이미지는 원본 배열을 수정하지 않은 복사본에만 overlay합니다. 원시
 입출력 JSON에서는 NumPy 배열을 복사하지 않고 shape와 dtype만 보여줍니다.

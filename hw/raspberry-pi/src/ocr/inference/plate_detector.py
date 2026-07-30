@@ -24,6 +24,7 @@ from typing import Any, cast
 
 import numpy as np
 
+from ..errors import OcrComponentError
 from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, CapturedFrame, DetectedPlate, Quad
 
@@ -31,7 +32,7 @@ from ..types import BgrImage, CapturedFrame, DetectedPlate, Quad
 # [예외]
 
 
-class DetectorContractError(RuntimeError):
+class DetectorContractError(OcrComponentError, RuntimeError):
     """입력 또는 YOLO 결과가 번호판 detector 계약을 만족하지 않는 경우."""
 
 
@@ -119,8 +120,8 @@ class YoloPlateDetector:
 
     실패:
         입력 이미지나 YOLO 결과의 개수·shape·값이 계약과 다르면
-        DetectorContractError를 발생시킨다. 실제 모델 실행 오류는
-        원래 예외를 그대로 전달한다.
+        DetectorContractError를 발생시킨다. 실제 모델 실행 오류도
+        원인을 보존한 DetectorContractError로 변환한다.
     """
 
     def __init__(
@@ -205,7 +206,9 @@ class YoloPlateDetector:
 
         if boxes_object is None:
             if keypoints_object is None:
-                return None
+                raise DetectorContractError(
+                    "YOLO result에 boxes와 keypoints 속성이 없습니다."
+                )
             raise DetectorContractError(
                 "YOLO keypoints는 있지만 boxes가 없습니다."
             )
@@ -340,18 +343,23 @@ class YoloPlateDetector:
     def _predict(self, image: BgrImage) -> list[Any]:
         """주입된 YOLO 모델을 lock 안에서 한 번 호출한다."""
 
-        with self._lock:
-            return list(
-                self._model.predict(
-                    source=image,
-                    device=self._device,
-                    imgsz=self._imgsz,
-                    conf=self._confidence_threshold,
-                    max_det=self._max_detections,
-                    half=False,
-                    verbose=False,
+        try:
+            with self._lock:
+                return list(
+                    self._model.predict(
+                        source=image,
+                        device=self._device,
+                        imgsz=self._imgsz,
+                        conf=self._confidence_threshold,
+                        max_det=self._max_detections,
+                        half=False,
+                        verbose=False,
+                    )
                 )
-            )
+        except Exception as exc:
+            raise DetectorContractError(
+                "YOLO 모델 실행에 실패했습니다."
+            ) from exc
 
     @staticmethod
     def _require_single_result(results: list[Any]) -> Any:

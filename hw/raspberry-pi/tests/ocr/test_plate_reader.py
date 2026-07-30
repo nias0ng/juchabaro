@@ -6,7 +6,11 @@ import unittest
 
 import numpy as np
 
-from src.ocr.inference.plate_reader import PaddlePlateReader
+from src.ocr.inference.plate_reader import (
+    PaddlePlateReader,
+    PaddleResultError,
+    _parse_paddle_result,
+)
 from src.ocr.types import (
     EstimatedQuad,
     PreparedPlate,
@@ -33,6 +37,11 @@ class FakePaddleResult:
         }
 
 
+class PayloadPaddleResult:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.json = {"res": payload}
+
+
 class FakePaddleModel:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -48,6 +57,19 @@ class FakePaddleModel:
             FakePaddleResult(index)
             for index in range(len(input))
         ]
+
+
+class FailingPaddleModel:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def predict(
+        self,
+        *,
+        input: list[np.ndarray],
+        batch_size: int,
+    ) -> list[FakePaddleResult]:
+        raise self.error
 
 
 def _plates(count: int) -> tuple[PreparedPlate, ...]:
@@ -81,6 +103,43 @@ class PaddlePlateReaderBatchTests(unittest.TestCase):
             tuple(result.frame_index for result in results),
             tuple(range(8)),
         )
+
+    def test_model_failure_is_typed_and_preserves_cause(self) -> None:
+        model_error = RuntimeError("의도한 PaddleOCR predict 실패")
+        reader = PaddlePlateReader(
+            FailingPaddleModel(model_error),
+            batch_size=6,
+        )
+
+        with self.assertRaises(PaddleResultError) as raised:
+            reader.recognize(_plates(1))
+
+        self.assertIs(raised.exception.__cause__, model_error)
+
+    def test_empty_text_may_omit_score(self) -> None:
+        self.assertEqual(
+            _parse_paddle_result(
+                PayloadPaddleResult({"rec_text": ""})
+            ),
+            ("", 0.0),
+        )
+
+    def test_malformed_result_fields_are_rejected(self) -> None:
+        payloads = (
+            {},
+            {"rec_text": None, "rec_score": 0.9},
+            {"rec_text": 123, "rec_score": 0.9},
+            {"rec_text": "12가3456"},
+            {"rec_text": "12가3456", "rec_score": "0.9"},
+            {"rec_text": "12가3456", "rec_score": True},
+        )
+
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(PaddleResultError):
+                    _parse_paddle_result(
+                        PayloadPaddleResult(payload)
+                    )
 
 
 if __name__ == "__main__":

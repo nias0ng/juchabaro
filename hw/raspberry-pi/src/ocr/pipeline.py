@@ -12,11 +12,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-import logging
+import math
+from numbers import Real
 from threading import Lock
-import time
 from typing import Protocol
 
+from .errors import (
+    InvalidBurstError,
+    OcrComponentError,
+    OcrRuntimeError,
+)
 from .image_validation import is_nonempty_bgr_uint8_image
 from .policy import OcrPipelinePolicy
 from .postprocessing.plate_text import build_ocr_candidate
@@ -25,19 +30,16 @@ from .types import (
     CapturedFrame,
     DetectedPlate,
     EstimatedQuad,
+    FrameQuality,
     OcrCandidate,
-    PipelineMetrics,
     PlateDecision,
     PlateReadResult,
     PreparedPlate,
     RawOcrResult,
     ReadStatus,
     RectifiedPlate,
-    StageFailure,
 )
-
-
-LOGGER = logging.getLogger(__name__)
+from .vision.geometry import GeometryError
 
 
 # [파이프라인 의존성 Protocol]
@@ -123,12 +125,12 @@ class PlateOcrPipeline:
         연속적인 BGR uint8 프레임.
 
     출력:
-        성공 여부, 전체 번호판, 프레임별 후보와 진단 정보를 포함한
+        정상 판독 상태와 성공 시 전체 번호판만 포함한
         ``PlateReadResult``.
 
     실패:
-        이벤트 안에서 복구 가능한 실패는 결과 상태와 ``failures``에 담는다.
-        ``KeyboardInterrupt``와 ``SystemExit``은 가로채지 않는다.
+        잘못된 burst는 ``InvalidBurstError``, 알려진 component 오류는
+        ``OcrRuntimeError``로 전달한다. 그 밖의 예외는 원형 전파한다.
     """
 
     def __init__(
@@ -170,101 +172,35 @@ class PlateOcrPipeline:
             CapturedFrame 시퀀스.
 
         출력:
-            성공 번호, 실패 상태, 후보·단계별 진단·실행 지표를 담은
-            PlateReadResult.
+            성공 번호 또는 정상적인 판독 실패 상태를 담은 PlateReadResult.
 
         실패:
-            입력·모델·처리 오류는 가능한 범위에서 결과 상태로 격리한다.
-            프로세스 종료를 위한 KeyboardInterrupt와 SystemExit은 전파한다.
+            burst 계약 위반은 InvalidBurstError, 알려진 모델·adapter·
+            OpenCV·내부 invariant 오류는 OcrRuntimeError가 발생한다.
+            예상하지 못한 component 예외는 변환하지 않는다.
 
-        각 프레임의 기하·전처리 실패는 해당 프레임만 제외한다. YOLO anchor
-        하나가 실패해도 나머지 anchor를 시도하며, PaddleOCR batch 자체가
-        실패하면 ``MODEL_ERROR``로 반환한다.
+        YOLO가 한 anchor에서 정상적으로 ``None``을 반환하거나 geometry가
+        장면상 사용할 수 없는 프레임 좌표를 생략하면 나머지로 계속한다.
         """
 
         with self._event_lock:
-            started = time.perf_counter()
-
             try:
                 frame_tuple = tuple(frames)
             except TypeError as exc:
-                # 센서·카메라 경계의 잘못된 입력도 24시간 서비스 반복문을
-                # 종료시키지 않도록 다른 입력 오류와 같은 결과로 격리한다.
-                return self._failure_result(
-                    status=ReadStatus.INVALID_INPUT,
-                    message=(
-                        "frames는 CapturedFrame 시퀀스여야 합니다: "
-                        f"{exc}"
-                    ),
-                    total_frames=0,
-                    candidates=(),
-                    failures=(),
-                    metrics=PipelineMetrics(),
-                    started=started,
-                )
+                raise InvalidBurstError(
+                    "frames는 CapturedFrame 시퀀스여야 합니다."
+                ) from exc
 
-            return self._read_plate_locked(frame_tuple)
+            try:
+                self._validate_frames(frame_tuple)
+            except ValueError as exc:
+                raise InvalidBurstError(str(exc)) from exc
 
-    def _read_plate_locked(
-        self,
-        frames: tuple[CapturedFrame, ...],
-    ) -> PlateReadResult:
-        started = time.perf_counter()
-        metrics = PipelineMetrics()
-        failures: list[StageFailure] = []
-        candidates: list[OcrCandidate] = []
-
-        try:
-            self._validate_frames(frames)
-        except ValueError as exc:
-            return self._failure_result(
-                status=ReadStatus.INVALID_INPUT,
-                message=str(exc),
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
-            )
-
-        try:
-            return self._run_event(
-                frames=frames,
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
-            )
-        except Exception as exc:
-            # 프로세스 종료 신호는 Exception의 하위 타입이 아니므로 숨기지 않는다.
-            LOGGER.exception(
-                "번호판 OCR 이벤트의 예상하지 못한 오류를 격리했습니다."
-            )
-            failures.append(
-                self._stage_failure(
-                    "pipeline",
-                    None,
-                    exc,
-                )
-            )
-            return self._failure_result(
-                status=ReadStatus.INTERNAL_ERROR,
-                message="번호판 OCR 파이프라인 내부 오류",
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
-            )
+            return self._run_event(frame_tuple)
 
     def _run_event(
         self,
-        *,
         frames: tuple[CapturedFrame, ...],
-        candidates: list[OcrCandidate],
-        failures: list[StageFailure],
-        metrics: PipelineMetrics,
-        started: float,
     ) -> PlateReadResult:
         frame_by_index = {
             frame.frame_index: frame
@@ -273,135 +209,77 @@ class PlateOcrPipeline:
 
         # [Anchor 선택]
 
-        selection_started = time.perf_counter()
-
         try:
             selection = self._selector.select_anchors(frames)
-            anchor_indices = self._validate_selection(
-                selection,
-                frame_by_index,
-            )
-        except ValueError as exc:
-            metrics.frame_selection_ms = self._elapsed_ms(
-                selection_started
-            )
-            failures.append(
-                self._stage_failure(
-                    "frame_selection",
-                    None,
-                    exc,
-                )
-            )
-            return self._failure_result(
-                status=ReadStatus.INVALID_INPUT,
-                message=str(exc),
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
-            )
+        except OcrComponentError as exc:
+            raise self._component_runtime_error(
+                "frame selector",
+                exc,
+            ) from exc
 
-        metrics.frame_selection_ms = self._elapsed_ms(
-            selection_started
+        anchor_indices = self._validate_selection(
+            selection,
+            frame_by_index,
         )
 
         # [번호판 검출]
 
         detections: list[DetectedPlate] = []
-        detector_errors = 0
 
-        # 첫 anchor의 결과와 무관하게 두 번째도 실행해야 차량 이동량을
-        # 추정할 가능성을 유지할 수 있다.
+        # 정상 미검출(None)이어도 두 번째 anchor를 실행해 fallback
+        # 가능성을 유지한다. 실행·계약 오류는 정상 미검출로 취급하지 않는다.
         for frame_index in anchor_indices:
-            detection_started = time.perf_counter()
-            metrics.detector_calls += 1
-
             try:
                 detection = self._detector.detect(
                     frame_by_index[frame_index]
                 )
-            except Exception as exc:
-                detector_errors += 1
-                failures.append(
-                    self._stage_failure(
-                        "detection",
-                        frame_index,
-                        exc,
-                    )
+            except OcrComponentError as exc:
+                raise self._component_runtime_error(
+                    "plate detector",
+                    exc,
+                ) from exc
+
+            if detection is None:
+                continue
+            if not isinstance(detection, DetectedPlate):
+                raise OcrRuntimeError(
+                    "detector는 DetectedPlate 또는 None을 반환해야 합니다."
                 )
-                LOGGER.warning(
-                    "frame_index=%s 번호판 검출 실패",
-                    frame_index,
-                    exc_info=True,
-                )
-            else:
-                if detection is not None:
-                    if detection.frame_index != frame_index:
-                        raise ValueError(
-                            "detector가 입력과 다른 frame_index를 "
-                            "반환했습니다."
-                        )
-                    detections.append(detection)
-            finally:
-                metrics.detection_ms += self._elapsed_ms(
-                    detection_started
-                )
+            self._validate_matching_frame_index(
+                component="detector",
+                actual=detection.frame_index,
+                expected=frame_index,
+            )
+            detections.append(detection)
 
         if not detections:
-            status = (
-                ReadStatus.MODEL_ERROR
-                if detector_errors
-                else ReadStatus.NO_PLATE_REGION
-            )
-            message = (
-                "YOLO 오류로 anchor에서 번호판을 얻지 못했습니다."
-                if detector_errors
-                else "두 anchor에서 번호판이 검출되지 않았습니다."
-            )
-            return self._failure_result(
-                status=status,
-                message=message,
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
+            return PlateReadResult(
+                status=ReadStatus.NO_PLATE_REGION,
+                plate_number=None,
             )
 
         # [좌표 추정과 원근 보정]
-
-        geometry_started = time.perf_counter()
 
         try:
             estimates = self._geometry.estimate_quads(
                 frames,
                 detections,
             )
-            estimate_by_index = self._index_estimates(
-                estimates,
-                frame_by_index,
-            )
-        except ValueError as exc:
-            metrics.geometry_ms = self._elapsed_ms(
-                geometry_started
-            )
-            failures.append(
-                self._stage_failure(
-                    "geometry",
-                    None,
-                    exc,
-                )
-            )
-            return self._failure_result(
+        except GeometryError:
+            return PlateReadResult(
                 status=ReadStatus.NO_PLATE_REGION,
-                message=str(exc),
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
+                plate_number=None,
             )
+        except OcrComponentError as exc:
+            raise self._component_runtime_error(
+                "plate geometry",
+                exc,
+            ) from exc
+
+        estimate_by_index = self._index_estimates(
+            estimates,
+            frame_by_index,
+        )
 
         rectified_plates: list[RectifiedPlate] = []
 
@@ -409,13 +287,6 @@ class PlateOcrPipeline:
             estimate = estimate_by_index.get(frame.frame_index)
 
             if estimate is None:
-                failures.append(
-                    StageFailure(
-                        stage="geometry",
-                        frame_index=frame.frame_index,
-                        message="사용 가능한 번호판 4점 좌표가 없습니다.",
-                    )
-                )
                 continue
 
             try:
@@ -423,188 +294,168 @@ class PlateOcrPipeline:
                     frame,
                     estimate,
                 )
-            except Exception as exc:
-                failures.append(
-                    self._stage_failure(
-                        "rectification",
-                        frame.frame_index,
-                        exc,
-                    )
-                )
-                LOGGER.warning(
-                    "frame_index=%s 원근 보정 실패",
-                    frame.frame_index,
-                    exc_info=True,
-                )
+            except GeometryError:
                 continue
+            except OcrComponentError as exc:
+                raise self._component_runtime_error(
+                    "perspective rectification",
+                    exc,
+                ) from exc
 
-            if rectified.frame_index != frame.frame_index:
-                raise ValueError(
-                    "geometry가 입력과 다른 frame_index를 반환했습니다."
+            if not isinstance(rectified, RectifiedPlate):
+                raise OcrRuntimeError(
+                    "geometry.rectify는 RectifiedPlate를 반환해야 합니다."
                 )
+            self._validate_matching_frame_index(
+                component="geometry",
+                actual=rectified.frame_index,
+                expected=frame.frame_index,
+            )
 
             rectified_plates.append(rectified)
 
-        metrics.geometry_ms = self._elapsed_ms(
-            geometry_started
-        )
-
         if not rectified_plates:
-            return self._failure_result(
+            return PlateReadResult(
                 status=ReadStatus.NO_PLATE_REGION,
-                message="원근 보정 가능한 번호판 영역이 없습니다.",
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
+                plate_number=None,
             )
 
         # [OCR 화질 전처리]
 
-        preprocessing_started = time.perf_counter()
         prepared_plates: list[PreparedPlate] = []
 
         for plate in rectified_plates:
             try:
                 prepared = self._preprocessor.process(plate)
-            except Exception as exc:
-                failures.append(
-                    self._stage_failure(
-                        "preprocessing",
-                        plate.frame_index,
-                        exc,
-                    )
-                )
-                LOGGER.warning(
-                    "frame_index=%s OCR 전처리 실패",
-                    plate.frame_index,
-                    exc_info=True,
-                )
-                continue
+            except OcrComponentError as exc:
+                raise self._component_runtime_error(
+                    "plate preprocessing",
+                    exc,
+                ) from exc
 
-            if prepared.frame_index != plate.frame_index:
-                raise ValueError(
-                    "preprocessor가 입력과 다른 frame_index를 반환했습니다."
+            if not isinstance(prepared, PreparedPlate):
+                raise OcrRuntimeError(
+                    "preprocessor는 PreparedPlate를 반환해야 합니다."
                 )
+            self._validate_matching_frame_index(
+                component="preprocessor",
+                actual=prepared.frame_index,
+                expected=plate.frame_index,
+            )
 
             prepared_plates.append(prepared)
 
-        metrics.preprocessing_ms = self._elapsed_ms(
-            preprocessing_started
-        )
-
         if not prepared_plates:
-            return self._failure_result(
-                status=ReadStatus.INTERNAL_ERROR,
-                message="OCR 전처리에 성공한 번호판 이미지가 없습니다.",
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
+            raise OcrRuntimeError(
+                "OCR 전처리 결과가 비어 있습니다."
             )
 
         # [PaddleOCR 인식]
-
-        recognition_started = time.perf_counter()
-        metrics.recognizer_calls += 1
 
         try:
             raw_results = self._reader.recognize(
                 prepared_plates
             )
-        except Exception as exc:
-            metrics.recognition_ms = self._elapsed_ms(
-                recognition_started
-            )
-            failures.append(
-                self._stage_failure(
-                    "recognition",
-                    None,
-                    exc,
-                )
-            )
-            LOGGER.warning(
-                "PaddleOCR batch 인식 실패",
-                exc_info=True,
-            )
-            return self._failure_result(
-                status=ReadStatus.MODEL_ERROR,
-                message="PaddleOCR batch 인식에 실패했습니다.",
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
-            )
+        except OcrComponentError as exc:
+            raise self._component_runtime_error(
+                "plate recognition",
+                exc,
+            ) from exc
 
-        metrics.recognition_ms = self._elapsed_ms(
-            recognition_started
-        )
-
-        self._validate_raw_results(
+        validated_raw_results = self._validate_raw_results(
             raw_results,
             prepared_plates,
         )
 
         # [문자열 후처리와 최종 집계]
 
-        postprocessing_started = time.perf_counter()
-
-        for raw_result in raw_results:
+        candidates: list[OcrCandidate] = []
+        for raw_result in validated_raw_results:
             try:
                 candidate = self._text_processor(raw_result)
-            except Exception as exc:
-                failures.append(
-                    self._stage_failure(
-                        "text_postprocessing",
-                        raw_result.frame_index,
-                        exc,
-                    )
-                )
-                LOGGER.warning(
-                    "frame_index=%s OCR 문자열 후처리 실패",
-                    raw_result.frame_index,
-                    exc_info=True,
-                )
-                continue
+            except OcrComponentError as exc:
+                raise self._component_runtime_error(
+                    "OCR text postprocessing",
+                    exc,
+                ) from exc
 
+            if not isinstance(candidate, OcrCandidate):
+                raise OcrRuntimeError(
+                    "text processor는 OcrCandidate를 반환해야 합니다."
+                )
+            self._validate_candidate(
+                candidate,
+                raw_result,
+            )
             candidates.append(candidate)
 
         if not candidates:
-            metrics.postprocessing_ms = self._elapsed_ms(
-                postprocessing_started
-            )
-            return self._failure_result(
-                status=ReadStatus.INTERNAL_ERROR,
-                message="후처리 가능한 OCR 결과가 없습니다.",
-                total_frames=len(frames),
-                candidates=candidates,
-                failures=failures,
-                metrics=metrics,
-                started=started,
+            raise OcrRuntimeError(
+                "후처리 가능한 OCR 결과가 없습니다."
             )
 
         try:
             decision = self._aggregator.aggregate(candidates)
-        finally:
-            # 집계 계약 오류도 INTERNAL_ERROR로 격리되므로 실패한 시간까지
-            # 남겨야 운영 로그에서 지연 원인을 잃지 않는다.
-            metrics.postprocessing_ms = self._elapsed_ms(
-                postprocessing_started
-            )
+        except OcrComponentError as exc:
+            raise self._component_runtime_error(
+                "candidate aggregation",
+                exc,
+            ) from exc
 
-        return self._decision_result(
-            decision=decision,
-            total_frames=len(frames),
-            candidates=candidates,
-            failures=failures,
-            metrics=metrics,
-            started=started,
-        )
+        return self._decision_result(decision, candidates)
 
     # [입력과 단계별 계약 검증]
+
+    @staticmethod
+    def _validate_matching_frame_index(
+        *,
+        component: str,
+        actual: object,
+        expected: int,
+    ) -> None:
+        """Component 반환 index가 bool이 아닌 동일한 정수인지 확인한다."""
+
+        if isinstance(actual, bool) or not isinstance(actual, int):
+            raise OcrRuntimeError(
+                f"{component} frame_index는 bool이 아닌 정수여야 합니다."
+            )
+        if actual != expected:
+            raise OcrRuntimeError(
+                f"{component}가 입력과 다른 frame_index를 반환했습니다."
+            )
+
+    @staticmethod
+    def _validate_candidate(
+        candidate: OcrCandidate,
+        raw_result: RawOcrResult,
+    ) -> None:
+        """문자열 후처리 결과의 타입·index·score 계약을 확인한다."""
+
+        PlateOcrPipeline._validate_matching_frame_index(
+            component="text processor",
+            actual=candidate.frame_index,
+            expected=raw_result.frame_index,
+        )
+        if (
+            not isinstance(candidate.raw_text, str)
+            or not isinstance(candidate.normalized_text, str)
+        ):
+            raise OcrRuntimeError(
+                "OCR candidate 문자열 필드는 str이어야 합니다."
+            )
+        if (
+            isinstance(candidate.rec_score, bool)
+            or not isinstance(candidate.rec_score, Real)
+            or not math.isfinite(float(candidate.rec_score))
+            or not 0.0 <= float(candidate.rec_score) <= 1.0
+        ):
+            raise OcrRuntimeError(
+                "OCR candidate rec_score는 0~1 범위의 유한한 수여야 합니다."
+            )
+        if not isinstance(candidate.valid_format, bool):
+            raise OcrRuntimeError(
+                "OCR candidate valid_format은 bool이어야 합니다."
+            )
 
     def _validate_frames(
         self,
@@ -676,6 +527,11 @@ class PlateOcrPipeline:
     ) -> tuple[int, int]:
         """Selector 결과가 YOLO 호출 정책과 입력 범위를 만족하는지 확인한다."""
 
+        if not isinstance(selection, AnchorSelection):
+            raise OcrRuntimeError(
+                "selector는 AnchorSelection을 반환해야 합니다."
+            )
+
         anchor_indices = (
             selection.earlier_frame_index,
             selection.later_frame_index,
@@ -686,12 +542,12 @@ class PlateOcrPipeline:
             or not isinstance(index, int)
             for index in anchor_indices
         ):
-            raise ValueError(
+            raise OcrRuntimeError(
                 "anchor frame_index는 bool이 아닌 정수여야 합니다."
             )
 
         if len(set(anchor_indices)) != len(anchor_indices):
-            raise ValueError(
+            raise OcrRuntimeError(
                 "두 anchor의 frame_index가 중복되었습니다."
             )
 
@@ -699,12 +555,12 @@ class PlateOcrPipeline:
             index not in frame_by_index
             for index in anchor_indices
         ):
-            raise ValueError(
+            raise OcrRuntimeError(
                 "입력에 없는 frame_index가 anchor로 선택되었습니다."
             )
 
         if anchor_indices[0] >= anchor_indices[1]:
-            raise ValueError(
+            raise OcrRuntimeError(
                 "earlier anchor는 later anchor보다 앞서야 합니다."
             )
 
@@ -712,23 +568,43 @@ class PlateOcrPipeline:
             anchor_indices[0]
             >= self._policy.early_anchor_candidate_count
         ):
-            raise ValueError(
+            raise OcrRuntimeError(
                 "earlier anchor가 정책의 품질 비교 후보 범위를 "
                 "벗어났습니다."
             )
 
         if anchor_indices[1] != self._policy.frame_count - 1:
-            raise ValueError(
+            raise OcrRuntimeError(
                 "later anchor는 burst의 마지막 프레임이어야 합니다."
             )
 
-        quality_indices = tuple(
-            quality.frame_index
-            for quality in selection.qualities
-        )
+        try:
+            qualities = tuple(selection.qualities)
+        except TypeError as exc:
+            raise OcrRuntimeError(
+                "selector qualities는 FrameQuality 시퀀스여야 합니다."
+            ) from exc
+
+        if any(
+            not isinstance(quality, FrameQuality)
+            for quality in qualities
+        ):
+            raise OcrRuntimeError(
+                "selector qualities는 FrameQuality 시퀀스여야 합니다."
+            )
+
+        quality_indices = tuple(quality.frame_index for quality in qualities)
+        if any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            for index in quality_indices
+        ):
+            raise OcrRuntimeError(
+                "quality frame_index는 bool이 아닌 정수여야 합니다."
+            )
 
         if quality_indices != tuple(frame_by_index):
-            raise ValueError(
+            raise OcrRuntimeError(
                 "품질 평가 결과가 입력 프레임 순서와 다릅니다."
             )
 
@@ -741,34 +617,79 @@ class PlateOcrPipeline:
     ) -> dict[int, EstimatedQuad]:
         """좌표 추정 결과의 중복과 입력 범위를 검사해 index mapping을 만든다."""
 
+        try:
+            estimate_tuple = tuple(estimates)
+        except TypeError as exc:
+            raise OcrRuntimeError(
+                "geometry 결과는 EstimatedQuad 시퀀스여야 합니다."
+            ) from exc
+
         estimate_by_index: dict[int, EstimatedQuad] = {}
 
-        for estimate in estimates:
+        for estimate in estimate_tuple:
+            if not isinstance(estimate, EstimatedQuad):
+                raise OcrRuntimeError(
+                    "geometry 결과는 EstimatedQuad 시퀀스여야 합니다."
+                )
+            if (
+                isinstance(estimate.frame_index, bool)
+                or not isinstance(estimate.frame_index, int)
+            ):
+                raise OcrRuntimeError(
+                    "geometry frame_index는 bool이 아닌 정수여야 합니다."
+                )
             if estimate.frame_index not in frame_by_index:
-                raise ValueError(
+                raise OcrRuntimeError(
                     "geometry가 입력에 없는 frame_index를 반환했습니다."
                 )
 
             if estimate.frame_index in estimate_by_index:
-                raise ValueError(
+                raise OcrRuntimeError(
                     "geometry 결과의 frame_index가 중복되었습니다."
                 )
 
             estimate_by_index[estimate.frame_index] = estimate
-
-        if not estimate_by_index:
-            raise ValueError(
-                "사용 가능한 번호판 4점 좌표가 없습니다."
-            )
-
         return estimate_by_index
 
     @staticmethod
     def _validate_raw_results(
         raw_results: Sequence[RawOcrResult],
         prepared_plates: Sequence[PreparedPlate],
-    ) -> None:
+    ) -> tuple[RawOcrResult, ...]:
         """PaddleOCR 결과가 입력 batch와 일대일 대응하는지 확인한다."""
+
+        try:
+            result_tuple = tuple(raw_results)
+        except TypeError as exc:
+            raise OcrRuntimeError(
+                "PaddleOCR 결과는 RawOcrResult 시퀀스여야 합니다."
+            ) from exc
+
+        for result in result_tuple:
+            if not isinstance(result, RawOcrResult):
+                raise OcrRuntimeError(
+                    "PaddleOCR 결과는 RawOcrResult 시퀀스여야 합니다."
+                )
+            if (
+                isinstance(result.frame_index, bool)
+                or not isinstance(result.frame_index, int)
+            ):
+                raise OcrRuntimeError(
+                    "PaddleOCR frame_index는 bool이 아닌 정수여야 합니다."
+                )
+            if not isinstance(result.raw_text, str):
+                raise OcrRuntimeError(
+                    "PaddleOCR raw_text는 문자열이어야 합니다."
+                )
+            if (
+                isinstance(result.rec_score, bool)
+                or not isinstance(result.rec_score, Real)
+                or not math.isfinite(float(result.rec_score))
+                or not 0.0 <= float(result.rec_score) <= 1.0
+            ):
+                raise OcrRuntimeError(
+                    "PaddleOCR rec_score는 0~1 범위의 유한한 수여야 합니다."
+                )
 
         expected_indices = tuple(
             plate.frame_index
@@ -776,94 +697,142 @@ class PlateOcrPipeline:
         )
         actual_indices = tuple(
             result.frame_index
-            for result in raw_results
+            for result in result_tuple
         )
 
         if actual_indices != expected_indices:
-            raise ValueError(
+            raise OcrRuntimeError(
                 "PaddleOCR 결과 순서가 입력 batch와 다릅니다: "
                 f"expected={expected_indices}, actual={actual_indices}"
             )
+
+        return result_tuple
 
     # [최종 결과 생성]
 
     @staticmethod
     def _decision_result(
-        *,
         decision: PlateDecision,
-        total_frames: int,
         candidates: Sequence[OcrCandidate],
-        failures: Sequence[StageFailure],
-        metrics: PipelineMetrics,
-        started: float,
     ) -> PlateReadResult:
         """집계기의 판정을 상위 서비스용 최종 결과로 변환한다."""
 
-        metrics.total_ms = PlateOcrPipeline._elapsed_ms(
-            started
+        if not isinstance(decision, PlateDecision):
+            raise OcrRuntimeError(
+                "aggregator는 PlateDecision을 반환해야 합니다."
+            )
+        if not isinstance(decision.status, ReadStatus):
+            raise OcrRuntimeError(
+                "aggregator가 알 수 없는 ReadStatus를 반환했습니다."
+            )
+        if decision.status is ReadStatus.NO_PLATE_REGION:
+            raise OcrRuntimeError(
+                "NO_PLATE_REGION은 aggregator가 반환할 수 없습니다."
+            )
+
+        integer_diagnostics = (
+            decision.valid_frames,
+            decision.vote_count,
         )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in integer_diagnostics
+        ):
+            raise OcrRuntimeError(
+                "aggregator의 frame·vote 진단값이 유효하지 않습니다."
+            )
+        if decision.vote_count > decision.valid_frames:
+            raise OcrRuntimeError(
+                "aggregator vote_count는 valid_frames보다 클 수 없습니다."
+            )
+        if decision.valid_frames > len(candidates):
+            raise OcrRuntimeError(
+                "aggregator valid_frames는 후보 수보다 클 수 없습니다."
+            )
+
+        probability_diagnostics = (
+            decision.vote_ratio,
+            decision.mean_rec_score,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+            for value in probability_diagnostics
+        ):
+            raise OcrRuntimeError(
+                "aggregator의 비율·confidence 진단값이 유효하지 않습니다."
+            )
+
+        expected_vote_ratio = (
+            decision.vote_count / decision.valid_frames
+            if decision.valid_frames
+            else 0.0
+        )
+        if not math.isclose(
+            float(decision.vote_ratio),
+            expected_vote_ratio,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise OcrRuntimeError(
+                "aggregator vote_ratio가 득표 진단값과 일치하지 않습니다."
+            )
+
+        if (
+            decision.error_message is not None
+            and not isinstance(decision.error_message, str)
+        ):
+            raise OcrRuntimeError(
+                "aggregator error_message는 문자열 또는 None이어야 합니다."
+            )
+
+        if decision.status is ReadStatus.SUCCESS:
+            if (
+                not isinstance(decision.plate_number, str)
+                or not decision.plate_number
+            ):
+                raise OcrRuntimeError(
+                    "SUCCESS 판정에는 비어 있지 않은 plate_number가 필요합니다."
+                )
+            if decision.valid_frames == 0 or decision.vote_count == 0:
+                raise OcrRuntimeError(
+                    "SUCCESS 판정에는 유효 프레임과 득표가 필요합니다."
+                )
+            matching_candidates = sum(
+                candidate.normalized_text == decision.plate_number
+                for candidate in candidates
+            )
+            if matching_candidates < decision.vote_count:
+                raise OcrRuntimeError(
+                    "SUCCESS plate_number와 득표 진단값이 후보와 "
+                    "일치하지 않습니다."
+                )
+            if decision.error_message is not None:
+                raise OcrRuntimeError(
+                    "SUCCESS 판정에는 error_message가 없어야 합니다."
+                )
+        elif decision.plate_number is not None:
+            raise OcrRuntimeError(
+                "성공이 아닌 판정에는 plate_number가 없어야 합니다."
+            )
 
         return PlateReadResult(
             status=decision.status,
             plate_number=decision.plate_number,
-            total_frames=total_frames,
-            valid_frames=decision.valid_frames,
-            vote_count=decision.vote_count,
-            vote_ratio=decision.vote_ratio,
-            mean_rec_score=decision.mean_rec_score,
-            candidates=tuple(candidates),
-            failures=tuple(failures),
-            metrics=metrics,
-            error_message=decision.error_message,
         )
 
     @staticmethod
-    def _failure_result(
-        *,
-        status: ReadStatus,
-        message: str,
-        total_frames: int,
-        candidates: Sequence[OcrCandidate],
-        failures: Sequence[StageFailure],
-        metrics: PipelineMetrics,
-        started: float,
-    ) -> PlateReadResult:
-        """중간 단계 실패를 일관된 최종 결과로 변환한다."""
-
-        metrics.total_ms = PlateOcrPipeline._elapsed_ms(
-            started
-        )
-
-        return PlateReadResult(
-            status=status,
-            plate_number=None,
-            total_frames=total_frames,
-            valid_frames=0,
-            vote_count=0,
-            vote_ratio=0.0,
-            mean_rec_score=0.0,
-            candidates=tuple(candidates),
-            failures=tuple(failures),
-            metrics=metrics,
-            error_message=message,
-        )
-
-    @staticmethod
-    def _stage_failure(
+    def _component_runtime_error(
         stage: str,
-        frame_index: int | None,
-        error: BaseException,
-    ) -> StageFailure:
-        """예외 타입과 메시지를 프레임별 진단 정보로 변환한다."""
+        error: OcrComponentError,
+    ) -> OcrRuntimeError:
+        """알려진 component 오류를 공개 runtime 오류로 변환한다."""
 
-        return StageFailure(
-            stage=stage,
-            frame_index=frame_index,
-            message=f"{type(error).__name__}: {error}",
+        return OcrRuntimeError(
+            f"{stage} 실행 또는 계약 오류: "
+            f"{type(error).__name__}: {error}"
         )
-
-    @staticmethod
-    def _elapsed_ms(started: float) -> float:
-        """``perf_counter`` 시작점부터 지난 시간을 밀리초로 반환한다."""
-
-        return (time.perf_counter() - started) * 1000.0

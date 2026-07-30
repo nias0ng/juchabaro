@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -11,7 +12,9 @@ from src.ocr import OcrPipelinePolicy
 from src.ocr.policy import validate_ocr_policy_compatibility
 from src.ocr.postprocessing.aggregator import AggregationPolicy
 from src.ocr.types import CapturedFrame, FrameQuality
+from src.ocr.vision import frame_selector as frame_selector_module
 from src.ocr.vision.frame_selector import (
+    FrameSelectionError,
     OpenCvFrameQualityEvaluator,
     QualityFrameSelector,
 )
@@ -249,6 +252,24 @@ class QualityFrameSelectorPolicyTests(unittest.TestCase):
 
         self.assertEqual(selection.earlier_frame_index, 1)
         self.assertEqual(selection.later_frame_index, 2)
+
+    def test_opencv_failure_is_typed_and_preserves_cause(self) -> None:
+        selector = QualityFrameSelector(
+            policy=OcrPipelinePolicy(frame_count=3),
+        )
+        opencv_error = frame_selector_module.cv2.error(
+            "의도한 frame quality 평가 실패"
+        )
+
+        with patch.object(
+            frame_selector_module.cv2,
+            "cvtColor",
+            side_effect=opencv_error,
+        ):
+            with self.assertRaises(FrameSelectionError) as raised:
+                selector.select_anchors(_frames(3))
+
+        self.assertIs(raised.exception.__cause__, opencv_error)
 
 
 if __name__ == "__main__":

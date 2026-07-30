@@ -33,14 +33,11 @@ class ReadStatus(str, Enum):
     """OCR 파이프라인이 반환할 수 있는 최종 처리 상태."""
 
     SUCCESS = "SUCCESS"
-    INVALID_INPUT = "INVALID_INPUT"
     NO_PLATE_REGION = "NO_PLATE_REGION"
     OCR_EMPTY = "OCR_EMPTY"
     INVALID_FORMAT = "INVALID_FORMAT"
     LOW_SCORE = "LOW_SCORE"
     AMBIGUOUS = "AMBIGUOUS"
-    MODEL_ERROR = "MODEL_ERROR"
-    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 class QuadSource(str, Enum):
@@ -165,7 +162,7 @@ class OcrCandidate:
     valid_format: bool
 
 
-# [최종 판정과 파이프라인 진단]
+# [최종 판정과 공개 결과]
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,45 +178,12 @@ class PlateDecision:
     error_message: str | None = None
 
 
-@dataclass(slots=True)
-class PipelineMetrics:
-    """단일 차량 이벤트의 단계별 실행 시간과 모델 호출 횟수."""
-
-    frame_selection_ms: float = 0.0
-    detection_ms: float = 0.0
-    geometry_ms: float = 0.0
-    preprocessing_ms: float = 0.0
-    recognition_ms: float = 0.0
-    postprocessing_ms: float = 0.0
-    total_ms: float = 0.0
-    detector_calls: int = 0
-    recognizer_calls: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class StageFailure:
-    """일부 프레임 처리 실패를 최종 결과에 남기는 진단 정보."""
-
-    stage: str
-    frame_index: int | None
-    message: str
-
-
 @dataclass(frozen=True, slots=True)
 class PlateReadResult:
-    """상위 입차 서비스에 반환하는 OCR 파이프라인 최종 결과."""
+    """상위 입차 서비스에 반환하는 최소 OCR 판독 결과."""
 
     status: ReadStatus
     plate_number: str | None
-    total_frames: int
-    valid_frames: int
-    vote_count: int
-    vote_ratio: float
-    mean_rec_score: float
-    candidates: tuple[OcrCandidate, ...]
-    failures: tuple[StageFailure, ...]
-    metrics: PipelineMetrics
-    error_message: str | None = None
 
     @property
     def succeeded(self) -> bool:

@@ -197,7 +197,8 @@ def main() -> None:
             try:
                 debug_run = run_debug_pipeline(runtime, burst)
             except Exception as exc:
-                # PlateOcrPipeline 밖에서 발생한 viewer 조립 오류만 이 경로로 온다.
+                # Pipeline 예외는 DebugRun에 trace와 함께 보존된다. 이
+                # 경로는 viewer 조립 자체가 실패한 경우만 처리한다.
                 st.error(
                     "파이프라인 실행 요청을 완료하지 못했습니다: "
                     f"{type(exc).__name__}: {exc}"

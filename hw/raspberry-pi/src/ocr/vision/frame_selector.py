@@ -23,8 +23,16 @@ from typing import Sequence
 import cv2
 import numpy as np
 
+from ..errors import OcrComponentError
 from ..policy import OcrPipelinePolicy
 from ..types import CapturedFrame, FrameQuality, AnchorSelection
+
+
+# [예외]
+
+
+class FrameSelectionError(OcrComponentError, RuntimeError):
+    """OpenCV 품질 평가를 실행할 수 없는 경우."""
 
 
 # [품질 측정 설정]
@@ -243,10 +251,16 @@ class QualityFrameSelector:
             earlier/later anchor 인덱스와 전체 품질 평가 결과.
 
         실패:
-            OpenCV 품질 평가가 실패하면 해당 예외를 전달한다.
+            OpenCV 품질 평가가 실패하면 원인을 보존한
+            FrameSelectionError가 발생한다.
         """
 
-        qualities = self._evaluator.evaluate(frames)
+        try:
+            qualities = self._evaluator.evaluate(frames)
+        except cv2.error as exc:
+            raise FrameSelectionError(
+                "OpenCV 프레임 품질 평가에 실패했습니다."
+            ) from exc
 
         # 점수가 같으면 정지선에 조금 더 가까울 가능성이 있는 뒤 프레임을 쓴다.
         earlier = max(

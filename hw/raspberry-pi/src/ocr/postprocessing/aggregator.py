@@ -2,7 +2,7 @@
 여러 프레임의 OCR 후보를 전체 번호판 단위로 투표해 최종 판정한다.
 
 파이프라인 위치:
-    plate_text → aggregator → PlateReadResult
+    plate_text → aggregator의 PlateDecision → pipeline의 PlateReadResult 변환
 
 주요 기능:
     - 번호판 형식과 OCR confidence에 따른 후보 선별
@@ -27,13 +27,14 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Sequence
 
+from ..errors import OcrComponentError
 from ..types import OcrCandidate, PlateDecision, ReadStatus
 
 
 # [예외]
 
 
-class AggregationError(ValueError):
+class AggregationError(OcrComponentError, ValueError):
     """OCR 후보 또는 집계 설정이 투표 입력 계약을 만족하지 않는 경우."""
 
 
