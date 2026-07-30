@@ -220,6 +220,35 @@ def test_reuses_calibration_across_captures(tmp_path):
     assert len(calls) == 1
 
 
+def test_returned_image_is_a_reused_buffer_invalidated_by_next_capture(tmp_path):
+    """[계약] capture()가 돌려준 image는 다음 capture() 전까지만 유효하다.
+
+    프레임당 수 MB 할당을 없애려고 dst 버퍼를 재사용하므로(측정상 30% 이상 빠름),
+    반환된 배열은 다음 호출에서 조용히 덮어써진다 — 예외도 경고도 없다. 프레임을
+    현재 이터레이션 밖으로 넘기려면(비동기 처리, 위반 클립·스냅샷 저장, 프레임 diff,
+    큐잉) 호출자가 .copy()를 하거나 여기서 더블 버퍼링으로 바꿔야 한다.
+
+    지금은 루프가 동기이고 트래커가 cvtColor로 즉시 복사본을 떠서 안전하다. 이
+    테스트는 계약이 바뀌면 알리는 용도다 — 복사본을 돌려주도록 고쳤다면 이 테스트를
+    지우고 호출자 쪽 가정도 함께 손봐야 한다.
+    """
+    inner = FakeFrameSource(np.full((FRAME_H, FRAME_W, 3), 40, np.uint8))
+    source = RemapFrameSource(
+        inner=inner, calibration_path=str(write_calibration(tmp_path)), balance=BALANCE
+    )
+    source.open()
+
+    first = source.capture()
+    first_snapshot = first.image.copy()
+
+    inner.image = np.full((FRAME_H, FRAME_W, 3), 200, np.uint8)
+    second = source.capture()
+
+    assert second.image is first.image
+    # 붙들고 있던 첫 프레임의 내용이 두 번째 프레임으로 바뀌어 있다.
+    assert not np.array_equal(first.image, first_snapshot)
+
+
 def test_delegates_open_and_close_to_inner_source(tmp_path):
     inner = FakeFrameSource(np.full((FRAME_H, FRAME_W, 3), 200, np.uint8))
     source = RemapFrameSource(
