@@ -36,9 +36,14 @@ services:
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
+      HW_API_KEY: ${HW_API_KEY}
+      UPLOAD_DIR: /app/uploads
+      UPLOAD_PUBLIC_URL: https://i15e202.p.ssafy.io/api/images
       TZ: Asia/Seoul
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - upload_data:/app/uploads
     healthcheck:
       test:
         - CMD-SHELL
@@ -55,6 +60,7 @@ services:
 
 volumes:
   mysql_data:
+  upload_data:
 
 networks:
   backend:

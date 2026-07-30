@@ -22,6 +22,11 @@ type ScreenProps = {
   backgroundColor?: string;
   backgroundGradient?: readonly [ColorValue, ColorValue, ...ColorValue[]];
 
+  /** 스크롤 콘텐츠 위, SafeAreaView 안에 고정 렌더링된다. */
+  header?: ReactNode;
+  /** 스크롤 콘텐츠 아래, SafeAreaView 안에 고정 렌더링된다. */
+  bottomBar?: ReactNode;
+
   avoidKeyboard?: boolean;
   edges?: Edge[];
   style?: StyleProp<ViewStyle>;
@@ -34,6 +39,8 @@ export function Screen({
   scroll = false,
   backgroundColor,
   backgroundGradient,
+  header,
+  bottomBar,
   avoidKeyboard = false,
   edges = ['top', 'right', 'bottom', 'left'],
   style,
@@ -49,6 +56,7 @@ export function Screen({
 
   const body = (
     <SafeAreaView style={screenStyle} edges={edges}>
+      {header}
       {scroll ? (
         <ScrollView
           style={styles.scroll}
@@ -61,6 +69,7 @@ export function Screen({
       ) : (
         <View style={[styles.content, contentContainerStyle]}>{children}</View>
       )}
+      {bottomBar}
     </SafeAreaView>
   );
 
