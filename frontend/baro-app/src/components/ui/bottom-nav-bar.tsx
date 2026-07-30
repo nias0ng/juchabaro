@@ -2,7 +2,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
 
-import { REQUEST_ICON_PATH, REQUEST_ICON_VIEWBOX_SIZE, STROKE_ICON_PATHS } from './bottom-nav-bar.icons';
+import { REQUEST_ICON_PATH, REQUEST_ICON_VIEWBOX_SIZE, STROKE_ICON_PATHS } from './bottom-nav-bar-icons';
 import { IconGlyph } from './icon-glyph';
 import { styles } from './bottom-nav-bar.styles';
 

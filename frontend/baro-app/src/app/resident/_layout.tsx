@@ -1,7 +1,7 @@
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 
-import { TabBarIcon, TabBarLabel } from '@/features/resident/components/tab-bar-icon';
+import { TabBarIcon, TabBarLabel } from '@/components/ui';
 import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
 

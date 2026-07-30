@@ -1,10 +1,14 @@
 import { router } from 'expo-router';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import {
+  FormErrorBanner,
+  ResponsiveContainer,
+  Screen,
+  ScreenHeader,
+  Stack,
+} from '@/components/ui';
 import { Palette, Spacing } from '@/styles';
 
-import { AuthErrorBanner } from '../components/auth-error-banner';
-import { AuthHeader } from '../components/auth-header';
 import { SignupProgress } from '../components/signup/signup-progress';
 import { SignupStepActions } from '../components/signup/signup-step-actions';
 import { SignupSteps } from '../components/signup/signup-steps';
@@ -28,7 +32,7 @@ export default function SignupScreen() {
     >
       <ResponsiveContainer> 
         <Stack gap={Spacing.xl}>
-          <AuthHeader
+          <ScreenHeader
             title={isCompleteStep ? '회원가입 완료' : '회원가입'}
             onBack={signup.goToPreviousStep}
           />
@@ -41,7 +45,7 @@ export default function SignupScreen() {
             onGoHome={() => goToAuthenticatedArea('/resident')}
           />
 
-          {signup.errorMessage ? <AuthErrorBanner message={signup.errorMessage} /> : null}
+          {signup.errorMessage ? <FormErrorBanner message={signup.errorMessage} /> : null}
 
           {!isCompleteStep && (
             <SignupStepActions

@@ -1,1 +1,1 @@
-export { default } from '@/features/auth/screens/register-car-screen';
+export { default } from '@/features/vehicle/screens/register-car-screen';
