@@ -99,6 +99,8 @@ export default function ResidentLayout() {
       <Tabs.Screen name="vehicles" options={{ href: null }} />
       {/* 이동 요청 상세는 URL/알림에서 접근하지만 하단 탭 항목으로는 노출하지 않는다. */}
       <Tabs.Screen name="request-detail" options={{ href: null }} />
+      {/* F-02 응답 완료는 E-11에서 응답 후 도달하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="response-complete" options={{ href: null }} />
     </Tabs>
   );
 }
