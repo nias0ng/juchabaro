@@ -319,8 +319,13 @@ class ZoneRegistry:
             allowed_minutes = None if allowed_minutes_raw is None else float(allowed_minutes_raw)
         except (KeyError, ValueError, TypeError) as exc:
             raise BaselineError(f"구역 정의 항목이 올바르지 않습니다: {item!r} ({exc})") from exc
-        if allowed_minutes is not None and allowed_minutes <= 0:
-            raise BaselineError(f"allowed_minutes는 양수여야 합니다: {item!r}")
+        # (리뷰 반영, I-3/319) json.loads는 표준이 아닌 NaN/Infinity 리터럴을 float로
+        # 그대로 파싱한다 — `nan <= 0`은 항상 False라서 `<= 0` 검사만으로는 NaN이
+        # 통과해버린다. 통과하면 classify_violation의 `dwell_seconds >= allowed_minutes
+        # * 60.0` 비교가 항상 False가 돼, 크래시 없이 EV_OVERSTAY가 영구적으로
+        # 발동하지 않는 조용한 실패가 된다(재현 확인됨) — math.isfinite로 명시적으로 막는다.
+        if allowed_minutes is not None and not (math.isfinite(allowed_minutes) and allowed_minutes > 0):
+            raise BaselineError(f"allowed_minutes는 유한한 양수여야 합니다: {item!r}")
         return ParkingZone(
             zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(points), allowed_minutes=allowed_minutes
         )
@@ -467,7 +472,23 @@ def classify_violation(
         return ViolationStatus.OUT_OF_ZONE, None, 0.0
 
     aisle = next((item for item in overlaps if item.zone.zone_type is ZoneType.AISLE), None)
-    restricted = next((item for item in overlaps if item.zone.zone_type in RESTRICTED_ZONE_TYPES), None)
+    restricted_overlaps = [item for item in overlaps if item.zone.zone_type in RESTRICTED_ZONE_TYPES]
+    restricted = restricted_overlaps[0] if restricted_overlaps else None
+    # (리뷰 반영, I-4/319) 정상 배치라면 전용구역끼리 겹치지 않아야 하지만, 캘리브레이션
+    # 오차 등으로 두 전용구역이 겹치는 경우 겹침 비율이 더 높은 쪽(overlaps 정렬 순서상
+    # 첫 번째, 위 restricted)만 보면 그 구역이 EV_CHARGING이 아닐 때 실제로는 시간
+    # 초과 중인 EV 구역이 영구히 가려진다(재현 확인됨) — 겹치는 전용구역 전체에서
+    # 시간 초과 중인 구역이 있는지 먼저 확인한다.
+    overstayed_restricted = next(
+        (
+            item
+            for item in restricted_overlaps
+            if item.zone.zone_type is ZoneType.EV_CHARGING
+            and item.zone.allowed_minutes is not None
+            and dwell_seconds >= item.zone.allowed_minutes * 60.0
+        ),
+        None,
+    )
 
     if dwell_seconds < min_dwell_seconds:
         # 정차는 감지됐지만 최소 정차 시간(FR-PARK-008, 확정치 10분)에 미달
@@ -483,14 +504,9 @@ def classify_violation(
         return ViolationStatus.AISLE_BLOCK, aisle.zone, aisle.ratio
     if blocked_zone is not None:
         return ViolationStatus.DOUBLE_PARK, blocked_zone.zone, blocked_zone.ratio
+    if overstayed_restricted is not None:
+        return ViolationStatus.EV_OVERSTAY, overstayed_restricted.zone, overstayed_restricted.ratio
     if restricted is not None:
-        zone = restricted.zone
-        if (
-            zone.zone_type is ZoneType.EV_CHARGING
-            and zone.allowed_minutes is not None
-            and dwell_seconds >= zone.allowed_minutes * 60.0
-        ):
-            return ViolationStatus.EV_OVERSTAY, zone, restricted.ratio
         return ViolationStatus.RESTRICTED_ZONE, restricted.zone, restricted.ratio
     if intruded_zone is not None:
         return ViolationStatus.LINE_CROSS, intruded_zone.zone, intruded_zone.ratio
@@ -2195,6 +2211,29 @@ class BaselineLogicTests(unittest.TestCase):
             ],
         )
 
+    def test_monitor_ev_overstay_not_masked_by_higher_ratio_overlapping_restricted_zone(self) -> None:
+        """리뷰 반영(I-4/319): 정상 배치라면 전용구역끼리 겹치지 않아야 하지만, 캘리브레이션
+        오차 등으로 겹치는 경우 겹침 비율이 더 높은 쪽(DISABLED)만 보면 실제로 시간
+        초과 중인 EV_CHARGING 구역이 영구히 가려진다 — 겹치는 전용구역 전체에서
+        시간 초과 여부를 확인해야 한다."""
+        disabled_zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
+        ev_zone = self.make_zone(
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
+        )
+        registry = ZoneRegistry([disabled_zone, ev_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.30, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        bbox = BoundingBox(0.0, 0.0, 0.4, 0.4)  # DISABLED와 EV_CHARGING 둘 다에 높은 비율로 겹침
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        events_at = {}
+        for seconds in (0, 2, 65):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+
+        self.assertEqual([(e.status, e.zone_id) for e in events_at[2]], [(ViolationStatus.RESTRICTED_ZONE, "DIS-01")])
+        self.assertEqual([(e.status, e.zone_id) for e in events_at[65]], [(ViolationStatus.EV_OVERSTAY, "EV-01")])
+
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
         이후 OUT_OF_ZONE 이벤트가 한 번 발행되고 중복 발행되지 않는다."""
@@ -2760,6 +2799,30 @@ class BaselineLogicTests(unittest.TestCase):
                                 "zone_type": "EV_CHARGING",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": 0,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_non_finite_allowed_minutes(self) -> None:
+        """리뷰 반영(I-3/319): json.loads는 표준이 아닌 NaN/Infinity를 float로 그대로
+        파싱하는데, `<= 0` 검사만으로는 NaN이 통과해(NaN과의 비교는 항상 False)
+        EV_OVERSTAY가 크래시 없이 영구적으로 발동하지 않는 조용한 실패로 이어진다."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "EV-01",
+                                "zone_type": "EV_CHARGING",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                                "allowed_minutes": float("nan"),
                             }
                         ]
                     }
