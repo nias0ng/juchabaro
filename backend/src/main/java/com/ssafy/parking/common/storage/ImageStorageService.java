@@ -4,6 +4,7 @@ import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -29,14 +30,24 @@ public class ImageStorageService {
     /** 파일을 events/{eventId}/ 아래 저장하고 공개 URL 반환 */
     public String store(MultipartFile file, Long eventId) {
         try {
-            String original = file.getOriginalFilename();
-            String ext = (original != null && original.contains("."))
-                    ? original.substring(original.lastIndexOf('.')) : "";
-            String filename = UUID.randomUUID() + ext;
+            // 원본 파일명 정제 (경로 순회 문자 제거)
+            String cleaned = StringUtils.cleanPath(
+                    file.getOriginalFilename() == null ? "" : file.getOriginalFilename());
+            if (cleaned.contains("..")) {
+                throw new BusinessException(ErrorCode.MOVE_REQUEST_INVALID);
+            }
+            String ext = cleaned.contains(".") ? cleaned.substring(cleaned.lastIndexOf('.')) : "";
 
-            Path dir = Paths.get(uploadDir, "events", String.valueOf(eventId));
-            Files.createDirectories(dir);
-            file.transferTo(dir.resolve(filename).toAbsolutePath());
+            String filename = UUID.randomUUID() + ext;   // 파일명은 UUID로 강제
+            Path baseDir = Paths.get(uploadDir, "events", String.valueOf(eventId))
+                    .toAbsolutePath().normalize();
+            Files.createDirectories(baseDir);
+
+            Path dest = baseDir.resolve(filename).normalize();
+            if (!dest.startsWith(baseDir)) {          // 최종 경로가 baseDir 밖이면 차단
+                throw new BusinessException(ErrorCode.MOVE_REQUEST_INVALID);
+            }
+            file.transferTo(dest);
 
             return publicBaseUrl + "/events/" + eventId + "/" + filename;
         } catch (IOException e) {
