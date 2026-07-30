@@ -24,6 +24,12 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
   설정돼 있으면 그 시간을 넘긴 정차를 `EV_OVERSTAY`로 별도 판정한다(319번,
   등록 여부와 무관 — 등록된 차라도 시간 초과면 EV_OVERSTAY). `allowed_minutes`가
   없는 구역은 기존과 동일하게 `RESTRICTED_ZONE`만 계속 보고한다(안전 쪽 기본값).
+  허용 시간 초과 판정을 서버가 아니라 엣지에서 수행하기로 결정했다(319 리뷰
+  C-3). AI 설계 스펙 §6은 원래 "엣지는 점유 시작 시각만 기록하고 판단은 서버"
+  였으나, 파일럿 검증에 바로 쓸 수 있는 쪽을 택했다. 서버도 같은 판정 수단을
+  갖고 있으므로(parking_zones.allowed_minutes, ParkingEventType.EV_OVERSTAY,
+  NotificationType.EV_OVERSTAY) **백엔드 쪽에 중복 발행 억제가 필요하다** —
+  양쪽이 각자 판정하면 같은 상황에 이벤트·알림이 두 번 나간다.
 - DOUBLE_PARK/LINE_CROSS 판정에서, 어떤 스팟에 아직 아무도 정착
   완료(min_dwell_seconds)하지 못한 동안은 그 스팟에 대한 침범 판정을
   보류한다(리뷰 반영: 정착 확정 전에 LINE_CROSS로 잘못 보고됐다가
@@ -321,6 +327,10 @@ class ZoneRegistry:
             zone_type = ZoneType(item["zone_type"])
             points = tuple((float(x), float(y)) for x, y in item["polygon"])
             allowed_minutes_raw = item.get("allowed_minutes")
+            if isinstance(allowed_minutes_raw, bool):
+                # (319 리뷰 재검토, I-3) bool은 int의 하위 타입이라 float(True) -> 1.0으로
+                # 조용히 통과한다. 아래 유한 양수 검사도 못 막는다.
+                raise BaselineError(f"allowed_minutes에 bool을 쓸 수 없습니다: {item!r}")
             allowed_minutes = None if allowed_minutes_raw is None else float(allowed_minutes_raw)
         except (KeyError, ValueError, TypeError) as exc:
             raise BaselineError(f"구역 정의 항목이 올바르지 않습니다: {item!r} ({exc})") from exc
@@ -431,6 +441,12 @@ def classify_violation(
     OUT_OF_ZONE은 다른 어떤 위반 신호도 없을 때만 성립하는 배타적 폴백이며
     (우선순위표가 아니라 아래 early-return의 배타 조건), 새 위반 신호를
     추가하면 그 조건도 함께 확장해야 한다.
+
+    EV_OVERSTAY는 이 우선순위에 예외가 하나 있다 — 겹치는 전용구역이 둘 이상일
+    때(예: 장애인 구역과 EV 구역이 붙어 있고 캘리브레이션 오차로 겹침),
+    **겹침 비율이 더 높은 쪽이 DISABLED여도 시간 초과 중인 EV 구역이 있으면
+    EV_OVERSTAY를 보고한다**(319 리뷰 I-4). "비율이 가장 높은 전용구역"이
+    아니라 "겹치는 전용구역 전체"에서 시간 초과를 찾기 때문이다.
 
     EV_OVERSTAY(요구사항 정의서.md:25, ERD.md:119-125 event_type)는
     RESTRICTED_ZONE의 특수화다 — 등록 여부와 무관하게 "전기차 충전구역을
@@ -2880,6 +2896,58 @@ class BaselineLogicTests(unittest.TestCase):
                                 "zone_type": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": float("nan"),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_bool_allowed_minutes(self) -> None:
+        """allowed_minutes에 bool이 오면 거부한다(319 리뷰 I-3).
+
+        float(True)는 1.0이라 유한한 양수 검사를 통과한다 — 그러면 명백한
+        설정 오기가 "1분 허용"이라는 엉뚱한 정책으로 조용히 적용된다.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "EV-01",
+                                "zone_type": "EV_FAST",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                                "allowed_minutes": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_infinite_allowed_minutes(self) -> None:
+        """allowed_minutes = Infinity도 NaN과 같은 이유로 거부한다(319 리뷰 I-3).
+
+        json.loads가 비표준 Infinity 리터럴을 float('inf')로 파싱하는데,
+        dwell >= inf는 항상 False라 EV_OVERSTAY가 조용히 영구 비활성화된다.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "EV-01",
+                                "zone_type": "EV_FAST",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                                "allowed_minutes": float("inf"),
                             }
                         ]
                     }
