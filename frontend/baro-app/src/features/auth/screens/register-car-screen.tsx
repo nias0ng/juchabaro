@@ -1,0 +1,119 @@
+import { router } from 'expo-router';
+import { StyleSheet, View } from 'react-native';
+
+import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { Palette, Spacing } from '@/styles';
+
+import { AuthErrorBanner } from '../components/auth-error-banner';
+import { AuthHeader } from '../components/auth-header';
+import { HouseholdCarForm } from '../components/register-car/household-car-form';
+import { RegisterCarConfirmView } from '../components/register-car/register-car-confirm-view';
+import { RegisterCarLoadingView } from '../components/register-car/register-car-loading-view';
+import { RegisterCarVisitDatePickerModal } from '../components/register-car/register-car-visit-date-picker-modal';
+import { VisitorCarForm } from '../components/register-car/visitor-car-form';
+import { useRegisterCarForm } from '../hooks/use-register-car-form';
+import type { RegisterCarStep } from '../types/register-car';
+import { parseVisitDateString } from '../validation/register-car';
+
+import { styles } from './register-car-screen.styles';
+
+const HEADER_TITLE: Record<RegisterCarStep, string> = {
+  household: '차량 등록',
+  visitor: '차량 등록',
+  confirm: '등록 정보 확인',
+};
+
+export default function RegisterCarScreen() {
+  const handleRegistrationSuccess = () => {
+    // TODO: 'H-01. 내 차량 관리' 화면이 아직 없다. 화면과 라우트가 만들어지면
+    // 여기서 router.replace로 그 화면으로 이동시킨다.
+  };
+
+  const registerCar = useRegisterCarForm(handleRegistrationSuccess);
+  const { step, isRegistering } = registerCar;
+
+  const handleBack = () => {
+    if (step === 'confirm') {
+      registerCar.goToInputStep();
+      return;
+    }
+    if (step === 'visitor') {
+      registerCar.selectCarType('household');
+      return;
+    }
+    router.back();
+  };
+
+  return (
+    <View style={styles.flex}>
+      <Screen
+        scroll
+        avoidKeyboard
+        backgroundColor={Palette.gray50}
+        edges={['top', 'right', 'left']}
+      >
+        <ResponsiveContainer>
+          <Stack gap={Spacing.xl}>
+            <AuthHeader title={HEADER_TITLE[step]} onBack={handleBack} />
+
+            {step === 'household' && (
+              <HouseholdCarForm
+                carType={registerCar.carType}
+                onChangeCarType={registerCar.selectCarType}
+                values={registerCar.householdValues}
+                onChange={registerCar.changeHouseholdValue}
+              />
+            )}
+
+            {step === 'visitor' && (
+              <VisitorCarForm
+                carType={registerCar.carType}
+                onChangeCarType={registerCar.selectCarType}
+                values={registerCar.visitorValues}
+                onChange={registerCar.changeVisitorValue}
+                onOpenVisitDatePicker={registerCar.openVisitDatePicker}
+              />
+            )}
+
+            {step === 'confirm' && (
+              <RegisterCarConfirmView
+                carType={registerCar.carType}
+                household={registerCar.householdValues}
+                visitor={registerCar.visitorValues}
+                isRegistering={isRegistering}
+                onConfirm={registerCar.handleCompleteRegistration}
+                onEdit={registerCar.goToInputStep}
+              />
+            )}
+
+            {registerCar.errorMessage ? <AuthErrorBanner message={registerCar.errorMessage} /> : null}
+
+            {step !== 'confirm' && (
+              <AppButton
+                label="차량 등록"
+                variant="neutral"
+                size="lg"
+                fullWidth
+                disabled={!registerCar.canSubmitStep}
+                onPress={registerCar.goToConfirm}
+              />
+            )}
+          </Stack>
+        </ResponsiveContainer>
+      </Screen>
+
+      {isRegistering ? (
+        <View style={StyleSheet.absoluteFill}>
+          <RegisterCarLoadingView />
+        </View>
+      ) : null}
+
+      <RegisterCarVisitDatePickerModal
+        visible={registerCar.isVisitDatePickerOpen}
+        selectedDate={parseVisitDateString(registerCar.visitorValues.visitDate)}
+        onSelectDate={registerCar.selectVisitDate}
+        onClose={registerCar.closeVisitDatePicker}
+      />
+    </View>
+  );
+}
