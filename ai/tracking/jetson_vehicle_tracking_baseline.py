@@ -1356,6 +1356,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
     parser.add_argument("--track-grace-seconds", type=float, default=2.0, help="트랙이 잠깐 안 보여도 상태를 유지하는 유예 시간.")
+    parser.add_argument("--dwell-reunification-seconds", type=float, default=120.0, help="track-grace-seconds를 넘겨 트랙이 삭제된 뒤에도, 같은 트랙이 이 시간 이내에 재등장하면 정차 시작 시각을 이어간다(리뷰 반영, C-1/319) — EV_OVERSTAY처럼 장시간 임계값을 쓰는 구역이 있다면 예상되는 최대 가림/미탐지 지속 시간보다 넉넉히 크게 설정해야 한다.")
     parser.add_argument("--entry-match-window-seconds", type=float, default=10.0, help="게이트 OCR 입차 이벤트와 신규 트랙을 매칭하는 시간창(§2.2).")
     parser.add_argument("--entry-zone-min-overlap-ratio", type=float, default=0.40, help="ENTRY_EXIT 구역 진입 판정 임계값.")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
@@ -1385,6 +1386,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("movement-epsilon은 0 이상이어야 합니다.")
     if args.track_grace_seconds < 0:
         raise BaselineError("track-grace-seconds는 0 이상이어야 합니다.")
+    if args.dwell_reunification_seconds < 0:
+        raise BaselineError("dwell-reunification-seconds는 0 이상이어야 합니다.")
     if args.entry_match_window_seconds < 0:
         raise BaselineError("entry-match-window-seconds는 0 이상이어야 합니다.")
     if not (0.0 <= args.entry_zone_min_overlap_ratio <= 1.0):
@@ -1519,6 +1522,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         spot_intrusion_ratio=args.spot_intrusion_ratio,
         entry_match_window_seconds=args.entry_match_window_seconds,
         entry_zone_min_overlap_ratio=args.entry_zone_min_overlap_ratio,
+        dwell_reunification_seconds=args.dwell_reunification_seconds,
     )
     publisher = StdoutResultPublisher(plain=args.plain)
 
