@@ -1,8 +1,11 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette } from '@/styles';
+import { FontWeight, Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
+  header: {
+    paddingTop: Spacing.lg,
+  },
   heading: {
     fontSize: 24,
     fontWeight: FontWeight.bold,
