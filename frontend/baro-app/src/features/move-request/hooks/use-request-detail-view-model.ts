@@ -62,6 +62,8 @@ export function useRequestDetailViewModel(requestId: number | null) {
       // 서버가 이 응답 자체에서 돌려준 결과를 바로 반영한다.
       const result = await submit({ responseType, estimatedMinutes });
       if (result) applyResponse(result);
+      // 호출한 쪽(request-detail-body)이 성공 여부를 보고 F-02(응답 완료)로 이동할지 판단할 수 있게 그대로 돌려준다.
+      return result;
     },
     [submit, applyResponse],
   );
