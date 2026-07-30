@@ -62,3 +62,11 @@ export function getJson<T>(path: string, accessToken: string): Promise<T> {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }
+
+// accessToken이 필요한 삭제용 DELETE.
+export function deleteJson<T>(path: string, accessToken: string): Promise<T> {
+  return request<T>(path, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}

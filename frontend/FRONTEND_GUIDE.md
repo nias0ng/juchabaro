@@ -27,7 +27,7 @@ import { Pressable, Text, View } from 'react-native';
 
 React Native 앱의 실행, 빌드, 라이브러리 연결을 편하게 도와주는 도구입니다.
 
-이 프로젝트는 **Expo SDK 57**을 사용합니다.
+이 프로젝트는 **Expo SDK 54**를 사용합니다.
 
 ### Expo Router
 
@@ -87,7 +87,8 @@ src/
 │  │  ├─ _layout.tsx
 │  │  ├─ index.tsx                 # /auth
 │  │  ├─ login.tsx                 # /auth/login
-│  │  └─ signup.tsx                # /auth/signup
+│  │  ├─ signup.tsx                # /auth/signup
+│  │  └─ register-car.tsx          # /auth/register-car
 │  └─ resident/
 │     ├─ _layout.tsx               # 하단 탭바: 홈·요청·알림·내 정보
 │     ├─ index.tsx                 # /resident
@@ -98,38 +99,45 @@ src/
 │
 ├─ features/                       # 실제 기능과 화면
 │  ├─ auth/
-│  │  ├─ api/                      # 로그인 API 요청/응답
-│  │  │  ├─ auth-api.ts
-│  │  │  ├─ auth-api.mock.ts       # 백엔드 준비 전 쓰는 목 데이터
-│  │  │  └─ types.ts
-│  │  ├─ components/               # 인증 화면 전용 컴포넌트
-│  │  │  ├─ auth-header.tsx
-│  │  │  ├─ checkbox-option.tsx
-│  │  │  └─ text-field.tsx
+│  │  ├─ api/                      # 로그인·회원가입 API
+│  │  ├─ components/               # 인증 전용 UI
 │  │  ├─ hooks/
-│  │  │  └─ use-saved-username.ts
 │  │  ├─ screens/
-│  │  │  ├─ auth-welcome-screen.tsx
-│  │  │  ├─ login-screen.tsx
-│  │  │  └─ signup-screen.tsx
-│  │  └─ services/
-│  │     └─ saved-username-storage.ts
-│  └─ resident/
-│     ├─ components/
-│     │  └─ tab-bar-icon.tsx
-│     └─ screens/
-│        ├─ home-screen.tsx
-│        ├─ requests-screen.tsx
-│        ├─ notifications-screen.tsx
-│        ├─ vehicles-screen.tsx
-│        └─ my-page-screen.tsx
+│  │  ├─ services/
+│  │  ├─ types/
+│  │  └─ validation/
+│  ├─ home/                        # 메인 대시보드
+│  │  ├─ components/
+│  │  └─ screens/
+│  ├─ parking/                     # 주차 세션·구역 현황
+│  │  ├─ api/
+│  │  ├─ components/
+│  │  ├─ hooks/
+│  │  └─ utils/
+│  ├─ vehicle/                     # 차량 등록·조회·삭제
+│  │  ├─ api/
+│  │  ├─ components/
+│  │  │  ├─ registration/
+│  │  │  └─ management/
+│  │  ├─ hooks/
+│  │  ├─ screens/
+│  │  ├─ types/
+│  │  └─ validation/
+│  ├─ move-request/                # 이동 요청
+│  ├─ notification/                # 알림
+│  └─ profile/                     # 내 정보
 │
 ├─ components/
 │  └─ ui/                          # 여러 기능에서 사용하는 공통 UI
 │     ├─ app-button.tsx
+│     ├─ checkbox-option.tsx
+│     ├─ form-error-banner.tsx
 │     ├─ responsive-container.tsx
 │     ├─ screen.tsx
+│     ├─ screen-header.tsx
 │     ├─ stack.tsx
+│     ├─ tab-bar-icon.tsx
+│     ├─ text-field.tsx
 │     ├─ themed-text.tsx
 │     └─ themed-view.tsx
 │
@@ -918,4 +926,3 @@ npm.cmd run lint
 - [ ] `npm.cmd run lint`가 통과하는가?
 - [ ] 디버그용 `console.log`가 남아 있지 않은가?
 - [ ] 변경한 화면을 직접 실행해 확인했는가?
-

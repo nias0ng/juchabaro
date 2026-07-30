@@ -12,6 +12,10 @@ public interface VehicleRepository extends JpaRepository<Vehicle, Long> {
 
     boolean existsByPlateNumber(String plateNumber);
 
+    Optional<Vehicle> findByPlateNumber(String plateNumber);
+
+    List<Vehicle> findByStatus(VehicleStatus status);
+
     List<Vehicle> findByUser_IdAndStatus(Long userId, VehicleStatus status);
 
     List<Vehicle> findByUser_IdAndOwnerTypeAndStatus(
@@ -19,6 +23,4 @@ public interface VehicleRepository extends JpaRepository<Vehicle, Long> {
             VehicleOwnerType ownerType,
             VehicleStatus status
     );
-
-    Optional<Vehicle> findByPlateNumber(String plateNumber);
 }
