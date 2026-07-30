@@ -1,12 +1,11 @@
 import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 
-import { ResponsiveContainer, Screen } from '@/components/ui';
+import { ResponsiveContainer, Screen, ScreenHeader } from '@/components/ui';
 
 import { VehicleAddCard } from '../components/management/vehicle-add-card';
 import { VehicleDeleteConfirmModal } from '../components/management/vehicle-delete-confirm-modal';
 import { VehicleErrorState } from '../components/management/vehicle-error-state';
-import { VehicleHeader } from '../components/management/vehicle-header';
 import { VehicleList } from '../components/management/vehicle-list';
 import { VehicleLoadingState } from '../components/management/vehicle-loading-state';
 import { useVehicleManagement } from '../hooks/use-vehicle-management';
@@ -29,7 +28,7 @@ export default function VehiclesScreen() {
     <View style={styles.flex}>
       <Screen scroll edges={['top', 'right', 'left']} backgroundColor={VEHICLES_SCREEN_BACKGROUND}>
         <ResponsiveContainer>
-          <VehicleHeader title="내 차량 관리" onBack={() => router.back()} />
+          <ScreenHeader title="내 차량 관리" onBack={() => router.back()} />
 
           <View style={styles.content}>
             {status === 'loading' && <VehicleLoadingState />}
@@ -54,7 +53,7 @@ export default function VehiclesScreen() {
                 <VehicleAddCard onPress={handleAddVehicle} />
 
                 <Text style={styles.notice}>
-                  {'차량 정보 수정은 관리자 승인 후 반영됩니다. \n부정확한 정보 입력 시 주차 서비스 이용에 제한될 수 있습니다.'}
+                  {'부정확한 정보 입력 시 주차 서비스 이용에 제한될 수 있습니다.'}
                 </Text>
               </>
             )}

@@ -1,6 +1,6 @@
 import { ApiError } from '@/services/api-error';
 
-import type { RegisterVehicleRequest, VehicleResult } from './types';
+import type { RegisterVehicleRequest, VehicleDetailResult, VehicleResult } from './types';
 
 const MOCK_RESPONSE_DELAY_MS = 600;
 
@@ -13,7 +13,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** visitDate("YYYY.MM.DD")를 기준으로 24시간 방문 등록 시작/종료 시각 문자열을 만든다. */
+/** visitDate("YYYY-MM-DD")를 기준으로 24시간 방문 등록 시작/종료 시각 문자열을 만든다. */
 function toVisitWindow(visitDate: string | undefined) {
   if (!visitDate) return { visitStartAt: null, visitEndAt: null };
 
@@ -28,19 +28,23 @@ export async function registerVehicleMock(request: RegisterVehicleRequest): Prom
   const isHousehold = request.ownerType === 'RESIDENT';
   const { visitStartAt, visitEndAt } = toVisitWindow(request.visitDate);
 
+  const now = new Date().toISOString();
+
   const vehicle: VehicleResult = {
     vehicleId: nextVehicleId++,
+    userId: 1,
     ownerType: request.ownerType,
     plateNumber: request.plateNumber,
-    carModel: request.carModel ?? null,
+    status: 'ACTIVE',
     visitDate: request.visitDate ?? null,
+    vehicleModel: request.vehicleModel ?? null,
     isElectric: request.isElectric,
-    isDisabled: request.isDisabled,
+    isDisabledVehicle: request.isDisabledVehicle,
     parkingSpotCode: isHousehold ? 'B1 · EV-01' : null,
-    registeredAt: isHousehold ? request.visitDate ?? null : null,
+    createdAt: now,
+    updatedAt: now,
     visitStartAt,
     visitEndAt,
-    approvalStatus: 'APPROVED',
   };
 
   mockVehicles = [...mockVehicles, vehicle];
@@ -52,6 +56,28 @@ export async function getVehiclesMock(): Promise<VehicleResult[]> {
   await delay(MOCK_RESPONSE_DELAY_MS);
 
   return mockVehicles;
+}
+
+export async function getVehicleDetailMock(vehicleId: number): Promise<VehicleDetailResult> {
+  await delay(MOCK_RESPONSE_DELAY_MS);
+
+  const vehicle = mockVehicles.find((item) => item.vehicleId === vehicleId);
+  if (!vehicle) {
+    throw new ApiError('차량을 찾을 수 없습니다.', 404);
+  }
+
+  return {
+    vehicleId: vehicle.vehicleId,
+    userId: vehicle.userId ?? 1,
+    plateNumber: vehicle.plateNumber,
+    vehicleModel: vehicle.vehicleModel,
+    isDisabledVehicle: vehicle.isDisabledVehicle,
+    isElectric: vehicle.isElectric,
+    ownerType: vehicle.ownerType,
+    status: vehicle.status,
+    createdAt: vehicle.createdAt ?? new Date().toISOString(),
+    updatedAt: vehicle.updatedAt ?? new Date().toISOString(),
+  };
 }
 
 export async function deleteVehicleMock(vehicleId: number): Promise<void> {

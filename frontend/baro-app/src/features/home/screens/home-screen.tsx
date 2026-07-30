@@ -33,7 +33,12 @@ const quickActions: QuickAction[] = [
     iconColor: Palette.violet500,
     onPress: () => router.push('/resident/vehicles'),
   },
-  { label: '방문\n등록', background: Palette.peach100, iconColor: Palette.orange400 },
+  {
+    label: '방문\n등록',
+    background: Palette.peach100,
+    iconColor: Palette.orange400,
+    onPress: () => router.push('/auth/register-car?carType=visitor'),
+  },
   { label: '위반\n이력', background: Palette.sky100, iconColor: Palette.blue500 },
 ];
 
