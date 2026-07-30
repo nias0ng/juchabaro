@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
 import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
 import { NotificationCard } from '@/features/notification/components/list/notification-card';
@@ -11,8 +11,7 @@ import { Spacing } from '@/styles';
 import { styles } from './notifications-screen.styles';
 
 export default function NotificationsScreen() {
-  const { notifications, isLoading, error, tab, setTab, isUnread, markAsRead, markAllAsRead } =
-    useNotifications();
+  const { notifications, isLoading, error, tab, setTab, isUnread, markAsRead } = useNotifications();
 
   const handlePressNotification = (notification: NotificationSummary) => {
     markAsRead(notification.notificationId);
@@ -37,12 +36,9 @@ export default function NotificationsScreen() {
   return (
     <Screen scroll edges={['top', 'right', 'left']}>
       <ResponsiveContainer>
-        <Stack gap={Spacing.md}>
+        <Stack gap={Spacing.md} fill>
           <View style={styles.headerRow}>
             <Text style={styles.headerTitle}>알림</Text>
-            <Pressable accessibilityRole="button" onPress={markAllAsRead}>
-              <Text style={styles.markAllText}>모두 읽음</Text>
-            </Pressable>
           </View>
 
           <NotificationTabs active={tab} onChange={setTab} />
