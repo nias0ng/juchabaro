@@ -1,28 +1,20 @@
-import { Modal, Text, View } from 'react-native';
+import { Modal, Pressable, Text, View } from 'react-native';
 
-import { AppButton, Stack } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
-import { Spacing } from '@/styles';
-
-import type { VehicleResult } from '@/features/auth/api/vehicle-types';
-
-import { maskPlateNumber } from '../../utils/mask-plate-number';
 
 import { styles } from './vehicle-delete-confirm-modal.styles';
 
 type VehicleDeleteConfirmModalProps = {
   visible: boolean;
-  vehicle: VehicleResult | null;
   isDeleting: boolean;
   errorMessage?: string;
   onCancel: () => void;
   onConfirm: () => void;
 };
 
-/** H-03. 차량 삭제 확인 모달. 삭제 대상 차량 정보만 보여주고, API 호출은 화면/훅에서 처리한다. */
+/** H-03. 차량 삭제 확인 모달. UI만 담당하고, API 호출은 화면/훅(use-vehicle-management)에서 처리한다. */
 export function VehicleDeleteConfirmModal({
   visible,
-  vehicle,
   isDeleting,
   errorMessage,
   onCancel,
@@ -32,36 +24,49 @@ export function VehicleDeleteConfirmModal({
 
   return (
     <Modal visible={visible} transparent onRequestClose={isDeleting ? undefined : onCancel}>
-      <View style={styles.backdrop}>
+      <View style={styles.overlay}>
         <View style={styles.sheet}>
-          <Stack gap={Spacing.md}>
-            <Text style={styles.title}>차량을 삭제할까요?</Text>
-            {vehicle ? <Text style={styles.plate}>{maskPlateNumber(vehicle.plateNumber)}</Text> : null}
-            <Text style={styles.description}>삭제한 차량 정보는 복구할 수 없습니다.</Text>
+          <View style={styles.iconCircle}>
+            <Text style={styles.iconText}>✕</Text>
+          </View>
 
-            {errorMessage ? (
-              <View style={[styles.errorBanner, { backgroundColor: theme.dangerSurface }]}>
-                <Text style={[styles.errorText, { color: theme.danger }]}>{errorMessage}</Text>
-              </View>
-            ) : null}
+          <Text style={styles.title}>차량 정보를 삭제하시겠습니까?</Text>
+          <Text style={styles.description}>
+            {'삭제된 차량 정보는 복구할 수 없습니다.\n정말 차량 정보를 삭제하시겠습니까?'}
+          </Text>
 
-            <Stack direction="row" gap={Spacing.sm}>
-              <View style={styles.actionItem}>
-                <AppButton label="취소" variant="muted" size="md" fullWidth disabled={isDeleting} onPress={onCancel} />
-              </View>
-              <View style={styles.actionItem}>
-                <AppButton
-                  label="삭제"
-                  variant="primary"
-                  size="md"
-                  fullWidth
-                  loading={isDeleting}
-                  style={{ backgroundColor: theme.danger, borderColor: theme.danger }}
-                  onPress={onConfirm}
-                />
-              </View>
-            </Stack>
-          </Stack>
+          {errorMessage ? (
+            <View style={[styles.errorBanner, { backgroundColor: theme.dangerSurface }]}>
+              <Text style={[styles.errorText, { color: theme.danger }]}>{errorMessage}</Text>
+            </View>
+          ) : null}
+
+          <View style={styles.actions}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isDeleting}
+              style={({ pressed }) => [
+                styles.deleteButton,
+                pressed && styles.deleteButtonPressed,
+                isDeleting && styles.buttonDisabled,
+              ]}
+              onPress={onConfirm}
+            >
+              <Text style={styles.deleteButtonText}>{isDeleting ? '삭제 중...' : '삭제'}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isDeleting}
+              style={({ pressed }) => [
+                styles.cancelButton,
+                pressed && styles.cancelButtonPressed,
+                isDeleting && styles.buttonDisabled,
+              ]}
+              onPress={onCancel}
+            >
+              <Text style={styles.cancelButtonText}>취소</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
     </Modal>

@@ -1,18 +1,17 @@
 import { router } from 'expo-router';
-import { View } from 'react-native';
+import { Text, View } from 'react-native';
 
-import { ResponsiveContainer, Screen, Stack, ThemedText } from '@/components/ui';
-import { Spacing } from '@/styles';
+import { ResponsiveContainer, Screen } from '@/components/ui';
 
-import { VehicleAddSection } from '../components/manageCar/vehicle-add-section';
+import { VehicleAddCard } from '../components/manageCar/vehicle-add-card';
 import { VehicleDeleteConfirmModal } from '../components/manageCar/vehicle-delete-confirm-modal';
-import { VehicleEmptyState } from '../components/manageCar/vehicle-empty-state';
 import { VehicleErrorState } from '../components/manageCar/vehicle-error-state';
+import { VehicleHeader } from '../components/manageCar/vehicle-header';
 import { VehicleList } from '../components/manageCar/vehicle-list';
 import { VehicleLoadingState } from '../components/manageCar/vehicle-loading-state';
 import { useVehicleManagement } from '../hooks/use-vehicle-management';
 
-import { styles } from './vehicles-screen.styles';
+import { VEHICLES_SCREEN_BACKGROUND, styles } from './vehicles-screen.styles';
 
 /**
  * H-01(0대)/H-02-1(1대)/H-02-2(2대 이상)을 차량 개수에 따라 이 화면 하나에서 렌더링한다.
@@ -28,11 +27,11 @@ export default function VehiclesScreen() {
 
   return (
     <View style={styles.flex}>
-      <Screen scroll edges={['top', 'right', 'left']}>
+      <Screen scroll edges={['top', 'right', 'left']} backgroundColor={VEHICLES_SCREEN_BACKGROUND}>
         <ResponsiveContainer>
-          <Stack gap={Spacing.xl}>
-            <ThemedText type="subtitle">차량 관리</ThemedText>
+          <VehicleHeader title="내 차량 관리" onBack={() => router.back()} />
 
+          <View style={styles.content}>
             {status === 'loading' && <VehicleLoadingState />}
 
             {status === 'error' && (
@@ -42,23 +41,29 @@ export default function VehiclesScreen() {
               />
             )}
 
-            {status === 'success' && vehicles.length === 0 && (
-              <VehicleEmptyState onAddVehicle={handleAddVehicle} />
-            )}
+            {status === 'success' && (
+              <>
+                <View style={styles.countRow}>
+                  <Text style={styles.countText}>{`등록된 차량 (${vehicles.length})`}</Text>
+                </View>
 
-            {status === 'success' && vehicles.length > 0 && (
-              <Stack gap={Spacing.md}>
-                <VehicleList vehicles={vehicles} onDeleteVehicle={vehicleManagement.openDeleteModal} />
-                <VehicleAddSection onPress={handleAddVehicle} />
-              </Stack>
+                {vehicles.length > 0 && (
+                  <VehicleList vehicles={vehicles} onDeleteVehicle={vehicleManagement.openDeleteModal} />
+                )}
+
+                <VehicleAddCard onPress={handleAddVehicle} />
+
+                <Text style={styles.notice}>
+                  {'차량 정보 수정은 관리자 승인 후 반영됩니다. \n부정확한 정보 입력 시 주차 서비스 이용에 제한될 수 있습니다.'}
+                </Text>
+              </>
             )}
-          </Stack>
+          </View>
         </ResponsiveContainer>
       </Screen>
 
       <VehicleDeleteConfirmModal
         visible={vehicleManagement.deleteTargetVehicle !== null}
-        vehicle={vehicleManagement.deleteTargetVehicle}
         isDeleting={vehicleManagement.isDeleting}
         errorMessage={vehicleManagement.deleteErrorMessage}
         onCancel={vehicleManagement.closeDeleteModal}
