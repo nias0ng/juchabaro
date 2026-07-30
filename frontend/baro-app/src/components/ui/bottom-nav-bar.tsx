@@ -2,7 +2,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
 
-import { REQUEST_ICON_PATH, REQUEST_ICON_VIEWBOX_SIZE, STROKE_ICON_PATHS } from './bottom-nav-bar.icons';
+import { REQUEST_ICON_PATH, REQUEST_ICON_VIEWBOX_SIZE, STROKE_ICON_PATHS } from './bottom-nav-bar-icons';
 import { IconGlyph } from './icon-glyph';
 import { styles } from './bottom-nav-bar.styles';
 
@@ -31,14 +31,29 @@ type BottomNavBarProps = {
   items?: NavItem[];
   activeKey: string;
   onPressItem: (key: string) => void;
+  bottomInset?: number;
 };
 
-/** Figma Z-02. BottomNavBar를 그대로 재현한 프레젠테이션 컴포넌트. 어떤 네비게이터에도 연결되어 있지 않다. */
-export function BottomNavBar({ items = DEFAULT_NAV_ITEMS, activeKey, onPressItem }: BottomNavBarProps) {
+/** Figma Z-02. 네비게이터와 분리된 하단 탭 UI. activeKey와 onPressItem으로 실제 라우팅에 연결한다. */
+export function BottomNavBar({
+  items = DEFAULT_NAV_ITEMS,
+  activeKey,
+  onPressItem,
+  bottomInset = 0,
+}: BottomNavBarProps) {
   const theme = useTheme();
 
   return (
-    <View style={[styles.container, { borderTopColor: BORDER_COLOR, backgroundColor: theme.surface }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          borderTopColor: BORDER_COLOR,
+          backgroundColor: theme.surface,
+          paddingBottom: Math.max(styles.container.paddingBottom, bottomInset),
+        },
+      ]}
+    >
       {items.map((item) => {
         const focused = item.key === activeKey;
         const color = focused ? theme.primary : INACTIVE_COLOR;
