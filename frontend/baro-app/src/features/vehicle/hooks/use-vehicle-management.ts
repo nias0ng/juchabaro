@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 
+import { getMyParkingSessions } from '@/features/parking/api/parking-api';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 
 import type { VehicleResult } from '../api/types';
 
-import { deleteVehicle, getVehicles } from '../api/vehicle-api';
+import { deleteVehicle, getVehicleDetail, getVehicles } from '../api/vehicle-api';
 
 type VehicleListStatus = 'loading' | 'success' | 'error';
 
@@ -39,8 +40,33 @@ export function useVehicleManagement() {
     setListErrorMessage(undefined);
 
     try {
-      const result = await getVehicles(accessToken);
-      setVehicles(result);
+      const [result, parkingSessions] = await Promise.all([
+        getVehicles(accessToken),
+        // 위치(주차 구역/자리)는 차량 API에 없어서, 홈 화면과 같은 "현재 주차 세션" 조회로 vehicleId를 매칭해 채운다.
+        // 실패해도 위치만 못 채울 뿐 차량 목록 자체는 보여줘야 하니 조용히 빈 배열로 넘어간다.
+        getMyParkingSessions(accessToken).catch(() => []),
+      ]);
+
+      const parkingSpotByVehicleId = new Map(
+        parkingSessions.map((session) => [session.vehicleId, `${session.zoneName} · ${session.spotCode}`]),
+      );
+
+      // 목록 조회엔 등록일(createdAt) 등이 없어서, 카드에 채워 보여주려고 차량별로 상세를 추가 조회한다.
+      // 한 대라도 상세 조회가 실패하면 그 차량만 목록 값 그대로 두고, 전체 목록 표시는 막지 않는다.
+      const withDetails = await Promise.all(
+        result.map(async (vehicle) => {
+          const parkingSpotCode = parkingSpotByVehicleId.get(vehicle.vehicleId) ?? vehicle.parkingSpotCode ?? null;
+
+          try {
+            const detail = await getVehicleDetail(vehicle.vehicleId, accessToken);
+            return { ...vehicle, parkingSpotCode, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+          } catch {
+            return { ...vehicle, parkingSpotCode };
+          }
+        }),
+      );
+
+      setVehicles(withDetails);
       setStatus('success');
     } catch (error) {
       setListErrorMessage(error instanceof ApiError ? error.message : '차량 목록을 불러오지 못했습니다.');

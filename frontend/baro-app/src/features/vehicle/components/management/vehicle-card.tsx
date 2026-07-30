@@ -3,7 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { Palette } from '@/styles';
 
-import type { VehicleApprovalStatus, VehicleResult } from '../../api/types';
+import type { VehicleResult, VehicleStatus } from '../../api/types';
 
 import { styles } from './vehicle-card.styles';
 import { VehicleBadgeIcon } from './vehicle-badge-icon';
@@ -11,12 +11,23 @@ import { VehicleBadgeIcon } from './vehicle-badge-icon';
 const HOUSEHOLD_CARD_GRADIENT = [Palette.lavender100, Palette.mint100] as const;
 const VISITOR_CARD_GRADIENT = [Palette.peach100, Palette.lavender100] as const;
 
-// TODO(vehicle-api): 백엔드 승인 상태 필드가 확정되면 라벨/색을 다시 확인해야 함.
-const APPROVAL_LABEL: Record<VehicleApprovalStatus, string> = {
-  APPROVED: '승인됨',
+const STATUS_LABEL: Record<VehicleStatus, string> = {
+  ACTIVE: '승인됨',
   PENDING: '심사중',
-  REJECTED: '반려됨',
+  DELETED: '삭제됨',
 };
+
+/** 상세 조회 응답의 createdAt(ISO, 타임존 포함)을 "YYYY.MM.DD"로 변환한다. */
+function formatRegisteredDate(createdAt: string | undefined): string {
+  if (!createdAt) return '-';
+
+  const date = new Date(createdAt);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}.${month}.${day}`;
+}
 
 type VehicleCardProps = {
   vehicle: VehicleResult;
@@ -26,19 +37,16 @@ type VehicleCardProps = {
 /** H-02-1/H-02-2에서 등록된 차량 한 대를 보여주는 카드. */
 export function VehicleCard({ vehicle, onDelete }: VehicleCardProps) {
   const isHousehold = vehicle.ownerType === 'RESIDENT';
-  const approvalStatus = vehicle.approvalStatus ?? 'APPROVED';
 
-  const subtitle = isHousehold ? vehicle.carModel : '24시간 임시 등록';
+  const subtitle = isHousehold ? vehicle.vehicleModel : '24시간 임시 등록';
 
-  const infoItems = isHousehold
-    ? [
-        { label: '위치', value: vehicle.parkingSpotCode ?? '-' },
-        { label: '등록일', value: vehicle.registeredAt ?? '-' },
-      ]
-    : [
-        { label: '방문 시작', value: vehicle.visitStartAt ?? '-' },
-        { label: '방문 종료', value: vehicle.visitEndAt ?? '-' },
-      ];
+  // TODO(vehicle-api): 방문 차량의 "방문 시작/종료"(visitDate 기반)를 보여주고 싶었지만, visitDate가
+  // 등록(POST) 응답에만 있고 조회(GET) 응답엔 없어서 새로고침하면 값을 다시 받을 수 없다.
+  // 백엔드가 GET 응답에 visitDate를 포함하면 방문 차량은 이 대신 방문 시작/종료로 되돌린다.
+  const infoItems = [
+    { label: '위치', value: vehicle.parkingSpotCode ?? '-' },
+    { label: '등록일', value: formatRegisteredDate(vehicle.createdAt) },
+  ];
 
   return (
     <LinearGradient
@@ -54,9 +62,9 @@ export function VehicleCard({ vehicle, onDelete }: VehicleCardProps) {
 
         <View style={styles.statusGroup}>
           {vehicle.isElectric ? <VehicleBadgeIcon name="electric" /> : null}
-          {vehicle.isDisabled ? <VehicleBadgeIcon name="disabled" /> : null}
+          {vehicle.isDisabledVehicle ? <VehicleBadgeIcon name="disabled" /> : null}
           <View style={styles.approvalBadge}>
-            <Text style={styles.approvalBadgeText}>{APPROVAL_LABEL[approvalStatus]}</Text>
+            <Text style={styles.approvalBadgeText}>{STATUS_LABEL[vehicle.status]}</Text>
           </View>
         </View>
       </View>
