@@ -13,7 +13,10 @@ def _make_event(**overrides) -> ViolationEvent:
         track_id=7,
         plate_number="12가3456",
         status=ViolationStatus.DOUBLE_PARK,
-        zone_id="GEN-01",
+        # zone_id는 백엔드가 발급하는 기계 식별자(Long)이고, 사람이 읽는 구역 번호는
+        # zone_number다. 페이로드에는 계약대로 zone_id만 실린다.
+        zone_id=12,
+        zone_number="GEN-01",
         zone_type=ZoneType.GENERAL,
         overlap_ratio=0.375,
         dwell_seconds=650.0,
@@ -48,7 +51,7 @@ def test_publish_sends_expected_payload_and_headers():
     payload = json.loads(request.data.decode("utf-8"))
     assert payload["trackingId"] == 7
     assert payload["plateNumber"] == "12가3456"
-    assert payload["zoneId"] == "GEN-01"
+    assert payload["zoneId"] == 12
     assert payload["eventType"] == "DOUBLE_PARKING"
     assert payload["detectedAt"] == "2026-07-30T12:00:00+00:00"
 

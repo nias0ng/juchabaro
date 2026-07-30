@@ -3,13 +3,10 @@ package com.ssafy.parking.domain.move.service;
 import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.common.storage.ImageStorageService;
-import com.ssafy.parking.domain.move.dto.MoveRequestCreateResponse;
-import com.ssafy.parking.domain.move.dto.MoveRequestListResponse;
-import com.ssafy.parking.domain.move.entity.MoveRequest;
-import com.ssafy.parking.domain.move.entity.MoveRequestScope;
-import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
-import com.ssafy.parking.domain.move.entity.MoveRequestType;
+import com.ssafy.parking.domain.move.dto.*;
+import com.ssafy.parking.domain.move.entity.*;
 import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
+import com.ssafy.parking.domain.move.repository.MoveRequestResponseRepository;
 import com.ssafy.parking.domain.notification.entity.Notification;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.repository.NotificationRepository;
@@ -30,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -48,6 +46,9 @@ public class MoveRequestService {
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
     private final ImageStorageService imageStorageService;
+    private final MoveRequestResponseRepository moveRequestResponseRepository;
+
+    private static final Set<Integer> ALLOWED_MINUTES = Set.of(10, 30, 60, 120);
 
     @Transactional
     public MoveRequestCreateResponse create(
@@ -56,7 +57,7 @@ public class MoveRequestService {
     ) {
         // 400
         if (eventType == null || reason == null || reason.isBlank()
-                || images == null || images.isEmpty() || images.get(0).isEmpty()) {
+                || images == null || images.isEmpty() || images.getFirst().isEmpty()) {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_INVALID);
         }
 
@@ -142,5 +143,75 @@ public class MoveRequestService {
             case ALL -> moveRequestRepository.findAllScoped(userId, status, pageable);
         };
         return MoveRequestListResponse.from(result);
+    }
+
+    @Transactional(readOnly = true)
+    public MoveRequestDetailResponse getMoveRequest(Long userId, Long requestId) {
+        MoveRequest mr = moveRequestRepository.findById(requestId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.MOVE_REQUEST_NOT_FOUND));
+
+        boolean isRequester = mr.getRequester() != null
+                && mr.getRequester().getId().equals(userId);
+        boolean isTargetOwner = mr.getTargetVehicle().getUser().getId().equals(userId);
+        if (!isRequester && !isTargetOwner) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_ACCESS_DENIED);
+        }
+
+        var images = eventImageRepository.findByEvent_Id(mr.getEvent().getId());
+        var responses = moveRequestResponseRepository.findByRequest_IdOrderByRespondedAtAsc(requestId);
+        var history = notificationRepository.findByRequest_IdOrderBySentAtAsc(requestId);
+
+        return MoveRequestDetailResponse.from(mr, images, responses, history);
+    }
+
+    @Transactional
+    public MoveResponseCreateResponse respond(Long userId, Long requestId, MoveResponseCreateRequest request) {
+        MoveRequest mr = moveRequestRepository.findById(requestId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.MOVE_REQUEST_NOT_FOUND));
+
+        if (!mr.getTargetVehicle().getUser().getId().equals(userId)) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_ACCESS_DENIED);
+        }
+
+        MoveRequestStatus st = mr.getRequestStatus();
+        if (st == MoveRequestStatus.COMPLETED || st == MoveRequestStatus.NEED_ADMIN
+                || st == MoveRequestStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_NOT_ALLOWED);
+        }
+
+        MoveResponseType type = request.responseType();
+        if (type == null) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_INVALID);
+        }
+        Integer minutes;
+        if (type == MoveResponseType.WILL_MOVE) {
+            minutes = request.estimatedMinutes();
+            if (minutes == null || !ALLOWED_MINUTES.contains(minutes)) {
+                throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_INVALID);
+            }
+        } else {
+            minutes = null;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+
+        MoveRequestResponse response = MoveRequestResponse.builder()
+                .request(mr)
+                .responder(userRepository.getReferenceById(userId))
+                .responseType(type)
+                .estimatedMinutes(minutes)
+                .respondedAt(now)
+                .build();
+        moveRequestResponseRepository.save(response);
+
+        ParkingEvent event = mr.getEvent();
+        if (type == MoveResponseType.WILL_MOVE) {
+            mr.markResponded(now.plusMinutes(minutes));
+        } else {
+            mr.markNeedAdmin();
+            event.changeStatus(ParkingEventStatus.NEED_ADMIN);
+        }
+
+        return MoveResponseCreateResponse.from(response, mr, event);
     }
 }

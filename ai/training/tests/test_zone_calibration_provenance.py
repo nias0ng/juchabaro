@@ -33,7 +33,12 @@ def write_calibration_file(tmp_path, name="camera_calibration.json", fx=260.0):
 def write_zones(tmp_path, calibration_block=None):
     payload = {
         "zones": [
-            {"zone_id": "GEN-01", "zone_type": "GENERAL", "polygon": [[0, 0], [0.2, 0], [0.2, 0.2], [0, 0.2]]}
+            {
+                "zoneId": 1,
+                "zoneNumber": "GEN-01",
+                "zoneType": "GENERAL",
+                "polygon": [[0, 0], [0.2, 0], [0.2, 0.2], [0, 0.2]],
+            }
         ]
     }
     if calibration_block is not None:
