@@ -499,6 +499,19 @@ class TrackState:
 
 
 @dataclass(frozen=True)
+class TrackSnapshot:
+    """오버레이·디버깅용 트랙 상태 스냅샷 (읽기 전용).
+
+    plate_number를 담지 않는다 — 리플레이 검증에는 게이트 OCR 입차 이벤트를
+    공급하는 경로가 없어 항상 None이다.
+    """
+
+    track_id: int
+    dwell_seconds: float
+    open_violation: ViolationStatus
+
+
+@dataclass(frozen=True)
 class ModelInfo:
     """결과 재현을 위해 기록하는 트래킹 라이브러리와 모델 정보."""
 
@@ -739,6 +752,26 @@ class ViolationMonitor:
         matched = eligible[0]
         self._pending_entry_events.remove(matched)
         self._tracks[detection.track_id].plate_number = matched.plate_number
+
+    def track_snapshot(self, now: datetime) -> dict[int, TrackSnapshot]:
+        """현재 트랙별 정차 상태를 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다.
+
+        update()는 중복 억제 때문에 "새로 발생한" 이벤트만 반환하므로, 매 프레임
+        "이 차가 몇 초 정차했고 지금 어떤 상태인가"를 그리려면 누적 상태가 필요하다.
+        오버레이가 이를 재계산하면 화면에 보이는 값과 실제 판정이 갈라질 수 있어,
+        검증 도구가 검증 대상과 다른 답을 내게 된다.
+
+        dwell 계산식은 update()가 dwell_by_track을 채울 때 쓰는 것과 같아야 한다.
+        """
+
+        return {
+            track_id: TrackSnapshot(
+                track_id=track_id,
+                dwell_seconds=(now - state.stationary_since).total_seconds(),
+                open_violation=state.open_violation,
+            )
+            for track_id, state in self._tracks.items()
+        }
 
     def update(self, detections: Sequence[VehicleBox]) -> list[ViolationEvent]:
         """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다.
@@ -2246,6 +2279,48 @@ class BaselineLogicTests(unittest.TestCase):
         )
         monitor.attach_plate(5, "1234")
         self.assertEqual(monitor._tracks[5].plate_number, "1234")
+
+    def test_track_snapshot_matches_dwell_used_by_update(self) -> None:
+        zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=10.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=4)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)])
+
+        snapshot = monitor.track_snapshot(later)
+
+        self.assertEqual(set(snapshot), {1})
+        self.assertAlmostEqual(snapshot[1].dwell_seconds, 4.0)
+
+    def test_track_snapshot_reports_open_violation(self) -> None:
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=1.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=5)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)])
+
+        self.assertEqual(monitor.track_snapshot(later)[1].open_violation, ViolationStatus.RESTRICTED_ZONE)
+
+    def test_track_snapshot_does_not_affect_judgment(self) -> None:
+        """오버레이가 판정을 바꾸면 검증 도구가 검증 대상을 오염시킨다."""
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=1.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=5)
+
+        for _ in range(3):
+            monitor.track_snapshot(later)
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)]
+        )
+
+        self.assertEqual([event.status for event in events], [ViolationStatus.RESTRICTED_ZONE])
 
     def test_entry_event_matches_new_track_in_entry_zone(self) -> None:
         entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
