@@ -104,6 +104,6 @@ root부터 원인까지 type과 message chain을 보존한다.
 입출력 JSON에서는 NumPy 배열을 복사하지 않고 shape와 dtype만 보여줍니다.
 Detector trace는 anchor 호출마다 한 번만 기록하며, 출력은 best-first
 `DetectedPlate` tuple입니다. 빈 tuple은 정상 미검출입니다. 화면에서는
-best 후보를 overlay하고 표시 계약을 통과한 전체 후보는 제한된 표로
-보여줍니다. 잘못된 후보 tuple이나 내부 필드는 실행 결과와 분리된 진단
-오류로 표시합니다.
+best 후보를 overlay하고 전체 후보를 best-first 표로 보여줍니다. Trace는
+같은 프로세스에서 운영 component가 만든 typed output을 그대로 사용하며,
+이미지를 표시할 때만 BGR 배열 계약을 확인합니다.

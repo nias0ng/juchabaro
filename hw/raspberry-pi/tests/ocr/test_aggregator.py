@@ -67,32 +67,16 @@ class AggregationPolicyTests(unittest.TestCase):
                 with self.assertRaises(AggregationError):
                     AggregationPolicy(min_valid_frames=value)
 
-    def test_default_vote_ratio_implies_default_margin_ratio(self) -> None:
-        policy = AggregationPolicy()
-
-        # 최다 후보가 W표라면 차순위는 많아도 V-W표다. 따라서 기본
-        # vote ratio를 통과한 모든 정수 분포의 margin 하한을 열거한다.
-        for valid_frames in range(1, 101):
-            for winner_votes in range(1, valid_frames + 1):
-                vote_ratio = winner_votes / valid_frames
-                if vote_ratio < policy.min_vote_ratio:
-                    continue
-
-                largest_possible_runner_up = valid_frames - winner_votes
-                minimum_margin_ratio = (
-                    winner_votes - largest_possible_runner_up
-                ) / valid_frames
-                with self.subTest(
-                    valid_frames=valid_frames,
-                    winner_votes=winner_votes,
-                ):
-                    self.assertGreaterEqual(
-                        minimum_margin_ratio + 1e-12,
-                        policy.min_margin_ratio,
-                    )
-
-
 class PlateAggregatorDecisionTests(unittest.TestCase):
+    def test_duplicate_frame_candidate_is_rejected(self) -> None:
+        with self.assertRaises(AggregationError):
+            PlateAggregator().aggregate(
+                (
+                    _candidate(0, "12가3456"),
+                    _candidate(0, "12가3456"),
+                )
+            )
+
     def test_empty_normalized_candidates_return_ocr_empty(self) -> None:
         decision = PlateAggregator().aggregate(
             (

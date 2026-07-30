@@ -15,5 +15,5 @@ class OcrRuntimeError(OcrPipelineError):
     """모델, adapter, OpenCV 또는 내부 invariant 오류."""
 
 
-class OcrComponentError(Exception):
-    """Pipeline이 ``OcrRuntimeError``로 변환할 수 있는 알려진 내부 오류."""
+class OcrComponentError(OcrRuntimeError):
+    """모델·adapter·OpenCV component에서 발생한 알려진 runtime 오류."""

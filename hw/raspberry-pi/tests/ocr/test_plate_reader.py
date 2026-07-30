@@ -34,21 +34,6 @@ PLATE_QUAD: Quad = (
 )
 
 
-class FakePaddleResult:
-    def __init__(self, frame_index: int) -> None:
-        self.json = {
-            "res": {
-                "rec_text": f"12가{frame_index:04d}",
-                "rec_score": 0.9,
-            }
-        }
-
-
-class PayloadPaddleResult:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.json = {"res": payload}
-
-
 class FakePaddleModel:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -58,10 +43,13 @@ class FakePaddleModel:
         *,
         input: list[np.ndarray],
         batch_size: int,
-    ) -> list[FakePaddleResult]:
+    ) -> list[dict[str, object]]:
         self.calls.append((len(input), batch_size))
         return [
-            FakePaddleResult(index)
+            {
+                "rec_text": f"12가{index:04d}",
+                "rec_score": 0.9,
+            }
             for index in range(len(input))
         ]
 
@@ -75,7 +63,7 @@ class FailingPaddleModel:
         *,
         input: list[np.ndarray],
         batch_size: int,
-    ) -> list[FakePaddleResult]:
+    ) -> list[dict[str, object]]:
         raise self.error
 
 
@@ -195,30 +183,22 @@ class PaddlePlateReaderBatchTests(unittest.TestCase):
                     self.assertEqual(model.device, "cpu")
                     self.assertEqual(model.calls, expected_calls)
 
-    def test_empty_text_may_omit_score(self) -> None:
-        self.assertEqual(
-            _parse_paddle_result(
-                PayloadPaddleResult({"rec_text": ""})
-            ),
-            ("", 0.0),
-        )
-
     def test_malformed_result_fields_are_rejected(self) -> None:
         payloads = (
+            object(),
             {},
             {"rec_text": None, "rec_score": 0.9},
-            {"rec_text": 123, "rec_score": 0.9},
-            {"rec_text": "12가3456"},
+            {"rec_text": ""},
             {"rec_text": "12가3456", "rec_score": "0.9"},
             {"rec_text": "12가3456", "rec_score": True},
+            {"rec_text": "12가3456", "rec_score": float("nan")},
+            {"rec_text": "12가3456", "rec_score": 1.1},
         )
 
         for payload in payloads:
             with self.subTest(payload=payload):
                 with self.assertRaises(PaddleResultError):
-                    _parse_paddle_result(
-                        PayloadPaddleResult(payload)
-                    )
+                    _parse_paddle_result(payload)
 
 
 if __name__ == "__main__":

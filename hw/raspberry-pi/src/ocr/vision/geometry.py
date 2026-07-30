@@ -67,8 +67,8 @@ class GeometryConfig:
     min_aspect_ratio: float = 1.2
     max_aspect_ratio: float = 8.0
     max_extrapolation_frames: int = 1
-    # 확정 정책 A: 단일 anchor도 인접 프레임까지 재사용해 성공 가능성을
-    # 유지한다. 운영 factory가 aggregation 최소 프레임 수와 교차 검증한다.
+    # 단일 anchor도 인접 프레임까지 재사용해 기본 집계 최소 프레임 수를
+    # 충족할 가능성을 유지한다.
     single_anchor_reuse_radius: int = 1
 
     def __post_init__(self) -> None:

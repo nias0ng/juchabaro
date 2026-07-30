@@ -9,8 +9,6 @@ from unittest.mock import patch
 import numpy as np
 
 from src.ocr import OcrPipelinePolicy
-from src.ocr.policy import validate_ocr_policy_compatibility
-from src.ocr.postprocessing.aggregator import AggregationPolicy
 from src.ocr.types import CapturedFrame, FrameQuality
 from src.ocr.vision import frame_selector as frame_selector_module
 from src.ocr.vision.frame_selector import (
@@ -18,7 +16,6 @@ from src.ocr.vision.frame_selector import (
     OpenCvFrameQualityEvaluator,
     QualityFrameSelector,
 )
-from src.ocr.vision.geometry import GeometryConfig
 
 
 def _frames(count: int) -> tuple[CapturedFrame, ...]:
@@ -107,72 +104,6 @@ class OcrPipelinePolicyTests(unittest.TestCase):
                         frame_count=6,
                         early_anchor_candidate_count=early_count,
                     )
-
-    def test_compatible_single_anchor_and_aggregation_policy(self) -> None:
-        validate_ocr_policy_compatibility(
-            OcrPipelinePolicy(frame_count=3),
-            AggregationPolicy(min_valid_frames=2),
-            GeometryConfig(single_anchor_reuse_radius=1),
-        )
-
-    def test_min_valid_frames_cannot_exceed_frame_count(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "min_valid_frames는 frame_count보다 클 수 없습니다",
-        ):
-            validate_ocr_policy_compatibility(
-                OcrPipelinePolicy(frame_count=3),
-                AggregationPolicy(min_valid_frames=4),
-                GeometryConfig(single_anchor_reuse_radius=4),
-            )
-
-    def test_single_anchor_must_supply_minimum_valid_frames(
-        self,
-    ) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "single-anchor fallback",
-        ):
-            validate_ocr_policy_compatibility(
-                OcrPipelinePolicy(frame_count=6),
-                AggregationPolicy(min_valid_frames=3),
-                GeometryConfig(single_anchor_reuse_radius=1),
-            )
-
-    def test_two_anchors_must_supply_minimum_valid_frames(
-        self,
-    ) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "two-anchor geometry",
-        ):
-            validate_ocr_policy_compatibility(
-                OcrPipelinePolicy(
-                    frame_count=8,
-                    early_anchor_candidate_count=7,
-                ),
-                AggregationPolicy(min_valid_frames=4),
-                GeometryConfig(
-                    max_extrapolation_frames=0,
-                    single_anchor_reuse_radius=3,
-                ),
-            )
-
-    def test_two_anchor_capacity_boundary_is_compatible(
-        self,
-    ) -> None:
-        validate_ocr_policy_compatibility(
-            OcrPipelinePolicy(
-                frame_count=8,
-                early_anchor_candidate_count=7,
-            ),
-            AggregationPolicy(min_valid_frames=4),
-            GeometryConfig(
-                max_extrapolation_frames=2,
-                single_anchor_reuse_radius=3,
-            ),
-        )
-
 
 class QualityFrameSelectorPolicyTests(unittest.TestCase):
     def test_opencv_evaluator_accepts_variable_frame_sequences(

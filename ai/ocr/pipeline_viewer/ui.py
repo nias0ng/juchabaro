@@ -12,7 +12,7 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from numbers import Real
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -26,18 +26,7 @@ from .service import (
 )
 from .tracing import PipelineTrace, StageCall
 from ocr.image_validation import is_nonempty_bgr_uint8_image
-from ocr.types import (
-    AnchorSelection,
-    DetectedPlate,
-    EstimatedQuad,
-    FrameQuality,
-    OcrCandidate,
-    PlateDecision,
-    PreparedPlate,
-    QuadSource,
-    RawOcrResult,
-    RectifiedPlate,
-)
+from ocr.types import PlateDecision
 
 
 _STAGE_LABELS = {
@@ -57,11 +46,6 @@ _QUAD_COLORS = {
     "EXTRAPOLATED": (0, 140, 255),
     "REUSED": (255, 0, 200),
 }
-
-# 현재 viewer 기본 detector profile의 ``max_detections``와 같다. Trace가
-# 깨졌더라도 과도한 후보를 한 번에 렌더링하지 않도록 표시 경계에서도 막는다.
-_MAX_DISPLAYED_DETECTION_CANDIDATES = 3
-
 
 # [공통 표시 helper]
 
@@ -141,6 +125,22 @@ def _put_label(
     )
 
 
+def _clipped_pixel(value: Real, upper_bound: int) -> int:
+    """좌표를 유효한 이미지 pixel 범위로 제한한다."""
+
+    coordinate = float(value)
+    if not np.isfinite(coordinate):
+        coordinate = 0.0
+    return int(
+        round(
+            min(
+                max(coordinate, 0.0),
+                float(max(0, upper_bound - 1)),
+            )
+        )
+    )
+
+
 def draw_detection(image: np.ndarray, detection: Any | None) -> np.ndarray:
     """원본 복사본 위에 best 후보의 bbox와 네 keypoint를 그린다."""
 
@@ -150,31 +150,19 @@ def draw_detection(image: np.ndarray, detection: Any | None) -> np.ndarray:
 
     image_height, image_width = canvas.shape[:2]
 
-    def clipped_pixel(value: Real, upper_bound: int) -> int:
-        """유한한 detector 좌표를 OpenCV가 안전하게 받는 이미지 좌표로 자른다."""
-
-        return int(
-            round(
-                min(
-                    max(float(value), 0.0),
-                    float(upper_bound - 1),
-                )
-            )
-        )
-
     x1, y1, x2, y2 = (
-        clipped_pixel(detection.bbox_xyxy[0], image_width),
-        clipped_pixel(detection.bbox_xyxy[1], image_height),
-        clipped_pixel(detection.bbox_xyxy[2], image_width),
-        clipped_pixel(detection.bbox_xyxy[3], image_height),
+        _clipped_pixel(detection.bbox_xyxy[0], image_width),
+        _clipped_pixel(detection.bbox_xyxy[1], image_height),
+        _clipped_pixel(detection.bbox_xyxy[2], image_width),
+        _clipped_pixel(detection.bbox_xyxy[3], image_height),
     )
     cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 220, 0), 2)
 
     points = np.asarray(
         tuple(
             (
-                clipped_pixel(point[0], image_width),
-                clipped_pixel(point[1], image_height),
+                _clipped_pixel(point[0], image_width),
+                _clipped_pixel(point[1], image_height),
             )
             for point in detection.quad
         ),
@@ -220,9 +208,17 @@ def draw_estimate(image: np.ndarray, estimate: Any | None) -> np.ndarray:
 
     source = _enum_value(estimate.source)
     color = _QUAD_COLORS.get(source, (0, 255, 255))
-    points = np.rint(
-        np.asarray(estimate.quad, dtype=np.float32)
-    ).astype(np.int32)
+    image_height, image_width = canvas.shape[:2]
+    points = np.asarray(
+        tuple(
+            (
+                _clipped_pixel(point[0], image_width),
+                _clipped_pixel(point[1], image_height),
+            )
+            for point in estimate.quad
+        ),
+        dtype=np.int32,
+    )
     cv2.polylines(
         canvas,
         [points.reshape((-1, 1, 2))],
@@ -261,238 +257,26 @@ def _frame_name(run: DebugRun, frame_index: int) -> str:
     return "-"
 
 
-def _materialize_sequence(value: Any) -> tuple[Any, ...] | None:
-    """Viewer 경계에서 iterable을 안전하게 tuple로 고정한다."""
+def _bgr_image(value: Any) -> np.ndarray | None:
+    """Trace 객체에서 표시 가능한 이미지만 꺼낸다."""
 
-    if value is None:
-        return ()
-    try:
-        return tuple(value)
-    except Exception:
-        # KeyboardInterrupt와 SystemExit 같은 BaseException은 전파한다.
-        return None
-
-
-def _finite_float(value: Any) -> float | None:
-    """bool이 아닌 유한한 실수를 표시용 float로 변환한다."""
-
-    if isinstance(value, bool) or not isinstance(value, Real):
-        return None
-    try:
-        converted = float(value)
-    except Exception:
-        return None
-    return converted if np.isfinite(converted) else None
-
-
-def _is_frame_index(value: Any) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int)
-
-
-def _is_displayable_quad(value: Any) -> bool:
-    if not isinstance(value, tuple) or len(value) != 4:
-        return False
-
-    for point in value:
-        if (
-            not isinstance(point, tuple)
-            or len(point) != 2
-            or any(
-                _finite_float(coordinate) is None
-                for coordinate in point
-            )
-        ):
-            return False
-    return True
-
-
-def _is_displayable_quality(value: Any) -> bool:
-    return (
-        isinstance(value, FrameQuality)
-        and _is_frame_index(value.frame_index)
-        and all(
-            _finite_float(metric) is not None
-            for metric in (
-                value.sharpness,
-                value.contrast,
-                value.mean_brightness,
-                value.dark_ratio,
-                value.bright_ratio,
-                value.score,
-            )
-        )
-    )
-
-
-def _is_displayable_detection(
-    value: Any,
-    *,
-    expected_frame_index: int | None = None,
-) -> bool:
-    score = (
-        _finite_float(value.detector_score)
-        if isinstance(value, DetectedPlate)
-        else None
-    )
-    if (
-        not isinstance(value, DetectedPlate)
-        or not _is_frame_index(value.frame_index)
-        or (
-            expected_frame_index is not None
-            and value.frame_index != expected_frame_index
-        )
-        or score is None
-        or not 0.0 <= score <= 1.0
-        or not _is_displayable_quad(value.quad)
-        or not isinstance(value.bbox_xyxy, tuple)
-    ):
-        return False
-
-    bbox = value.bbox_xyxy
-    coordinates = tuple(_finite_float(coordinate) for coordinate in bbox)
-    if len(coordinates) != 4 or any(
-        coordinate is None
-        for coordinate in coordinates
-    ):
-        return False
-
-    x1, y1, x2, y2 = coordinates
-    assert x1 is not None
-    assert y1 is not None
-    assert x2 is not None
-    assert y2 is not None
-    return x2 > x1 and y2 > y1
-
-
-def _detection_output_view(
-    value: Any,
-    *,
-    expected_frame_index: int,
-) -> tuple[
-    tuple[DetectedPlate, ...],
-    str | None,
-]:
-    """Best-first 후보 tuple을 bounded display payload로 검증한다."""
-
-    if not isinstance(value, tuple):
-        return (
-            (),
-            "Detector 출력은 best-first DetectedPlate tuple이어야 "
-            f"합니다: actual={type(value).__name__}",
-        )
-
-    if len(value) > _MAX_DISPLAYED_DETECTION_CANDIDATES:
-        return (
-            (),
-            "표시 가능한 후보 수를 초과했습니다: "
-            f"actual={len(value)}, "
-            f"max={_MAX_DISPLAYED_DETECTION_CANDIDATES}",
-        )
-
-    for rank, candidate in enumerate(value, start=1):
-        if not _is_displayable_detection(
-            candidate,
-            expected_frame_index=expected_frame_index,
-        ):
-            return (
-                (),
-                f"후보 #{rank}의 표시 계약이 유효하지 않습니다.",
-            )
-
-    return value, None
-
-
-def _is_displayable_estimate(value: Any) -> bool:
-    if (
-        not isinstance(value, EstimatedQuad)
-        or not _is_frame_index(value.frame_index)
-        or not _is_displayable_quad(value.quad)
-        or not isinstance(value.source, QuadSource)
-    ):
-        return False
-
-    source_indices = _materialize_sequence(
-        value.source_anchor_indices
-    )
-    return (
-        source_indices is not None
-        and all(_is_frame_index(index) for index in source_indices)
-    )
-
-
-def _is_displayable_rectified(value: Any) -> bool:
-    return (
-        isinstance(value, RectifiedPlate)
-        and _is_frame_index(value.frame_index)
-        and is_nonempty_bgr_uint8_image(value.image)
-    )
-
-
-def _is_displayable_prepared(value: Any) -> bool:
-    return (
-        isinstance(value, PreparedPlate)
-        and _is_frame_index(value.frame_index)
-        and is_nonempty_bgr_uint8_image(value.image)
-        and isinstance(value.preprocessing_applied, bool)
-    )
-
-
-def _is_displayable_raw_result(value: Any) -> bool:
-    return (
-        isinstance(value, RawOcrResult)
-        and _is_frame_index(value.frame_index)
-        and isinstance(value.raw_text, str)
-        and _finite_float(value.rec_score) is not None
-    )
+    image = getattr(value, "image", None)
+    return image if is_nonempty_bgr_uint8_image(image) else None
 
 
 def _aggregation_decision(
     trace: PipelineTrace,
 ) -> PlateDecision | None:
-    """성공한 집계 호출의 상세 판정을 반환한다."""
+    """성공한 집계 호출의 판정을 반환한다."""
 
     call = trace.first("aggregation")
     if (
         call is None
         or not call.succeeded
-        or not isinstance(call.output, PlateDecision)
-        or isinstance(call.output.valid_frames, bool)
-        or not isinstance(call.output.valid_frames, int)
-        or isinstance(call.output.vote_count, bool)
-        or not isinstance(call.output.vote_count, int)
-        or _finite_float(call.output.vote_ratio) is None
-        or _finite_float(call.output.mean_rec_score) is None
+        or call.output is None
     ):
         return None
-    return call.output
-
-
-def _is_displayable_candidate(value: Any) -> bool:
-    """후보 표에서 안전하게 읽을 수 있는 최소 필드 계약을 확인한다."""
-
-    return (
-        isinstance(value, OcrCandidate)
-        and not isinstance(value.frame_index, bool)
-        and isinstance(value.frame_index, int)
-        and isinstance(value.raw_text, str)
-        and isinstance(value.normalized_text, str)
-        and _finite_float(value.rec_score) is not None
-        and isinstance(value.valid_format, bool)
-    )
-
-
-def _trace_candidates(
-    trace: PipelineTrace,
-) -> tuple[OcrCandidate, ...]:
-    """문자열 후처리에 성공해 집계 대상으로 전달된 후보를 반환한다."""
-
-    return tuple(
-        output
-        for output in trace.successful_outputs(
-            "text_postprocessing"
-        )
-        if _is_displayable_candidate(output)
-    )
+    return cast(PlateDecision, call.output)
 
 
 def _normal_result_message(run: DebugRun) -> str:
@@ -500,15 +284,12 @@ def _normal_result_message(run: DebugRun) -> str:
 
     decision = _aggregation_decision(run.trace)
     if decision is not None:
-        message = getattr(decision, "error_message", None)
-        if isinstance(message, str) and message:
-            return message
+        if decision.error_message:
+            return decision.error_message
 
     detection_calls = run.trace.calls_for("detection")
     if detection_calls and all(
-        call.succeeded
-        and isinstance(call.output, tuple)
-        and not call.output
+        call.succeeded and call.output == ()
         for call in detection_calls
     ):
         return "선택된 anchor에서 번호판이 검출되지 않았습니다."
@@ -517,11 +298,10 @@ def _normal_result_message(run: DebugRun) -> str:
     if geometry_call is not None:
         if not geometry_call.succeeded:
             return _call_error(geometry_call) or "좌표 추정에 실패했습니다."
-        estimates = _materialize_sequence(geometry_call.output)
-        if estimates == ():
+        if geometry_call.output == ():
             return "사용 가능한 번호판 좌표가 없습니다."
-        if estimates is None:
-            return "Geometry 출력 iterable을 확인할 수 없습니다."
+        if geometry_call.output is None:
+            return "Geometry 출력이 기록되지 않았습니다."
 
     rectification_calls = run.trace.calls_for("rectification")
     if rectification_calls and not any(
@@ -534,7 +314,7 @@ def _normal_result_message(run: DebugRun) -> str:
 
 
 def _trace_failure_rows(run: DebugRun) -> list[dict[str, Any]]:
-    """실패 호출과 geometry 누락 프레임을 요약 표로 만든다."""
+    """실패한 component와 pipeline 호출을 요약한다."""
 
     rows: list[dict[str, Any]] = []
 
@@ -552,60 +332,6 @@ def _trace_failure_rows(run: DebugRun) -> list[dict[str, Any]]:
                 "message": _call_error(call),
             }
         )
-
-    geometry_call = run.trace.first("geometry")
-    if (
-        geometry_call is not None
-        and geometry_call.succeeded
-        and isinstance(geometry_call.inputs, Mapping)
-    ):
-        frames = _materialize_sequence(
-            geometry_call.inputs.get("frames")
-        )
-        estimates = _materialize_sequence(geometry_call.output)
-        invalid_trace = (
-            frames is None
-            or estimates is None
-            or any(
-                not _is_displayable_estimate(estimate)
-                for estimate in (estimates or ())
-            )
-            or any(
-                not _is_frame_index(getattr(frame, "frame_index", None))
-                for frame in (frames or ())
-            )
-        )
-        if invalid_trace:
-            rows.append(
-                {
-                    "stage": "geometry",
-                    "frame": "-",
-                    "message": (
-                        "Geometry trace의 iterable 또는 내부 필드가 "
-                        "표시 계약을 위반했습니다."
-                    ),
-                }
-            )
-        else:
-            assert frames is not None
-            assert estimates is not None
-            estimated_indices = {
-                estimate.frame_index
-                for estimate in estimates
-            }
-            for frame in frames:
-                frame_index = frame.frame_index
-                if frame_index not in estimated_indices:
-                    rows.append(
-                        {
-                            "stage": "geometry",
-                            "frame": f"F{frame_index + 1}",
-                            "message": (
-                                "사용 가능한 번호판 4점 좌표가 "
-                                "없습니다."
-                            ),
-                        }
-                    )
 
     pipeline_call = run.trace.pipeline_call
     if (
@@ -777,17 +503,17 @@ def _render_summary(run: DebugRun) -> None:
             st.warning(f"{status}: {_normal_result_message(run)}")
 
     valid_frames = (
-        getattr(decision, "valid_frames", None)
+        decision.valid_frames
         if decision is not None
         else None
     )
     vote_count = (
-        getattr(decision, "vote_count", None)
+        decision.vote_count
         if decision is not None
         else None
     )
     vote_ratio = (
-        getattr(decision, "vote_ratio", None)
+        decision.vote_ratio
         if decision is not None
         else None
     )
@@ -817,27 +543,6 @@ def _render_summary(run: DebugRun) -> None:
         f"{total_ms:.1f} ms" if total_ms is not None else "-",
     )
 
-    st.markdown("#### 후보")
-    candidate_rows = [
-        {
-            "frame": f"F{candidate.frame_index + 1}",
-            "file": _frame_name(run, candidate.frame_index),
-            "raw_text": candidate.raw_text,
-            "normalized_text": candidate.normalized_text,
-            "rec_score": round(float(candidate.rec_score), 4),
-            "valid_format": candidate.valid_format,
-        }
-        for candidate in _trace_candidates(run.trace)
-    ]
-    if candidate_rows:
-        st.dataframe(
-            candidate_rows,
-            hide_index=True,
-            use_container_width=True,
-        )
-    else:
-        st.info("생성된 OCR 후보가 없습니다.")
-
     st.markdown("#### 단계 실패")
     failure_rows = _trace_failure_rows(run)
     if failure_rows:
@@ -850,7 +555,7 @@ def _render_summary(run: DebugRun) -> None:
         st.caption("기록된 단계 실패가 없습니다.")
 
 
-def _render_frame_selection(run: DebugRun, burst: DecodedBurst) -> None:
+def _render_frame_selection(run: DebugRun) -> None:
     call = run.trace.first("frame_selection")
     if call is None:
         st.info("입력 검증 단계에서 종료되어 frame selector가 호출되지 않았습니다.")
@@ -863,32 +568,6 @@ def _render_frame_selection(run: DebugRun, burst: DecodedBurst) -> None:
     if selection is None:
         st.warning("Frame selector 출력이 없습니다.")
         return
-    if not isinstance(selection, AnchorSelection):
-        st.error(
-            "Frame selector가 AnchorSelection이 아닌 값을 반환했습니다."
-        )
-        st.json(summarize_value(selection))
-        return
-    qualities = _materialize_sequence(selection.qualities)
-    anchor_values = (
-        selection.earlier_frame_index,
-        selection.later_frame_index,
-    )
-    if (
-        qualities is None
-        or any(
-            not _is_frame_index(index)
-            for index in anchor_values
-        )
-        or any(
-            not _is_displayable_quality(quality)
-            for quality in (qualities or ())
-        )
-    ):
-        st.error("Frame selector 출력의 내부 계약이 유효하지 않습니다.")
-        st.json(summarize_value(selection))
-        return
-    assert qualities is not None
 
     anchor_indices = {
         selection.earlier_frame_index,
@@ -906,7 +585,7 @@ def _render_frame_selection(run: DebugRun, burst: DecodedBurst) -> None:
             "bright_ratio": round(float(quality.bright_ratio), 4),
             "score": round(float(quality.score), 4),
         }
-        for quality in qualities
+        for quality in selection.qualities
     ]
     st.dataframe(
         quality_rows,
@@ -917,28 +596,6 @@ def _render_frame_selection(run: DebugRun, burst: DecodedBurst) -> None:
         f"선택된 anchor: F{selection.earlier_frame_index + 1}, "
         f"F{selection.later_frame_index + 1}"
     )
-
-    for row_start in range(0, len(burst.frames), 3):
-        columns = st.columns(3)
-        for column, frame in zip(
-            columns,
-            burst.frames[row_start : row_start + 3],
-            strict=False,
-        ):
-            with column:
-                st.image(
-                    frame.image,
-                    channels="BGR",
-                    use_container_width=True,
-                )
-                marker = (
-                    " · ANCHOR"
-                    if frame.frame_index in anchor_indices
-                    else ""
-                )
-                st.caption(
-                    f"F{frame.frame_index + 1}{marker} · {frame.file_name}"
-                )
 
 
 def _render_detection(run: DebugRun) -> None:
@@ -951,44 +608,35 @@ def _render_detection(run: DebugRun) -> None:
     columns = st.columns(min(2, len(calls)))
     for column, call in zip(columns, calls, strict=True):
         frame = call.inputs
-        candidates, output_error = (
-            _detection_output_view(
-                call.output,
-                expected_frame_index=frame.frame_index,
-            )
-            if call.succeeded
-            else ((), None)
+        candidates = (
+            call.output
+            if call.succeeded and call.output is not None
+            else ()
         )
         candidate_count = (
-            len(call.output)
-            if call.succeeded and isinstance(call.output, tuple)
+            len(candidates)
+            if call.succeeded and call.output is not None
             else None
         )
         best_candidate = candidates[0] if candidates else None
 
         with column:
-            st.image(
-                draw_detection(frame.image, best_candidate),
-                channels="BGR",
-                use_container_width=True,
-            )
+            frame_image = _bgr_image(frame)
+            if frame_image is not None:
+                st.image(
+                    draw_detection(frame_image, best_candidate),
+                    channels="BGR",
+                    use_container_width=True,
+                )
+            else:
+                st.error("표시할 anchor 이미지가 없습니다.")
+                st.json(summarize_value(frame))
             if not call.succeeded:
                 st.error(_call_error(call))
                 state = "ERROR"
-            elif output_error is not None:
-                st.error(output_error)
-                preview = (
-                    call.output[
-                        :_MAX_DISPLAYED_DETECTION_CANDIDATES
-                    ]
-                    if isinstance(call.output, tuple)
-                    else {
-                        "type": type(call.output).__name__,
-                        "contract": "expected tuple[DetectedPlate, ...]",
-                    }
-                )
-                st.json(summarize_value(preview))
-                state = "INVALID_OUTPUT"
+            elif call.output is None:
+                st.warning("Detector 출력이 기록되지 않았습니다.")
+                state = "NO_OUTPUT"
             elif not candidates:
                 st.warning("번호판 미검출")
                 state = "NO_DETECTION"
@@ -1057,22 +705,10 @@ def _render_geometry(run: DebugRun, burst: DecodedBurst) -> None:
         st.error(_call_error(estimate_call))
         return
 
-    estimates = _materialize_sequence(estimate_call.output)
-    invalid_estimates = (
-        estimates is None
-        or any(
-            not _is_displayable_estimate(estimate)
-            for estimate in (estimates or ())
-        )
-    )
-    if invalid_estimates:
-        st.error(
-            "Geometry 출력의 iterable 또는 내부 필드 계약이 "
-            "유효하지 않습니다."
-        )
-        st.json(summarize_value(estimate_call.output))
+    estimates = estimate_call.output
+    if estimates is None:
+        st.warning("Geometry 출력이 기록되지 않았습니다.")
         return
-    assert estimates is not None
 
     estimate_by_index = {
         estimate.frame_index: estimate
@@ -1106,11 +742,13 @@ def _render_geometry(run: DebugRun, burst: DecodedBurst) -> None:
             ),
             "rectified": (
                 frame.frame_index in rectification_by_index
-                and _is_displayable_rectified(
-                    rectification_by_index[
-                        frame.frame_index
-                    ].output
+                and rectification_by_index[
+                    frame.frame_index
+                ].succeeded
+                and _bgr_image(
+                    rectification_by_index[frame.frame_index].output
                 )
+                is not None
             ),
         }
         for frame in burst.frames
@@ -1130,37 +768,43 @@ def _render_geometry(run: DebugRun, burst: DecodedBurst) -> None:
                 st.markdown(
                     f"**F{frame.frame_index + 1} · {frame.file_name}**"
                 )
-                st.image(
-                    draw_estimate(frame.image, estimate),
-                    channels="BGR",
-                    use_container_width=True,
-                    caption=(
-                        _enum_value(estimate.source)
-                        if estimate is not None
-                        else "좌표 없음"
-                    ),
-                )
+                scene_image = _bgr_image(frame)
+                if scene_image is not None:
+                    st.image(
+                        draw_estimate(scene_image, estimate),
+                        channels="BGR",
+                        use_container_width=True,
+                        caption=(
+                            _enum_value(estimate.source)
+                            if estimate is not None
+                            else "좌표 없음"
+                        ),
+                    )
+                else:
+                    st.error("표시할 원본 이미지가 없습니다.")
+                    st.json(summarize_value(frame))
                 if rectify_call is None:
                     st.caption("원근 보정 미호출")
                 elif not rectify_call.succeeded:
                     st.error(_call_error(rectify_call))
-                elif _is_displayable_rectified(rectify_call.output):
+                elif rectify_call.output is None:
+                    st.warning("원근 보정 출력이 기록되지 않았습니다.")
+                elif (
+                    rectified_image := _bgr_image(rectify_call.output)
+                ) is not None:
                     rectified = rectify_call.output
                     st.image(
-                        rectified.image,
+                        rectified_image,
                         channels="BGR",
                         use_container_width=True,
                         caption=(
                             "Rectified "
-                            f"{rectified.image.shape[1]}×"
-                            f"{rectified.image.shape[0]}"
+                            f"{rectified_image.shape[1]}×"
+                            f"{rectified_image.shape[0]}"
                         ),
                     )
                 else:
-                    st.error(
-                        "Geometry rectify 출력의 타입 또는 이미지 "
-                        "계약이 유효하지 않습니다."
-                    )
+                    st.error("원근 보정 이미지를 표시할 수 없습니다.")
                     st.json(summarize_value(rectify_call.output))
 
 
@@ -1179,11 +823,9 @@ def _render_preprocessing(run: DebugRun) -> None:
         ):
             columns = st.columns(2)
             rectified = call.inputs
-            if not _is_displayable_rectified(rectified):
-                message = (
-                    "Preprocessor 입력의 타입 또는 이미지 계약이 "
-                    "유효하지 않습니다."
-                )
+            rectified_image = _bgr_image(rectified)
+            if rectified_image is None:
+                message = "원근 보정 입력 이미지를 표시할 수 없습니다."
                 columns[0].error(message)
                 columns[0].json(summarize_value(rectified))
                 rows.append(
@@ -1199,47 +841,49 @@ def _render_preprocessing(run: DebugRun) -> None:
                 continue
 
             columns[0].image(
-                rectified.image,
+                rectified_image,
                 channels="BGR",
                 use_container_width=True,
                 caption=(
                     "Rectified input · "
-                    f"{rectified.image.shape[1]}×{rectified.image.shape[0]}"
+                    f"{rectified_image.shape[1]}×{rectified_image.shape[0]}"
                 ),
             )
 
-            if call.succeeded and _is_displayable_prepared(call.output):
+            prepared_image = (
+                _bgr_image(call.output)
+                if call.succeeded and call.output is not None
+                else None
+            )
+            if call.succeeded and prepared_image is not None:
                 prepared = call.output
                 columns[1].image(
-                    prepared.image,
+                    prepared_image,
                     channels="BGR",
                     use_container_width=True,
                     caption=(
                         "Prepared output · "
-                        f"{prepared.image.shape[1]}×{prepared.image.shape[0]}"
+                        f"{prepared_image.shape[1]}×{prepared_image.shape[0]}"
                     ),
                 )
                 rows.append(
                     {
                         "frame": f"F{frame_index + 1}",
-                        "input_shape": tuple(rectified.image.shape),
-                        "output_shape": tuple(prepared.image.shape),
+                        "input_shape": tuple(rectified_image.shape),
+                        "output_shape": tuple(prepared_image.shape),
                         "applied": prepared.preprocessing_applied,
                         "elapsed_ms": round(call.elapsed_ms, 3),
                         "error": "",
                     }
                 )
             elif call.succeeded and call.output is not None:
-                message = (
-                    "Preprocessor 출력의 타입 또는 이미지 계약이 "
-                    "유효하지 않습니다."
-                )
+                message = "전처리 출력 이미지를 표시할 수 없습니다."
                 columns[1].error(message)
                 columns[1].json(summarize_value(call.output))
                 rows.append(
                     {
                         "frame": f"F{frame_index + 1}",
-                        "input_shape": tuple(rectified.image.shape),
+                        "input_shape": tuple(rectified_image.shape),
                         "output_shape": None,
                         "applied": None,
                         "elapsed_ms": round(call.elapsed_ms, 3),
@@ -1251,7 +895,7 @@ def _render_preprocessing(run: DebugRun) -> None:
                 rows.append(
                     {
                         "frame": f"F{frame_index + 1}",
-                        "input_shape": tuple(rectified.image.shape),
+                        "input_shape": tuple(rectified_image.shape),
                         "output_shape": None,
                         "applied": None,
                         "elapsed_ms": round(call.elapsed_ms, 3),
@@ -1271,39 +915,13 @@ def _render_ocr_and_aggregation(run: DebugRun) -> None:
         st.error(_call_error(recognition))
         return
 
-    prepared_plates = _materialize_sequence(recognition.inputs)
-    raw_results = _materialize_sequence(recognition.output)
-    if prepared_plates is None or raw_results is None:
-        st.error("Recognition 입출력이 시퀀스 계약을 위반했습니다.")
-        st.json(
-            {
-                "inputs": summarize_value(recognition.inputs),
-                "output": summarize_value(recognition.output),
-            }
-        )
+    prepared_plates = recognition.inputs
+    if prepared_plates is None:
+        st.warning("Recognition 입력이 기록되지 않았습니다.")
         return
-
-    if any(
-        not _is_displayable_prepared(plate)
-        for plate in prepared_plates
-    ):
-        st.error(
-            "Recognition 입력의 타입 또는 이미지 계약이 "
-            "유효하지 않습니다."
-        )
-        st.json(summarize_value(recognition.inputs))
-        return
-
-    invalid_raw_results = any(
-        not _is_displayable_raw_result(result)
-        for result in raw_results
-    )
-    if invalid_raw_results:
-        st.error(
-            "Recognition이 RawOcrResult 시퀀스가 아닌 값을 "
-            "반환했습니다."
-        )
-        st.json(summarize_value(recognition.output))
+    raw_results = recognition.output
+    if raw_results is None:
+        st.warning("Recognition 출력이 기록되지 않았습니다.")
         return
 
     raw_by_index = {
@@ -1314,37 +932,12 @@ def _render_ocr_and_aggregation(run: DebugRun) -> None:
     candidate_by_index = {
         call.frame_indices[0]: call.output
         for call in text_calls
-        if (
-            call.succeeded
-            and _is_displayable_candidate(call.output)
-        )
+        if call.succeeded and call.output is not None
     }
-
-    for row_start in range(0, len(prepared_plates), 3):
-        columns = st.columns(3)
-        for column, plate in zip(
-            columns,
-            prepared_plates[row_start : row_start + 3],
-            strict=False,
-        ):
-            raw = raw_by_index.get(plate.frame_index)
-            with column:
-                st.image(
-                    plate.image,
-                    channels="BGR",
-                    use_container_width=True,
-                )
-                st.caption(
-                    f"F{plate.frame_index + 1} · "
-                    f"raw={raw.raw_text!r}, "
-                    f"score={float(raw.rec_score):.4f}"
-                    if raw is not None
-                    else f"F{plate.frame_index + 1} · 결과 없음"
-                )
 
     result_rows: list[dict[str, Any]] = []
     for plate in prepared_plates:
-        frame_index = int(plate.frame_index)
+        frame_index = plate.frame_index
         raw = raw_by_index.get(frame_index)
         candidate = candidate_by_index.get(frame_index)
         text_call = next(
@@ -1381,17 +974,7 @@ def _render_ocr_and_aggregation(run: DebugRun) -> None:
                         text_call is not None
                         and not text_call.succeeded
                     )
-                    else (
-                        "OcrCandidate가 아닌 출력"
-                        if (
-                            text_call is not None
-                            and text_call.output is not None
-                            and not _is_displayable_candidate(
-                                text_call.output
-                            )
-                        )
-                        else None
-                    )
+                    else None
                 ),
             }
         )
@@ -1407,6 +990,8 @@ def _render_ocr_and_aggregation(run: DebugRun) -> None:
         st.info("집계기가 호출되지 않았습니다.")
     elif not aggregation.succeeded:
         st.error(_call_error(aggregation))
+    elif aggregation.output is None:
+        st.warning("집계 출력이 기록되지 않았습니다.")
     else:
         st.json(summarize_value(aggregation.output))
 
@@ -1453,27 +1038,7 @@ def _render_diagnostics(run: DebugRun) -> None:
                 st.json(summarize_value(pipeline_call.output))
 
     st.markdown("#### 실제 함수 호출")
-    call_rows = [
-        {
-            "order": index + 1,
-            "stage": _STAGE_LABELS.get(call.stage, call.stage),
-            "frames": ", ".join(
-                f"F{frame_index + 1}"
-                for frame_index in call.frame_indices
-            ),
-            "state": "OK" if call.succeeded else "ERROR",
-            "elapsed_ms": round(call.elapsed_ms, 3),
-            "error": _call_error(call) or "",
-        }
-        for index, call in enumerate(run.trace.calls)
-    ]
-    if call_rows:
-        st.dataframe(
-            call_rows,
-            hide_index=True,
-            use_container_width=True,
-        )
-    else:
+    if not run.trace.calls:
         st.info("기록된 함수 호출이 없습니다.")
 
     for index, call in enumerate(run.trace.calls):
@@ -1516,7 +1081,7 @@ def render_debug_run(run: DebugRun, burst: DecodedBurst) -> None:
     with tabs[0]:
         _render_summary(run)
     with tabs[1]:
-        _render_frame_selection(run, burst)
+        _render_frame_selection(run)
     with tabs[2]:
         _render_detection(run)
     with tabs[3]:

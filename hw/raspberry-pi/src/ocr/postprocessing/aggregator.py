@@ -135,16 +135,11 @@ def _validate_positive_integer(name: str, value: int) -> None:
 def _validate_candidates(
     candidates: tuple[OcrCandidate, ...],
 ) -> None:
-    """후보별 프레임과 confidence 계약 및 프레임 중복을 검사한다."""
+    """한 프레임이 집계에 두 번 참여하지 않았는지 확인한다."""
 
     seen_frame_indices: set[int] = set()
 
     for candidate in candidates:
-        if not isinstance(candidate, OcrCandidate):
-            raise AggregationError(
-                "candidates의 모든 항목은 OcrCandidate여야 합니다."
-            )
-
         frame_index = candidate.frame_index
         if (
             isinstance(frame_index, bool)
@@ -159,38 +154,6 @@ def _validate_candidates(
                 f"frame_index {frame_index}의 OCR 후보가 중복되었습니다."
             )
         seen_frame_indices.add(frame_index)
-
-        if not isinstance(candidate.raw_text, str):
-            raise AggregationError(
-                "candidate.raw_text는 문자열이어야 합니다."
-            )
-        if not isinstance(candidate.normalized_text, str):
-            raise AggregationError(
-                "candidate.normalized_text는 문자열이어야 합니다."
-            )
-        if not isinstance(candidate.valid_format, bool):
-            raise AggregationError(
-                "candidate.valid_format은 bool이어야 합니다."
-            )
-
-        if (
-            isinstance(candidate.rec_score, bool)
-            or not isinstance(candidate.rec_score, Real)
-        ):
-            raise AggregationError(
-                "candidate.rec_score는 0~1 범위의 "
-                "유한한 수여야 합니다."
-            )
-
-        rec_score = float(candidate.rec_score)
-        if (
-            not math.isfinite(rec_score)
-            or not 0.0 <= rec_score <= 1.0
-        ):
-            raise AggregationError(
-                "candidate.rec_score는 0~1 범위의 "
-                "유한한 수여야 합니다."
-            )
 
 
 # [판정 결과 생성]
@@ -418,8 +381,8 @@ class PlateAggregator:
     confidence로 해소하지 않고 모호한 결과로 남긴다.
 
     입력:
-        OcrCandidate의 시퀀스. 모든 프레임 인덱스는 고유해야 하고
-        confidence는 유한한 0~1 값이어야 한다.
+        OcrCandidate의 시퀀스. 하나의 프레임은 집계에 한 번만
+        참여할 수 있다.
 
     출력:
         최종 상태, 확정 번호판 또는 투표 진단값을 가진 PlateDecision.
@@ -428,7 +391,8 @@ class PlateAggregator:
         winner에 투표한 후보들만의 평균 confidence다.
 
     실패:
-        후보 입력 계약이 잘못되면 AggregationError가 발생한다.
+        후보의 frame_index가 유효하지 않거나 중복되면
+        AggregationError가 발생한다.
     """
 
     def __init__(
@@ -452,17 +416,11 @@ class PlateAggregator:
             가능한 범위의 투표 진단값을 포함한 PlateDecision.
 
         실패:
-            후보 타입·필드·프레임 중복 또는 confidence 계약을 위반하면
+            프레임 인덱스가 유효하지 않거나 중복되면
             AggregationError가 발생한다.
         """
 
-        try:
-            candidate_tuple = tuple(candidates)
-        except TypeError as exc:
-            raise AggregationError(
-                "candidates는 OcrCandidate 시퀀스여야 합니다."
-            ) from exc
-
+        candidate_tuple = tuple(candidates)
         _validate_candidates(candidate_tuple)
         eligible, rejection = _filter_eligible_candidates(
             candidate_tuple,

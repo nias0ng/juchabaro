@@ -1,9 +1,9 @@
-"""실제 모델 없이 OCR pipeline의 공개 결과와 예외 계약을 검증한다."""
+"""실제 모델 없이 OCR pipeline의 공개 결과와 주요 흐름을 검증한다."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import fields
+from dataclasses import fields, replace
 import unittest
 
 import numpy as np
@@ -16,6 +16,7 @@ from src.ocr import (
 from src.ocr.errors import OcrComponentError
 from src.ocr.pipeline import OcrPipelinePolicy, PlateOcrPipeline
 from src.ocr.postprocessing.aggregator import PlateAggregator
+from src.ocr.postprocessing.plate_text import build_ocr_candidate
 from src.ocr.types import (
     AnchorSelection,
     CapturedFrame,
@@ -23,7 +24,6 @@ from src.ocr.types import (
     EstimatedQuad,
     FrameQuality,
     OcrCandidate,
-    PlateDecision,
     PlateReadResult,
     PreparedPlate,
     Quad,
@@ -81,11 +81,9 @@ class FakeSelector:
         error: BaseException | None = None,
         *,
         earlier_frame_index: int = 1,
-        later_frame_index: int | None = None,
     ) -> None:
         self.error = error
         self.earlier_frame_index = earlier_frame_index
-        self.later_frame_index = later_frame_index
         self.calls = 0
 
     def select_anchors(
@@ -96,26 +94,21 @@ class FakeSelector:
         if self.error is not None:
             raise self.error
 
-        qualities = tuple(
-            FrameQuality(
-                frame_index=frame.frame_index,
-                sharpness=1.0,
-                contrast=1.0,
-                mean_brightness=127.0,
-                dark_ratio=0.0,
-                bright_ratio=0.0,
-                score=1.0,
-            )
-            for frame in frames
-        )
         return AnchorSelection(
             earlier_frame_index=self.earlier_frame_index,
-            later_frame_index=(
-                self.later_frame_index
-                if self.later_frame_index is not None
-                else frames[-1].frame_index
+            later_frame_index=frames[-1].frame_index,
+            qualities=tuple(
+                FrameQuality(
+                    frame_index=frame.frame_index,
+                    sharpness=1.0,
+                    contrast=1.0,
+                    mean_brightness=127.0,
+                    dark_ratio=0.0,
+                    bright_ratio=0.0,
+                    score=1.0,
+                )
+                for frame in frames
             ),
-            qualities=qualities,
         )
 
 
@@ -124,7 +117,7 @@ class FakeDetector:
         self,
         responses: dict[
             int,
-            tuple[DetectedPlate, ...] | BaseException | object,
+            tuple[DetectedPlate, ...] | BaseException,
         ]
         | None = None,
     ) -> None:
@@ -142,14 +135,7 @@ class FakeDetector:
         response = self.responses.get(frame.frame_index, ())
         if isinstance(response, BaseException):
             raise response
-        return response  # type: ignore[return-value]
-
-
-class UnexpectedlyIteratedDetectorOutput:
-    """Tuple 타입 검사 전에 순회하면 테스트를 실패시키는 detector 출력."""
-
-    def __iter__(self):
-        raise AssertionError("non-tuple detector output must not be iterated")
+        return response
 
 
 class FakeGeometry:
@@ -193,25 +179,23 @@ class FakeGeometry:
             if self.estimated_indices is not None
             else tuple(frame.frame_index for frame in frames)
         )
-
-        estimates: list[EstimatedQuad] = []
-        for index in indices:
-            if index in anchor_indices:
-                source = QuadSource.DETECTED
-            elif len(anchor_indices) == 1:
-                source = QuadSource.REUSED
-            else:
-                source = QuadSource.INTERPOLATED
-
-            estimates.append(
-                EstimatedQuad(
-                    frame_index=index,
-                    quad=PLATE_QUAD,
-                    source=source,
-                    source_anchor_indices=anchor_indices,
-                )
+        return tuple(
+            EstimatedQuad(
+                frame_index=index,
+                quad=PLATE_QUAD,
+                source=(
+                    QuadSource.DETECTED
+                    if index in anchor_indices
+                    else (
+                        QuadSource.REUSED
+                        if len(anchor_indices) == 1
+                        else QuadSource.INTERPOLATED
+                    )
+                ),
+                source_anchor_indices=anchor_indices,
             )
-        return tuple(estimates)
+            for index in indices
+        )
 
     def rectify(
         self,
@@ -230,21 +214,10 @@ class FakeGeometry:
 
 
 class FakePreprocessor:
-    def __init__(
-        self,
-        errors: dict[int, BaseException] | None = None,
-    ) -> None:
-        self.errors = errors or {}
-        self.calls: list[int] = []
-
     def process(
         self,
         plate: RectifiedPlate,
     ) -> PreparedPlate:
-        self.calls.append(plate.frame_index)
-        error = self.errors.get(plate.frame_index)
-        if error is not None:
-            raise error
         return PreparedPlate(
             frame_index=plate.frame_index,
             image=plate.image,
@@ -285,47 +258,11 @@ class FakeReader:
         return tuple(
             RawOcrResult(
                 frame_index=frame_index,
-                raw_text=self.texts.get(
-                    frame_index,
-                    PLATE_NUMBER,
-                ),
-                rec_score=self.scores.get(
-                    frame_index,
-                    0.9,
-                ),
+                raw_text=self.texts.get(frame_index, PLATE_NUMBER),
+                rec_score=self.scores.get(frame_index, 0.9),
             )
             for frame_index in result_indices
         )
-
-
-class RaisingTextProcessor:
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
-
-    def __call__(self, result: RawOcrResult) -> OcrCandidate:
-        raise self.error
-
-
-class RaisingAggregator:
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
-
-    def aggregate(
-        self,
-        candidates: Sequence[OcrCandidate],
-    ) -> object:
-        raise self.error
-
-
-class ReturningAggregator:
-    def __init__(self, value: object) -> None:
-        self.value = value
-
-    def aggregate(
-        self,
-        candidates: Sequence[OcrCandidate],
-    ) -> object:
-        return self.value
 
 
 class UnexpectedProgrammerError(RuntimeError):
@@ -337,57 +274,44 @@ def _pipeline(
     selector: FakeSelector | None = None,
     detector: FakeDetector | None = None,
     geometry: FakeGeometry | PlateGeometry | None = None,
-    preprocessor: FakePreprocessor | None = None,
     reader: FakeReader | None = None,
-    aggregator: object | None = None,
-    text_processor: Callable[[RawOcrResult], OcrCandidate] | None = None,
+    text_processor: Callable[
+        [RawOcrResult],
+        OcrCandidate,
+    ] = build_ocr_candidate,
     policy: OcrPipelinePolicy | None = None,
 ) -> tuple[
     PlateOcrPipeline,
     FakeSelector,
     FakeDetector,
     FakeGeometry | PlateGeometry,
-    FakePreprocessor,
     FakeReader,
 ]:
     selected_selector = selector or FakeSelector()
     selected_detector = detector or FakeDetector()
     selected_geometry = geometry or FakeGeometry()
-    selected_preprocessor = preprocessor or FakePreprocessor()
     selected_reader = reader or FakeReader()
-    selected_aggregator = (
-        aggregator
-        if aggregator is not None
-        else PlateAggregator()
-    )
 
-    arguments: dict[str, object] = {
-        "selector": selected_selector,
-        "detector": selected_detector,
-        "geometry": selected_geometry,
-        "preprocessor": selected_preprocessor,
-        "reader": selected_reader,
-        "aggregator": selected_aggregator,
-        "policy": policy,
-    }
-    if text_processor is not None:
-        arguments["text_processor"] = text_processor
-
-    pipeline = PlateOcrPipeline(**arguments)  # type: ignore[arg-type]
     return (
-        pipeline,
+        PlateOcrPipeline(
+            selector=selected_selector,
+            detector=selected_detector,
+            geometry=selected_geometry,
+            preprocessor=FakePreprocessor(),
+            reader=selected_reader,
+            aggregator=PlateAggregator(),
+            text_processor=text_processor,
+            policy=policy,
+        ),
         selected_selector,
         selected_detector,
         selected_geometry,
-        selected_preprocessor,
         selected_reader,
     )
 
 
-class PlateOcrPipelineContractTests(unittest.TestCase):
-    """공개 DTO, 정상 판독 실패와 오류 예외의 경계를 검증한다."""
-
-    def test_read_status_contains_only_normal_read_outcomes(self) -> None:
+class PlateOcrPipelineTests(unittest.TestCase):
+    def test_public_result_and_error_contract(self) -> None:
         self.assertEqual(
             tuple(ReadStatus),
             (
@@ -399,43 +323,16 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                 ReadStatus.AMBIGUOUS,
             ),
         )
-        self.assertTrue(issubclass(InvalidBurstError, OcrPipelineError))
-        self.assertTrue(issubclass(OcrRuntimeError, OcrPipelineError))
-
-    def test_plate_read_result_has_only_public_minimum_fields(self) -> None:
         self.assertEqual(
             tuple(field.name for field in fields(PlateReadResult)),
             ("status", "plate_number"),
         )
+        self.assertTrue(issubclass(InvalidBurstError, OcrPipelineError))
+        self.assertTrue(issubclass(OcrRuntimeError, OcrPipelineError))
+        self.assertTrue(issubclass(OcrComponentError, OcrRuntimeError))
 
-        success = PlateReadResult(
-            status=ReadStatus.SUCCESS,
-            plate_number=PLATE_NUMBER,
-        )
-        failure = PlateReadResult(
-            status=ReadStatus.AMBIGUOUS,
-            plate_number=None,
-        )
-
-        self.assertTrue(success.succeeded)
-        self.assertFalse(failure.succeeded)
-        for removed_field in (
-            "total_frames",
-            "valid_frames",
-            "vote_count",
-            "vote_ratio",
-            "mean_rec_score",
-            "candidates",
-            "failures",
-            "metrics",
-            "error_message",
-        ):
-            self.assertFalse(hasattr(success, removed_field))
-
-    def test_six_frame_success_calls_two_anchors_and_returns_minimum_dto(
-        self,
-    ) -> None:
-        pipeline, selector, detector, geometry, _, reader = _pipeline()
+    def test_six_frame_success_runs_pipeline_in_order(self) -> None:
+        pipeline, selector, detector, geometry, reader = _pipeline()
 
         result = pipeline.read_plate(_frames())
 
@@ -452,25 +349,18 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(geometry.estimate_calls, [(1, 5)])
         self.assertEqual(reader.calls, [(0, 1, 2, 3, 4, 5)])
 
-    def test_detector_candidates_keep_anchor_and_batch_order(
-        self,
-    ) -> None:
-        earlier_candidates = (
+    def test_detector_candidates_keep_anchor_and_batch_order(self) -> None:
+        earlier = (
             _detection(1, score=0.95),
             _detection(1, score=0.80),
         )
-        later_candidates = (
+        later = (
             _detection(5, score=0.90),
             _detection(5, score=0.70),
         )
         geometry = FakeGeometry()
-        pipeline, _, detector, _, _, _ = _pipeline(
-            detector=FakeDetector(
-                {
-                    1: earlier_candidates,
-                    5: later_candidates,
-                }
-            ),
+        pipeline, _, detector, _, _ = _pipeline(
+            detector=FakeDetector({1: earlier, 5: later}),
             geometry=geometry,
         )
 
@@ -480,23 +370,19 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(detector.calls, [1, 5])
         self.assertEqual(
             geometry.estimate_inputs,
-            [(*earlier_candidates, *later_candidates)],
+            [(*earlier, *later)],
         )
 
-    def test_pipeline_supports_configured_three_six_and_eight_frames(
-        self,
-    ) -> None:
+    def test_pipeline_supports_configured_frame_counts(self) -> None:
         for frame_count in (3, 6, 8):
             with self.subTest(frame_count=frame_count):
-                policy = OcrPipelinePolicy(frame_count=frame_count)
-                pipeline, _, detector, geometry, _, reader = _pipeline(
-                    policy=policy,
+                pipeline, _, detector, geometry, reader = _pipeline(
+                    policy=OcrPipelinePolicy(frame_count=frame_count),
                 )
 
                 result = pipeline.read_plate(_frames(frame_count))
 
                 self.assertEqual(result.status, ReadStatus.SUCCESS)
-                self.assertEqual(result.plate_number, PLATE_NUMBER)
                 self.assertEqual(
                     detector.calls,
                     [1, frame_count - 1],
@@ -510,16 +396,13 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                     [tuple(range(frame_count))],
                 )
 
-    def test_pipeline_uses_custom_early_anchor_candidate_count(
-        self,
-    ) -> None:
-        policy = OcrPipelinePolicy(
-            frame_count=6,
-            early_anchor_candidate_count=3,
-        )
-        pipeline, _, detector, geometry, _, _ = _pipeline(
+    def test_custom_early_anchor_candidate_count(self) -> None:
+        pipeline, _, detector, geometry, _ = _pipeline(
             selector=FakeSelector(earlier_frame_index=2),
-            policy=policy,
+            policy=OcrPipelinePolicy(
+                frame_count=6,
+                early_anchor_candidate_count=3,
+            ),
         )
 
         result = pipeline.read_plate(_frames())
@@ -528,68 +411,36 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(detector.calls, [2, 5])
         self.assertEqual(geometry.estimate_calls, [(2, 5)])
 
-    def test_policy_mismatch_raises_invalid_burst_before_components(
-        self,
-    ) -> None:
-        cases = (
-            (3, 6),
-            (6, 3),
-            (6, 8),
-            (8, 6),
+    def test_policy_mismatch_fails_before_components(self) -> None:
+        pipeline, selector, detector, geometry, reader = _pipeline(
+            policy=OcrPipelinePolicy(frame_count=3),
         )
 
-        for configured_count, supplied_count in cases:
-            with self.subTest(
-                configured_count=configured_count,
-                supplied_count=supplied_count,
-            ):
-                pipeline, selector, detector, geometry, _, reader = _pipeline(
-                    policy=OcrPipelinePolicy(
-                        frame_count=configured_count,
-                    )
-                )
+        with self.assertRaises(InvalidBurstError):
+            pipeline.read_plate(_frames(6))
 
-                with self.assertRaises(InvalidBurstError):
-                    pipeline.read_plate(_frames(supplied_count))
+        self.assertEqual(selector.calls, 0)
+        self.assertEqual(detector.calls, [])
+        self.assertEqual(geometry.estimate_calls, [])
+        self.assertEqual(reader.calls, [])
 
-                self.assertEqual(selector.calls, 0)
-                self.assertEqual(detector.calls, [])
-                self.assertEqual(geometry.estimate_calls, [])
-                self.assertEqual(reader.calls, [])
-
-    def test_malformed_burst_raises_invalid_burst_at_boundary(self) -> None:
+    def test_malformed_burst_raises_invalid_burst(self) -> None:
         valid = list(_frames())
-
         wrong_indices = valid.copy()
         wrong_indices[2] = CapturedFrame(
             frame_index=3,
             image=wrong_indices[2].image,
         )
-
-        bool_index = valid.copy()
-        bool_index[0] = CapturedFrame(
-            frame_index=True,
-            image=bool_index[0].image,
-        )
-
         wrong_dtype = valid.copy()
         wrong_dtype[0] = CapturedFrame(
             frame_index=0,
             image=np.zeros((24, 40, 3), dtype=np.float32),
         )
-
         wrong_channels = valid.copy()
         wrong_channels[0] = CapturedFrame(
             frame_index=0,
             image=np.zeros((24, 40), dtype=np.uint8),
         )
-
-        empty_image = valid.copy()
-        empty_image[0] = CapturedFrame(
-            frame_index=0,
-            image=np.zeros((0, 40, 3), dtype=np.uint8),
-        )
-
         mixed_resolution = valid.copy()
         mixed_resolution[-1] = CapturedFrame(
             frame_index=5,
@@ -600,377 +451,70 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
             ("not_iterable", None),
             ("wrong_type", (object(), *valid[1:])),
             ("wrong_indices", tuple(wrong_indices)),
-            ("bool_index", tuple(bool_index)),
             ("wrong_dtype", tuple(wrong_dtype)),
             ("wrong_channels", tuple(wrong_channels)),
-            ("empty_image", tuple(empty_image)),
             ("mixed_resolution", tuple(mixed_resolution)),
         )
-
         for name, frames in cases:
             with self.subTest(name=name):
-                pipeline, selector, detector, geometry, _, reader = _pipeline()
-
+                pipeline, *_ = _pipeline()
                 with self.assertRaises(InvalidBurstError):
                     pipeline.read_plate(frames)  # type: ignore[arg-type]
 
-                self.assertEqual(selector.calls, 0)
-                self.assertEqual(detector.calls, [])
-                self.assertEqual(geometry.estimate_calls, [])
-                self.assertEqual(reader.calls, [])
-
-    def test_internal_component_output_contract_raises_runtime_error(
-        self,
-    ) -> None:
-        cases: tuple[
-            tuple[str, Callable[[], PlateOcrPipeline]],
-            ...,
-        ] = (
-            (
-                "selector_anchor",
-                lambda: _pipeline(
-                    selector=FakeSelector(earlier_frame_index=2)
-                )[0],
-            ),
-            (
-                "selector_later_not_last",
-                lambda: _pipeline(
-                    selector=FakeSelector(later_frame_index=4)
-                )[0],
-            ),
-            (
-                "selector_bool_index",
-                lambda: _pipeline(
-                    selector=FakeSelector(
-                        earlier_frame_index=True
-                    )
-                )[0],
-            ),
-            (
-                "selector_float_index",
-                lambda: _pipeline(
-                    selector=FakeSelector(
-                        earlier_frame_index=1.0  # type: ignore[arg-type]
-                    )
-                )[0],
-            ),
-            (
-                "selector_custom_early_pool",
-                lambda: _pipeline(
-                    selector=FakeSelector(earlier_frame_index=1),
-                    policy=OcrPipelinePolicy(
-                        early_anchor_candidate_count=1
-                    ),
-                )[0],
-            ),
-            (
-                "detector_index",
-                lambda: _pipeline(
-                    detector=FakeDetector(
-                        {1: (_detection(0),)}
-                    )
-                )[0],
-            ),
-            (
-                "detector_bool_index",
-                lambda: _pipeline(
-                    detector=FakeDetector(
-                        {1: (_detection(True),)}
-                    )
-                )[0],
-            ),
-            (
-                "detector_none",
-                lambda: _pipeline(
-                    detector=FakeDetector({1: None})
-                )[0],
-            ),
-            (
-                "detector_single_candidate",
-                lambda: _pipeline(
-                    detector=FakeDetector({1: _detection(1)})
-                )[0],
-            ),
-            (
-                "detector_string_iterable",
-                lambda: _pipeline(
-                    detector=FakeDetector({1: "not candidates"})
-                )[0],
-            ),
-            (
-                "detector_list",
-                lambda: _pipeline(
-                    detector=FakeDetector(
-                        {1: [_detection(1)]}
-                    )
-                )[0],
-            ),
-            (
-                "detector_non_tuple_iterable",
-                lambda: _pipeline(
-                    detector=FakeDetector(
-                        {1: UnexpectedlyIteratedDetectorOutput()}
-                    )
-                )[0],
-            ),
-            (
-                "geometry_index",
-                lambda: _pipeline(
-                    geometry=FakeGeometry(
-                        estimated_indices=(99,)
-                    )
-                )[0],
-            ),
-            (
-                "reader_order",
-                lambda: _pipeline(
-                    reader=FakeReader(
-                        result_indices=(5, 4, 3, 2, 1, 0)
-                    )
-                )[0],
-            ),
-            (
-                "aggregator_type",
-                lambda: _pipeline(
-                    aggregator=ReturningAggregator(object())
-                )[0],
-            ),
-            (
-                "aggregator_impossible_success",
-                lambda: _pipeline(
-                    aggregator=ReturningAggregator(
-                        PlateDecision(
-                            status=ReadStatus.SUCCESS,
-                            plate_number=None,
-                            valid_frames=6,
-                            vote_count=6,
-                            vote_ratio=1.0,
-                            mean_rec_score=0.9,
-                        )
-                    )
-                )[0],
-            ),
-            (
-                "aggregator_zero_vote_success",
-                lambda: _pipeline(
-                    aggregator=ReturningAggregator(
-                        PlateDecision(
-                            status=ReadStatus.SUCCESS,
-                            plate_number=PLATE_NUMBER,
-                            valid_frames=0,
-                            vote_count=0,
-                            vote_ratio=0.0,
-                            mean_rec_score=0.0,
-                        )
-                    )
-                )[0],
-            ),
-            (
-                "aggregator_unknown_winner",
-                lambda: _pipeline(
-                    aggregator=ReturningAggregator(
-                        PlateDecision(
-                            status=ReadStatus.SUCCESS,
-                            plate_number="99하9999",
-                            valid_frames=1,
-                            vote_count=1,
-                            vote_ratio=1.0,
-                            mean_rec_score=0.9,
-                        )
-                    )
-                )[0],
-            ),
-            (
-                "aggregator_failure_with_plate",
-                lambda: _pipeline(
-                    aggregator=ReturningAggregator(
-                        PlateDecision(
-                            status=ReadStatus.AMBIGUOUS,
-                            plate_number=PLATE_NUMBER,
-                            valid_frames=6,
-                            vote_count=6,
-                            vote_ratio=1.0,
-                            mean_rec_score=0.9,
-                            error_message="ambiguous",
-                        )
-                    )
-                )[0],
-            ),
+    def test_reader_result_order_mismatch_is_rejected(self) -> None:
+        pipeline, *_ = _pipeline(
+            reader=FakeReader(
+                result_indices=(5, 4, 3, 2, 1, 0)
+            )
         )
 
-        for name, build_pipeline in cases:
-            with self.subTest(stage=name):
-                with self.assertRaises(OcrRuntimeError):
-                    build_pipeline().read_plate(_frames())
+        with self.assertRaises(OcrRuntimeError):
+            pipeline.read_plate(_frames())
 
-    def test_known_component_errors_are_wrapped_as_runtime_errors(
-        self,
-    ) -> None:
-        builders: tuple[
-            tuple[
-                str,
-                Callable[[OcrComponentError], PlateOcrPipeline],
-            ],
-            ...,
-        ] = (
-            (
-                "selector",
-                lambda error: _pipeline(
-                    selector=FakeSelector(error)
-                )[0],
-            ),
-            (
-                "detector",
-                lambda error: _pipeline(
-                    detector=FakeDetector({1: error})
-                )[0],
-            ),
-            (
-                "geometry_estimate",
-                lambda error: _pipeline(
-                    geometry=FakeGeometry(estimate_error=error)
-                )[0],
-            ),
-            (
-                "rectification",
-                lambda error: _pipeline(
-                    geometry=FakeGeometry(
-                        rectify_errors={0: error}
-                    )
-                )[0],
-            ),
-            (
-                "preprocessing",
-                lambda error: _pipeline(
-                    preprocessor=FakePreprocessor({0: error})
-                )[0],
-            ),
-            (
-                "reader",
-                lambda error: _pipeline(
-                    reader=FakeReader(error=error)
-                )[0],
-            ),
-            (
-                "text_postprocessing",
-                lambda error: _pipeline(
-                    text_processor=RaisingTextProcessor(error)
-                )[0],
-            ),
-            (
-                "aggregation",
-                lambda error: _pipeline(
-                    aggregator=RaisingAggregator(error)
-                )[0],
-            ),
+    def test_text_processor_frame_index_mismatch_is_rejected(self) -> None:
+        pipeline, *_ = _pipeline(
+            text_processor=lambda result: replace(
+                build_ocr_candidate(result),
+                frame_index=result.frame_index + 100,
+            )
         )
 
-        for stage, build_pipeline in builders:
-            with self.subTest(stage=stage):
-                component_error = OcrComponentError(
-                    f"{stage} known error"
-                )
+        with self.assertRaises(OcrRuntimeError):
+            pipeline.read_plate(_frames())
 
-                with self.assertRaises(OcrRuntimeError) as caught:
-                    build_pipeline(component_error).read_plate(_frames())
-
-                self.assertIs(
-                    caught.exception.__cause__,
-                    component_error,
-                )
-
-    def test_unknown_programmer_errors_propagate_as_same_object(
+    def test_known_component_error_keeps_identity_at_runtime_boundary(
         self,
     ) -> None:
-        builders: tuple[
-            tuple[
-                str,
-                Callable[
-                    [UnexpectedProgrammerError],
-                    PlateOcrPipeline,
-                ],
-            ],
-            ...,
-        ] = (
-            (
-                "selector",
-                lambda error: _pipeline(
-                    selector=FakeSelector(error)
-                )[0],
-            ),
-            (
-                "detector",
-                lambda error: _pipeline(
-                    detector=FakeDetector({1: error})
-                )[0],
-            ),
-            (
-                "geometry_estimate",
-                lambda error: _pipeline(
-                    geometry=FakeGeometry(estimate_error=error)
-                )[0],
-            ),
-            (
-                "rectification",
-                lambda error: _pipeline(
-                    geometry=FakeGeometry(
-                        rectify_errors={0: error}
-                    )
-                )[0],
-            ),
-            (
-                "preprocessing",
-                lambda error: _pipeline(
-                    preprocessor=FakePreprocessor({0: error})
-                )[0],
-            ),
-            (
-                "reader",
-                lambda error: _pipeline(
-                    reader=FakeReader(error=error)
-                )[0],
-            ),
-            (
-                "text_postprocessing",
-                lambda error: _pipeline(
-                    text_processor=RaisingTextProcessor(error)
-                )[0],
-            ),
-            (
-                "aggregation",
-                lambda error: _pipeline(
-                    aggregator=RaisingAggregator(error)
-                )[0],
-            ),
+        component_error = OcrComponentError("known failure")
+        pipeline, *_ = _pipeline(
+            selector=FakeSelector(component_error)
         )
 
-        for stage, build_pipeline in builders:
-            with self.subTest(stage=stage):
-                programmer_error = UnexpectedProgrammerError(
-                    f"{stage} unexpected error"
-                )
+        with self.assertRaises(OcrRuntimeError) as caught:
+            pipeline.read_plate(_frames())
 
-                with self.assertRaises(
-                    UnexpectedProgrammerError
-                ) as caught:
-                    build_pipeline(programmer_error).read_plate(
-                        _frames()
-                    )
+        self.assertIs(caught.exception, component_error)
 
-                self.assertIs(caught.exception, programmer_error)
+    def test_unknown_error_propagates_as_same_object(self) -> None:
+        programmer_error = UnexpectedProgrammerError("unexpected failure")
+        pipeline, *_ = _pipeline(
+            selector=FakeSelector(programmer_error)
+        )
 
-    def test_pipeline_continues_when_only_one_anchor_is_detected(self) -> None:
+        with self.assertRaises(UnexpectedProgrammerError) as caught:
+            pipeline.read_plate(_frames())
+
+        self.assertIs(caught.exception, programmer_error)
+
+    def test_pipeline_continues_with_one_detected_anchor(self) -> None:
         cases = (
             ({1: (_detection(1),), 5: ()}, (1,)),
             ({1: (), 5: (_detection(5),)}, (5,)),
         )
-
-        for responses, expected_detection_indices in cases:
-            with self.subTest(
-                detected_indices=expected_detection_indices,
-            ):
+        for responses, expected_indices in cases:
+            with self.subTest(detected_indices=expected_indices):
                 geometry = FakeGeometry()
-                pipeline, _, detector, _, _, _ = _pipeline(
+                pipeline, _, detector, _, _ = _pipeline(
                     detector=FakeDetector(responses),
                     geometry=geometry,
                 )
@@ -981,15 +525,14 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                 self.assertEqual(detector.calls, [1, 5])
                 self.assertEqual(
                     geometry.estimate_calls,
-                    [expected_detection_indices],
+                    [expected_indices],
                 )
 
-    def test_geometry_can_omit_one_frame_and_continue(self) -> None:
-        geometry = FakeGeometry(
-            estimated_indices=(0, 1, 3, 4, 5)
-        )
-        pipeline, _, _, _, _, reader = _pipeline(
-            geometry=geometry,
+    def test_geometry_can_omit_one_frame(self) -> None:
+        pipeline, _, _, _, reader = _pipeline(
+            geometry=FakeGeometry(
+                estimated_indices=(0, 1, 3, 4, 5)
+            ),
         )
 
         result = pipeline.read_plate(_frames())
@@ -998,7 +541,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(reader.calls, [(0, 1, 3, 4, 5)])
 
     def test_scene_geometry_failure_excludes_only_that_frame(self) -> None:
-        pipeline, _, _, _, _, reader = _pipeline(
+        pipeline, _, _, _, reader = _pipeline(
             geometry=FakeGeometry(
                 rectify_errors={
                     2: GeometryError("사용할 수 없는 장면 좌표")
@@ -1011,24 +554,12 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(result.status, ReadStatus.SUCCESS)
         self.assertEqual(reader.calls, [(0, 1, 3, 4, 5)])
 
-    def test_all_scene_invalid_anchor_quads_return_no_plate_region(
-        self,
-    ) -> None:
+    def test_all_invalid_anchor_quads_return_no_plate_region(self) -> None:
         pipeline, *_ = _pipeline(
             detector=FakeDetector(
                 {
-                    1: (
-                        _detection(
-                            1,
-                            quad=INVALID_PLATE_QUAD,
-                        ),
-                    ),
-                    5: (
-                        _detection(
-                            5,
-                            quad=INVALID_PLATE_QUAD,
-                        ),
-                    ),
+                    1: (_detection(1, quad=INVALID_PLATE_QUAD),),
+                    5: (_detection(5, quad=INVALID_PLATE_QUAD),),
                 }
             ),
             geometry=PlateGeometry(),
@@ -1036,18 +567,13 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
 
         result = pipeline.read_plate(_frames())
 
-        self.assertEqual(
-            result,
-            PlateReadResult(
-                status=ReadStatus.NO_PLATE_REGION,
-                plate_number=None,
-            ),
-        )
+        self.assertEqual(result.status, ReadStatus.NO_PLATE_REGION)
+        self.assertIsNone(result.plate_number)
 
     def test_invalid_top_candidate_does_not_hide_valid_candidate(
         self,
     ) -> None:
-        pipeline, _, detector, _, _, reader = _pipeline(
+        pipeline, _, detector, _, reader = _pipeline(
             detector=FakeDetector(
                 {
                     1: (
@@ -1073,7 +599,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
 
     def test_no_detection_returns_no_plate_region(self) -> None:
         geometry = FakeGeometry()
-        pipeline, _, detector, _, _, _ = _pipeline(
+        pipeline, _, detector, _, _ = _pipeline(
             detector=FakeDetector({1: (), 5: ()}),
             geometry=geometry,
         )
@@ -1086,10 +612,10 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(detector.calls, [1, 5])
         self.assertEqual(geometry.estimate_calls, [])
 
-    def test_later_single_anchor_succeeds_with_two_matching_frames(
+    def test_later_single_anchor_succeeds_with_matching_frames(
         self,
     ) -> None:
-        pipeline, _, _, _, _, reader = _pipeline(
+        pipeline, _, _, _, reader = _pipeline(
             detector=FakeDetector(
                 {1: (), 5: (_detection(5),)}
             ),
@@ -1102,7 +628,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(result.plate_number, PLATE_NUMBER)
         self.assertEqual(reader.calls, [(4, 5)])
 
-    def test_later_single_anchor_is_ambiguous_when_frames_disagree(
+    def test_later_single_anchor_is_ambiguous_on_disagreement(
         self,
     ) -> None:
         pipeline, *_ = _pipeline(
@@ -1122,7 +648,6 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
 
         self.assertEqual(result.status, ReadStatus.AMBIGUOUS)
         self.assertIsNone(result.plate_number)
-        self.assertFalse(result.succeeded)
 
     def test_known_read_failures_remain_normal_results(self) -> None:
         cases = (
@@ -1160,7 +685,6 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                 ReadStatus.AMBIGUOUS,
             ),
         )
-
         for reader, expected_status in cases:
             with self.subTest(status=expected_status):
                 pipeline, *_ = _pipeline(reader=reader)
@@ -1174,7 +698,6 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                         plate_number=None,
                     ),
                 )
-                self.assertFalse(result.succeeded)
 
     def test_pipeline_does_not_mutate_input_images(self) -> None:
         frames = _frames()

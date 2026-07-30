@@ -4,7 +4,8 @@ OCR 파이프라인 모듈 사이에서 전달되는 공통 데이터 타입을 
 이 파일은 촬영된 프레임부터 최종 번호판 판정까지의 데이터 계약만
 담당한다. 모델 실행, 영상 처리, 문자열 판정 로직은 포함하지 않는다.
 촬영 시각은 카메라·입차 이벤트 계층의 책임이므로 현재 계약에서 제외한다.
-데이터 클래스는 경량 전달 객체이며 유효성은 각 처리 단계 입구에서 검증한다.
+데이터 클래스는 경량 전달 객체다. 외부 입력과 모델 adapter 경계에서
+유효성을 검증하고, 그 뒤의 내부 단계는 앞 단계가 만든 계약을 신뢰한다.
 
 ``frozen=True``는 필드 재할당만 막으며 ``numpy.ndarray``의 내부 값까지
 불변으로 만들지는 않는다. 입력 이미지 buffer의 소유권은 caller에게 있고
@@ -161,7 +162,7 @@ class PreparedPlate:
 
 @dataclass(frozen=True, slots=True)
 class RawOcrResult:
-    """PaddleOCR가 직접 반환한 아직 정규화되지 않은 인식 결과."""
+    """PaddleOCR adapter가 만든 아직 정규화되지 않은 인식 결과."""
 
     frame_index: int
     raw_text: str

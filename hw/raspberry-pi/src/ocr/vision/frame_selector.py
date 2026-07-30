@@ -14,8 +14,8 @@
     - 원근 보정과 OCR 추론
 
 Anchor 선택 자체는 앞쪽 후보의 품질과 마지막 frame index만 사용한다.
-다만 ``AnchorSelection.qualities``는 pipeline 계약과 viewer 진단을 위해
-현재 전체 N장의 품질을 보존한다. 운영 계산과 진단 계산의 분리는 실제
+다만 ``AnchorSelection.qualities``는 viewer 진단을 위해 현재 전체 N장의
+품질을 보존한다. 운영 계산과 진단 계산의 분리는 실제
 Raspberry Pi burst benchmark로 비용과 진단 가치를 확인한 뒤 진행한다.
 """
 
@@ -262,8 +262,8 @@ class QualityFrameSelector:
             FrameSelectionError가 발생한다.
         """
 
-        # Anchor 선택에는 앞쪽 후보만 필요하지만 전체 qualities는 pipeline
-        # 검증과 viewer 진단 계약이다. 실장 benchmark 없이 축소하지 않는다.
+        # Anchor 선택에는 앞쪽 후보만 필요하지만 전체 qualities는 viewer
+        # 진단에 사용한다. 실장 benchmark 없이 축소하지 않는다.
         try:
             qualities = self._evaluator.evaluate(frames)
         except cv2.error as exc:

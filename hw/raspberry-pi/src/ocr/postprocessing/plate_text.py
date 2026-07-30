@@ -19,10 +19,8 @@ PaddleOCR의 원시 문자열을 번호판 후보로 정규화하고 형식을 �
 
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
-from numbers import Real
 
 from ..types import OcrCandidate, RawOcrResult
 
@@ -95,34 +93,11 @@ def build_ocr_candidate(result: RawOcrResult) -> OcrCandidate:
     PaddleOCR 원시 결과를 정규화하고 형식을 판정한 후보로 변환한다.
 
     입력:
-        프레임 인덱스, 원시 문자열, OCR confidence를 가진 RawOcrResult.
+        PaddleOCR adapter가 생성한 RawOcrResult.
 
     출력:
         정규화 문자열과 지원 형식 여부가 채워진 OcrCandidate.
-
-    실패:
-        프레임 인덱스가 음수이거나 OCR confidence가 유한한 0~1 값이
-        아니면 ValueError가 발생한다. 원시 문자열이 문자열이 아니면
-        TypeError가 발생한다.
     """
-
-    if isinstance(result.frame_index, bool) or not isinstance(
-        result.frame_index,
-        int,
-    ):
-        raise ValueError("frame_index는 0 이상의 정수여야 합니다.")
-    if result.frame_index < 0:
-        raise ValueError("frame_index는 0 이상의 정수여야 합니다.")
-
-    if (
-        isinstance(result.rec_score, bool)
-        or not isinstance(result.rec_score, Real)
-    ):
-        raise ValueError("rec_score는 0~1 범위의 유한한 수여야 합니다.")
-
-    rec_score = float(result.rec_score)
-    if not math.isfinite(rec_score) or not 0.0 <= rec_score <= 1.0:
-        raise ValueError("rec_score는 0~1 범위의 유한한 수여야 합니다.")
 
     normalized_text = normalize_plate_text(result.raw_text)
 
@@ -130,6 +105,6 @@ def build_ocr_candidate(result: RawOcrResult) -> OcrCandidate:
         frame_index=result.frame_index,
         raw_text=result.raw_text,
         normalized_text=normalized_text,
-        rec_score=rec_score,
+        rec_score=result.rec_score,
         valid_format=is_supported_plate_number(normalized_text),
     )

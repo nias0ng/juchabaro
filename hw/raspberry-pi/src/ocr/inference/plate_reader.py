@@ -7,7 +7,7 @@ PaddleOCR recognition-only 모델로 전처리된 번호판 문자열을 읽는�
 주요 기능:
     - 서비스 시작 시 주입된 PaddleOCR 모델 재사용
     - 여러 번호판 이미지의 batch recognition 실행
-    - PaddleOCR ``Result.json``에서 원문과 confidence 추출
+    - PaddleOCR recognition 결과에서 원문과 confidence 추출
 
 담당하지 않는 기능:
     - 번호판 이미지 전처리
@@ -17,8 +17,8 @@ PaddleOCR recognition-only 모델로 전처리된 번호판 문자열을 읽는�
 
 from __future__ import annotations
 
-import json
 import math
+from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
 from threading import Lock
@@ -64,73 +64,43 @@ def _validate_bgr_image(image: BgrImage, *, frame_index: int) -> None:
 
 def _parse_paddle_result(result: Any) -> tuple[str, float]:
     """
-    PaddleOCR ``Result.json``에서 인식 문자열과 confidence를 추출한다.
+    PaddleOCR recognition 결과에서 문자열과 confidence를 추출한다.
 
     입력:
-        ``json`` 속성이 callable, JSON 문자열 또는 dict인 Paddle 결과.
+        PaddleOCR 3.7 ``TextRecResult``처럼 ``rec_text``와
+        ``rec_score``를 가진 mapping.
 
     출력:
         정규화하지 않은 문자열과 0.0~1.0 범위 confidence.
-        비어 있는 결과의 누락된 confidence는 0.0으로 변환한다.
 
     실패:
-        JSON 구조가 잘못되었거나 confidence가 숫자가 아니고,
+        결과 구조가 잘못되었거나 confidence가 숫자가 아니고,
         유한하지 않거나 범위를 벗어나면 PaddleResultError가 발생한다.
     """
 
-    data = getattr(result, "json", None)
-    if callable(data):
-        try:
-            data = data()
-        except Exception as exc:
-            raise PaddleResultError(
-                "PaddleOCR Result.json 호출에 실패했습니다."
-            ) from exc
-
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise PaddleResultError(
-                "PaddleOCR Result.json이 올바른 JSON 문자열이 아닙니다."
-            ) from exc
-
-    if not isinstance(data, dict):
+    if not isinstance(result, Mapping):
         raise PaddleResultError(
-            "PaddleOCR Result.json은 dict 또는 JSON 문자열이어야 합니다."
+            "PaddleOCR recognition 결과는 mapping이어야 합니다."
         )
 
-    payload = data.get("res", data)
-    if not isinstance(payload, dict):
+    if "rec_text" not in result:
         raise PaddleResultError(
-            "PaddleOCR Result.json의 res는 dict여야 합니다."
+            "PaddleOCR recognition 결과에 rec_text가 없습니다."
         )
 
-    if "rec_text" not in payload:
-        raise PaddleResultError(
-            "PaddleOCR Result.json에 rec_text가 없습니다."
-        )
-
-    raw_text_value = payload["rec_text"]
+    raw_text_value = result["rec_text"]
     if not isinstance(raw_text_value, str):
         raise PaddleResultError(
             "PaddleOCR rec_text는 문자열이어야 합니다."
         )
     raw_text = raw_text_value
 
-    score_value = payload.get("rec_score")
-    if score_value is None or (
-        isinstance(score_value, str)
-        and not score_value.strip()
-    ):
-        # 빈 인식 결과는 일부 Paddle 버전에서 score를 생략한다.
-        # 후처리에서 안전하게 제외할 수 있도록 0.0으로 통일한다.
-        if not raw_text:
-            return "", 0.0
+    if "rec_score" not in result:
         raise PaddleResultError(
-            "비어 있지 않은 PaddleOCR rec_text에는 rec_score가 필요합니다."
+            "PaddleOCR recognition 결과에 rec_score가 없습니다."
         )
 
+    score_value = result["rec_score"]
     if isinstance(score_value, bool) or not isinstance(score_value, Real):
         raise PaddleResultError(
             "PaddleOCR rec_score는 숫자여야 합니다: "
@@ -169,7 +139,7 @@ class PaddlePlateReader:
 
     실패:
         중복 frame_index, 잘못된 BGR 이미지, 결과 개수 불일치 또는
-        비정상 Result.json이면 PaddleResultError를 발생시킨다.
+        비정상 recognition 결과면 PaddleResultError를 발생시킨다.
         실제 모델 실행 오류도 원인을 보존한 PaddleResultError로 변환한다.
     """
 

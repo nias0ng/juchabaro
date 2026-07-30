@@ -50,7 +50,6 @@ from ocr.pipeline import (  # noqa: E402
     OcrPipelinePolicy,
     PlateOcrPipeline,
 )
-from ocr.policy import validate_ocr_policy_compatibility  # noqa: E402
 from ocr.postprocessing.aggregator import (  # noqa: E402
     AggregationPolicy,
     PlateAggregator,
@@ -254,11 +253,6 @@ def load_runtime(
     validate_model_paths(selected_paths)
     geometry_config = GeometryConfig()
     aggregation_policy = AggregationPolicy()
-    validate_ocr_policy_compatibility(
-        DEFAULT_OCR_POLICY,
-        aggregation_policy,
-        geometry_config,
-    )
 
     detector, detector_load_ms = _timed(
         lambda: load_yolo_plate_detector(

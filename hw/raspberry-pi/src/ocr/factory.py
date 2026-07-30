@@ -14,7 +14,7 @@ from pathlib import Path
 from .inference.plate_detector import load_yolo_plate_detector
 from .inference.plate_reader import load_paddle_plate_reader
 from .pipeline import PlateOcrPipeline
-from .policy import OcrPipelinePolicy, validate_ocr_policy_compatibility
+from .policy import OcrPipelinePolicy
 from .postprocessing.aggregator import AggregationPolicy, PlateAggregator
 from .vision.frame_selector import QualityFrameSelector
 from .vision.geometry import GeometryConfig, PlateGeometry
@@ -61,9 +61,9 @@ def load_plate_ocr_pipeline(
     소유권은 호출자에게 있다.
 
     실패:
-        잘못된 runtime 설정·교차 정책 조합, 모델 파일 누락, runtime import,
-        모델 load 또는 warm-up 오류를 숨기지 않고 그대로 전달한다. 실패한
-        경우 부분 초기화된 pipeline은 반환하지 않는다.
+        잘못된 runtime 설정, 모델 파일 누락, runtime import, 모델 load
+        또는 warm-up 오류를 숨기지 않고 그대로 전달한다. 실패한 경우
+        부분 초기화된 pipeline은 반환하지 않는다.
     """
 
     if not isinstance(config, OcrRuntimeConfig):
@@ -71,11 +71,6 @@ def load_plate_ocr_pipeline(
 
     geometry_config = GeometryConfig()
     aggregation_policy = AggregationPolicy()
-    validate_ocr_policy_compatibility(
-        config.policy,
-        aggregation_policy,
-        geometry_config,
-    )
 
     # 정책·OpenCV 설정 오류는 무거운 모델을 읽기 전에 확인한다.
     selector = QualityFrameSelector(policy=config.policy)

@@ -10,10 +10,7 @@ import src.ocr as public_ocr
 from src.ocr import factory as factory_module
 from src.ocr.factory import OcrRuntimeConfig, load_plate_ocr_pipeline
 from src.ocr.pipeline import PlateOcrPipeline
-from src.ocr.policy import (
-    OcrPipelinePolicy,
-    validate_ocr_policy_compatibility,
-)
+from src.ocr.policy import OcrPipelinePolicy
 from src.ocr.postprocessing.aggregator import PlateAggregator
 from src.ocr.vision.frame_selector import QualityFrameSelector
 from src.ocr.vision.geometry import PlateGeometry
@@ -100,11 +97,6 @@ class PlateOcrFactoryTests(unittest.TestCase):
                 "load_paddle_plate_reader",
                 return_value=reader,
             ) as reader_loader,
-            patch.object(
-                factory_module,
-                "validate_ocr_policy_compatibility",
-                wraps=validate_ocr_policy_compatibility,
-            ) as compatibility_validator,
         ):
             loader_calls.attach_mock(detector_loader, "detector")
             loader_calls.attach_mock(reader_loader, "reader")
@@ -134,19 +126,6 @@ class PlateOcrFactoryTests(unittest.TestCase):
                     warm_up=True,
                 ),
             ],
-        )
-
-        validated_policy, aggregation_policy, geometry_config = (
-            compatibility_validator.call_args.args
-        )
-        self.assertIs(validated_policy, policy)
-        self.assertIs(
-            pipeline._aggregator._policy,
-            aggregation_policy,
-        )
-        self.assertIs(
-            pipeline._geometry._config,
-            geometry_config,
         )
 
         # Warm-up은 각 loader가 소유하며 factory가 반환 객체에 중복 호출하지 않는다.
@@ -180,31 +159,6 @@ class PlateOcrFactoryTests(unittest.TestCase):
             device="cpu",
             warm_up=False,
         )
-
-    def test_policy_validation_runs_before_model_loading(self) -> None:
-        validation_error = ValueError("의도한 교차 정책 오류")
-
-        with (
-            patch.object(
-                factory_module,
-                "validate_ocr_policy_compatibility",
-                side_effect=validation_error,
-            ),
-            patch.object(
-                factory_module,
-                "load_yolo_plate_detector",
-            ) as detector_loader,
-            patch.object(
-                factory_module,
-                "load_paddle_plate_reader",
-            ) as reader_loader,
-        ):
-            with self.assertRaises(ValueError) as raised:
-                load_plate_ocr_pipeline(_config())
-
-        self.assertIs(raised.exception, validation_error)
-        detector_loader.assert_not_called()
-        reader_loader.assert_not_called()
 
     def test_detector_startup_failure_is_not_hidden(self) -> None:
         startup_error = RuntimeError("의도한 detector load 또는 warm-up 실패")
