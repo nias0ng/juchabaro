@@ -324,8 +324,8 @@ def load_paddle_plate_reader(
     """
     로컬 PaddleOCR inference model을 로드해 재사용 가능한 reader를 만든다.
 
-    이 함수는 ``main.py``의 서비스 시작 단계에서 한 번만 호출해야 한다.
-    차량 감지 반복문에서는 반환된 객체의 ``recognize()``만 재사용한다.
+    운영에서는 ``load_plate_ocr_pipeline()``이 서비스 시작 단계에서
+    이 loader를 한 번 호출한다. 차량 이벤트마다 모델을 다시 읽지 않는다.
 
     입력:
         model_dir는 Paddle inference 파일 세 개가 있는 디렉터리다.

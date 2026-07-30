@@ -69,6 +69,38 @@ class AggregationPolicyTests(unittest.TestCase):
 
 
 class PlateAggregatorDecisionTests(unittest.TestCase):
+    def test_empty_normalized_candidates_return_ocr_empty(self) -> None:
+        decision = PlateAggregator().aggregate(
+            (
+                OcrCandidate(
+                    frame_index=0,
+                    raw_text="---",
+                    normalized_text="",
+                    rec_score=0.9,
+                    valid_format=False,
+                ),
+            )
+        )
+
+        self.assertEqual(decision.status, ReadStatus.OCR_EMPTY)
+        self.assertEqual(decision.valid_frames, 0)
+
+    def test_nonempty_invalid_candidates_return_invalid_format(self) -> None:
+        decision = PlateAggregator().aggregate(
+            (
+                OcrCandidate(
+                    frame_index=0,
+                    raw_text="ABC",
+                    normalized_text="ABC",
+                    rec_score=0.9,
+                    valid_format=False,
+                ),
+            )
+        )
+
+        self.assertEqual(decision.status, ReadStatus.INVALID_FORMAT)
+        self.assertEqual(decision.valid_frames, 0)
+
     def test_two_matching_candidates_at_score_boundary_succeed(
         self,
     ) -> None:
@@ -136,6 +168,18 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
         self.assertEqual(decision.status, ReadStatus.SUCCESS)
         self.assertEqual(decision.vote_count, 3)
         self.assertEqual(decision.vote_ratio, 0.6)
+
+    def test_winner_mean_score_uses_only_winning_candidates(self) -> None:
+        decision = PlateAggregator().aggregate(
+            (
+                _candidate(0, "12가3456", score=0.4),
+                _candidate(1, "12가3456", score=0.8),
+                _candidate(2, "34나5678", score=1.0),
+            )
+        )
+
+        self.assertEqual(decision.status, ReadStatus.SUCCESS)
+        self.assertAlmostEqual(decision.mean_rec_score, 0.6)
 
     def test_half_of_four_is_rejected_by_vote_ratio(self) -> None:
         decision = PlateAggregator().aggregate(

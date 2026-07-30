@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
+from types import ModuleType
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from src.ocr.inference.plate_reader import (
+    DEFAULT_RECOGNITION_BATCH_SIZE,
     PaddlePlateReader,
     PaddleResultError,
     _parse_paddle_result,
+    load_paddle_plate_reader,
 )
 from src.ocr.types import (
     EstimatedQuad,
@@ -72,6 +79,34 @@ class FailingPaddleModel:
         raise self.error
 
 
+class LoaderTextRecognitionModel:
+    """Loader의 constructor와 warm-up predict 횟수를 기록하는 fake."""
+
+    instances: list[LoaderTextRecognitionModel] = []
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        model_dir: str,
+        device: str,
+    ) -> None:
+        self.model_name = model_name
+        self.model_dir = model_dir
+        self.device = device
+        self.calls: list[tuple[int, int]] = []
+        self.instances.append(self)
+
+    def predict(
+        self,
+        *,
+        input: list[np.ndarray],
+        batch_size: int,
+    ) -> list[object]:
+        self.calls.append((len(input), batch_size))
+        return [object() for _ in input]
+
+
 def _plates(count: int) -> tuple[PreparedPlate, ...]:
     return tuple(
         PreparedPlate(
@@ -115,6 +150,50 @@ class PaddlePlateReaderBatchTests(unittest.TestCase):
             reader.recognize(_plates(1))
 
         self.assertIs(raised.exception.__cause__, model_error)
+
+    def test_loader_performs_optional_warm_up_exactly_once(self) -> None:
+        fake_module = ModuleType("paddleocr")
+        fake_module.TextRecognition = (  # type: ignore[attr-defined]
+            LoaderTextRecognitionModel
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            model_dir = Path(temporary_directory)
+            for filename in (
+                "inference.json",
+                "inference.pdiparams",
+                "inference.yml",
+            ):
+                (model_dir / filename).write_bytes(b"fake model")
+
+            for warm_up, expected_calls in (
+                (True, [(1, DEFAULT_RECOGNITION_BATCH_SIZE)]),
+                (False, []),
+            ):
+                with self.subTest(warm_up=warm_up):
+                    LoaderTextRecognitionModel.instances.clear()
+                    with patch.dict(
+                        sys.modules,
+                        {"paddleocr": fake_module},
+                    ):
+                        reader = load_paddle_plate_reader(
+                            model_dir,
+                            device="cpu",
+                            warm_up=warm_up,
+                        )
+
+                    self.assertEqual(
+                        len(LoaderTextRecognitionModel.instances),
+                        1,
+                    )
+                    model = LoaderTextRecognitionModel.instances[0]
+                    self.assertIs(reader._model, model)
+                    self.assertEqual(
+                        model.model_dir,
+                        str(model_dir.resolve()),
+                    )
+                    self.assertEqual(model.device, "cpu")
+                    self.assertEqual(model.calls, expected_calls)
 
     def test_empty_text_may_omit_score(self) -> None:
         self.assertEqual(

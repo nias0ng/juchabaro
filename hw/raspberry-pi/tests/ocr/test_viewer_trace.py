@@ -491,6 +491,17 @@ def _render_with_stub(
     return stub.events
 
 
+def _stage_signature(
+    trace: PipelineTrace,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Component trace의 실행 순서와 호출 단위를 비교 가능한 값으로 만든다."""
+
+    return tuple(
+        (call.stage, call.frame_indices)
+        for call in trace.calls
+    )
+
+
 class ViewerTraceTest(unittest.TestCase):
     def test_success_diagnostics_come_from_trace_not_public_result(
         self,
@@ -543,6 +554,51 @@ class ViewerTraceTest(unittest.TestCase):
             0.0,
         )
 
+    def test_success_trace_preserves_stage_order_and_call_units(
+        self,
+    ) -> None:
+        run = run_debug_pipeline(_runtime(), _burst())
+
+        self.assertEqual(
+            _stage_signature(run.trace),
+            (
+                ("frame_selection", (0, 1, 2)),
+                ("detection", (0,)),
+                ("detection", (2,)),
+                ("geometry", (0, 1, 2)),
+                ("rectification", (0,)),
+                ("rectification", (1,)),
+                ("rectification", (2,)),
+                ("preprocessing", (0,)),
+                ("preprocessing", (1,)),
+                ("preprocessing", (2,)),
+                ("recognition", (0, 1, 2)),
+                ("text_postprocessing", (0,)),
+                ("text_postprocessing", (1,)),
+                ("text_postprocessing", (2,)),
+                ("aggregation", (0, 1, 2)),
+            ),
+        )
+
+    def test_repeated_runs_keep_trace_state_isolated(self) -> None:
+        runtime = _runtime()
+        burst = _burst()
+
+        first = run_debug_pipeline(runtime, burst)
+        first_signature = _stage_signature(first.trace)
+        second = run_debug_pipeline(runtime, burst)
+
+        self.assertIsNot(first.trace, second.trace)
+        self.assertIsNot(first.trace.calls, second.trace.calls)
+        self.assertIsNot(
+            first.trace.pipeline_call,
+            second.trace.pipeline_call,
+        )
+        self.assertEqual(_stage_signature(first.trace), first_signature)
+        self.assertEqual(_stage_signature(second.trace), first_signature)
+        self.assertEqual(len(first.trace.calls), 15)
+        self.assertEqual(len(second.trace.calls), 15)
+
     def test_normal_no_detection_keeps_successful_pipeline_trace(
         self,
     ) -> None:
@@ -566,6 +622,14 @@ class ViewerTraceTest(unittest.TestCase):
                 for call in detection_calls
             )
         )
+        self.assertEqual(
+            _stage_signature(run.trace),
+            (
+                ("frame_selection", (0, 1, 2)),
+                ("detection", (0,)),
+                ("detection", (2,)),
+            ),
+        )
         self.assertIsNone(run.trace.first("aggregation"))
 
     def test_scene_rejection_reason_survives_in_normal_result_trace(
@@ -586,6 +650,15 @@ class ViewerTraceTest(unittest.TestCase):
             ReadStatus.NO_PLATE_REGION,
         )
         self.assertTrue(run.trace.pipeline_call.succeeded)
+        self.assertEqual(
+            _stage_signature(run.trace),
+            (
+                ("frame_selection", (0, 1, 2)),
+                ("detection", (0,)),
+                ("detection", (2,)),
+                ("geometry", (0, 1, 2)),
+            ),
+        )
 
         geometry_call = run.trace.first("geometry")
         self.assertIsNotNone(geometry_call)

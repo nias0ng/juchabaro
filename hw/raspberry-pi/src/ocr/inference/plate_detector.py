@@ -200,6 +200,31 @@ class YoloPlateDetector:
         result = self._require_single_result(
             self._predict(frame.image)
         )
+        raw_candidates = self._extract_candidate_arrays(result)
+
+        if raw_candidates is None:
+            return None
+
+        box_count, boxes, scores, keypoints = raw_candidates
+        candidates = self._parse_candidates(
+            frame_index=frame.frame_index,
+            box_count=box_count,
+            boxes=boxes,
+            scores=scores,
+            keypoints=keypoints,
+        )
+        return self._select_candidate(candidates)
+
+    @staticmethod
+    def _extract_candidate_arrays(
+        result: Any,
+    ) -> tuple[
+        int,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ] | None:
+        """YOLO result schema를 확인하고 후보별 raw 배열을 추출한다."""
 
         boxes_object = getattr(result, "boxes", None)
         keypoints_object = getattr(result, "keypoints", None)
@@ -251,6 +276,19 @@ class YoloPlateDetector:
             name="keypoints.xy",
         )
 
+        return box_count, boxes, scores, keypoints
+
+    @staticmethod
+    def _parse_candidates(
+        *,
+        frame_index: int,
+        box_count: int,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        keypoints: np.ndarray,
+    ) -> tuple[DetectedPlate, ...]:
+        """후보 배열 계약을 검증하고 typed 번호판 후보로 변환한다."""
+
         if boxes.shape != (box_count, 4):
             raise DetectorContractError(
                 "YOLO boxes.xyxy는 객체당 네 좌표여야 합니다: "
@@ -286,7 +324,6 @@ class YoloPlateDetector:
             )
 
         candidates: list[DetectedPlate] = []
-
         for box, score_value, points in zip(
             boxes,
             scores,
@@ -324,12 +361,20 @@ class YoloPlateDetector:
 
             candidates.append(
                 DetectedPlate(
-                    frame_index=frame.frame_index,
+                    frame_index=frame_index,
                     bbox_xyxy=bbox_xyxy,
                     quad=quad,
                     detector_score=score,
                 )
             )
+
+        return tuple(candidates)
+
+    @staticmethod
+    def _select_candidate(
+        candidates: tuple[DetectedPlate, ...],
+    ) -> DetectedPlate:
+        """Confidence와 bbox 면적 순으로 대표 후보 한 개를 선택한다."""
 
         # 입구에는 한 번에 차량 한 대가 접근한다는 현재 운영 가정이다.
         return max(
@@ -412,8 +457,8 @@ def load_yolo_plate_detector(
     """
     로컬 ``best.pt``를 로드해 재사용 가능한 번호판 detector를 만든다.
 
-    이 함수는 ``main.py``의 서비스 시작 단계에서 한 번만 호출해야 한다.
-    차량 감지 반복문에서는 반환된 객체의 ``detect()``만 재사용한다.
+    운영에서는 ``load_plate_ocr_pipeline()``이 서비스 시작 단계에서
+    이 loader를 한 번 호출한다. 차량 이벤트마다 모델을 다시 읽지 않는다.
 
     입력:
         model_path는 파인튜닝한 YOLOv8n-pose ``.pt`` 파일 경로다.

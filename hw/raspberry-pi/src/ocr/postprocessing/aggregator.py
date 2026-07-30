@@ -210,26 +210,196 @@ def _empty_decision(
     )
 
 
+def _filter_eligible_candidates(
+    candidates: tuple[OcrCandidate, ...],
+    policy: AggregationPolicy,
+) -> tuple[tuple[OcrCandidate, ...], PlateDecision | None]:
+    """빈 문자열·형식·confidence 순으로 투표 가능한 후보를 선별한다."""
+
+    # 구두점만 인식한 결과도 정규화 이후에는 빈 OCR 결과로 본다.
+    non_empty = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.normalized_text
+    )
+    if not non_empty:
+        return (), _empty_decision(
+            ReadStatus.OCR_EMPTY,
+            "모든 프레임의 정규화된 OCR 문자열이 비어 있습니다.",
+        )
+
+    formatted = tuple(
+        candidate
+        for candidate in non_empty
+        if candidate.valid_format
+    )
+    if not formatted:
+        return (), _empty_decision(
+            ReadStatus.INVALID_FORMAT,
+            "현재 지원하는 일반 번호판 형식을 만족한 후보가 없습니다.",
+        )
+
+    eligible = tuple(
+        candidate
+        for candidate in formatted
+        if candidate.rec_score >= policy.min_rec_score
+    )
+    if not eligible:
+        return (), _empty_decision(
+            ReadStatus.LOW_SCORE,
+            "형식이 유효한 후보가 최소 OCR confidence "
+            f"{policy.min_rec_score:.3f}에 미달했습니다.",
+        )
+
+    return eligible, None
+
+
+@dataclass(frozen=True, slots=True)
+class _VoteTally:
+    """최종 정책 판단에 필요한 결정적인 다수결 계산 결과."""
+
+    winner: str
+    valid_frames: int
+    vote_count: int
+    vote_ratio: float
+    mean_rec_score: float
+    second_vote_count: int
+    tied_for_first: bool
+
+    @property
+    def margin_ratio(self) -> float:
+        """최다 후보와 차순위 후보의 득표율 차이를 반환한다."""
+
+        return (
+            self.vote_count - self.second_vote_count
+        ) / self.valid_frames
+
+
+def _tally_votes(
+    candidates: tuple[OcrCandidate, ...],
+) -> _VoteTally:
+    """유효 후보를 문자열별로 집계하고 최다 후보 진단값을 계산한다."""
+
+    counts = Counter(
+        candidate.normalized_text
+        for candidate in candidates
+    )
+    scores: defaultdict[str, list[float]] = defaultdict(list)
+    for candidate in candidates:
+        scores[candidate.normalized_text].append(
+            float(candidate.rec_score)
+        )
+
+    # confidence는 순위를 바꾸지 않는다. 문자열 정렬은 동률 상태의
+    # 진단값을 실행마다 동일하게 만들기 위한 결정적 기준일 뿐이다.
+    ranked = sorted(
+        counts,
+        key=lambda plate_number: (
+            -counts[plate_number],
+            plate_number,
+        ),
+    )
+    winner = ranked[0]
+    vote_count = counts[winner]
+    winner_scores = scores[winner]
+    valid_frames = len(candidates)
+    second_vote_count = (
+        counts[ranked[1]]
+        if len(ranked) > 1
+        else 0
+    )
+
+    return _VoteTally(
+        winner=winner,
+        valid_frames=valid_frames,
+        vote_count=vote_count,
+        vote_ratio=vote_count / valid_frames,
+        mean_rec_score=(
+            math.fsum(winner_scores) / len(winner_scores)
+        ),
+        second_vote_count=second_vote_count,
+        tied_for_first=(
+            len(ranked) > 1
+            and counts[ranked[0]] == counts[ranked[1]]
+        ),
+    )
+
+
 def _voted_decision(
     *,
     status: ReadStatus,
-    winner: str,
-    valid_frames: int,
-    vote_count: int,
-    vote_ratio: float,
-    mean_rec_score: float,
+    tally: _VoteTally,
     error_message: str | None,
 ) -> PlateDecision:
     """투표 진단값을 보존하면서 성공 또는 모호 판정을 만든다."""
 
     return PlateDecision(
         status=status,
-        plate_number=winner if status is ReadStatus.SUCCESS else None,
-        valid_frames=valid_frames,
-        vote_count=vote_count,
-        vote_ratio=vote_ratio,
-        mean_rec_score=mean_rec_score,
+        plate_number=(
+            tally.winner
+            if status is ReadStatus.SUCCESS
+            else None
+        ),
+        valid_frames=tally.valid_frames,
+        vote_count=tally.vote_count,
+        vote_ratio=tally.vote_ratio,
+        mean_rec_score=tally.mean_rec_score,
         error_message=error_message,
+    )
+
+
+def _apply_vote_policy(
+    tally: _VoteTally,
+    policy: AggregationPolicy,
+) -> PlateDecision:
+    """득표 집계에 동률·최소 프레임·비율·격차 정책을 순서대로 적용한다."""
+
+    # 최상위 동률은 confidence로 깨지 않는다. 같은 수의 독립
+    # 관측이므로 어느 번호판도 확정할 근거가 충분하지 않다.
+    if tally.tied_for_first:
+        return _voted_decision(
+            status=ReadStatus.AMBIGUOUS,
+            tally=tally,
+            error_message="최다 득표 번호판 후보가 동률입니다.",
+        )
+
+    if tally.valid_frames < policy.min_valid_frames:
+        return _voted_decision(
+            status=ReadStatus.AMBIGUOUS,
+            tally=tally,
+            error_message=(
+                f"유효 프레임 {tally.valid_frames}개가 최소 요구값 "
+                f"{policy.min_valid_frames}개에 미달했습니다."
+            ),
+        )
+
+    if tally.vote_ratio < policy.min_vote_ratio:
+        return _voted_decision(
+            status=ReadStatus.AMBIGUOUS,
+            tally=tally,
+            error_message=(
+                f"최다 후보 득표율 {tally.vote_ratio:.3f}이 최소 요구값 "
+                f"{policy.min_vote_ratio:.3f}에 미달했습니다."
+            ),
+        )
+
+    # 비율을 두 번 나눈 뒤 빼면 3/5 - 2/5가 0.2보다 아주 작게
+    # 표현될 수 있으므로, 득표수 차이를 먼저 구해 한 번만 나눈다.
+    if tally.margin_ratio < policy.min_margin_ratio:
+        return _voted_decision(
+            status=ReadStatus.AMBIGUOUS,
+            tally=tally,
+            error_message=(
+                "최다 후보와 차순위 후보의 득표율 차이 "
+                f"{tally.margin_ratio:.3f}이 최소 요구값 "
+                f"{policy.min_margin_ratio:.3f}에 미달했습니다."
+            ),
+        )
+
+    return _voted_decision(
+        status=ReadStatus.SUCCESS,
+        tally=tally,
+        error_message=None,
     )
 
 
@@ -288,135 +458,14 @@ class PlateAggregator:
             ) from exc
 
         _validate_candidates(candidate_tuple)
-
-        # 구두점만 인식한 결과도 정규화 이후에는 빈 OCR 결과로 본다.
-        non_empty = [
-            candidate
-            for candidate in candidate_tuple
-            if candidate.normalized_text
-        ]
-        if not non_empty:
-            return _empty_decision(
-                ReadStatus.OCR_EMPTY,
-                "모든 프레임의 정규화된 OCR 문자열이 비어 있습니다.",
-            )
-
-        formatted = [
-            candidate
-            for candidate in non_empty
-            if candidate.valid_format
-        ]
-        if not formatted:
-            return _empty_decision(
-                ReadStatus.INVALID_FORMAT,
-                "현재 지원하는 일반 번호판 형식을 만족한 후보가 없습니다.",
-            )
-
-        eligible = [
-            candidate
-            for candidate in formatted
-            if candidate.rec_score >= self._policy.min_rec_score
-        ]
-        if not eligible:
-            return _empty_decision(
-                ReadStatus.LOW_SCORE,
-                "형식이 유효한 후보가 최소 OCR confidence "
-                f"{self._policy.min_rec_score:.3f}에 미달했습니다.",
-            )
-
-        counts = Counter(
-            candidate.normalized_text
-            for candidate in eligible
+        eligible, rejection = _filter_eligible_candidates(
+            candidate_tuple,
+            self._policy,
         )
-        scores: defaultdict[str, list[float]] = defaultdict(list)
-        for candidate in eligible:
-            scores[candidate.normalized_text].append(
-                float(candidate.rec_score)
-            )
+        if rejection is not None:
+            return rejection
 
-        # confidence는 순위를 바꾸지 않는다. 문자열 정렬은 동률 상태의
-        # 진단값을 실행마다 동일하게 만들기 위한 결정적 기준일 뿐이다.
-        ranked = sorted(
-            counts,
-            key=lambda plate_number: (
-                -counts[plate_number],
-                plate_number,
-            ),
-        )
-        winner = ranked[0]
-        vote_count = counts[winner]
-        valid_frames = len(eligible)
-        vote_ratio = vote_count / valid_frames
-        winner_scores = scores[winner]
-        mean_rec_score = math.fsum(winner_scores) / len(winner_scores)
-
-        second_vote_count = (
-            counts[ranked[1]]
-            if len(ranked) > 1
-            else 0
-        )
-        # 비율을 두 번 나눈 뒤 빼면 3/5 - 2/5가 0.2보다 아주 작게
-        # 표현될 수 있으므로, 득표수 차이를 먼저 구해 한 번만 나눈다.
-        margin_ratio = (
-            vote_count - second_vote_count
-        ) / valid_frames
-
-        common = {
-            "winner": winner,
-            "valid_frames": valid_frames,
-            "vote_count": vote_count,
-            "vote_ratio": vote_ratio,
-            "mean_rec_score": mean_rec_score,
-        }
-
-        # 최상위 동률은 confidence로 깨지 않는다. 같은 수의 독립
-        # 관측이므로 어느 번호판도 확정할 근거가 충분하지 않다.
-        if (
-            len(ranked) > 1
-            and counts[ranked[0]] == counts[ranked[1]]
-        ):
-            return _voted_decision(
-                status=ReadStatus.AMBIGUOUS,
-                error_message=(
-                    "최다 득표 번호판 후보가 동률입니다."
-                ),
-                **common,
-            )
-
-        if valid_frames < self._policy.min_valid_frames:
-            return _voted_decision(
-                status=ReadStatus.AMBIGUOUS,
-                error_message=(
-                    f"유효 프레임 {valid_frames}개가 최소 요구값 "
-                    f"{self._policy.min_valid_frames}개에 미달했습니다."
-                ),
-                **common,
-            )
-
-        if vote_ratio < self._policy.min_vote_ratio:
-            return _voted_decision(
-                status=ReadStatus.AMBIGUOUS,
-                error_message=(
-                    f"최다 후보 득표율 {vote_ratio:.3f}이 최소 요구값 "
-                    f"{self._policy.min_vote_ratio:.3f}에 미달했습니다."
-                ),
-                **common,
-            )
-
-        if margin_ratio < self._policy.min_margin_ratio:
-            return _voted_decision(
-                status=ReadStatus.AMBIGUOUS,
-                error_message=(
-                    "최다 후보와 차순위 후보의 득표율 차이 "
-                    f"{margin_ratio:.3f}이 최소 요구값 "
-                    f"{self._policy.min_margin_ratio:.3f}에 "
-                    "미달했습니다."
-                ),
-                **common,
-            )
-
-        return _voted_decision(
-            status=ReadStatus.SUCCESS,
-            error_message=None,
-            **common,
+        return _apply_vote_policy(
+            _tally_votes(eligible),
+            self._policy,
         )

@@ -207,7 +207,46 @@ class PlateOcrPipeline:
             for frame in frames
         }
 
-        # [Anchor 선택]
+        anchor_indices = self._select_anchors(
+            frames,
+            frame_by_index,
+        )
+        detections = self._detect_anchors(
+            frame_by_index,
+            anchor_indices,
+        )
+        if not detections:
+            return self._no_plate_region_result()
+
+        estimate_by_index = self._estimate_quads(
+            frames,
+            detections,
+            frame_by_index,
+        )
+        if not estimate_by_index:
+            return self._no_plate_region_result()
+
+        rectified_plates = self._rectify_frames(
+            frames,
+            estimate_by_index,
+        )
+        if not rectified_plates:
+            return self._no_plate_region_result()
+
+        prepared_plates = self._prepare_plates(rectified_plates)
+        raw_results = self._recognize(prepared_plates)
+        candidates = self._build_candidates(raw_results)
+        decision = self._aggregate(candidates)
+        return self._decision_result(decision, candidates)
+
+    # [단계별 실행]
+
+    def _select_anchors(
+        self,
+        frames: tuple[CapturedFrame, ...],
+        frame_by_index: dict[int, CapturedFrame],
+    ) -> tuple[int, int]:
+        """Anchor selector를 실행하고 두 프레임 인덱스 계약을 검증한다."""
 
         try:
             selection = self._selector.select_anchors(frames)
@@ -217,17 +256,22 @@ class PlateOcrPipeline:
                 exc,
             ) from exc
 
-        anchor_indices = self._validate_selection(
+        return self._validate_selection(
             selection,
             frame_by_index,
         )
 
-        # [번호판 검출]
+    def _detect_anchors(
+        self,
+        frame_by_index: dict[int, CapturedFrame],
+        anchor_indices: tuple[int, int],
+    ) -> list[DetectedPlate]:
+        """두 anchor를 모두 검사하고 정상 미검출은 제외한다."""
 
         detections: list[DetectedPlate] = []
 
-        # 정상 미검출(None)이어도 두 번째 anchor를 실행해 fallback
-        # 가능성을 유지한다. 실행·계약 오류는 정상 미검출로 취급하지 않는다.
+        # 첫 anchor의 정상 미검출(None)과 무관하게 두 번째도 실행해
+        # single-anchor fallback 가능성을 유지한다.
         for frame_index in anchor_indices:
             try:
                 detection = self._detector.detect(
@@ -252,13 +296,15 @@ class PlateOcrPipeline:
             )
             detections.append(detection)
 
-        if not detections:
-            return PlateReadResult(
-                status=ReadStatus.NO_PLATE_REGION,
-                plate_number=None,
-            )
+        return detections
 
-        # [좌표 추정과 원근 보정]
+    def _estimate_quads(
+        self,
+        frames: tuple[CapturedFrame, ...],
+        detections: Sequence[DetectedPlate],
+        frame_by_index: dict[int, CapturedFrame],
+    ) -> dict[int, EstimatedQuad]:
+        """Anchor 좌표를 추정·검증하고 frame index mapping을 반환한다."""
 
         try:
             estimates = self._geometry.estimate_quads(
@@ -266,26 +312,29 @@ class PlateOcrPipeline:
                 detections,
             )
         except GeometryError:
-            return PlateReadResult(
-                status=ReadStatus.NO_PLATE_REGION,
-                plate_number=None,
-            )
+            return {}
         except OcrComponentError as exc:
             raise self._component_runtime_error(
                 "plate geometry",
                 exc,
             ) from exc
 
-        estimate_by_index = self._index_estimates(
+        return self._index_estimates(
             estimates,
             frame_by_index,
         )
+
+    def _rectify_frames(
+        self,
+        frames: tuple[CapturedFrame, ...],
+        estimate_by_index: dict[int, EstimatedQuad],
+    ) -> list[RectifiedPlate]:
+        """좌표가 있는 프레임을 보정하고 장면상 실패한 프레임만 제외한다."""
 
         rectified_plates: list[RectifiedPlate] = []
 
         for frame in frames:
             estimate = estimate_by_index.get(frame.frame_index)
-
             if estimate is None:
                 continue
 
@@ -311,16 +360,15 @@ class PlateOcrPipeline:
                 actual=rectified.frame_index,
                 expected=frame.frame_index,
             )
-
             rectified_plates.append(rectified)
 
-        if not rectified_plates:
-            return PlateReadResult(
-                status=ReadStatus.NO_PLATE_REGION,
-                plate_number=None,
-            )
+        return rectified_plates
 
-        # [OCR 화질 전처리]
+    def _prepare_plates(
+        self,
+        rectified_plates: Sequence[RectifiedPlate],
+    ) -> list[PreparedPlate]:
+        """원근 보정 번호판을 OCR 입력으로 전처리하고 계약을 검증한다."""
 
         prepared_plates: list[PreparedPlate] = []
 
@@ -342,15 +390,19 @@ class PlateOcrPipeline:
                 actual=prepared.frame_index,
                 expected=plate.frame_index,
             )
-
             prepared_plates.append(prepared)
 
         if not prepared_plates:
             raise OcrRuntimeError(
                 "OCR 전처리 결과가 비어 있습니다."
             )
+        return prepared_plates
 
-        # [PaddleOCR 인식]
+    def _recognize(
+        self,
+        prepared_plates: Sequence[PreparedPlate],
+    ) -> tuple[RawOcrResult, ...]:
+        """PaddleOCR batch를 실행하고 입력과 일대일인 결과를 반환한다."""
 
         try:
             raw_results = self._reader.recognize(
@@ -362,15 +414,20 @@ class PlateOcrPipeline:
                 exc,
             ) from exc
 
-        validated_raw_results = self._validate_raw_results(
+        return self._validate_raw_results(
             raw_results,
             prepared_plates,
         )
 
-        # [문자열 후처리와 최종 집계]
+    def _build_candidates(
+        self,
+        raw_results: Sequence[RawOcrResult],
+    ) -> list[OcrCandidate]:
+        """원시 OCR 결과를 검증된 번호판 후보로 변환한다."""
 
         candidates: list[OcrCandidate] = []
-        for raw_result in validated_raw_results:
+
+        for raw_result in raw_results:
             try:
                 candidate = self._text_processor(raw_result)
             except OcrComponentError as exc:
@@ -393,16 +450,30 @@ class PlateOcrPipeline:
             raise OcrRuntimeError(
                 "후처리 가능한 OCR 결과가 없습니다."
             )
+        return candidates
+
+    def _aggregate(
+        self,
+        candidates: Sequence[OcrCandidate],
+    ) -> PlateDecision:
+        """후보를 집계하고 알려진 component 오류를 runtime 오류로 바꾼다."""
 
         try:
-            decision = self._aggregator.aggregate(candidates)
+            return self._aggregator.aggregate(candidates)
         except OcrComponentError as exc:
             raise self._component_runtime_error(
                 "candidate aggregation",
                 exc,
             ) from exc
 
-        return self._decision_result(decision, candidates)
+    @staticmethod
+    def _no_plate_region_result() -> PlateReadResult:
+        """사용할 번호판 영역이 없는 정상 판독 결과를 만든다."""
+
+        return PlateReadResult(
+            status=ReadStatus.NO_PLATE_REGION,
+            plate_number=None,
+        )
 
     # [입력과 단계별 계약 검증]
 

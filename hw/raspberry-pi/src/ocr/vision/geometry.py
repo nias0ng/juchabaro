@@ -322,6 +322,16 @@ class PlateGeometry:
         유효한 좌표는 float tuple로 정규화해 반환한다.
         """
 
+        points = self._normalize_quad_coordinates(quad)
+        points = self._validate_bounds_and_clip(points, frame)
+        self._validate_order_and_convexity(points)
+        self._validate_area_edges_and_aspect(points)
+        return points
+
+    @staticmethod
+    def _normalize_quad_coordinates(quad: Quad) -> Quad:
+        """네 꼭짓점을 유한한 float ``(x, y)`` 좌표로 정규화한다."""
+
         try:
             if len(quad) != 4:
                 raise GeometryProcessingError(
@@ -351,6 +361,15 @@ class PlateGeometry:
                 "번호판 좌표는 유한한 숫자여야 합니다."
             )
 
+        return cast(Quad, points)
+
+    def _validate_bounds_and_clip(
+        self,
+        points: Quad,
+        frame: CapturedFrame,
+    ) -> Quad:
+        """프레임 경계를 검사하고 허용 오차 안의 좌표만 경계로 자른다."""
+
         image_height, image_width = frame.image.shape[:2]
         tolerance = self._config.bounds_tolerance_px
         if any(
@@ -370,6 +389,12 @@ class PlateGeometry:
             )
             for x, y in points
         )
+
+        return cast(Quad, points)
+
+    @staticmethod
+    def _validate_order_and_convexity(points: Quad) -> None:
+        """TL→TR→BR→BL 의미 순서와 볼록 사각형 조건을 검증한다."""
 
         top_left, top_right, bottom_right, bottom_left = points
         top_mid_y = (top_left[1] + top_right[1]) / 2.0
@@ -397,6 +422,13 @@ class PlateGeometry:
         if any(value <= 1e-6 for value in cross_products):
             raise GeometryError("번호판 좌표가 유효한 볼록 사각형이 아닙니다.")
 
+    def _validate_area_edges_and_aspect(
+        self,
+        points: Quad,
+    ) -> None:
+        """사각형 면적, 네 변 길이와 종횡비 운영 기준을 검증한다."""
+
+        top_left, top_right, bottom_right, bottom_left = points
         signed_twice_area = sum(
             points[index][0] * points[(index + 1) % 4][1]
             - points[(index + 1) % 4][0] * points[index][1]
@@ -436,8 +468,6 @@ class PlateGeometry:
                 "번호판 종횡비가 허용 범위를 벗어납니다: "
                 f"aspect_ratio={aspect_ratio:.3f}"
             )
-
-        return cast(Quad, points)
 
     # [Anchor 좌표 보간]
 

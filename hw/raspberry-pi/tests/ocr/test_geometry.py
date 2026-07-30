@@ -40,11 +40,15 @@ def _frames(count: int = 6) -> tuple[CapturedFrame, ...]:
     )
 
 
-def _detection(frame_index: int) -> DetectedPlate:
+def _detection(
+    frame_index: int,
+    *,
+    quad: Quad = PLATE_QUAD,
+) -> DetectedPlate:
     return DetectedPlate(
         frame_index=frame_index,
         bbox_xyxy=(5.0, 5.0, 25.0, 15.0),
-        quad=PLATE_QUAD,
+        quad=quad,
         detector_score=0.9,
     )
 
@@ -182,6 +186,85 @@ class PlateGeometryCharacterizationTests(unittest.TestCase):
                 _frames(),
                 (detection,),
             )
+
+    def test_non_finite_anchor_quad_is_runtime_contract_error(self) -> None:
+        with self.assertRaises(GeometryProcessingError):
+            PlateGeometry().estimate_quads(
+                _frames(),
+                (
+                    _detection(
+                        1,
+                        quad=(
+                            (5.0, 5.0),
+                            (float("nan"), 5.0),
+                            (25.0, 15.0),
+                            (5.0, 15.0),
+                        ),
+                    ),
+                ),
+            )
+
+    def test_bounds_tolerance_clips_small_coordinate_error(self) -> None:
+        estimates = PlateGeometry().estimate_quads(
+            _frames(),
+            (
+                _detection(
+                    1,
+                    quad=(
+                        (-1.0, 5.0),
+                        (25.0, 5.0),
+                        (25.0, 15.0),
+                        (-1.0, 15.0),
+                    ),
+                ),
+            ),
+        )
+
+        detected = next(
+            estimate
+            for estimate in estimates
+            if estimate.frame_index == 1
+        )
+        self.assertEqual(detected.quad[0], (0.0, 5.0))
+        self.assertEqual(detected.quad[3], (0.0, 15.0))
+
+    def test_wrong_quad_order_is_scene_rejection(self) -> None:
+        with self.assertRaises(GeometryError) as raised:
+            PlateGeometry().estimate_quads(
+                _frames(),
+                (
+                    _detection(
+                        1,
+                        quad=(
+                            (5.0, 5.0),
+                            (25.0, 15.0),
+                            (25.0, 5.0),
+                            (5.0, 15.0),
+                        ),
+                    ),
+                ),
+            )
+
+        self.assertIn("frame_index=1", str(raised.exception))
+
+    def test_too_small_quad_is_scene_rejection(self) -> None:
+        with self.assertRaises(GeometryError) as raised:
+            PlateGeometry().estimate_quads(
+                _frames(),
+                (
+                    _detection(
+                        1,
+                        quad=(
+                            (5.0, 5.0),
+                            (10.0, 5.0),
+                            (10.0, 7.0),
+                            (5.0, 7.0),
+                        ),
+                    ),
+                ),
+            )
+
+        self.assertIn("면적", str(raised.exception))
 
     def test_opencv_failure_is_runtime_error_and_preserves_cause(
         self,
