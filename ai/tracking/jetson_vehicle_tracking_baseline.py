@@ -19,7 +19,7 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
-  전기차 충전구역(EV_CHARGING)은 여기서 한 걸음 더 나아가, `zones` 파일에
+  전기차 충전구역(EV_FAST/EV_SLOW)은 여기서 한 걸음 더 나아가, `zones` 파일에
   `allowed_minutes`(구역별 허용 점유 시간, ERD `parking_zones.allowed_minutes`)가
   설정돼 있으면 그 시간을 넘긴 정차를 `EV_OVERSTAY`로 별도 판정한다(319번,
   등록 여부와 무관 — 등록된 차라도 시간 초과면 EV_OVERSTAY). `allowed_minutes`가
@@ -107,20 +107,25 @@ class ZoneType(str, Enum):
 
     GENERAL = "GENERAL"
     DISABLED = "DISABLED"
-    EV_CHARGING = "EV_CHARGING"
+    EV_FAST = "EV_FAST"
+    EV_SLOW = "EV_SLOW"
     AISLE = "AISLE"
     ENTRY_EXIT = "ENTRY_EXIT"
 
 
+# "전기차 충전구역이란 무엇인가"의 단일 정의. 이 질문을 하는 곳이 세 군데
+# (RESTRICTED_ZONE_TYPES, _SPOT_ZONE_TYPES, classify_violation의 시간 초과
+# 검사)라 상수 하나로 모은다 — 값이 늘거나 줄면 여기만 고치면 된다.
+EV_ZONE_TYPES = frozenset({ZoneType.EV_FAST, ZoneType.EV_SLOW})
 # 전용구역(장애인/전기차) 점유는 위반 의심으로 표시한다. 실제 등록 차량
 # 여부는 서버 조회로 확정하며 이 파일의 책임 범위가 아니다.
-# (리뷰 반영, C-2/319) 예전엔 EV_FAST/EV_SLOW 두 값으로 나눠져 있었으나,
-# 백엔드 ParkingZoneType.java/DB 마이그레이션/ERD.md:71/프론트 타입 전부
-# EV_CHARGING 하나만 쓴다 — 값이 갈라져 있으면 백엔드가 내려주는 구역
-# 데이터를 그대로 파싱할 때 ZoneType("EV_CHARGING")가 실패해 구역 파일
-# 로딩 자체가 깨진다. 완속/급속 구분이 필요해지면 별도 필드(예: 콘센트
-# 종류)로 다뤄야지 zone_type 값 자체를 나누면 안 된다.
-RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
+#
+# (319 리뷰 재검토, C-2) 백엔드 구현·DB·프론트는 현재 EV_CHARGING 하나만
+# 쓰지만 값을 거기 맞추지 않는다 — 주차구역 계약 설계 §5.2가 DB를
+# EV_FAST/EV_SLOW로 확장하고 EV_CHARGING을 ENUM에서 제거하기로 확정했고,
+# 급속/완속별 허용 시간 차등(FR-EV-009)은 값을 하나로 합치면 표현할 수 없다.
+# 백엔드 V2 마이그레이션이 선행돼야 이 계약이 완성된다(후속 이슈).
+RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED}) | EV_ZONE_TYPES
 # 입출차 감지용 참고 구역은 주차 위반 판정 대상에서 제외한다.
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
 
@@ -273,7 +278,7 @@ class ParkingZone:
     """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0).
 
     `allowed_minutes`(ERD `parking_zones.allowed_minutes`)는 전기차 충전구역
-    (EV_CHARGING)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
+    (EV_FAST/EV_SLOW)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
     타입에는 의미가 없어 기본값 None(백엔드 미설정 시 무제한 허용, 안전
     쪽으로 기움)이다. `ViolationMonitor.min_dwell_seconds`(정착 확정 시간)보다
     `allowed_minutes * 60`이 작게 설정되면(운영 실수), 정착 확정 전까지는
@@ -369,7 +374,7 @@ def classify_zone_overlaps(
 
 # 이중주차 판정에서 "내 자리"로 볼 수 있는 구역 타입. 통행로(AISLE)는 주차
 # 스팟이 아니므로 홈 구역 후보에서 제외한다(AISLE_BLOCK이 별도로 처리).
-_SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
+_SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED}) | EV_ZONE_TYPES
 
 
 def _home_zone_overlap(overlaps: Sequence[ZoneOverlap]) -> ZoneOverlap | None:
@@ -432,7 +437,7 @@ def classify_violation(
     점유했다"는 사실 자체는 RESTRICTED_ZONE과 똑같이 판정하지만, 그 구역의
     `allowed_minutes`(구역별 허용 점유 시간)를 넘겨 정차했으면 "등록된
     차량이라도 시간 초과"라는 더 구체적인 상태로 대체한다. `allowed_minutes`가
-    설정 안 된 구역이나 EV_CHARGING이 아닌 구역에는 적용되지 않는다.
+    설정 안 된 구역이나 EV 충전구역이 아닌 구역에는 적용되지 않는다.
 
     `blocked_zone`/`intruded_zone`은 둘 다 "내 홈 구역이 아닌 스팟을 얼마나
     덮었는가"라는 같은 계산(구역 면적 기준, `zone_coverage_ratio`)에서 나오며,
@@ -476,14 +481,14 @@ def classify_violation(
     restricted = restricted_overlaps[0] if restricted_overlaps else None
     # (리뷰 반영, I-4/319) 정상 배치라면 전용구역끼리 겹치지 않아야 하지만, 캘리브레이션
     # 오차 등으로 두 전용구역이 겹치는 경우 겹침 비율이 더 높은 쪽(overlaps 정렬 순서상
-    # 첫 번째, 위 restricted)만 보면 그 구역이 EV_CHARGING이 아닐 때 실제로는 시간
+    # 첫 번째, 위 restricted)만 보면 그 구역이 EV 충전구역이 아닐 때 실제로는 시간
     # 초과 중인 EV 구역이 영구히 가려진다(재현 확인됨) — 겹치는 전용구역 전체에서
     # 시간 초과 중인 구역이 있는지 먼저 확인한다.
     overstayed_restricted = next(
         (
             item
             for item in restricted_overlaps
-            if item.zone.zone_type is ZoneType.EV_CHARGING
+            if item.zone.zone_type in EV_ZONE_TYPES
             and item.zone.allowed_minutes is not None
             and dwell_seconds >= item.zone.allowed_minutes * 60.0
         ),
@@ -1614,7 +1619,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(zone_hit.zone_id, "DIS-01")
 
     def test_observing_before_min_dwell(self) -> None:
-        zone = self.make_zone("EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100.0, min_dwell_seconds=600.0)
@@ -1625,7 +1630,7 @@ class BaselineLogicTests(unittest.TestCase):
         RESTRICTED_ZONE이 아니라 EV_OVERSTAY로 판정한다(요구사항 정의서.md:25,
         ERD.md:119-125, ERD.md의 parking_zones.allowed_minutes)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1641,7 +1646,7 @@ class BaselineLogicTests(unittest.TestCase):
         RESTRICTED_ZONE이다 — EV_OVERSTAY는 등록 여부 판정을 대체하지 않고,
         시간 초과일 때만 더 구체적인 상태로 대체한다."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1654,7 +1659,7 @@ class BaselineLogicTests(unittest.TestCase):
         (다른 경계값들과 동일하게 `>=` 기준 — OUT_OF_ZONE 317번 MR 리뷰에서
         요청받았던 경계값 검증 패턴을 그대로 적용)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1673,7 +1678,7 @@ class BaselineLogicTests(unittest.TestCase):
         크래시나 이중 발행 없이 안전하게 '지연'되는 것만 확인 — allowed_minutes는
         min_dwell_seconds보다 크게 설정하는 게 정상 사용법이다)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
         )  # allowed_minutes*60 = 120초
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1689,11 +1694,59 @@ class BaselineLogicTests(unittest.TestCase):
     def test_ev_overstay_not_flagged_when_allowed_minutes_unset(self) -> None:
         """allowed_minutes가 설정 안 된 EV 구역은 아무리 오래 정차해도 여전히
         RESTRICTED_ZONE이다(허용 시간 기준이 없으면 시간 초과를 판단할 수 없음)."""
-        zone = self.make_zone("EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100000.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
+
+    def test_ev_overstay_applies_to_ev_slow_zone(self) -> None:
+        """완속 충전구역(EV_SLOW)도 급속(EV_FAST)과 똑같이 시간 초과를 판정한다.
+
+        기존 테스트가 EV_FAST만 다뤄서, EV 구역 집합에서 EV_SLOW를 빼도 전부
+        통과하는 상태였다(319 리뷰 §8).
+        """
+        zone = self.make_zone(
+            "EV-02", ZoneType.EV_SLOW, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+        status, hit_zone, _ratio = classify_violation(
+            overlaps, dwell_seconds=7300.0, min_dwell_seconds=600.0
+        )
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        self.assertEqual(hit_zone.zone_id, "EV-02")
+
+    def test_zone_registry_from_file_accepts_all_zone_types(self) -> None:
+        """zones 파일이 담을 수 있는 zone_type 6종을 고정하고, 백엔드 현행 구현이
+        쓰는 EV_CHARGING은 거부한다는 것을 명시한다.
+
+        `GET /api/hw/parking-zones`가 아직 Not started라 실제 응답과 대조하는
+        테스트는 만들 수 없다(319 리뷰 C-2). 그 API가 생기기 전까지 이 테스트가
+        계약의 유일한 기계적 고정점이다.
+        """
+        expected = ["GENERAL", "DISABLED", "EV_FAST", "EV_SLOW", "AISLE", "ENTRY_EXIT"]
+        self.assertEqual(sorted(item.value for item in ZoneType), sorted(expected))
+
+        square = [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {"zones": [{"zone_id": f"Z-{index}", "zone_type": value, "polygon": square}
+                               for index, value in enumerate(expected)]}
+                ),
+                encoding="utf-8",
+            )
+            registry = ZoneRegistry.from_file(path)
+            self.assertEqual(len(registry.all()), len(expected))
+
+            path.write_text(
+                json.dumps({"zones": [{"zone_id": "EV-01", "zone_type": "EV_CHARGING", "polygon": square}]}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
 
     def test_ev_overstay_not_applicable_to_disabled_zone(self) -> None:
         """장애인 구역(DISABLED)은 EV_OVERSTAY 대상이 아니다 — allowed_minutes가
@@ -2139,7 +2192,7 @@ class BaselineLogicTests(unittest.TestCase):
         allowed_minutes를 넘기면 같은 트랙 상태가 자동으로 EV_OVERSTAY로 한 번만
         갱신 발행된다(같은 물리적 상황에 대해 중복 발행되지 않음)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=0.05
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=0.05
         )  # 0.05분 = 3초, 테스트를 짧게 유지하기 위한 값
         registry = ZoneRegistry([zone])
         monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
@@ -2165,7 +2218,7 @@ class BaselineLogicTests(unittest.TestCase):
         리셋돼 RESTRICTED_ZONE이 중복 발행되고 EV_OVERSTAY는 가림이 끝난
         시점부터 다시 카운트가 시작돼 지연/누락됐다(재현으로 확인됨)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
         )  # 1분 = 60초
         registry = ZoneRegistry([zone])
         monitor = ViolationMonitor(
@@ -2218,15 +2271,15 @@ class BaselineLogicTests(unittest.TestCase):
     def test_monitor_ev_overstay_not_masked_by_higher_ratio_overlapping_restricted_zone(self) -> None:
         """리뷰 반영(I-4/319): 정상 배치라면 전용구역끼리 겹치지 않아야 하지만, 캘리브레이션
         오차 등으로 겹치는 경우 겹침 비율이 더 높은 쪽(DISABLED)만 보면 실제로 시간
-        초과 중인 EV_CHARGING 구역이 영구히 가려진다 — 겹치는 전용구역 전체에서
+        초과 중인 EV 충전구역이 영구히 가려진다 — 겹치는 전용구역 전체에서
         시간 초과 여부를 확인해야 한다."""
         disabled_zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
         ev_zone = self.make_zone(
-            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
         )
         registry = ZoneRegistry([disabled_zone, ev_zone])
         monitor = ViolationMonitor(registry, min_overlap_ratio=0.30, min_dwell_seconds=1.0, movement_epsilon=0.01)
-        bbox = BoundingBox(0.0, 0.0, 0.4, 0.4)  # DISABLED와 EV_CHARGING 둘 다에 높은 비율로 겹침
+        bbox = BoundingBox(0.0, 0.0, 0.4, 0.4)  # DISABLED와 EV 충전구역 둘 다에 높은 비율로 겹침
         base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
 
         events_at = {}
@@ -2758,7 +2811,7 @@ class BaselineLogicTests(unittest.TestCase):
                         "zones": [
                             {
                                 "zone_id": "EV-01",
-                                "zone_type": "EV_CHARGING",
+                                "zone_type": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": 120,
                             }
@@ -2800,7 +2853,7 @@ class BaselineLogicTests(unittest.TestCase):
                         "zones": [
                             {
                                 "zone_id": "EV-01",
-                                "zone_type": "EV_CHARGING",
+                                "zone_type": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": 0,
                             }
@@ -2824,7 +2877,7 @@ class BaselineLogicTests(unittest.TestCase):
                         "zones": [
                             {
                                 "zone_id": "EV-01",
-                                "zone_type": "EV_CHARGING",
+                                "zone_type": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": float("nan"),
                             }
