@@ -49,8 +49,40 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// E-13(이동 완료) 화면 확인용: /resident/request-detail?requestId=998 로 들어가면 완료 처리된 상태를 바로 볼 수 있다.
+function buildCompletedMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 20 * 60_000);
+  const respondedAt = new Date(Date.now() - 12 * 60_000);
+  const resolvedAt = new Date();
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'COMPLETED',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: null,
+    responses: [
+      {
+        responseId: 9001,
+        responseType: 'WILL_MOVE',
+        estimatedMinutes: 10,
+        respondedAt: respondedAt.toISOString(),
+      },
+    ],
+    history: [
+      { notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() },
+      { notificationType: 'EVENT_RESOLVED', sentAt: resolvedAt.toISOString() },
+    ],
+  };
+}
+
 export async function getMoveRequestDetailMock(requestId: number): Promise<MoveRequestDetail> {
   await delay(MOCK_RESPONSE_DELAY_MS);
+
+  if (requestId === 998) {
+    return buildCompletedMockDetail(requestId);
+  }
+
   return { ...mockRequestDetail, requestId };
 }
 

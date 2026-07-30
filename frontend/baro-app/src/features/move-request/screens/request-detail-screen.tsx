@@ -1,15 +1,20 @@
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/ui';
+import { RequestCompletedSection } from '@/features/move-request/components/request-completed/request-completed-section';
 import { RequestDetailSection } from '@/features/move-request/components/request-detail/request-detail-section';
 import { RequestHeaderRight } from '@/features/move-request/components/request-header-right';
 import { RequestWaitingSection } from '@/features/move-request/components/request-waiting/request-waiting-section';
 import { useCountdown } from '@/features/move-request/hooks/use-countdown';
 import { useMoveRequestDetail } from '@/features/move-request/hooks/use-move-request-detail';
 import { useMoveRequestResponse } from '@/features/move-request/hooks/use-move-request-response';
-import { toRequestDetailDisplay, toRequestWaitingDisplay } from '@/features/move-request/utils/move-request';
+import {
+  toRequestCompletedDisplay,
+  toRequestDetailDisplay,
+  toRequestWaitingDisplay,
+} from '@/features/move-request/utils/move-request';
 import { Palette } from '@/styles';
 
 import { styles } from './request-detail-screen.styles';
@@ -17,6 +22,7 @@ import { styles } from './request-detail-screen.styles';
 const SUMMARY_TITLE = '고객님의 차량 이동을\n요청드립니다';
 const REMINDER_MESSAGE = '응답이 없으면 한 시간 후에 한 번 더 알려드리고,\n그 이후에는 관리사무소로 전달합니다.';
 const WAITING_GRADIENT = ['#ede9fd', '#f7f6fb'] as const;
+const COMPLETED_GRADIENT = ['#eae7fb', '#f7f6fb'] as const;
 
 export default function RequestDetailScreen() {
   const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
@@ -26,6 +32,8 @@ export default function RequestDetailScreen() {
   const { submit, isSubmitting, errorMessage: submitError } = useMoveRequestResponse(normalizedRequestId);
   const display = detail ? toRequestDetailDisplay(detail) : null;
 
+  // E-13: 차량 이동이 완료 처리된 상태.
+  const isCompleted = detail?.requestStatus === 'COMPLETED';
   // E-12: 응답 완료 후 차량 이동을 기다리는 상태. 이 화면 하나가 requestStatus에 따라 다르게 그려진다.
   const isWaiting = detail?.requestStatus === 'RESPONDED';
   // "요청 상세 보기"를 눌러서 대기 화면 대신 상세(E-11 레이아웃, 응답 버튼 없음)를 보고 있는 상태.
@@ -43,6 +51,7 @@ export default function RequestDetailScreen() {
     isWaiting ? latestResponse?.respondedAt ?? null : null,
   );
   const waitingDisplay = isWaiting && detail ? toRequestWaitingDisplay(detail) : null;
+  const completedDisplay = isCompleted && detail ? toRequestCompletedDisplay(detail) : null;
 
   const hasResponded = detail ? detail.responses.length > 0 : false;
 
@@ -65,8 +74,8 @@ export default function RequestDetailScreen() {
     <Screen
       scroll
       edges={['top', 'right', 'left']}
-      backgroundColor={isWaiting ? undefined : Palette.gray50}
-      backgroundGradient={isWaiting ? WAITING_GRADIENT : undefined}
+      backgroundColor={isWaiting || isCompleted ? undefined : Palette.gray50}
+      backgroundGradient={isCompleted ? COMPLETED_GRADIENT : isWaiting ? WAITING_GRADIENT : undefined}
     >
       <ScreenHeader
         title="이동 요청"
@@ -76,7 +85,9 @@ export default function RequestDetailScreen() {
           <RequestHeaderRight
             isWaiting={isWaiting}
             requestSource={
-              display ? { label: display.requestSourceLabel, variant: display.requestSourceVariant } : null
+              display && !isCompleted
+                ? { label: display.requestSourceLabel, variant: display.requestSourceVariant }
+                : null
             }
           />
         }
@@ -86,6 +97,12 @@ export default function RequestDetailScreen() {
         <View style={styles.statusContainer}>
           <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
+      ) : isCompleted && completedDisplay ? (
+        <RequestCompletedSection
+          endTimeLabel={completedDisplay.endTimeLabel}
+          timeline={completedDisplay.timeline}
+          onPressHome={() => router.replace('/resident')}
+        />
       ) : showWaitingView && waitingDisplay ? (
         <RequestWaitingSection
           countdownLabel={countdown.label}

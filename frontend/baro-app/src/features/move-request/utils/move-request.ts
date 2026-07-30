@@ -81,3 +81,36 @@ export function toRequestWaitingDisplay(detail: MoveRequestDetail): RequestWaiti
     respondedTimeLabel: latestResponse ? formatTime12(latestResponse.respondedAt) : '--',
   };
 }
+
+export type RequestCompletedTimelineStep = {
+  label: string;
+  detail: string;
+  isFinal: boolean;
+};
+
+export type RequestCompletedDisplay = {
+  endTimeLabel: string;
+  timeline: RequestCompletedTimelineStep[];
+};
+
+// 이동 완료(COMPLETED) 화면(E-13)에서 표시할 문자열로 변환
+export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCompletedDisplay {
+  const latestResponse = detail.responses[detail.responses.length - 1];
+  // history를 시간순으로 쌓아두므로, 가장 마지막 EVENT_RESOLVED 알림 시각을 종료 시각으로 쓴다.
+  const resolvedEntry = [...detail.history].reverse().find((item) => item.notificationType === 'EVENT_RESOLVED');
+
+  const timeline: RequestCompletedTimelineStep[] = [
+    { label: '요청 접수', detail: formatTime24(detail.requestedAt), isFinal: false },
+  ];
+
+  if (latestResponse) {
+    timeline.push({ label: '이동 진행', detail: formatTime24(latestResponse.respondedAt), isFinal: false });
+  }
+
+  timeline.push({ label: '완료', detail: '정상 처리되었습니다', isFinal: true });
+
+  return {
+    endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : '--:--',
+    timeline,
+  };
+}
