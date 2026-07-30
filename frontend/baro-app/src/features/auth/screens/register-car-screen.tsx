@@ -1,11 +1,10 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { AppButton, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { Palette, Spacing } from '@/styles';
 
 import { AuthErrorBanner } from '../components/auth-error-banner';
-import { AuthHeader } from '../components/auth-header';
 import { HouseholdCarForm } from '../components/register-car/household-car-form';
 import { RegisterCarConfirmView } from '../components/register-car/register-car-confirm-view';
 import { RegisterCarLoadingView } from '../components/register-car/register-car-loading-view';
@@ -54,7 +53,7 @@ export default function RegisterCarScreen() {
       >
         <ResponsiveContainer>
           <Stack gap={Spacing.xl}>
-            <AuthHeader title={HEADER_TITLE[step]} onBack={handleBack} />
+            <ScreenHeader title={HEADER_TITLE[step]} onBack={handleBack} style={styles.header} />
 
             {step === 'household' && (
               <HouseholdCarForm
