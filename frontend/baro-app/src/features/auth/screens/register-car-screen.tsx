@@ -1,10 +1,9 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { AppButton, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { AppButton, ErrorBanner, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { Palette, Spacing } from '@/styles';
 
-import { AuthErrorBanner } from '../components/auth-error-banner';
 import { HouseholdCarForm } from '../components/register-car/household-car-form';
 import { RegisterCarConfirmView } from '../components/register-car/register-car-confirm-view';
 import { RegisterCarLoadingView } from '../components/register-car/register-car-loading-view';
@@ -85,7 +84,7 @@ export default function RegisterCarScreen() {
               />
             )}
 
-            {registerCar.errorMessage ? <AuthErrorBanner message={registerCar.errorMessage} /> : null}
+            {registerCar.errorMessage ? <ErrorBanner message={registerCar.errorMessage} /> : null}
 
             {step !== 'confirm' && (
               <AppButton

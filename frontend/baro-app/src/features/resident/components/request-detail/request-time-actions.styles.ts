@@ -7,6 +7,9 @@ export const styles = StyleSheet.create({
     marginTop: Spacing.sm,
     gap: Spacing.base + 2,
   },
+  containerDisabled: {
+    opacity: 0.5,
+  },
   heading: {
     fontSize: 14,
     fontWeight: FontWeight.bold,
@@ -36,7 +39,7 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.sm + 2,
   },
-  timedButton10: {
+  timedButton30: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -44,12 +47,12 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
   },
-  timedButton10Text: {
+  timedButton30Text: {
     fontSize: 16,
     fontWeight: FontWeight.bold,
     color: Palette.violet600,
   },
-  timedButton30: {
+  timedButton60: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -57,7 +60,7 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
   },
-  timedButton30Text: {
+  timedButton60Text: {
     fontSize: 16,
     fontWeight: FontWeight.bold,
     color: '#00a38b',

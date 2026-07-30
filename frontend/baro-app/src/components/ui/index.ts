@@ -1,5 +1,6 @@
 export * from './app-button';
 export * from './avatar';
+export * from './error-banner';
 export * from './responsive-container';
 export * from './screen';
 export * from './screen-header';

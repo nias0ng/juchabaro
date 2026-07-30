@@ -1,12 +1,13 @@
 import { useLocalSearchParams } from 'expo-router';
 import { Text, View } from 'react-native';
 
-import { Screen, ScreenHeader } from '@/components/ui';
+import { ErrorBanner, Screen, ScreenHeader } from '@/components/ui';
 import { RequestInfoCard } from '@/features/resident/components/request-detail/request-info-card';
 import { RequestPhoto } from '@/features/resident/components/request-detail/request-photo';
 import { RequestReminderNotice } from '@/features/resident/components/request-detail/request-reminder-notice';
 import { RequestTimeActions } from '@/features/resident/components/request-detail/request-time-actions';
 import { useMoveRequestDetail } from '@/features/resident/hooks/use-move-request-detail';
+import { useMoveRequestResponse } from '@/features/resident/hooks/use-move-request-response';
 import { toRequestDetailDisplay } from '@/features/resident/utils/move-request';
 import { Palette } from '@/styles';
 
@@ -18,10 +19,17 @@ const REMINDER_MESSAGE = '응답이 없으면 한 시간 후에 한 번 더 알�
 export default function RequestDetailScreen() {
   const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
   const requestId = requestIdParam ? Number(requestIdParam) : null;
-  const { detail, isLoading, error } = useMoveRequestDetail(
-    requestId !== null && !Number.isNaN(requestId) ? requestId : null,
-  );
+  const normalizedRequestId = requestId !== null && !Number.isNaN(requestId) ? requestId : null;
+  const { detail, isLoading, error, refetch } = useMoveRequestDetail(normalizedRequestId);
+  const { submit, isSubmitting, errorMessage: submitError } = useMoveRequestResponse(normalizedRequestId);
   const display = detail ? toRequestDetailDisplay(detail) : null;
+
+  const hasResponded = detail ? detail.responses.length > 0 : false;
+
+  const respond = async (responseType: 'WILL_MOVE' | 'CANNOT_MOVE_NOW', estimatedMinutes: number | null) => {
+    const succeeded = await submit({ responseType, estimatedMinutes });
+    if (succeeded) refetch();
+  };
 
   const statusMessage = isLoading
     ? '이동 요청 정보를 불러오는 중입니다'
@@ -81,7 +89,15 @@ export default function RequestDetailScreen() {
 
             <RequestReminderNotice message={REMINDER_MESSAGE} />
 
-            <RequestTimeActions />
+            {submitError ? <ErrorBanner message={submitError} /> : null}
+
+            <RequestTimeActions
+              disabled={hasResponded || isSubmitting}
+              onPressImmediate={() => respond('WILL_MOVE', 10)}
+              onPress30Min={() => respond('WILL_MOVE', 30)}
+              onPress60Min={() => respond('WILL_MOVE', 60)}
+              onPressDecline={() => respond('CANNOT_MOVE_NOW', null)}
+            />
           </View>
         </>
       )}

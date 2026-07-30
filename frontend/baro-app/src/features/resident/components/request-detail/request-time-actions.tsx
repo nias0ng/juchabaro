@@ -4,36 +4,58 @@ import { styles } from './request-time-actions.styles';
 
 type RequestTimeActionsProps = {
   onPressImmediate?: () => void;
-  onPress10Min?: () => void;
   onPress30Min?: () => void;
+  onPress60Min?: () => void;
   onPressDecline?: () => void;
+  disabled?: boolean;
 };
 
 export function RequestTimeActions({
   onPressImmediate,
-  onPress10Min,
   onPress30Min,
+  onPress60Min,
   onPressDecline,
+  disabled = false,
 }: RequestTimeActionsProps) {
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, disabled && styles.containerDisabled]}>
       <Text style={styles.heading}>언제 이동하실 수 있나요?</Text>
 
-      <Pressable accessibilityRole="button" style={styles.immediateButton} onPress={onPressImmediate}>
+      <Pressable
+        accessibilityRole="button"
+        style={styles.immediateButton}
+        disabled={disabled}
+        onPress={onPressImmediate}
+      >
         <Text style={styles.immediateButtonText}>바로 이동하겠습니다</Text>
         <Text style={styles.immediateButtonArrow}>→</Text>
       </Pressable>
 
       <View style={styles.timedRow}>
-        <Pressable accessibilityRole="button" style={styles.timedButton10} onPress={onPress10Min}>
-          <Text style={styles.timedButton10Text}>10분 이내</Text>
-        </Pressable>
-        <Pressable accessibilityRole="button" style={styles.timedButton30} onPress={onPress30Min}>
+        <Pressable
+          accessibilityRole="button"
+          style={styles.timedButton30}
+          disabled={disabled}
+          onPress={onPress30Min}
+        >
           <Text style={styles.timedButton30Text}>30분 이내</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          style={styles.timedButton60}
+          disabled={disabled}
+          onPress={onPress60Min}
+        >
+          <Text style={styles.timedButton60Text}>1시간 이내</Text>
         </Pressable>
       </View>
 
-      <Pressable accessibilityRole="button" style={styles.declineLink} onPress={onPressDecline}>
+      <Pressable
+        accessibilityRole="button"
+        style={styles.declineLink}
+        disabled={disabled}
+        onPress={onPressDecline}
+      >
         <Text style={styles.declineText}>지금은 이동이 어렵습니다</Text>
       </Pressable>
     </View>

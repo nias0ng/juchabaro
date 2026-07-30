@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { getMoveRequestDetail } from '@/features/resident/api/move-request-api';
 import type { MoveRequestDetail } from '@/features/resident/api/types';
@@ -9,6 +9,8 @@ export function useMoveRequestDetail(requestId: number | null) {
   const [detail, setDetail] = useState<MoveRequestDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  // fetch 이펙트를 다시 돌리기 위한 트리거. 값 자체는 의미 없고 바뀌기만 하면 된다.
+  const [refetchTick, setRefetchTick] = useState(0);
 
   useEffect(() => {
     if (status !== 'authenticated' || !accessToken || requestId === null) {
@@ -43,7 +45,11 @@ export function useMoveRequestDetail(requestId: number | null) {
     return () => {
       isMounted = false;
     };
-  }, [status, accessToken, requestId]);
+  }, [status, accessToken, requestId, refetchTick]);
 
-  return { detail, isLoading, error };
+  const refetch = useCallback(() => {
+    setRefetchTick((tick) => tick + 1);
+  }, []);
+
+  return { detail, isLoading, error, refetch };
 }

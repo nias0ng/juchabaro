@@ -81,3 +81,20 @@ export type MoveRequestDetail = {
   responses: MoveRequestResponseItem[];
   history: MoveRequestHistoryItem[]; // notifications를 requestId 기준, sentAt 순 정렬
 };
+
+// POST /api/move-requests/{requestId}/responses 요청 body.
+export type MoveResponseRequest = {
+  responseType: MoveResponseType;
+  estimatedMinutes: number | null; // WILL_MOVE일 때만 필수(10/30/60/120), CANNOT_MOVE_NOW면 null
+};
+
+// POST /api/move-requests/{requestId}/responses 응답의 result.
+export type MoveResponseResult = {
+  responseId: number;
+  requestId: number;
+  responseType: MoveResponseType;
+  estimatedMinutes: number | null;
+  requestStatus: MoveRequestStatus;
+  dueAt: string | null;
+  respondedAt: string;
+};

@@ -1,9 +1,8 @@
 import { router } from 'expo-router';
 
-import { ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { ErrorBanner, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { Gradients, Palette, Spacing } from '@/styles';
 
-import { AuthErrorBanner } from '../components/auth-error-banner';
 import { SignupProgress } from '../components/signup/signup-progress';
 import { SignupStepActions } from '../components/signup/signup-step-actions';
 import { SignupSteps } from '../components/signup/signup-steps';
@@ -40,7 +39,7 @@ export default function SignupScreen() {
             onGoHome={() => goToAuthenticatedArea('/resident')}
           />
 
-          {signup.errorMessage ? <AuthErrorBanner message={signup.errorMessage} /> : null}
+          {signup.errorMessage ? <ErrorBanner message={signup.errorMessage} /> : null}
 
           {!isCompleteStep && (
             <SignupStepActions
