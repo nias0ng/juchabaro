@@ -92,6 +92,21 @@ public enum ErrorCode {
             "이동 요청 조회 조건이 올바르지 않습니다."
     ),
 
+    NOTIFICATION_QUERY_INVALID(
+            HttpStatus.BAD_REQUEST,
+            "알림 조회 조건이 올바르지 않습니다."
+    ),
+
+    NOTIFICATION_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "알림을 찾을 수 없습니다."
+    ),
+
+    NOTIFICATION_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 알림에 접근할 권한이 없습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
