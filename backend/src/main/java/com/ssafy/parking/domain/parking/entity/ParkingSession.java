@@ -52,6 +52,9 @@ public class ParkingSession extends BaseEntity {
     @Column(name = "exit_time")
     private LocalDateTime exitTime;
 
+    @Column(name = "idempotency_key", unique = true, length = 100)
+    private String idempotencyKey;
+
     @Builder
     private ParkingSession(
             Vehicle vehicle,
@@ -60,7 +63,8 @@ public class ParkingSession extends BaseEntity {
             String trackingId,
             LocalDateTime entryTime,
             LocalDateTime parkedAt,
-            LocalDateTime exitTime
+            LocalDateTime exitTime,
+            String idempotencyKey
     ) {
         this.vehicle = vehicle;
         this.zone = zone;
@@ -69,5 +73,6 @@ public class ParkingSession extends BaseEntity {
         this.entryTime = entryTime;
         this.parkedAt = parkedAt;
         this.exitTime = exitTime;
+        this.idempotencyKey = idempotencyKey;
     }
 }
