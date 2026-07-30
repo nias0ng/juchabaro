@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.parking.domain.vehicle.entity.Vehicle;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -17,6 +18,7 @@ public record VehicleDetailResponse(
         @Schema(example = "true") @JsonProperty("isElectric") boolean isElectric,
         @Schema(example = "RESIDENT") String ownerType,
         @Schema(example = "ACTIVE") String status,
+        @Schema(description = "방문일 (VISITOR만 값, 그 외 null)", example = "2026-07-27") LocalDate visitDate,
         @Schema(example = "2026-07-23T14:10:00+09:00") OffsetDateTime createdAt,
         @Schema(example = "2026-07-23T14:10:00+09:00") OffsetDateTime updatedAt
 ) {
@@ -25,6 +27,7 @@ public record VehicleDetailResponse(
                 v.getId(), v.getUser().getId(), v.getPlateNumber(), v.getVehicleModel(),
                 v.isDisabledVehicle(), v.isElectric(),
                 v.getOwnerType().name(), v.getStatus().name(),
+                v.getVisitDate(),
                 toKst(v.getCreatedAt()), toKst(v.getUpdatedAt())
         );
     }

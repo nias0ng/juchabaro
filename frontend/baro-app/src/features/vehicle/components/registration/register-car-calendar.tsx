@@ -20,12 +20,17 @@ function startOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
 /**
  * 외부 패키지 없이 순수 JS Date 계산만으로 그리는 월간 그리드 캘린더.
  * 이전/다음 달 이동은 내부 상태로, 실제 선택값은 상위(form)가 소유한다.
  */
 export function RegisterCarCalendar({ selectedDate, onSelectDate }: RegisterCarCalendarProps) {
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(selectedDate ?? new Date()));
+  const today = startOfDay(new Date());
 
   const year = visibleMonth.getFullYear();
   const month = visibleMonth.getMonth();
@@ -76,17 +81,21 @@ export function RegisterCarCalendar({ selectedDate, onSelectDate }: RegisterCarC
         ))}
         {dates.map((date) => {
           const selected = selectedDate ? isSameDay(date, selectedDate) : false;
+          const disabled = date < today;
 
           return (
             <Pressable
               key={date.getDate()}
               accessibilityRole="button"
-              accessibilityState={{ selected }}
+              accessibilityState={{ selected, disabled }}
+              disabled={disabled}
               style={styles.cell}
               onPress={() => onSelectDate(date)}
             >
               <View style={[styles.dayCircle, selected && styles.dayCircleSelected]}>
-                <Text style={[styles.dayText, selected && styles.dayTextSelected]}>{date.getDate()}</Text>
+                <Text style={[styles.dayText, selected && styles.dayTextSelected, disabled && styles.dayTextDisabled]}>
+                  {date.getDate()}
+                </Text>
               </View>
             </Pressable>
           );

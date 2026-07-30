@@ -2,18 +2,20 @@ import { deleteJson, getJson, postJson } from '@/services/http-client';
 
 import {
   deleteVehicleMock,
+  getVehicleDetailMock,
   getVehiclesMock,
   registerVehicleMock,
 } from './vehicle-api.mock';
-import type { RegisterVehicleRequest, VehicleResult } from './types';
+import type {
+  RegisterVehicleRequest,
+  VehicleDetailResult,
+  VehicleListResult,
+  VehicleResult,
+} from './types';
 
-// TODO(vehicle-api): 백엔드 /vehicles 명세가 확정되면 이 값을 false로 전환하고 실제 API를 검증한다.
 const useMockVehicles = __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_VEHICLES === 'true';
 
-/**
- * 차량 등록 API. 응답으로 저장된 차량 정보를 그대로 돌려받아 별도의 조회 호출 없이 등록 확인에 사용
- * TODO(vehicle-api): 백엔드 /vehicles 명세가 확정되면 요청/응답 필드를 다시 확인해야 함
- */
+/** 차량 등록 API. 응답으로 저장된 차량 정보를 그대로 돌려받아 별도의 조회 호출 없이 등록 확인에 사용 */
 export function registerVehicle(
   request: RegisterVehicleRequest,
   accessToken?: string,
@@ -22,15 +24,26 @@ export function registerVehicle(
     return registerVehicleMock(request);
   }
 
-  return postJson<VehicleResult>('/vehicles', request, accessToken);
+  return postJson<VehicleResult>('/api/vehicles', request, accessToken);
 }
 
-export function getVehicles(accessToken: string): Promise<VehicleResult[]> {
+export async function getVehicles(accessToken: string): Promise<VehicleResult[]> {
   if (useMockVehicles) {
     return getVehiclesMock();
   }
 
-  return getJson<VehicleResult[]>('/vehicles', accessToken);
+  // result가 배열이 아니라 { totalCount, vehicles } 객체로 온다.
+  const { vehicles } = await getJson<VehicleListResult>('/api/vehicles', accessToken);
+  return vehicles;
+}
+
+/** 목록 조회엔 없는 등록일(createdAt) 등을 채우기 위한 차량 한 대 상세 조회. */
+export function getVehicleDetail(vehicleId: number, accessToken: string): Promise<VehicleDetailResult> {
+  if (useMockVehicles) {
+    return getVehicleDetailMock(vehicleId);
+  }
+
+  return getJson<VehicleDetailResult>(`/api/vehicles/${vehicleId}`, accessToken);
 }
 
 export function deleteVehicle(vehicleId: number, accessToken: string): Promise<void> {
@@ -38,5 +51,5 @@ export function deleteVehicle(vehicleId: number, accessToken: string): Promise<v
     return deleteVehicleMock(vehicleId);
   }
 
-  return deleteJson<void>(`/vehicles/${vehicleId}`, accessToken);
+  return deleteJson<void>(`/api/vehicles/${vehicleId}`, accessToken);
 }

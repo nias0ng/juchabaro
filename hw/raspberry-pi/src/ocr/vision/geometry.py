@@ -6,6 +6,7 @@ YOLO anchor의 번호판 4점 좌표를 프레임별로 추정하고 원근 보�
 
 주요 기능:
     - 좌상→우상→우하→좌하 순서의 4점 좌표 검증
+    - anchor별 우선순위 후보 중 첫 geometry-valid 후보 선택
     - 두 anchor 사이의 좌표 보간과 제한적인 외삽
     - 단일 anchor 검출 시 인접 프레임에 한정한 좌표 재사용
     - 번호판의 자연스러운 가로·세로 크기를 유지한 perspective warp
@@ -25,6 +26,8 @@ from typing import Sequence, cast
 import cv2
 import numpy as np
 
+from ..errors import OcrComponentError
+from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import (
     CapturedFrame,
     DetectedPlate,
@@ -35,15 +38,12 @@ from ..types import (
 )
 
 
-# [입력 계약과 예외]
-
-
-EXPECTED_FRAME_COUNT = 6
-EXPECTED_FRAME_INDICES = tuple(range(EXPECTED_FRAME_COUNT))
-
-
 class GeometryError(ValueError):
-    """번호판 좌표를 추정하거나 원근 보정할 수 없는 경우."""
+    """장면상의 번호판 좌표를 사용할 수 없는 경우."""
+
+
+class GeometryProcessingError(OcrComponentError, RuntimeError):
+    """Geometry 입력·OpenCV·내부 반환 계약이 깨진 경우."""
 
 
 # [기하 처리 설정]
@@ -67,6 +67,8 @@ class GeometryConfig:
     min_aspect_ratio: float = 1.2
     max_aspect_ratio: float = 8.0
     max_extrapolation_frames: int = 1
+    # 단일 anchor도 인접 프레임까지 재사용해 기본 집계 최소 프레임 수를
+    # 충족할 가능성을 유지한다.
     single_anchor_reuse_radius: int = 1
 
     def __post_init__(self) -> None:
@@ -109,14 +111,16 @@ class PlateGeometry:
     모델 학습 계약 오류가 조용히 가려지지 않는다.
 
     입력:
-        시간순 CapturedFrame 6장과 최대 2개의 DetectedPlate anchor.
+        pipeline 진입 검증을 통과한 시간순 CapturedFrame 시퀀스와
+        최대 2개 anchor 프레임에 속한 우선순위순 DetectedPlate 후보.
 
     출력:
         프레임별 EstimatedQuad 또는 원근 보정된 RectifiedPlate.
 
     실패:
-        프레임 계약, 좌표, anchor 구성이 잘못되거나 유효한 anchor가
-        하나도 없으면 GeometryError가 발생한다.
+        장면상 유효한 anchor가 하나도 없으면 GeometryError가 발생한다.
+        후보 타입·구성·좌표 shape 같은 내부 계약이 깨지면
+        GeometryProcessingError가 발생한다.
     """
 
     def __init__(
@@ -131,11 +135,12 @@ class PlateGeometry:
         detections: Sequence[DetectedPlate],
     ) -> tuple[EstimatedQuad, ...]:
         """
-        최대 두 anchor의 좌표로 사용할 수 있는 프레임의 4점을 추정한다.
+        최대 두 anchor의 후보에서 사용할 좌표를 골라 프레임별로 추정한다.
 
         입력:
-            frame_index 0~5의 BGR 프레임 6장과 서로 다른 프레임에서
-            얻은 DetectedPlate 1~2개.
+            연속 frame_index를 가진 시간순 BGR 프레임과 1~2개 anchor
+            프레임에서 얻은 DetectedPlate 후보들. 같은 프레임의 후보는
+            detector 우선순위가 높은 순서여야 한다.
 
         출력:
             frame_index 순으로 정렬된 유효한 EstimatedQuad tuple.
@@ -143,28 +148,37 @@ class PlateGeometry:
             단일 anchor 재사용 범위는 GeometryConfig 설정을 따른다.
 
         실패:
-            구조적인 입력 계약이 잘못되거나 검증을 통과한 anchor가
-            하나도 없으면 GeometryError가 발생한다.
+            detection의 anchor 구성이나 내부 반환 계약이 잘못되면
+            GeometryProcessingError가 발생한다. 모든 anchor가 장면상
+            부적합하면 거부 사유를 담은 GeometryError가 발생한다.
+            Burst 입력 계약은 pipeline 경계에서 한 번 검증하며 여기서
+            반복하지 않는다.
         """
 
-        validated_frames = self._validate_frames(frames)
+        frame_tuple = tuple(frames)
         frame_by_index = {
             frame.frame_index: frame
-            for frame in validated_frames
+            for frame in frame_tuple
         }
         supplied_detections = tuple(detections)
 
-        if not 1 <= len(supplied_detections) <= 2:
-            raise GeometryError("번호판 anchor 검출 결과는 1개 또는 2개여야 합니다.")
+        if not supplied_detections:
+            raise GeometryProcessingError(
+                "번호판 anchor 검출 후보가 하나 이상 필요합니다."
+            )
 
         detection_indices = tuple(
             detection.frame_index
             for detection in supplied_detections
         )
-        if len(set(detection_indices)) != len(detection_indices):
-            raise GeometryError("같은 프레임의 anchor 검출 결과가 중복되었습니다.")
+        anchor_indices = tuple(dict.fromkeys(detection_indices))
+        if len(anchor_indices) > 2:
+            raise GeometryProcessingError(
+                "번호판 후보는 최대 2개 anchor 프레임에만 속해야 합니다: "
+                f"actual={anchor_indices}"
+            )
         if any(index not in frame_by_index for index in detection_indices):
-            raise GeometryError(
+            raise GeometryProcessingError(
                 "anchor frame_index가 촬영 burst에 포함되어 있지 않습니다: "
                 f"actual={detection_indices}"
             )
@@ -172,37 +186,55 @@ class PlateGeometry:
         usable_anchors: list[tuple[int, Quad]] = []
         rejected_reasons: list[str] = []
 
-        for detection in supplied_detections:
-            frame = frame_by_index[detection.frame_index]
-            try:
-                quad = self._validate_quad(detection.quad, frame)
-            except GeometryError as exc:
-                rejected_reasons.append(
-                    f"frame_index={detection.frame_index}: {exc}"
-                )
-            else:
-                usable_anchors.append((detection.frame_index, quad))
+        for anchor_index in anchor_indices:
+            frame = frame_by_index[anchor_index]
+            anchor_candidates = tuple(
+                detection
+                for detection in supplied_detections
+                if detection.frame_index == anchor_index
+            )
+
+            # Detector가 정한 score·bbox 우선순위는 유지하되, 장면상
+            # 부적합한 quad 하나가 뒤의 정상 후보를 가리지 않게 한다.
+            for candidate_rank, detection in enumerate(
+                anchor_candidates,
+                start=1,
+            ):
+                try:
+                    quad = self._validate_quad(detection.quad, frame)
+                except GeometryError as exc:
+                    rejected_reasons.append(
+                        f"frame_index={anchor_index}, "
+                        f"candidate_rank={candidate_rank}: {exc}"
+                    )
+                else:
+                    usable_anchors.append((anchor_index, quad))
+                    break
 
         if not usable_anchors:
-            detail = "; ".join(rejected_reasons) or "검출 결과가 없습니다."
-            raise GeometryError(f"사용할 수 있는 번호판 anchor가 없습니다: {detail}")
+            detail = "; ".join(rejected_reasons)
+            raise GeometryError(
+                f"사용할 수 있는 번호판 anchor가 없습니다: {detail}"
+            )
 
         usable_anchors.sort(key=lambda item: item[0])
         if len(usable_anchors) == 1:
             estimates = self._estimate_from_one_anchor(
-                validated_frames,
+                frame_tuple,
                 usable_anchors[0],
             )
         else:
             estimates = self._estimate_from_two_anchors(
-                validated_frames,
+                frame_tuple,
                 usable_anchors[0],
                 usable_anchors[1],
             )
 
         if not estimates:
-            # 유효한 anchor 자신은 항상 포함되므로 이 분기는 방어적 검사다.
-            raise GeometryError("프레임에 적용할 수 있는 번호판 좌표가 없습니다.")
+            # 유효한 anchor 자신은 항상 포함되므로 내부 invariant 오류다.
+            raise GeometryProcessingError(
+                "프레임에 적용할 수 있는 번호판 좌표가 없습니다."
+            )
 
         return tuple(sorted(estimates, key=lambda estimate: estimate.frame_index))
 
@@ -222,13 +254,30 @@ class PlateGeometry:
             원래 번호판의 긴 변·짧은 변 길이로 계산한 RectifiedPlate.
 
         실패:
-            프레임과 좌표의 인덱스가 다르거나 좌표 검증 또는 OpenCV
-            원근 변환에 실패하면 GeometryError가 발생한다.
+            장면상의 좌표가 유효하지 않으면 GeometryError가 발생한다.
+            입력 계약 위반이나 OpenCV 원근 변환 실패는
+            GeometryProcessingError가 발생한다.
         """
 
-        self._validate_frame(frame)
+        if not isinstance(frame, CapturedFrame):
+            raise GeometryProcessingError(
+                "frame은 CapturedFrame이어야 합니다."
+            )
+        if (
+            isinstance(frame.frame_index, bool)
+            or not isinstance(frame.frame_index, int)
+        ):
+            raise GeometryProcessingError(
+                "frame_index는 bool이 아닌 정수여야 합니다."
+            )
+        if not is_nonempty_bgr_uint8_image(frame.image):
+            raise GeometryProcessingError(
+                "frame.image는 비어 있지 않은 BGR uint8 "
+                "HxWx3 배열이어야 합니다."
+            )
+
         if frame.frame_index != estimate.frame_index:
-            raise GeometryError(
+            raise GeometryProcessingError(
                 "프레임과 추정 좌표의 frame_index가 다릅니다: "
                 f"frame={frame.frame_index}, estimate={estimate.frame_index}"
             )
@@ -268,81 +317,19 @@ class PlateGeometry:
                 flags=cv2.INTER_LINEAR,
             )
         except cv2.error as exc:
-            raise GeometryError(
+            raise GeometryProcessingError(
                 f"번호판 원근 보정에 실패했습니다: frame_index={frame.frame_index}"
             ) from exc
 
-        if (
-            not isinstance(rectified, np.ndarray)
-            or rectified.dtype != np.uint8
-            or rectified.ndim != 3
-            or rectified.shape[2] != 3
-            or rectified.size == 0
-        ):
-            raise GeometryError(
+        if not is_nonempty_bgr_uint8_image(rectified):
+            raise GeometryProcessingError(
                 f"원근 보정 결과가 유효하지 않습니다: frame_index={frame.frame_index}"
             )
 
         return RectifiedPlate(
             frame_index=frame.frame_index,
             image=rectified,
-            quad_estimate=estimate,
         )
-
-    def _validate_frames(
-        self,
-        frames: Sequence[CapturedFrame],
-    ) -> tuple[CapturedFrame, ...]:
-        """촬영 burst가 0~5 순서의 유효한 BGR 프레임인지 검사한다."""
-
-        validated = tuple(frames)
-        if len(validated) != EXPECTED_FRAME_COUNT:
-            raise GeometryError(
-                f"프레임은 정확히 {EXPECTED_FRAME_COUNT}장이어야 합니다: "
-                f"actual={len(validated)}"
-            )
-
-        for frame in validated:
-            self._validate_frame(frame)
-
-        indices = tuple(frame.frame_index for frame in validated)
-        if indices != EXPECTED_FRAME_INDICES:
-            raise GeometryError(
-                "프레임은 촬영 시간순이며 frame_index가 0~5여야 합니다: "
-                f"actual={indices}"
-            )
-
-        return validated
-
-    @staticmethod
-    def _validate_frame(frame: CapturedFrame) -> None:
-        """한 프레임이 비어 있지 않은 BGR uint8 HxWx3인지 검사한다."""
-
-        if not isinstance(frame, CapturedFrame):
-            raise GeometryError(
-                "frames의 모든 항목은 CapturedFrame이어야 합니다."
-            )
-        if (
-            isinstance(frame.frame_index, bool)
-            or not isinstance(frame.frame_index, int)
-        ):
-            raise GeometryError(
-                "frame_index는 bool이 아닌 정수여야 합니다."
-            )
-
-        image = frame.image
-        if (
-            not isinstance(image, np.ndarray)
-            or image.dtype != np.uint8
-            or image.ndim != 3
-            or image.shape[2] != 3
-            or image.shape[0] <= 0
-            or image.shape[1] <= 0
-        ):
-            raise GeometryError(
-                "프레임 이미지는 비어 있지 않은 BGR uint8 HxWx3 "
-                f"배열이어야 합니다: frame_index={frame.frame_index}"
-            )
 
     def _validate_quad(
         self,
@@ -355,27 +342,53 @@ class PlateGeometry:
         유효한 좌표는 float tuple로 정규화해 반환한다.
         """
 
-        if len(quad) != 4:
-            raise GeometryError("번호판 좌표는 꼭짓점 4개여야 합니다.")
+        points = self._normalize_quad_coordinates(quad)
+        points = self._validate_bounds_and_clip(points, frame)
+        self._validate_order_and_convexity(points)
+        self._validate_area_edges_and_aspect(points)
+        return points
+
+    @staticmethod
+    def _normalize_quad_coordinates(quad: Quad) -> Quad:
+        """네 꼭짓점을 유한한 float ``(x, y)`` 좌표로 정규화한다."""
 
         try:
+            if len(quad) != 4:
+                raise GeometryProcessingError(
+                    "번호판 좌표는 꼭짓점 4개여야 합니다."
+                )
             if any(len(point) != 2 for point in quad):
-                raise GeometryError("각 번호판 꼭짓점은 (x, y) 두 값이어야 합니다.")
+                raise GeometryProcessingError(
+                    "각 번호판 꼭짓점은 (x, y) 두 값이어야 합니다."
+                )
             points = tuple(
                 (float(point[0]), float(point[1]))
                 for point in quad
             )
-        except GeometryError:
+        except GeometryProcessingError:
             raise
         except (TypeError, ValueError, IndexError) as exc:
-            raise GeometryError("번호판 좌표를 (x, y) 숫자로 변환할 수 없습니다.") from exc
+            raise GeometryProcessingError(
+                "번호판 좌표를 (x, y) 숫자로 변환할 수 없습니다."
+            ) from exc
 
         if not all(
             math.isfinite(value)
             for point in points
             for value in point
         ):
-            raise GeometryError("번호판 좌표는 유한한 숫자여야 합니다.")
+            raise GeometryProcessingError(
+                "번호판 좌표는 유한한 숫자여야 합니다."
+            )
+
+        return cast(Quad, points)
+
+    def _validate_bounds_and_clip(
+        self,
+        points: Quad,
+        frame: CapturedFrame,
+    ) -> Quad:
+        """프레임 경계를 검사하고 허용 오차 안의 좌표만 경계로 자른다."""
 
         image_height, image_width = frame.image.shape[:2]
         tolerance = self._config.bounds_tolerance_px
@@ -396,6 +409,12 @@ class PlateGeometry:
             )
             for x, y in points
         )
+
+        return cast(Quad, points)
+
+    @staticmethod
+    def _validate_order_and_convexity(points: Quad) -> None:
+        """TL→TR→BR→BL 의미 순서와 볼록 사각형 조건을 검증한다."""
 
         top_left, top_right, bottom_right, bottom_left = points
         top_mid_y = (top_left[1] + top_right[1]) / 2.0
@@ -423,6 +442,13 @@ class PlateGeometry:
         if any(value <= 1e-6 for value in cross_products):
             raise GeometryError("번호판 좌표가 유효한 볼록 사각형이 아닙니다.")
 
+    def _validate_area_edges_and_aspect(
+        self,
+        points: Quad,
+    ) -> None:
+        """사각형 면적, 네 변 길이와 종횡비 운영 기준을 검증한다."""
+
+        top_left, top_right, bottom_right, bottom_left = points
         signed_twice_area = sum(
             points[index][0] * points[(index + 1) % 4][1]
             - points[(index + 1) % 4][0] * points[index][1]
@@ -462,8 +488,6 @@ class PlateGeometry:
                 "번호판 종횡비가 허용 범위를 벗어납니다: "
                 f"aspect_ratio={aspect_ratio:.3f}"
             )
-
-        return cast(Quad, points)
 
     # [Anchor 좌표 보간]
 
@@ -516,7 +540,9 @@ class PlateGeometry:
         later_index, later_quad = later
         interval = later_index - earlier_index
         if interval <= 0:
-            raise GeometryError("두 anchor의 시간순 인덱스가 올바르지 않습니다.")
+            raise GeometryProcessingError(
+                "두 anchor의 시간순 인덱스가 올바르지 않습니다."
+            )
 
         estimates: list[EstimatedQuad] = []
         for frame in frames:

@@ -73,4 +73,7 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Palette.white,
   },
+  dayTextDisabled: {
+    color: Palette.gray300,
+  },
 });
