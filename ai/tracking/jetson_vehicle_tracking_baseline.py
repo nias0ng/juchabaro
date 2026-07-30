@@ -45,6 +45,17 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
     OUT_OF_ZONE이 확정되고, 이동 감지 시 상태가 리셋되어 매 프레임
     이벤트가 발행될 수 있다(다른 위반 판정도 동일한 구조적 한계를
     공유하나, OUT_OF_ZONE은 대상 면적이 훨씬 넓어 영향이 커진다).
+  · (N-1 수정 후에도 남는 것, N-2) 게이트에 앞머리만 걸친 차량(예:
+    entry_zone_min_overlap_ratio 기준 몸겹침 25%)은 여전히 OUT_OF_ZONE으로
+    발행된다 — I-1(AISLE 부분겹침)과 같은 뿌리 원인(몸체 겹침 임계값
+    미달)이다. 게이트는 차가 정당하게 오래 서 있을 수 있는 유일한
+    장소라, 파일럿에서 `--min-dwell-seconds`를 낮추면 체감 빈도가 올라갈
+    수 있다.
+  · (N-3) 피해 차량이 흔들려 정착(min_dwell_seconds)이 풀렸다가 다시
+    정착하면, 같은 물리적 상황에 대해 DOUBLE_PARK가 두 번 발행될 수
+    있다 — 이건 이번 MR이 만든 게 아니라, `pending_home_zone_ids` 보류
+    메커니즘이 막으려던 "이벤트만 바뀌며 중복 발행"의 잔여 형태다. 후속
+    정리가 필요하다.
 
 CLI 모드: 웹캠 점검(`--probe-camera`), 캘리브레이션용 프레임 저장
 (`--capture-frame`), 실시간 루프(`--run`), 하드웨어 비의존 자체 테스트
@@ -760,7 +771,13 @@ class ViolationMonitor:
             zone_overlaps_by_track[detection.track_id] = overlaps
             home_zone_by_track[detection.track_id] = _home_zone_overlap(overlaps)
             ignored_overlap_by_track[detection.track_id] = _ignored_zone_overlap(
-                detection.bbox, self._zones.all(), min_overlap_ratio=self._min_overlap_ratio
+                # (리뷰 반영, N-1) "게이트 안에 있다"는 같은 기하학적 질문을 §2.2
+                # 입차매칭(_try_match_entry_event)도 판단하는데, 거기는
+                # entry_zone_min_overlap_ratio를 쓴다. 여기서 min_overlap_ratio(0.40,
+                # 스팟 판정용)를 쓰면 --entry-zone-min-overlap-ratio를 낮췄을 때
+                # "입차매칭은 게이트로 인정 + OUT_OF_ZONE은 게이트 아님"이라는
+                # 모순된 판정이 같은 프레임에 나온다 — 같은 질문에는 같은 임계값을 써야 한다.
+                detection.bbox, self._zones.all(), min_overlap_ratio=self._entry_zone_min_overlap_ratio
             )
             state = self._tracks[detection.track_id]
             dwell_by_track[detection.track_id] = (detection.captured_at - state.stationary_since).total_seconds()
@@ -1757,6 +1774,32 @@ class BaselineLogicTests(unittest.TestCase):
         monitor.update([VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=0, captured_at=base_time)])
         events = monitor.update(
             [VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=1, captured_at=base_time + timedelta(seconds=2))]
+        )
+        self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events])
+
+    def test_monitor_gate_overlap_uses_entry_zone_threshold_not_general_threshold(self) -> None:
+        """리뷰 반영(N-1): "게이트 안에 있다" 판단은 §2.2 입차매칭과 같은
+        entry_zone_min_overlap_ratio를 써야 한다. 몸겹침이 entry_zone_min_overlap_ratio는
+        넘고(그래서 입차매칭은 성공) min_overlap_ratio(스팟 판정용, 더 높음)는 못 넘는
+        차량이, 같은 프레임에서 "게이트에 있다(번호판 매칭 성공)"와 "구역 외 주차"라는
+        모순된 판정을 동시에 받으면 안 된다."""
+        ent = self.make_zone("ENT-1", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([ent]),
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=1.0,
+            movement_epsilon=0.01,
+            entry_zone_min_overlap_ratio=0.20,
+        )
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        # ENT-1과 몸겹침 37.5% — entry_zone_min_overlap_ratio(0.20)는 넘지만
+        # min_overlap_ratio(0.40)는 못 넘는 위치.
+        gate_bbox = BoundingBox(0.35, 0.0, 0.75, 0.3)
+
+        monitor.add_entry_event(EntryEvent(plate_number="12가3456", captured_at=base_time))
+        monitor.update([VehicleBox(track_id=1, bbox=gate_bbox, confidence=0.9, frame_id=0, captured_at=base_time)])
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=gate_bbox, confidence=0.9, frame_id=1, captured_at=base_time + timedelta(seconds=2))]
         )
         self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events])
 
