@@ -20,6 +20,10 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.ssafy.parking.domain.move.dto.MoveRequestDetailResponse;
+import com.ssafy.parking.domain.move.dto.MoveResponseCreateRequest;
+import com.ssafy.parking.domain.move.dto.MoveResponseCreateResponse;
+
 import java.util.List;
 
 @Tag(name = "이동 요청", description = "차량 이동 요청 API")
@@ -73,5 +77,44 @@ public class MoveRequestController {
                 moveRequestService.getMoveRequests(userId, scope, requestStatus, page, size);
         return ResponseEntity.ok(
                 ApiResponse.success(HttpStatus.OK, "이동 요청 목록 조회에 성공했습니다.", result));
+    }
+
+    @Operation(summary = "이동 요청 상세 조회", description = "요청자 또는 대상 차주가 이동 요청 상세를 조회합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "조회 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "접근 권한 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "이동 요청 없음")
+    })
+    @GetMapping("/{requestId}")
+    public ResponseEntity<ApiResponse<MoveRequestDetailResponse>> getMoveRequest(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @PathVariable Long requestId
+    ) {
+        MoveRequestDetailResponse result = moveRequestService.getMoveRequest(userId, requestId);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "이동 요청 상세 조회에 성공했습니다.", result));
+    }
+
+    @Operation(summary = "이동 요청 응답(원탭)", description = "대상 차주가 이동 예정/불가로 응답합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "응답 등록 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "응답 값 오류"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "응답 권한 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "이동 요청 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "응답 불가 상태")
+    })
+    @PostMapping("/{requestId}/responses")
+    public ResponseEntity<ApiResponse<MoveResponseCreateResponse>> respond(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @PathVariable Long requestId,
+            @RequestBody MoveResponseCreateRequest request
+    ) {
+        MoveResponseCreateResponse result = moveRequestService.respond(userId, requestId, request);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(HttpStatus.CREATED, "이동 요청 응답이 등록되었습니다.", result));
     }
 }
