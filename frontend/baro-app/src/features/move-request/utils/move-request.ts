@@ -1,6 +1,8 @@
 import type {
   MoveEventType,
   MoveRequestDetail,
+  MoveRequestStatus,
+  MoveRequestSummary,
   MoveRequestType,
 } from '@/features/move-request/api/types';
 import type { RequestOverdueTimelineStep } from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
@@ -22,6 +24,15 @@ const REQUEST_TYPE_DISPLAY: Record<
 };
 
 const DEFAULT_LOCATION_LABEL = '위치 정보 없음';
+
+const REQUEST_STATUS_LABEL: Record<MoveRequestStatus, string> = {
+  SENT: '응답 대기',
+  RESPONDED: '이동 대기중',
+  REMINDER_SENT: '재알림 발송',
+  COMPLETED: '이동 완료',
+  NEED_ADMIN: '관리사무소 전달',
+  CANCELLED: '취소됨',
+};
 
 export type RequestDetailDisplay = {
   requestSourceLabel: string;
@@ -218,5 +229,34 @@ export function toRequestReminderDisplay(detail: MoveRequestDetail): RequestRemi
     reminderRoundLabel: latestRoundLabel,
     timeline,
     pendingStep: { label: '이동 확인 대기', status: '진행중' },
+  };
+}
+
+export type RequestSummaryDisplay = {
+  requestId: number;
+  plateNumber: string;
+  eventTypeLabel: string;
+  statusLabel: string;
+  requestedAtLabel: string;
+  message: string | null;
+};
+
+// "07/31 14:20" 형태. 목록 화면은 여러 날짜가 섞여 있어 월/일을 함께 보여준다.
+function formatDateTimeLabel(iso: string): string {
+  const date = new Date(iso);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${month}/${day} ${formatTime24(iso)}`;
+}
+
+// 요청 내역(목록) 화면에서 표시할 문자열로 변환
+export function toRequestSummaryDisplay(summary: MoveRequestSummary): RequestSummaryDisplay {
+  return {
+    requestId: summary.requestId,
+    plateNumber: summary.targetPlateNumber,
+    eventTypeLabel: EVENT_TYPE_LABEL[summary.eventType],
+    statusLabel: REQUEST_STATUS_LABEL[summary.requestStatus],
+    requestedAtLabel: formatDateTimeLabel(summary.requestedAt),
+    message: summary.message,
   };
 }
