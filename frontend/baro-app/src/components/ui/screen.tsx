@@ -21,6 +21,8 @@ type ScreenProps = {
   scroll?: boolean;
   backgroundColor?: string;
   backgroundGradient?: readonly [ColorValue, ColorValue, ...ColorValue[]];
+  /** backgroundGradient의 색상 정지 위치(0~1). 생략하면 균등 분배된다. */
+  backgroundGradientLocations?: readonly number[];
 
   /** 스크롤 콘텐츠 위, SafeAreaView 안에 고정 렌더링된다. */
   header?: ReactNode;
@@ -39,6 +41,7 @@ export function Screen({
   scroll = false,
   backgroundColor,
   backgroundGradient,
+  backgroundGradientLocations,
   header,
   bottomBar,
   avoidKeyboard = false,
@@ -74,7 +77,11 @@ export function Screen({
   );
 
   const background = backgroundGradient ? (
-    <LinearGradient colors={backgroundGradient} style={styles.fill}>
+    <LinearGradient
+      colors={backgroundGradient}
+      locations={backgroundGradientLocations as [number, number, ...number[]] | undefined}
+      style={styles.fill}
+    >
       {body}
     </LinearGradient>
   ) : (
