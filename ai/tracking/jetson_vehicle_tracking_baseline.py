@@ -1008,9 +1008,21 @@ class ViolationMonitor:
             # 그대로 재생산한다 — 걸쳐 선 차에는 EV_OVERSTAY가 영영 발화하지
             # 못한다. 반대로 실제 이동은 앵커 대비 movement_epsilon을 넘으므로
             # moved가 True가 되어 정상 리셋된다.
+            #
+            # (319 리뷰 재검토 3차, C-1) 단, moved는 시계의 "전환"에만 요구하고
+            # "시작"에는 요구하지 않는다(occupied_zone_id is None). 둘을 같이 막으면,
+            # 홈 구역을 첫 프레임이 아니라 나중에 획득하는 트랙(겹침 비율이
+            # min_overlap_ratio 아래에서 시작해 탐지 노이즈로 위로 올라가는 흔한
+            # 경우)은 그 프레임의 moved가 False라서 occupied_zone_id가 영구히 None으로
+            # 남는다. 그러면 occupancy_seconds가 영영 0.0이고, EV_OVERSTAY는 이제
+            # 이 시계로만 발화하므로 아예 발화하지 못한다 — C-1이 없애려던 실패
+            # 유형을 그대로 재생산한다. 시계가 한 번 시작된 뒤의 모든 변경(None으로
+            # 돌아가는 것 포함)은 여전히 moved를 요구하므로 flapping 방어는 유지된다.
             home = home_zone_by_track[detection.track_id]
             home_zone_id = home.zone.zone_id if home is not None else None
-            if home_zone_id != state.occupied_zone_id and moved_by_track[detection.track_id]:
+            if home_zone_id != state.occupied_zone_id and (
+                state.occupied_zone_id is None or moved_by_track[detection.track_id]
+            ):
                 state.occupied_zone_id = home_zone_id
                 state.zone_occupied_since = detection.captured_at if home_zone_id is not None else None
             occupancy_by_track[detection.track_id] = (
@@ -2066,6 +2078,23 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(zone.zone_id, "GEN-01")  # 이제 피해 차량이 점유한 구역이 실제로 실린다
         self.assertAlmostEqual(ratio, 0.9)
 
+        # 구역 겹침이 전혀 없어도 다른 차량의 홈 구역을 침범했으면 이중주차로 판정한다.
+        status, zone, ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_zone=blocked_zone
+        )
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+        assert zone is not None
+        self.assertEqual(zone.zone_id, "GEN-01")
+        self.assertAlmostEqual(ratio, 0.9)
+
+        # 최소 정차 시간 미달이면 겹침이 있어도 아직 OBSERVING이다.
+        status, zone, _ratio = classify_violation(
+            [], dwell_seconds=10.0, min_dwell_seconds=600.0, blocked_zone=blocked_zone
+        )
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+        assert zone is not None
+        self.assertEqual(zone.zone_id, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
+
     def test_ev_overstay_takes_priority_over_aisle_block(self) -> None:
         """EV 충전구역 시간 초과가 통행 방해보다 우선한다(319 리뷰 C-1, 사람 판단).
 
@@ -2129,23 +2158,6 @@ class BaselineLogicTests(unittest.TestCase):
             occupancy_seconds=60.0,
         )
         self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
-
-        # 구역 겹침이 전혀 없어도 다른 차량의 홈 구역을 침범했으면 이중주차로 판정한다.
-        status, zone, ratio = classify_violation(
-            [], dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_zone=blocked_zone
-        )
-        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
-        assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-01")
-        self.assertAlmostEqual(ratio, 0.9)
-
-        # 최소 정차 시간 미달이면 겹침이 있어도 아직 OBSERVING이다.
-        status, zone, _ratio = classify_violation(
-            [], dwell_seconds=10.0, min_dwell_seconds=600.0, blocked_zone=blocked_zone
-        )
-        self.assertEqual(status, ViolationStatus.OBSERVING)
-        assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
 
     def test_monitor_double_park_flags_whoever_intrudes_regardless_of_arrival_order(self) -> None:
         """리뷰에서 발견된 회귀: 먼저 온 차가 실제로 옆 칸(나중에 온 차의 자리)을
@@ -2669,6 +2681,51 @@ class BaselineLogicTests(unittest.TestCase):
                 seen.append(event.status)
 
         self.assertEqual(seen, [ViolationStatus.RESTRICTED_ZONE])
+
+    def test_occupancy_clock_starts_when_home_zone_acquired_without_movement(self) -> None:
+        """홈 구역을 첫 프레임이 아니라 나중에 획득해도 점유 시계가 시작된다
+        (319 리뷰 C-1 3차).
+
+        점유 시계 리셋에 걸어둔 moved 조건이 시계의 '리셋'뿐 아니라 '시작'까지
+        막고 있었다. 겹침 비율이 min_overlap_ratio 아래에서 시작해 탐지 노이즈로
+        위로 올라가는 흔한 경우(차는 movement_epsilon 안에서 가만히 있다), 홈 구역을
+        획득하는 그 프레임의 moved가 False라서 occupied_zone_id가 영구히 None으로
+        남았다. 그러면 occupancy_seconds가 영영 0.0이고, EV_OVERSTAY는 이제 이
+        시계로만 발화하므로 아무리 오래 점유해도 발화하지 못한다 — C-1이 없애려던
+        실패 유형을 그대로 재생산한 것이다.
+
+        그래서 moved는 시계의 '전환'에만 요구하고 '시작'(occupied_zone_id is None)에는
+        요구하지 않는다. 시계가 한 번 시작된 뒤의 변경은 여전히 moved를 요구하므로
+        flapping 방어는 그대로다.
+        """
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2)], allowed_minutes=1.0
+        )
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0, movement_epsilon=0.01
+        )
+        # bbox 면적 0.02 고정. below는 구역과 0.0074(비율 0.37)만 겹쳐 min_overlap_ratio
+        # 미달이라 홈 구역이 없고, above는 0.0082(비율 0.41)로 홈 구역이 생긴다.
+        # 두 bbox의 중심 거리는 0.008로 movement_epsilon(0.01) 미만이라 moved는 False다.
+        below_threshold = BoundingBox(0.126, 0.05, 0.326, 0.15)
+        above_threshold = BoundingBox(0.118, 0.05, 0.318, 0.15)
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        seen: list[ViolationEvent] = []
+        for seconds, bbox in ((0, below_threshold), (10, above_threshold), (40, above_threshold), (71, above_threshold)):
+            for event in monitor.update(
+                [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds,
+                            captured_at=base_time + timedelta(seconds=seconds))]
+            ):
+                seen.append(event)
+
+        self.assertEqual(
+            [event.status for event in seen],
+            [ViolationStatus.RESTRICTED_ZONE, ViolationStatus.EV_OVERSTAY],
+        )
+        # 점유 시계는 홈 구역을 획득한 t=10부터 흐른다 — t=71이면 61초로 허용 60초 초과.
+        self.assertAlmostEqual(seen[-1].occupancy_seconds, 61.0)
 
     def test_violation_event_carries_occupancy_and_dwell_clocks_separately(self) -> None:
         """이벤트가 정차 시계와 점유 시계를 둘 다 실어보낸다(319 리뷰 C-1 2차).
