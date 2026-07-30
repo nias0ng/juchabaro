@@ -1,4 +1,4 @@
-import { Stack } from '@/components/ui';
+import { CheckboxOption, Stack, TextField } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import type { SignupAccountFormValues } from '../../types/signup';
@@ -11,9 +11,7 @@ import {
   isUsernameValid,
 } from '../../validation/signup';
 
-import { CheckboxOption } from '../checkbox-option';
 import { SignupStepHeading } from './signup-step-heading';
-import { TextField } from '../text-field';
 
 type SignupAccountFormProps = {
   values: SignupAccountFormValues;

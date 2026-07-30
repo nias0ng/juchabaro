@@ -1,6 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { Stack } from '@/components/ui';
+import { CheckboxOption, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import type {
@@ -9,7 +9,6 @@ import type {
   SignupHouseholdFormValues,
 } from '../../types/signup';
 
-import { CheckboxOption } from '../checkbox-option';
 import { SignupStepHeading } from './signup-step-heading';
 import { styles } from './signup-confirm-form.styles';
 
