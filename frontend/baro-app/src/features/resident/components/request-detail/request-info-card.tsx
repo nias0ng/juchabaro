@@ -13,9 +13,7 @@ export function RequestInfoCard({ violationType, plateNumber, location }: Reques
     <View style={styles.container}>
       <View style={styles.violationRow}>
         <Text style={styles.label}>위반 유형</Text>
-        <View style={styles.violationBadge}>
-          <Text style={styles.violationBadgeText}>{violationType}</Text>
-        </View>
+        <Text style={styles.violationBadgeText}>{violationType}</Text>
       </View>
 
       <View style={styles.infoGrid}>

@@ -1,3 +1,4 @@
+import { useLocalSearchParams } from 'expo-router';
 import { Text, View } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/ui';
@@ -5,23 +6,31 @@ import { RequestInfoCard } from '@/features/resident/components/request-detail/r
 import { RequestPhoto } from '@/features/resident/components/request-detail/request-photo';
 import { RequestReminderNotice } from '@/features/resident/components/request-detail/request-reminder-notice';
 import { RequestTimeActions } from '@/features/resident/components/request-detail/request-time-actions';
+import { useMoveRequestDetail } from '@/features/resident/hooks/use-move-request-detail';
+import { toRequestDetailDisplay } from '@/features/resident/utils/move-request';
 import { Palette } from '@/styles';
 
 import { styles } from './request-detail-screen.styles';
 
-// TODO(request-detail): GET /api/move-requests/{requestId} 연동 전까지 Figma E-11 기준 값으로 고정.
-const MOCK_REQUEST = {
-  title: '고객님의 차량 이동을\n요청드립니다',
-  reason: '"출차 통로를 막고 있어 차량 이동을 요청했습니다."',
-  violationType: '이중 주차',
-  plateNumber: '12가 3456',
-  location: 'B1 · B-14',
-  photoIndex: 1,
-  photoTotal: 2,
-  reminderMessage: '응답이 없으면 15:00에 한 번 더 알려드리고,\n그 이후에는 관리사무소로 전달합니다.',
-};
+const SUMMARY_TITLE = '고객님의 차량 이동을\n요청드립니다';
+const REMINDER_MESSAGE = '응답이 없으면 한 시간 후에 한 번 더 알려드리고,\n그 이후에는 관리사무소로 전달합니다.';
 
 export default function RequestDetailScreen() {
+  const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
+  const requestId = requestIdParam ? Number(requestIdParam) : null;
+  const { detail, isLoading, error } = useMoveRequestDetail(
+    requestId !== null && !Number.isNaN(requestId) ? requestId : null,
+  );
+  const display = detail ? toRequestDetailDisplay(detail) : null;
+
+  const statusMessage = isLoading
+    ? '이동 요청 정보를 불러오는 중입니다'
+    : error
+      ? '이동 요청 정보를 불러오지 못했습니다'
+      : !display
+        ? '이동 요청 정보를 찾을 수 없습니다'
+        : undefined;
+
   return (
     <Screen scroll edges={['top', 'right', 'left']} backgroundColor={Palette.gray50}>
       <ScreenHeader
@@ -34,24 +43,32 @@ export default function RequestDetailScreen() {
         }
       />
 
-      <RequestPhoto photoIndex={MOCK_REQUEST.photoIndex} photoTotal={MOCK_REQUEST.photoTotal} />
-
-      <View style={styles.mainCard}>
-        <View style={styles.summary}>
-          <Text style={styles.summaryTitle}>{MOCK_REQUEST.title}</Text>
-          <Text style={styles.summaryReason}>{MOCK_REQUEST.reason}</Text>
+      {statusMessage || !display ? (
+        <View style={styles.statusContainer}>
+          <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
+      ) : (
+        <>
+          <RequestPhoto photos={display.photos} />
 
-        <RequestInfoCard
-          violationType={MOCK_REQUEST.violationType}
-          plateNumber={MOCK_REQUEST.plateNumber}
-          location={MOCK_REQUEST.location}
-        />
+          <View style={styles.mainCard}>
+            <View style={styles.summary}>
+              <Text style={styles.summaryTitle}>{SUMMARY_TITLE}</Text>
+              <Text style={styles.summaryReason}>{display.reasonQuote}</Text>
+            </View>
 
-        <RequestReminderNotice message={MOCK_REQUEST.reminderMessage} />
+            <RequestInfoCard
+              violationType={display.violationTypeLabel}
+              plateNumber={display.plateNumber}
+              location={display.location}
+            />
 
-        <RequestTimeActions />
-      </View>
+            <RequestReminderNotice message={REMINDER_MESSAGE} />
+
+            <RequestTimeActions />
+          </View>
+        </>
+      )}
     </Screen>
   );
 }

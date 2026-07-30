@@ -5,7 +5,8 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   header: {
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xs,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xs,
   },
   urgentBadge: {
     backgroundColor: Palette.peach100,
@@ -17,6 +18,18 @@ export const styles = StyleSheet.create({
     fontSize: 10.5,
     fontWeight: FontWeight.bold,
     color: Palette.orange600,
+  },
+  statusContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.xxl,
+    paddingHorizontal: Spacing.lg,
+  },
+  statusText: {
+    fontSize: 13.5,
+    color: Palette.gray500,
+    textAlign: 'center',
   },
   mainCard: {
     gap: Spacing.base + 1,

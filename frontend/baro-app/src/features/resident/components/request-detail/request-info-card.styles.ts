@@ -15,16 +15,10 @@ export const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.base + 2,
   },
-  violationBadge: {
-    backgroundColor: '#eae8fb',
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.sm + 2,
-    paddingVertical: Spacing.xs + 2,
-  },
   violationBadgeText: {
     fontSize: 13,
     fontWeight: FontWeight.bold,
-    color: Palette.violet600,
+    color: Palette.red500,
   },
   infoGrid: {
     flexDirection: 'row',

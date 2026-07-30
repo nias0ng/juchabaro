@@ -9,6 +9,10 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.gray700,
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
+    overflow: 'hidden',
+  },
+  photo: {
+    height: 220,
   },
   indicator: {
     margin: Spacing.sm + 4,
