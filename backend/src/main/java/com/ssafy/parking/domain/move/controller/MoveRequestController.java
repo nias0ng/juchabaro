@@ -2,6 +2,9 @@ package com.ssafy.parking.domain.move.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
 import com.ssafy.parking.domain.move.dto.MoveRequestCreateResponse;
+import com.ssafy.parking.domain.move.dto.MoveRequestListResponse;
+import com.ssafy.parking.domain.move.entity.MoveRequestScope;
+import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
 import com.ssafy.parking.domain.move.service.MoveRequestService;
 import com.ssafy.parking.domain.parking.entity.ParkingEventType;
 import io.swagger.v3.oas.annotations.Operation;
@@ -49,5 +52,26 @@ public class MoveRequestController {
                 moveRequestService.create(userId, targetPlateNumber, eventType, reason, zoneId, images);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(HttpStatus.CREATED, "차량 이동 요청이 전송되었습니다.", result));
+    }
+
+    @Operation(summary = "이동 요청 목록 조회", description = "받은/보낸 이동 요청을 페이지로 조회합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "조회 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "조회 조건 오류"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음")
+    })
+    @GetMapping
+    public ResponseEntity<ApiResponse<MoveRequestListResponse>> getMoveRequests(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @RequestParam(defaultValue = "ALL") MoveRequestScope scope,
+            @RequestParam(required = false) MoveRequestStatus requestStatus,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size
+    ) {
+        MoveRequestListResponse result =
+                moveRequestService.getMoveRequests(userId, scope, requestStatus, page, size);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "이동 요청 목록 조회에 성공했습니다.", result));
     }
 }

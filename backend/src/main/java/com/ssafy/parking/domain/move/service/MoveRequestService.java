@@ -4,7 +4,9 @@ import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.common.storage.ImageStorageService;
 import com.ssafy.parking.domain.move.dto.MoveRequestCreateResponse;
+import com.ssafy.parking.domain.move.dto.MoveRequestListResponse;
 import com.ssafy.parking.domain.move.entity.MoveRequest;
+import com.ssafy.parking.domain.move.entity.MoveRequestScope;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
 import com.ssafy.parking.domain.move.entity.MoveRequestType;
 import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
@@ -17,6 +19,10 @@ import com.ssafy.parking.domain.user.repository.UserRepository;
 import com.ssafy.parking.domain.vehicle.entity.Vehicle;
 import com.ssafy.parking.domain.vehicle.repository.VehicleRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -117,5 +123,24 @@ public class MoveRequestService {
         notificationRepository.save(notification);
 
         return MoveRequestCreateResponse.from(event, moveRequest, savedImages);
+    }
+
+    // TODO(N+1 최적화): 조회 결과 매핑 시 lazy 연관(event/targetVehicle/requester) 접근으로
+    //   N+1 발생. 리포지토리에 @EntityGraph 또는 fetch join 적용 예정.
+    @Transactional(readOnly = true)
+    public MoveRequestListResponse getMoveRequests(
+            Long userId, MoveRequestScope scope, MoveRequestStatus status, int page, int size
+    ) {
+        if (page < 0 || size < 1) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_QUERY_INVALID);
+        }
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "requestedAt"));
+
+        Page<MoveRequest> result = switch (scope) {
+            case RECEIVED -> moveRequestRepository.findReceived(userId, status, pageable);
+            case SENT -> moveRequestRepository.findSent(userId, status, pageable);
+            case ALL -> moveRequestRepository.findAllScoped(userId, status, pageable);
+        };
+        return MoveRequestListResponse.from(result);
     }
 }
