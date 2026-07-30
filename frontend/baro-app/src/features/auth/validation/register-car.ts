@@ -1,8 +1,38 @@
-const PLATE_NUMBER_PATTERN = /^[0-9]{2,3}\s?[가-힣]\s?[0-9]{4}$/;
+const PLATE_NUMBER_PATTERN = /^[0-9]{2,3}[가-힣] [0-9]{4}$/;
 const VISIT_DATE_PATTERN = /^\d{4}\.\d{2}\.\d{2}$/;
 
 export function isPlateNumberValid(value: string) {
   return PLATE_NUMBER_PATTERN.test(value.trim());
+}
+
+/**
+ * 입력값을 숫자 2~3자리 + 한글 1자 + 띄어쓰기 + 숫자 4자리 형식으로 강제한다.
+ * 그 외 문자나 자릿수를 넘는 입력은 입력 즉시 걸러낸다.
+ */
+export function formatPlateNumberInput(rawInput: string): string {
+  const chars = rawInput.match(/[0-9가-힣]/g) ?? [];
+
+  let prefixDigits = '';
+  let koreanChar = '';
+  let suffixDigits = '';
+
+  for (const char of chars) {
+    const isDigit = char >= '0' && char <= '9';
+
+    if (!koreanChar) {
+      if (isDigit) {
+        if (prefixDigits.length < 3) prefixDigits += char;
+      } else {
+        koreanChar = char;
+      }
+    } else if (isDigit && suffixDigits.length < 4) {
+      suffixDigits += char;
+    }
+  }
+
+  if (!koreanChar) return prefixDigits;
+  if (!suffixDigits) return `${prefixDigits}${koreanChar}`;
+  return `${prefixDigits}${koreanChar} ${suffixDigits}`;
 }
 
 export function isCarModelValid(value: string) {
