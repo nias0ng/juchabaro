@@ -50,6 +50,10 @@ export const styles = StyleSheet.create({
   mapCellEv: {
     backgroundColor: Palette.teal100,
   },
+  mapCellSelected: {
+    borderWidth: 2,
+    borderColor: Palette.violet500,
+  },
   mapCellLabel: {
     fontSize: 9,
     fontWeight: FontWeight.bold,
@@ -66,5 +70,8 @@ export const styles = StyleSheet.create({
   evLabel: {
     color: Palette.teal600,
     fontWeight: FontWeight.regular,
+  },
+  spotCodeLabel: {
+    color: Palette.gray975,
   },
 });
