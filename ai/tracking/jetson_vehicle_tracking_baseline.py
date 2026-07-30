@@ -19,7 +19,7 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
-  전기차 충전구역(EV_FAST/EV_SLOW)은 여기서 한 걸음 더 나아가, `zones` 파일에
+  전기차 충전구역(EV_CHARGING)은 여기서 한 걸음 더 나아가, `zones` 파일에
   `allowed_minutes`(구역별 허용 점유 시간, ERD `parking_zones.allowed_minutes`)가
   설정돼 있으면 그 시간을 넘긴 정차를 `EV_OVERSTAY`로 별도 판정한다(319번,
   등록 여부와 무관 — 등록된 차라도 시간 초과면 EV_OVERSTAY). `allowed_minutes`가
@@ -107,15 +107,20 @@ class ZoneType(str, Enum):
 
     GENERAL = "GENERAL"
     DISABLED = "DISABLED"
-    EV_FAST = "EV_FAST"
-    EV_SLOW = "EV_SLOW"
+    EV_CHARGING = "EV_CHARGING"
     AISLE = "AISLE"
     ENTRY_EXIT = "ENTRY_EXIT"
 
 
 # 전용구역(장애인/전기차) 점유는 위반 의심으로 표시한다. 실제 등록 차량
 # 여부는 서버 조회로 확정하며 이 파일의 책임 범위가 아니다.
-RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_FAST, ZoneType.EV_SLOW})
+# (리뷰 반영, C-2/319) 예전엔 EV_FAST/EV_SLOW 두 값으로 나눠져 있었으나,
+# 백엔드 ParkingZoneType.java/DB 마이그레이션/ERD.md:71/프론트 타입 전부
+# EV_CHARGING 하나만 쓴다 — 값이 갈라져 있으면 백엔드가 내려주는 구역
+# 데이터를 그대로 파싱할 때 ZoneType("EV_CHARGING")가 실패해 구역 파일
+# 로딩 자체가 깨진다. 완속/급속 구분이 필요해지면 별도 필드(예: 콘센트
+# 종류)로 다뤄야지 zone_type 값 자체를 나누면 안 된다.
+RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
 # 입출차 감지용 참고 구역은 주차 위반 판정 대상에서 제외한다.
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
 
@@ -268,7 +273,7 @@ class ParkingZone:
     """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0).
 
     `allowed_minutes`(ERD `parking_zones.allowed_minutes`)는 전기차 충전구역
-    (EV_FAST/EV_SLOW)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
+    (EV_CHARGING)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
     타입에는 의미가 없어 기본값 None(백엔드 미설정 시 무제한 허용, 안전
     쪽으로 기움)이다. `ViolationMonitor.min_dwell_seconds`(정착 확정 시간)보다
     `allowed_minutes * 60`이 작게 설정되면(운영 실수), 정착 확정 전까지는
@@ -359,7 +364,7 @@ def classify_zone_overlaps(
 
 # 이중주차 판정에서 "내 자리"로 볼 수 있는 구역 타입. 통행로(AISLE)는 주차
 # 스팟이 아니므로 홈 구역 후보에서 제외한다(AISLE_BLOCK이 별도로 처리).
-_SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_FAST, ZoneType.EV_SLOW})
+_SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
 
 
 def _home_zone_overlap(overlaps: Sequence[ZoneOverlap]) -> ZoneOverlap | None:
@@ -422,7 +427,7 @@ def classify_violation(
     점유했다"는 사실 자체는 RESTRICTED_ZONE과 똑같이 판정하지만, 그 구역의
     `allowed_minutes`(구역별 허용 점유 시간)를 넘겨 정차했으면 "등록된
     차량이라도 시간 초과"라는 더 구체적인 상태로 대체한다. `allowed_minutes`가
-    설정 안 된 구역이나 EV_FAST/EV_SLOW가 아닌 구역에는 적용되지 않는다.
+    설정 안 된 구역이나 EV_CHARGING이 아닌 구역에는 적용되지 않는다.
 
     `blocked_zone`/`intruded_zone`은 둘 다 "내 홈 구역이 아닌 스팟을 얼마나
     덮었는가"라는 같은 계산(구역 면적 기준, `zone_coverage_ratio`)에서 나오며,
@@ -481,7 +486,7 @@ def classify_violation(
     if restricted is not None:
         zone = restricted.zone
         if (
-            zone.zone_type in {ZoneType.EV_FAST, ZoneType.EV_SLOW}
+            zone.zone_type is ZoneType.EV_CHARGING
             and zone.allowed_minutes is not None
             and dwell_seconds >= zone.allowed_minutes * 60.0
         ):
@@ -643,6 +648,18 @@ class ViolationMonitor:
     유지한다 — 매 프레임 최소 하나의 탐지가 있어야 경과 시간을 계산할 수
     있어, 프레임이 통째로 비는 동안에는 유예 판정이 지연될 수 있다.
 
+    `track_grace_seconds`를 넘겨 트랙이 삭제된 뒤에도, 같은 track_id가
+    `dwell_reunification_seconds` 이내에 다시 나타나면 정차 시작 시각
+    (`stationary_since`)과 마지막으로 발행한 상태(`open_violation`)를
+    복원한다(리뷰 반영, C-1/319) — `track_grace_seconds`는 짧게 유지하되
+    (스팟 회전이 빠른 일반 구역에서 떠난 차를 빨리 잊어야 다른 차가 그
+    스팟의 새 주인이 될 수 있다), EV_OVERSTAY처럼 수십~백분 단위로 누적
+    정차 시간을 재는 판정은 그보다 훨씬 긴 순간적 미탐지(사람/다른 차에
+    잠깐 가려짐, 프레임 드롭 등)에도 견뎌야 한다는 상충을 분리해서 다룬다.
+    `dwell_reunification_seconds`보다 오래 끊기면 여전히 새 트랙으로
+    취급되어 정차 시간이 리셋된다 — 이 상한을 얼마로 잡을지는 실제
+    운영 환경의 가림/미탐지 지속 시간을 관찰해서 정해야 한다.
+
     통행로를 막는 "일반적인 이중주차"(차 여러 대의 진출입로를 막는 경우)는
     AISLE_BLOCK이 담당한다(구역 폴리곤만 있으면 판정 가능). DOUBLE_PARK와
     LINE_CROSS는 둘 다 "내가 진짜 주인이 아닌 스팟 구역을 얼마나 침범했는가"
@@ -696,6 +713,7 @@ class ViolationMonitor:
         # 데이터로 재검증되지 않았다.
         entry_match_window_seconds: float = 10.0,
         entry_zone_min_overlap_ratio: float = 0.40,
+        dwell_reunification_seconds: float = 120.0,
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
@@ -705,8 +723,24 @@ class ViolationMonitor:
         self._spot_intrusion_ratio = spot_intrusion_ratio
         self._entry_match_window_seconds = entry_match_window_seconds
         self._entry_zone_min_overlap_ratio = entry_zone_min_overlap_ratio
+        self._dwell_reunification_seconds = dwell_reunification_seconds
         self._tracks: dict[int, TrackState] = {}
+        # track_grace_seconds를 넘겨 self._tracks에서 삭제된 트랙을 잠시
+        # 보관한다(리뷰 반영, C-1/319) — dwell_reunification_seconds 이내에
+        # 같은 track_id가 재등장하면 여기서 꺼내 stationary_since/
+        # open_violation을 이어간다. 그 창을 넘기면 _prune_reunification_archive가
+        # 완전히 버린다(메모리 누수 방지).
+        self._reunification_archive: dict[int, TrackState] = {}
         self._pending_entry_events: list[EntryEvent] = []
+
+    def _prune_reunification_archive(self, now: datetime) -> None:
+        expired = [
+            track_id
+            for track_id, state in self._reunification_archive.items()
+            if (now - state.last_seen_at).total_seconds() > self._dwell_reunification_seconds
+        ]
+        for track_id in expired:
+            del self._reunification_archive[track_id]
 
     def attach_plate(self, track_id: int, plate_number: str) -> None:
         """트랙에 직접 번호판을 연결한다 (자동 매칭 없이 수동으로 붙일 때 사용)."""
@@ -786,18 +820,38 @@ class ViolationMonitor:
         for detection in detections:
             seen_ids.add(detection.track_id)
             state = self._tracks.get(detection.track_id)
-            if state is None:
-                state = TrackState(
-                    track_id=detection.track_id,
-                    last_bbox=detection.bbox,
-                    last_seen_at=detection.captured_at,
-                    stationary_since=detection.captured_at,
+            is_new_track = state is None
+            if is_new_track:
+                # (리뷰 반영, C-1/319) track_grace_seconds를 넘겨 삭제된 트랙이라도
+                # dwell_reunification_seconds 이내에 같은 track_id로 재등장하면
+                # "새 트랙"이 아니라 이어진 것으로 본다 — 안 그러면 잠깐의
+                # 미탐지/가림 한 번으로 stationary_since가 리셋돼, 수십~백분
+                # 단위 누적 시간을 재는 EV_OVERSTAY 같은 판정이 사실상
+                # 무력화된다(재현 확인됨).
+                archived = self._reunification_archive.pop(detection.track_id, None)
+                reunifiable = (
+                    archived is not None
+                    and (detection.captured_at - archived.last_seen_at).total_seconds()
+                    <= self._dwell_reunification_seconds
                 )
+                if reunifiable:
+                    state = archived
+                    is_new_track = False
+                else:
+                    state = TrackState(
+                        track_id=detection.track_id,
+                        last_bbox=detection.bbox,
+                        last_seen_at=detection.captured_at,
+                        stationary_since=detection.captured_at,
+                    )
                 self._tracks[detection.track_id] = state
-            else:
+
+            if not is_new_track:
                 # state.last_bbox는 "정차 시작 시점의 위치" 기준점으로 유지한다.
                 # 매 프레임 갱신하면 프레임 간 이동량이 매번 movement_epsilon 이하일 때
                 # 누적 이동거리가 커도 계속 "정지 상태"로 남는 문제가 생긴다(리뷰 반영).
+                # 재등장(reunify) 직후에도 같은 기준으로 판단한다 — 끊긴 동안 차가
+                # 실제로 옮겨졌다면(anchor 대비 movement_epsilon 초과) 정당하게 리셋된다.
                 moved = _centroid_distance(state.last_bbox, detection.bbox) > self._movement_epsilon
                 if moved:
                     state.stationary_since = detection.captured_at
@@ -933,7 +987,11 @@ class ViolationMonitor:
                 and (now - state.last_seen_at).total_seconds() > self._track_grace_seconds
             ]
             for track_id in stale_ids:
-                del self._tracks[track_id]
+                # (리뷰 반영, C-1/319) 바로 버리지 않고 재결합 보관함으로 옮긴다 —
+                # dwell_reunification_seconds 이내에 같은 track_id가 돌아오면
+                # stationary_since/open_violation을 이어간다.
+                self._reunification_archive[track_id] = self._tracks.pop(track_id)
+            self._prune_reunification_archive(now)
 
         return events
 
@@ -1536,7 +1594,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(zone_hit.zone_id, "DIS-01")
 
     def test_observing_before_min_dwell(self) -> None:
-        zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        zone = self.make_zone("EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100.0, min_dwell_seconds=600.0)
@@ -1547,7 +1605,7 @@ class BaselineLogicTests(unittest.TestCase):
         RESTRICTED_ZONE이 아니라 EV_OVERSTAY로 판정한다(요구사항 정의서.md:25,
         ERD.md:119-125, ERD.md의 parking_zones.allowed_minutes)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1563,7 +1621,7 @@ class BaselineLogicTests(unittest.TestCase):
         RESTRICTED_ZONE이다 — EV_OVERSTAY는 등록 여부 판정을 대체하지 않고,
         시간 초과일 때만 더 구체적인 상태로 대체한다."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1576,7 +1634,7 @@ class BaselineLogicTests(unittest.TestCase):
         (다른 경계값들과 동일하게 `>=` 기준 — OUT_OF_ZONE 317번 MR 리뷰에서
         요청받았던 경계값 검증 패턴을 그대로 적용)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
         )
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1595,7 +1653,7 @@ class BaselineLogicTests(unittest.TestCase):
         크래시나 이중 발행 없이 안전하게 '지연'되는 것만 확인 — allowed_minutes는
         min_dwell_seconds보다 크게 설정하는 게 정상 사용법이다)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
         )  # allowed_minutes*60 = 120초
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
@@ -1611,7 +1669,7 @@ class BaselineLogicTests(unittest.TestCase):
     def test_ev_overstay_not_flagged_when_allowed_minutes_unset(self) -> None:
         """allowed_minutes가 설정 안 된 EV 구역은 아무리 오래 정차해도 여전히
         RESTRICTED_ZONE이다(허용 시간 기준이 없으면 시간 초과를 판단할 수 없음)."""
-        zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        zone = self.make_zone("EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100000.0, min_dwell_seconds=600.0)
@@ -2061,7 +2119,7 @@ class BaselineLogicTests(unittest.TestCase):
         allowed_minutes를 넘기면 같은 트랙 상태가 자동으로 EV_OVERSTAY로 한 번만
         갱신 발행된다(같은 물리적 상황에 대해 중복 발행되지 않음)."""
         zone = self.make_zone(
-            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=0.05
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=0.05
         )  # 0.05분 = 3초, 테스트를 짧게 유지하기 위한 값
         registry = ZoneRegistry([zone])
         monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
@@ -2078,6 +2136,64 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual([e.status for e in events_at[2]], [ViolationStatus.RESTRICTED_ZONE])  # 정착 -> RESTRICTED_ZONE
         self.assertEqual([e.status for e in events_at[4]], [ViolationStatus.EV_OVERSTAY])  # allowed_minutes(3초) 초과 -> EV_OVERSTAY로 갱신
         self.assertEqual(len(events_at[6]), 0)  # 같은 EV_OVERSTAY가 계속 열려있으므로 중복 없음
+
+    def test_monitor_ev_overstay_survives_brief_occlusion_beyond_track_grace(self) -> None:
+        """리뷰 반영(C-1/319): track_grace_seconds(짧게 유지, 다른 차의 스팟 회전을
+        위해)를 넘기는 순간적 가림이 있어도, dwell_reunification_seconds 이내
+        재등장이면 정차 시작 시각이 리셋되지 않아 EV_OVERSTAY가 정확한 누적
+        시간에 발행된다 — 수정 전에는 3초짜리 가림 한 번으로 dwell이 통째로
+        리셋돼 RESTRICTED_ZONE이 중복 발행되고 EV_OVERSTAY는 가림이 끝난
+        시점부터 다시 카운트가 시작돼 지연/누락됐다(재현으로 확인됨)."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_CHARGING, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
+        )  # 1분 = 60초
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry,
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=10.0,
+            movement_epsilon=0.01,
+            track_grace_seconds=2.0,
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        other_bbox = BoundingBox(0.60, 0.60, 0.80, 0.80)  # 항상 존재하는 무관한 차량(카메라가 계속 프레임을 처리한다는 뜻)
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        all_events: list[tuple[int, ViolationStatus]] = []
+
+        def step(seconds: float, include_track_1: bool) -> None:
+            dets = [VehicleBox(track_id=99, bbox=other_bbox, confidence=0.9, frame_id=0, captured_at=base_time + timedelta(seconds=seconds))]
+            if include_track_1:
+                dets.append(
+                    VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=0, captured_at=base_time + timedelta(seconds=seconds))
+                )
+            for event in monitor.update(dets):
+                all_events.append((event.track_id, event.status))
+
+        step(0, include_track_1=True)
+        step(10, include_track_1=True)  # dwell=10s -> RESTRICTED_ZONE 발행
+
+        # track_grace_seconds(2초)를 넘기는 3초짜리 가림 — 다른 차(99)는 계속 탐지되어
+        # update()는 계속 호출된다(카메라 자체는 죽지 않음). track 1만 잠깐 안 보인다.
+        step(11, include_track_1=False)
+        step(12, include_track_1=False)
+        step(13, include_track_1=False)
+        self.assertIn(1, monitor._reunification_archive)
+        self.assertNotIn(1, monitor._tracks)
+
+        step(14, include_track_1=True)  # 재등장 - stationary_since는 t=0 그대로 이어져야 함
+
+        step(59, include_track_1=True)  # dwell=59s, 아직 60초 미달
+        step(60, include_track_1=True)  # dwell=60s -> EV_OVERSTAY 발행
+
+        track_1_events = [item for item in all_events if item[0] == 1]
+        self.assertEqual(
+            track_1_events,
+            [
+                (1, ViolationStatus.RESTRICTED_ZONE),
+                (1, ViolationStatus.EV_OVERSTAY),
+            ],
+        )
 
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
@@ -2325,7 +2441,7 @@ class BaselineLogicTests(unittest.TestCase):
 
         monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
 
-        # 유예 시간(2초)을 훨씬 넘겨서 사라짐 → 트랙이 삭제되어야 한다.
+        # 유예 시간(2초)을 훨씬 넘겨서 사라짐 → 활성 트랙에서는 삭제된다.
         monitor.update(
             [
                 VehicleBox(
@@ -2336,11 +2452,47 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertNotIn(1, monitor._tracks)
 
-        # 다시 나타나면 완전히 새 트랙으로 취급되어 dwell이 0부터 다시 시작한다.
+        # (리뷰 반영, C-1/319) dwell_reunification_seconds(기본 120초) 이내에
+        # 재등장하면 재결합 보관함에서 stationary_since를 이어받는다 —
+        # 정차 시작(t=0)부터 재등장(t=11)까지 이미 min_dwell_seconds(10초)를
+        # 채웠으므로 즉시 RESTRICTED_ZONE이 발행돼야 한다(dwell이 0으로
+        # 리셋되지 않음).
         events = monitor.update(
             [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=11))]
         )
-        self.assertEqual(len(events), 0)
+        self.assertEqual([(e.track_id, e.status) for e in events], [(1, ViolationStatus.RESTRICTED_ZONE)])
+
+    def test_track_not_reunified_beyond_dwell_reunification_window(self) -> None:
+        """재결합 보관 기간(dwell_reunification_seconds)마저 넘기면 완전히 새 트랙으로
+        취급되어 dwell이 0부터 다시 시작한다 — 무한정 이어붙이지는 않는다는 한계."""
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0, 0), (1, 0), (1, 1), (0, 1)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry,
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=10.0,
+            track_grace_seconds=2.0,
+            dwell_reunification_seconds=30.0,
+        )
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        other_bbox = BoundingBox(0.5, 0.5, 0.6, 0.6)
+
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=99, bbox=other_bbox, confidence=0.9, frame_id=2,
+                    captured_at=base_time + timedelta(seconds=40),
+                )
+            ]
+        )
+        self.assertNotIn(1, monitor._reunification_archive)  # 이미 정리(prune)됐어야 함
+
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=41))]
+        )
+        self.assertEqual(len(events), 0)  # dwell이 0부터 다시 시작해 min_dwell_seconds 미달
 
     def test_monitor_attach_plate_updates_track_state(self) -> None:
         zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
@@ -2563,7 +2715,7 @@ class BaselineLogicTests(unittest.TestCase):
                         "zones": [
                             {
                                 "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zone_type": "EV_CHARGING",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": 120,
                             }
@@ -2605,7 +2757,7 @@ class BaselineLogicTests(unittest.TestCase):
                         "zones": [
                             {
                                 "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zone_type": "EV_CHARGING",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                                 "allowed_minutes": 0,
                             }
