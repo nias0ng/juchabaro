@@ -1,13 +1,23 @@
+import { router } from 'expo-router';
+
 import { ResponsiveContainer, Screen, Stack, ThemedText } from '@/components/ui';
+import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
 
+import { MyPageView } from '../components/manageCar/my-page-view';
+
 export default function MyPageScreen() {
+  const { user } = useAuth();
+
   return (
-    <Screen edges={['top', 'right', 'left']}>
+    <Screen scroll edges={['top', 'right', 'left']}>
       <ResponsiveContainer>
-        <Stack fill align="center" justify="center" gap={Spacing.md}>
+        <Stack gap={Spacing.xl}>
           <ThemedText type="subtitle">내 정보</ThemedText>
-          <ThemedText themeColor="textSecondary">사용자 정보와 로그아웃을 관리합니다.</ThemedText>
+          <MyPageView
+            nickname={user?.nickname ?? ''}
+            onNavigateToVehicles={() => router.push('/resident/vehicles')}
+          />
         </Stack>
       </ResponsiveContainer>
     </Screen>
