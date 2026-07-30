@@ -632,6 +632,16 @@ class TrackState:
     # 시간"이기 때문이다 — 같은 자리에서 13px 흔들렸다고 2시간 타이머를 0으로
     # 되돌리면 기능이 현장에서 발화하지 않는다. 실제로 움직여서(moved) 홈 구역이
     # 바뀌거나 구역을 벗어날 때만 리셋된다.
+    #
+    # 단, 시계의 "시작"에는 moved가 필요하지 않다(319 리뷰 재검토 3차 / 최종 리뷰).
+    # occupied_zone_id가 None인 동안에는 moved와 무관하게 홈 구역을 잡는 즉시
+    # 시계가 켜진다 — 홈 구역을 첫 프레임이 아니라 나중에 획득하는 트랙(겹침
+    # 비율이 min_overlap_ratio 아래에서 시작해 올라가는 흔한 경우)은 그 프레임의
+    # moved가 False라서, 시작에도 moved를 요구하면 occupied_zone_id가 영구히
+    # None으로 남고 EV_OVERSTAY가 아예 발화하지 못한다. 이 "시작 예외"는 갱신
+    # 조건식(ViolationMonitor.update)에만 적혀 있었는데, 그 조건식이 수정 라운드에서
+    # 두 번 연속 결함을 냈고 그중 한 번이 정확히 이 시작을 놓친 것이었다 —
+    # 규칙을 여기 필드 옆에도 남겨 둔다.
     occupied_zone_id: str | None = None
     zone_occupied_since: datetime | None = None
 
@@ -779,6 +789,14 @@ class ViolationMonitor:
     `dwell_reunification_seconds`보다 오래 끊기면 여전히 새 트랙으로
     취급되어 정차 시간이 리셋된다 — 이 상한을 얼마로 잡을지는 실제
     운영 환경의 가림/미탐지 지속 시간을 관찰해서 정해야 한다.
+    이 값(현재 기본 30초)과 위 번호판 상속 결정은 묶여 있으므로 한쪽만 건드리면
+    안 된다(319 최종 리뷰): 창을 짧게 잡은 것 자체가 번호판을 상속하기 때문에
+    오귀속 노출을 줄이려는 선택이라 값을 올리려면 번호판 상속을 유지할지 함께
+    재고해야 하고, 반대로 짧은 창의 대가도 실측해야 한다 — 30초를 넘는 가림은
+    2시간 점유 시계를 리셋하는데 주차장에서 가장 그럴듯한 가림 원인은 그 칸 앞
+    통행로에 서 있는 차(바로 이 시스템이 잡으려는 상황)이고, 리셋 후에는
+    `allowed_minutes`를 다시 채워야 EV_OVERSTAY가 재발행된다. 둘 다 파일럿
+    실측 항목이다.
     재식별은 track_id가 아니라 중심점 근접으로 한다 — ByteTrack은
     track_buffer(기본 30프레임)를 넘기면 새 번호를 발급하므로 번호로는 이을
     수 없다.
@@ -867,12 +885,19 @@ class ViolationMonitor:
     def _claim_reunifiable(self, detection: VehicleBox) -> TrackState | None:
         """보관함에서 이 탐지와 같은 차로 볼 수 있는 트랙을 찾아 꺼낸다.
 
-        track_id로 찾지 않는 이유: ByteTrack은 track_buffer(bytetrack.yaml 기본
+        track_id로만 찾지 않는 이유: ByteTrack은 track_buffer(bytetrack.yaml 기본
         30프레임, --frame-interval-ms 200이면 약 6초)를 넘겨 사라진 트랙을 잊고,
-        재등장 시 새 번호를 발급한다. 번호로 찾으면 그 시점부터 영영 못 잇는다.
+        재등장 시 새 번호를 발급한다. 번호로만 찾으면 그 시점부터 영영 못 잇는다.
 
         근접 판정에 movement_epsilon을 그대로 쓴다 — 앵커 이동 판정과 같은
         잣대라 "같은 자리"의 정의가 한 곳으로 유지된다.
+
+        다만 track_id 일치는 근접보다 우선한다(319 최종 리뷰 Minor) — 같은
+        track_id 항목이 시간·거리 필터를 둘 다 통과했으면 다른 항목이 조금 더
+        가까워도 그것을 claim한다. 아래 불변식이 쓰는 근거대로 track_id 일치는
+        "같은 트래커 트랙"과 동의어이므로 근접보다 강한 증거다. 그 증거로 항목을
+        삭제하면서 매칭에서는 무시하면, 그 차 자신의 번호판·점유 시계를 버리고
+        남의 상태를 물려받게 된다(= 엉뚱한 번호판에 붙는 조작된 EV_OVERSTAY).
 
         불변식(리뷰 Important 1): 이 함수를 지나면 보관함에 `detection.track_id`를
         든 항목이 남지 않는다. 보관 항목과 같은 track_id를 든 탐지가 다른
@@ -891,8 +916,10 @@ class ViolationMonitor:
         best_index: int | None = None
         best_distance: float | None = None
         same_id_index: int | None = None
+        same_id_eligible = False
         for index, archived in enumerate(self._reunification_archive):
-            if archived.track_id == detection.track_id:
+            is_same_id = archived.track_id == detection.track_id
+            if is_same_id:
                 same_id_index = index
             elapsed = (detection.captured_at - archived.last_seen_at).total_seconds()
             if not (0.0 <= elapsed <= self._dwell_reunification_seconds):
@@ -900,8 +927,20 @@ class ViolationMonitor:
             distance = _centroid_distance(archived.last_bbox, detection.bbox)
             if distance > self._movement_epsilon:
                 continue
+            if is_same_id:
+                same_id_eligible = True
             if best_distance is None or distance < best_distance:
                 best_index, best_distance = index, distance
+        if same_id_eligible:
+            # (319 최종 리뷰 Minor) 같은 track_id 항목이 시간·거리 필터를 둘 다
+            # 통과했으면 거리와 무관하게 그것을 claim한다. 아래 불변식이 쓰는
+            # 근거("track_id 일치는 같은 트래커 트랙과 동의어")는 매칭에도 그대로
+            # 유효하다 — 13px 근접보다 강한 증거다. 그 증거로 항목을 삭제하면서
+            # 매칭에서는 무시하면, 조금 더 가까운 남의 항목이 이겨 그 차 자신의
+            # 상태(번호판 + 점유 시계)가 버려지고 엉뚱한 번호판에 조작된
+            # EV_OVERSTAY가 붙는다. same_id_eligible이 True면 same_id_index도
+            # 반드시 설정돼 있다(같은 루프 반복에서 둘을 함께 정한다).
+            best_index = same_id_index
         if best_index is None:
             if same_id_index is not None:
                 del self._reunification_archive[same_id_index]  # 위 불변식 — 유령 방지
@@ -3141,24 +3180,38 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertNotIn(ViolationStatus.EV_OVERSTAY, [item[1] for item in seen])
         self.assertNotIn("12가3456", [item[2] for item in b_events])
 
-    def test_reunification_consumes_same_id_entry_even_when_another_is_claimed(self) -> None:
-        """다른 항목을 claim해도 같은 track_id를 든 항목은 남기지 않는다.
+    def test_reunification_prefers_same_id_entry_and_never_leaves_it_behind(self) -> None:
+        """같은 track_id 항목이 필터를 통과했으면 그것을 claim하고, 통과하지 못했으면
+        다른 항목을 claim하더라도 같은 id 항목은 반드시 버린다.
 
         불변식: `_claim_reunifiable`을 지나면 보관함에 detection.track_id를 든
-        항목이 없다(319 리뷰 재검토, C-1 Important 1). claim 대상과 소비 대상이
-        서로 다른 인덱스일 때 삭제 순서에 따라 인덱스가 밀리므로, 두 방향
-        (같은 id 항목이 claim 대상보다 앞/뒤)을 모두 고정한다. 도달 조건은
-        "두 트랙이 movement_epsilon 안에 겹친 채로 둘 다 삭제되는" 희귀한
-        배치지만, 남기면 유령이 되는 것은 위 테스트와 같다.
+        항목이 없다(319 리뷰 재검토, C-1 Important 1).
+
+        기대값이 바뀐 이유(319 최종 리뷰 Minor): 예전에는 같은 id 항목이 시간·거리
+        필터를 통과했는데도 다른 항목이 조금 더 가까우면 그쪽을 claim했다 —
+        그 증거("track_id 일치는 같은 트래커 트랙과 동의어")로 항목을 삭제하면서
+        매칭에서는 무시한 셈이다. 결과는 그 차 자신의 번호판과 점유 시계를 버리고
+        남의 상태를 물려받는 것, 즉 엉뚱한 번호판에 조작된 EV_OVERSTAY다.
+        이제 같은 id 항목이 필터를 통과했으면 거리와 무관하게 그것을 claim한다.
+
+        네 가지 배치를 고정한다 — (같은 id 항목이 필터 통과/미통과) ×
+        (같은 id 항목이 더 가까운 항목보다 앞/뒤). 미통과 쪽 두 배치가 claim 대상과
+        소비 대상이 서로 다른 인덱스인 경우이고, 그때 pop으로 인덱스가 밀리는
+        보정 로직의 양방향을 그대로 태운다. 도달 조건은 "두 트랙이
+        movement_epsilon 안에 겹친 채로 둘 다 삭제되는" 희귀한 배치지만,
+        남기면 유령이 되는 것은 위 테스트와 같다.
         """
         zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.6, 0.6), (0.9, 0.6), (0.9, 0.9), (0.6, 0.9)])
         anchor_a = BoundingBox(0.05, 0.05, 0.25, 0.25)  # 중심 (0.15, 0.15)
         anchor_b = BoundingBox(0.054, 0.054, 0.254, 0.254)  # 중심 (0.154, 0.154) — 거리 0.0057 < ε
+        far = BoundingBox(0.30, 0.30, 0.50, 0.50)  # 중심 (0.4, 0.4) — 두 앵커에서 ε 밖
         filler = BoundingBox(0.85, 0.85, 0.95, 0.95)
         base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
 
-        def archive_two_tracks() -> ViolationMonitor:
-            """track 1(앵커 A)과 track 7(앵커 B)을 이 순서로 보관함에 넣는다."""
+        def archive_two_tracks(
+            first_id: int, first_bbox: BoundingBox, second_id: int, second_bbox: BoundingBox
+        ) -> ViolationMonitor:
+            """두 트랙을 인자 순서대로 보관함에 넣는다(보관 순서 = 최초 탐지 순서)."""
 
             monitor = ViolationMonitor(
                 ZoneRegistry([zone]), min_overlap_ratio=0.40, min_dwell_seconds=10.0,
@@ -3166,14 +3219,16 @@ class BaselineLogicTests(unittest.TestCase):
             )
             monitor.update([
                 VehicleBox(track_id=99, bbox=filler, confidence=0.9, frame_id=0, captured_at=base_time),
-                VehicleBox(track_id=1, bbox=anchor_a, confidence=0.9, frame_id=0, captured_at=base_time),
-                VehicleBox(track_id=7, bbox=anchor_b, confidence=0.9, frame_id=0, captured_at=base_time),
+                VehicleBox(track_id=first_id, bbox=first_bbox, confidence=0.9, frame_id=0, captured_at=base_time),
+                VehicleBox(track_id=second_id, bbox=second_bbox, confidence=0.9, frame_id=0, captured_at=base_time),
             ])
             monitor.update([
                 VehicleBox(track_id=99, bbox=filler, confidence=0.9, frame_id=3,
                            captured_at=base_time + timedelta(seconds=3))
             ])
-            self.assertEqual([s.track_id for s in monitor._reunification_archive], [1, 7])
+            self.assertEqual(
+                [s.track_id for s in monitor._reunification_archive], [first_id, second_id]
+            )
             return monitor
 
         def reappear(monitor: ViolationMonitor, track_id: int, bbox: BoundingBox) -> None:
@@ -3184,18 +3239,34 @@ class BaselineLogicTests(unittest.TestCase):
                            captured_at=base_time + timedelta(seconds=5)),
             ])
 
-        # 같은 id 항목(인덱스 0)이 claim 대상(인덱스 1)보다 앞에 있는 경우.
-        monitor = archive_two_tracks()
+        # ── 같은 id 항목이 필터를 통과한 경우: 더 가까운 항목이 있어도 그것을 claim한다.
+        # (a) 같은 id 항목(track 1, 인덱스 0)이 더 가까운 항목(track 7, 인덱스 1)보다 앞.
+        monitor = archive_two_tracks(1, anchor_a, 7, anchor_b)
+        reappear(monitor, 1, anchor_b)
+        self.assertEqual(monitor._tracks[1].last_bbox, anchor_a)  # 자기 항목(앵커 A)을 claim했다
+        # 남은 항목은 track 7 — 다른 트래커 트랙이므로 불변식 대상이 아니다.
+        self.assertEqual([s.track_id for s in monitor._reunification_archive], [7])
+
+        # (b) 같은 id 항목(track 1, 인덱스 1)이 더 가까운 항목(track 7, 인덱스 0)보다 뒤.
+        monitor = archive_two_tracks(7, anchor_b, 1, anchor_a)
+        reappear(monitor, 1, anchor_b)
+        self.assertEqual(monitor._tracks[1].last_bbox, anchor_a)
+        self.assertEqual([s.track_id for s in monitor._reunification_archive], [7])
+
+        # ── 같은 id 항목이 거리 필터에서 탈락한 경우: 다른 항목이 claim하고,
+        #    같은 id 항목은 유령 방지를 위해 삭제된다(인덱스 시프트 보정 경로).
+        # (c) 같은 id 항목(인덱스 0)이 claim 대상(인덱스 1)보다 앞 — 시프트 없음.
+        monitor = archive_two_tracks(1, far, 7, anchor_b)
         reappear(monitor, 1, anchor_b)
         self.assertEqual(monitor._reunification_archive, [])
-        self.assertEqual(monitor._tracks[1].last_bbox, anchor_b)  # 더 가까운 track 7 항목을 claim했다
+        self.assertEqual(monitor._tracks[1].last_bbox, anchor_b)  # track 7 항목을 claim했다
 
-        # 같은 id 항목(인덱스 1)이 claim 대상(인덱스 0)보다 뒤에 있는 경우 —
-        # pop으로 인덱스가 한 칸 당겨지는 쪽이다.
-        monitor = archive_two_tracks()
-        reappear(monitor, 7, anchor_a)
+        # (d) 같은 id 항목(인덱스 1)이 claim 대상(인덱스 0)보다 뒤 —
+        #     pop으로 인덱스가 한 칸 당겨지는 쪽이다.
+        monitor = archive_two_tracks(7, anchor_b, 1, far)
+        reappear(monitor, 1, anchor_b)
         self.assertEqual(monitor._reunification_archive, [])
-        self.assertEqual(monitor._tracks[7].last_bbox, anchor_a)  # 더 가까운 track 1 항목을 claim했다
+        self.assertEqual(monitor._tracks[1].last_bbox, anchor_b)
 
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
