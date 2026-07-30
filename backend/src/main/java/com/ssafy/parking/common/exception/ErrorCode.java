@@ -72,6 +72,26 @@ public enum ErrorCode {
             "처리 중인 주차 기록이 있어 차량을 삭제할 수 없습니다."
     ),
 
+    MOVE_REQUEST_INVALID(
+            HttpStatus.BAD_REQUEST,
+            "이동 요청 값이 올바르지 않습니다."
+    ),
+
+    MOVE_REQUEST_TARGET_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "이동 요청 대상 차량의 주차 정보를 찾을 수 없습니다."
+    ),
+
+    MOVE_REQUEST_ALREADY_EXISTS(
+            HttpStatus.CONFLICT,
+            "이미 처리 중인 이동 요청이 있습니다."
+    ),
+
+    MOVE_REQUEST_QUERY_INVALID(
+            HttpStatus.BAD_REQUEST,
+            "이동 요청 조회 조건이 올바르지 않습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
