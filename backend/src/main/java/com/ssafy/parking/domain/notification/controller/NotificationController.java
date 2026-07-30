@@ -1,6 +1,7 @@
 package com.ssafy.parking.domain.notification.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
+import com.ssafy.parking.domain.notification.dto.NotificationDetailResponse;
 import com.ssafy.parking.domain.notification.dto.NotificationListResponse;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.service.NotificationService;
@@ -13,10 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 @Tag(name = "알림", description = "알림 API")
 @RestController
@@ -44,5 +42,24 @@ public class NotificationController {
                 notificationService.getNotifications(userId, notificationType, page, size);
         return ResponseEntity.ok(
                 ApiResponse.success(HttpStatus.OK, "알림 목록 조회에 성공했습니다.", result));
+    }
+
+    @Operation(summary = "알림 상세 조회", description = "본인이 받은 알림의 상세(관련 사건·이동요청 포함)를 조회합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "조회 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보 유효하지 않음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "접근 권한 없음"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "알림 없음")
+    })
+    @GetMapping("/{notificationId}")
+    public ResponseEntity<ApiResponse<NotificationDetailResponse>> getNotification(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @PathVariable Long notificationId
+    ) {
+        NotificationDetailResponse result =
+                notificationService.getNotification(userId, notificationId);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "알림 상세 조회에 성공했습니다.", result));
     }
 }
