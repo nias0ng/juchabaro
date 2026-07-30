@@ -436,9 +436,9 @@ def classify_violation(
 ) -> tuple[ViolationStatus, ParkingZone | None, float]:
     """§5.1 규칙으로 겹침 구역·스팟 침범·정차 시간을 종합해 위반 상태를 판정한다.
 
-    여러 조건이 동시에 걸리면 전기차 충전구역 장기 점유(EV_OVERSTAY) >
-    통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) > 전용구역 점유
-    (RESTRICTED_ZONE) > 선 침범(LINE_CROSS) > 구역 외 주차(OUT_OF_ZONE)
+    여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
+    전기차 충전구역 장기 점유(EV_OVERSTAY) > 전용구역 점유(RESTRICTED_ZONE) >
+    선 침범(LINE_CROSS) > 구역 외 주차(OUT_OF_ZONE)
     순으로 하나만 보고한다.
     OUT_OF_ZONE은 다른 어떤 위반 신호도 없을 때만 성립하는 배타적 폴백이며
     (우선순위표가 아니라 아래 early-return의 배타 조건), 새 위반 신호를
@@ -450,10 +450,11 @@ def classify_violation(
     EV_OVERSTAY를 보고한다**(319 리뷰 I-4). "비율이 가장 높은 전용구역"이
     아니라 "겹치는 전용구역 전체"에서 시간 초과를 찾기 때문이다.
 
-    EV_OVERSTAY가 최상위인 이유는 판정 근거가 다르기 때문이다 — 나머지는 모두
-    "지금 이 프레임의 기하학적 배치"를 보지만 EV_OVERSTAY는 "이 자리를 얼마나
-    오래 차지했는가"를 본다. 통행로를 막은 채 2시간 충전구역을 점유했다면
-    더 오래 지속된 쪽을 보고하는 게 운영 판단에 맞다.
+    EV 시간 초과는 `min_dwell_seconds` 게이트만 우회하고, 우선순위에서는
+    여전히 AISLE_BLOCK·DOUBLE_PARK에 밀린다(319 최종 리뷰). 게이트를 우회하는
+    이유는 게이트가 쓰는 `dwell_seconds`가 "연속 무이동 시간"이라 미세 이동이
+    잦으면 영영 게이트를 못 넘어 2시간을 점유해도 OBSERVING에 머물기
+    때문이다 — 이건 게이트 문제이고 우선순위 문제가 아니다.
 
     EV_OVERSTAY(요구사항 정의서.md:25, ERD.md:119-125 event_type)는
     RESTRICTED_ZONE의 특수화다 — 등록 여부와 무관하게 "전기차 충전구역을
@@ -481,8 +482,11 @@ def classify_violation(
     (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
     우선순위 때문에 RESTRICTED_ZONE 대신 DOUBLE_PARK로 보고된다. 옛 방식
     (차체 접촉 필요)에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가
-    여전히 의도한 동작인지 팀 확인이 필요하다. 그 특수화인 EV_OVERSTAY는
-    위 C-1 변경으로 이 가림에서 빠졌다 — 시간 초과 판정이 최상위다.
+    여전히 의도한 동작인지 팀 확인이 필요하다. 그 특수화인 EV_OVERSTAY도
+    같은 가림을 받는다 — 통행로를 막고 있거나 남의 스팟을 침범하고 있는
+    동안에는 AISLE_BLOCK/DOUBLE_PARK가 EV_OVERSTAY를 가린다. 차가 그
+    상황에서 벗어나면(통행로에서 빠지거나 침범을 그치면) 시간 초과는
+    그대로 남아 있으므로 EV_OVERSTAY가 그때 보고된다.
     """
 
     if not overlaps and blocked_zone is None and intruded_zone is None:
@@ -539,6 +543,22 @@ def classify_violation(
     # allowed_minutes를 min_dwell_seconds보다 작게 설정하면 이 분기가 게이트를
     # 실질적으로 무력화한다 — 그건 설정 오류이고 별도 지적사항(I-1)이다.
     if overstayed_restricted is not None:
+        # 게이트만 우회하고 우선순위는 원래대로다(319 최종 리뷰) — AISLE_BLOCK·
+        # DOUBLE_PARK가 먼저다. EV_OVERSTAY를 최상위로 올리면 점유 시계가 단조
+        # 증가하는 탓에 한 번 열린 EV_OVERSTAY가 매 프레임 계속 이기고,
+        # 중복 판정 키 (status, zone_id)도 안 바뀌어 그 뒤에 새로 시작된
+        # AISLE_BLOCK/DOUBLE_PARK가 주차 세션 내내 영구히 보고되지 않는다
+        # (재현 확인됨). 통행로 막힘은 소방 진입로·비상 통행 문제라 몇 시간을
+        # 놓칠 수 없다.
+        #
+        # 이 분기 안에서는 게이트 없이 정상 우선순위를 적용한다 — 허용 시간
+        # 초과 자체가 "정착했다"의 증거이므로 게이트가 더 붙잡아 둘 이유가 없고,
+        # 같은 차에 대해 게이트만 우회한 EV_OVERSTAY와 게이트에 걸린
+        # AISLE_BLOCK을 섞으면 우선순위가 뒤집힌다.
+        if aisle is not None:
+            return ViolationStatus.AISLE_BLOCK, aisle.zone, aisle.ratio
+        if blocked_zone is not None:
+            return ViolationStatus.DOUBLE_PARK, blocked_zone.zone, blocked_zone.ratio
         return ViolationStatus.EV_OVERSTAY, overstayed_restricted.zone, overstayed_restricted.ratio
 
     if dwell_seconds < min_dwell_seconds:
@@ -2150,14 +2170,19 @@ class BaselineLogicTests(unittest.TestCase):
         assert zone is not None
         self.assertEqual(zone.zone_id, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
 
-    def test_ev_overstay_takes_priority_over_aisle_block(self) -> None:
-        """EV 충전구역 시간 초과가 통행 방해보다 우선한다(319 리뷰 C-1, 사람 판단).
+    def test_aisle_block_takes_priority_over_ev_overstay(self) -> None:
+        """통행 방해가 EV 충전구역 시간 초과보다 우선한다(319 최종 리뷰, 사람 판단).
 
-        나머지 판정은 모두 "지금 이 프레임의 기하학적 배치"를 보지만 EV_OVERSTAY는
-        "이 자리를 얼마나 오래 차지했는가"를 본다 — 통행로를 막은 채 허용 시간을
-        넘겨 충전구역을 점유했다면 더 오래 지속된 쪽을 보고하는 게 운영 판단에 맞다.
-        이 테스트가 없으면 우선순위 승격이 docstring에만 주장되고 코드로는 고정되지
-        않는다(리뷰 지적).
+        기대값이 바뀐 이유: 이 브랜치가 한때 EV_OVERSTAY를 최상위로 올렸는데,
+        점유 시계가 단조 증가하므로 한 번 열린 EV_OVERSTAY가 매 프레임 계속 이기고
+        중복 판정 키 (status, zone_id)도 안 바뀌어, 그 뒤에 새로 시작된
+        AISLE_BLOCK이 주차 세션 내내 영구히 보고되지 않았다(모니터 수준으로
+        재현 확인 — test_monitor_aisle_block_reported_after_ev_overstay_opened).
+        통행로 막힘은 소방 진입로·비상 통행 문제라 몇 시간을 놓칠 수 없어서
+        우선순위를 원래대로 되돌렸다. 게이트 우회만 남긴다.
+
+        따라서 통행로를 막고 있는 동안에는 EV_OVERSTAY가 가려지고, 차가 통행로에서
+        빠지면 시간 초과는 그대로 남아 있으므로 그때 EV_OVERSTAY가 보고된다.
         """
         aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
         ev_zone = self.make_zone(
@@ -2169,22 +2194,32 @@ class BaselineLogicTests(unittest.TestCase):
         status, zone_hit, _ratio = classify_violation(
             overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0, occupancy_seconds=700.0
         )
-        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "EV-01")
+        self.assertEqual(zone_hit.zone_id, "AISLE-01")
 
-        # 허용 시간을 안 넘겼으면 원래 우선순위대로 AISLE_BLOCK이다 — EV_OVERSTAY가
-        # 무조건 앞서는 게 아니라 "시간 초과가 성립할 때만" 앞선다.
+        # 시간 초과가 성립하든 안 하든 통행로가 걸려 있으면 AISLE_BLOCK이다.
         status, _zone_hit, _ratio = classify_violation(
             overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0, occupancy_seconds=60.0
         )
         self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
 
-    def test_ev_overstay_takes_priority_over_double_park(self) -> None:
-        """EV 충전구역 시간 초과가 이중주차보다 우선한다(319 리뷰 C-1, 사람 판단).
+        # 통행로에서 빠지면 가려져 있던 시간 초과가 그대로 보고된다.
+        ev_only = classify_zone_overlaps(bbox, [ev_zone], min_overlap_ratio=0.40)
+        status, zone_hit, _ratio = classify_violation(
+            ev_only, dwell_seconds=700.0, min_dwell_seconds=600.0, occupancy_seconds=700.0
+        )
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        assert zone_hit is not None
+        self.assertEqual(zone_hit.zone_id, "EV-01")
 
-        변경 전에는 자기 EV 구역을 오래 점유하면서 동시에 남의 스팟도 침범한 차가
-        DOUBLE_PARK로만 보고돼 EV_OVERSTAY가 영구히 가려졌다.
+    def test_double_park_takes_priority_over_ev_overstay(self) -> None:
+        """이중주차가 EV 충전구역 시간 초과보다 우선한다(319 최종 리뷰, 사람 판단).
+
+        기대값이 바뀐 이유는 위 test_aisle_block_takes_priority_over_ev_overstay와
+        같다 — EV_OVERSTAY를 최상위로 올리면 한 번 열린 뒤 새로 시작된 DOUBLE_PARK가
+        영구히 가려진다. 남의 스팟을 침범하고 있는 동안에는 DOUBLE_PARK로 보고되고,
+        침범을 그치면 EV_OVERSTAY가 보고된다.
         """
         victim_spot = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.6, 0.6), (0.9, 0.6), (0.9, 0.9), (0.6, 0.9)])
         blocked_zone = ZoneOverlap(victim_spot, 0.9)
@@ -2200,11 +2235,11 @@ class BaselineLogicTests(unittest.TestCase):
             blocked_zone=blocked_zone,
             occupancy_seconds=700.0,
         )
-        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "EV-01")
+        self.assertEqual(zone_hit.zone_id, "GEN-01")
 
-        # 허용 시간을 안 넘겼으면 원래 우선순위대로 DOUBLE_PARK이다.
+        # 시간 초과가 성립하든 안 하든 남의 스팟을 침범 중이면 DOUBLE_PARK이다.
         status, _zone_hit, _ratio = classify_violation(
             overlaps,
             dwell_seconds=700.0,
@@ -2213,6 +2248,77 @@ class BaselineLogicTests(unittest.TestCase):
             occupancy_seconds=60.0,
         )
         self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+
+        # 침범을 그치면 가려져 있던 시간 초과가 그대로 보고된다.
+        status, zone_hit, _ratio = classify_violation(
+            overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0, occupancy_seconds=700.0
+        )
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        assert zone_hit is not None
+        self.assertEqual(zone_hit.zone_id, "EV-01")
+
+    def test_monitor_aisle_block_reported_after_ev_overstay_opened(self) -> None:
+        """319 최종 리뷰 회귀: EV_OVERSTAY가 이미 열린 뒤에 새로 시작된 통행 방해도
+        보고돼야 한다.
+
+        EV_OVERSTAY를 우선순위 최상위로 올렸을 때 발견된 결함이다. 점유 시계는
+        단조 증가하므로 한 번 시간 초과가 성립하면 매 프레임 EV_OVERSTAY가 계속
+        이기고, 중복 판정 키 (status, zone_id)도 (EV_OVERSTAY, EV-01)에서 안 바뀌어
+        새 이벤트가 나가지 않는다 — 그 결과 그 뒤에 차가 통행로를 막기 시작해도
+        주차 세션이 끝날 때까지 AISLE_BLOCK이 영구히 보고되지 않았다.
+
+        홈 구역(`_home_zone_overlap`)은 스팟형 구역만 보므로 차가 통행로 쪽으로
+        옮겨가도 홈은 EV-01로 유지되고 점유 시계는 리셋되지 않는다 — 즉 시간 초과가
+        계속 성립하는 상태로 통행로 겹침이 새로 생기는, 정확히 문제가 되는 배치다.
+        """
+        ev_zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)], allowed_minutes=1.0
+        )
+        aisle = self.make_zone("AISLE-1", ZoneType.AISLE, [(0.4, 0.0), (1.0, 0.0), (1.0, 0.4), (0.4, 0.4)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([ev_zone, aisle]),
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=10.0,
+            movement_epsilon=0.01,
+        )
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+        # EV-01 안에만 있는 위치(통행로 겹침 0).
+        inside_ev = BoundingBox(0.05, 0.05, 0.35, 0.35)
+        # EV-01과 AISLE-1에 각각 절반씩(0.5 >= min_overlap_ratio) 걸치는 위치.
+        # 홈 구역은 여전히 EV-01뿐이다 — 통행로는 스팟형이 아니다.
+        over_aisle = BoundingBox(0.25, 0.05, 0.55, 0.35)
+
+        def frame(seconds: int, bbox: BoundingBox) -> list[ViolationEvent]:
+            return monitor.update([
+                VehicleBox(
+                    track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds,
+                    captured_at=base_time + timedelta(seconds=seconds),
+                )
+            ])
+
+        self.assertEqual(frame(0, inside_ev), [])  # 최소 정차 시간 미달
+        restricted_events = frame(10, inside_ev)
+        self.assertEqual([event.status for event in restricted_events], [ViolationStatus.RESTRICTED_ZONE])
+        self.assertEqual(restricted_events[0].zone_id, "EV-01")
+
+        overstay_events = frame(61, inside_ev)  # allowed_minutes 1.0 = 60초 초과
+        self.assertEqual([event.status for event in overstay_events], [ViolationStatus.EV_OVERSTAY])
+        self.assertEqual(overstay_events[0].zone_id, "EV-01")
+
+        # 여기서부터가 회귀 대상: 시간 초과가 계속 성립하는 채로 통행로를 막기 시작한다.
+        aisle_events = frame(70, over_aisle)
+        self.assertEqual([event.status for event in aisle_events], [ViolationStatus.AISLE_BLOCK])
+        self.assertEqual(aisle_events[0].zone_id, "AISLE-1")
+        # 점유 시계는 리셋되지 않았다(홈 구역이 EV-01로 유지) — 즉 EV_OVERSTAY가
+        # 여전히 성립하는데도 AISLE_BLOCK이 이겼다는 뜻이다.
+        self.assertGreaterEqual(aisle_events[0].occupancy_seconds, 60.0)
+
+        self.assertEqual(frame(80, over_aisle), [])  # 같은 사건이 계속 열려 있으므로 중복 발행 없음
+
+        # 통행로에서 빠지면 가려져 있던 EV_OVERSTAY가 다시 보고된다.
+        back_events = frame(300, inside_ev)
+        self.assertEqual([event.status for event in back_events], [ViolationStatus.EV_OVERSTAY])
+        self.assertEqual(back_events[0].zone_id, "EV-01")
 
     def test_monitor_double_park_flags_whoever_intrudes_regardless_of_arrival_order(self) -> None:
         """리뷰에서 발견된 회귀: 먼저 온 차가 실제로 옆 칸(나중에 온 차의 자리)을
