@@ -19,6 +19,11 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
 - 장애인/전기차 구역의 "등록 차량 여부" 서버 조회: 여기서는 구역을
   점유했다는 사실만 `RESTRICTED_ZONE`으로 표시하고, 실제 인증 여부 판단은
   서버 몫으로 남겨둔다(조회 실패 시 안전 우선 정책으로 위반 의심 유지).
+  전기차 충전구역(EV_FAST/EV_SLOW)은 여기서 한 걸음 더 나아가, `zones` 파일에
+  `allowed_minutes`(구역별 허용 점유 시간, ERD `parking_zones.allowed_minutes`)가
+  설정돼 있으면 그 시간을 넘긴 정차를 `EV_OVERSTAY`로 별도 판정한다(319번,
+  등록 여부와 무관 — 등록된 차라도 시간 초과면 EV_OVERSTAY). `allowed_minutes`가
+  없는 구역은 기존과 동일하게 `RESTRICTED_ZONE`만 계속 보고한다(안전 쪽 기본값).
 - DOUBLE_PARK/LINE_CROSS 판정에서, 어떤 스팟에 아직 아무도 정착
   완료(min_dwell_seconds)하지 못한 동안은 그 스팟에 대한 침범 판정을
   보류한다(리뷰 반영: 정착 확정 전에 LINE_CROSS로 잘못 보고됐다가
@@ -125,6 +130,7 @@ class ViolationStatus(str, Enum):
     AISLE_BLOCK = "AISLE_BLOCK"
     DOUBLE_PARK = "DOUBLE_PARK"
     OUT_OF_ZONE = "OUT_OF_ZONE"
+    EV_OVERSTAY = "EV_OVERSTAY"
 
 
 @dataclass(frozen=True)
@@ -259,11 +265,22 @@ def zone_coverage_ratio(zone: ParkingZone, bbox: BoundingBox) -> float:
 
 @dataclass(frozen=True)
 class ParkingZone:
-    """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0)."""
+    """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0).
+
+    `allowed_minutes`(ERD `parking_zones.allowed_minutes`)는 전기차 충전구역
+    (EV_FAST/EV_SLOW)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
+    타입에는 의미가 없어 기본값 None(백엔드 미설정 시 무제한 허용, 안전
+    쪽으로 기움)이다. `ViolationMonitor.min_dwell_seconds`(정착 확정 시간)보다
+    `allowed_minutes * 60`이 작게 설정되면(운영 실수), 정착 확정 전까지는
+    이미 시간 초과 상태라도 OBSERVING으로만 표시된다 — 크래시나 오탐은
+    없지만 EV_OVERSTAY 발행이 min_dwell_seconds까지 지연되므로,
+    allowed_minutes는 min_dwell_seconds보다 충분히 크게 설정해야 한다.
+    """
 
     zone_id: str
     zone_type: ZoneType
     polygon: NormalizedPolygon
+    allowed_minutes: float | None = None
 
 
 class ZoneRegistry:
@@ -293,9 +310,15 @@ class ZoneRegistry:
             zone_id = str(item["zone_id"])
             zone_type = ZoneType(item["zone_type"])
             points = tuple((float(x), float(y)) for x, y in item["polygon"])
+            allowed_minutes_raw = item.get("allowed_minutes")
+            allowed_minutes = None if allowed_minutes_raw is None else float(allowed_minutes_raw)
         except (KeyError, ValueError, TypeError) as exc:
             raise BaselineError(f"구역 정의 항목이 올바르지 않습니다: {item!r} ({exc})") from exc
-        return ParkingZone(zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(points))
+        if allowed_minutes is not None and allowed_minutes <= 0:
+            raise BaselineError(f"allowed_minutes는 양수여야 합니다: {item!r}")
+        return ParkingZone(
+            zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(points), allowed_minutes=allowed_minutes
+        )
 
     def all(self) -> tuple[ParkingZone, ...]:
         """등록된 모든 구역을 반환한다."""
@@ -388,10 +411,18 @@ def classify_violation(
     """§5.1 규칙으로 겹침 구역·스팟 침범·정차 시간을 종합해 위반 상태를 판정한다.
 
     여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
-    전용구역 점유(RESTRICTED_ZONE) > 선 침범(LINE_CROSS) > 구역 외 주차
-    (OUT_OF_ZONE) 순으로 하나만 보고한다. OUT_OF_ZONE은 다른 어떤 위반 신호도
-    없을 때만 성립하는 배타적 폴백이며(우선순위표가 아니라 아래 early-return의
-    배타 조건), 새 위반 신호를 추가하면 그 조건도 함께 확장해야 한다.
+    전기차 충전구역 장기 점유(EV_OVERSTAY) > 전용구역 점유(RESTRICTED_ZONE) >
+    선 침범(LINE_CROSS) > 구역 외 주차(OUT_OF_ZONE) 순으로 하나만 보고한다.
+    OUT_OF_ZONE은 다른 어떤 위반 신호도 없을 때만 성립하는 배타적 폴백이며
+    (우선순위표가 아니라 아래 early-return의 배타 조건), 새 위반 신호를
+    추가하면 그 조건도 함께 확장해야 한다.
+
+    EV_OVERSTAY(요구사항 정의서.md:25, ERD.md:119-125 event_type)는
+    RESTRICTED_ZONE의 특수화다 — 등록 여부와 무관하게 "전기차 충전구역을
+    점유했다"는 사실 자체는 RESTRICTED_ZONE과 똑같이 판정하지만, 그 구역의
+    `allowed_minutes`(구역별 허용 점유 시간)를 넘겨 정차했으면 "등록된
+    차량이라도 시간 초과"라는 더 구체적인 상태로 대체한다. `allowed_minutes`가
+    설정 안 된 구역이나 EV_FAST/EV_SLOW가 아닌 구역에는 적용되지 않는다.
 
     `blocked_zone`/`intruded_zone`은 둘 다 "내 홈 구역이 아닌 스팟을 얼마나
     덮었는가"라는 같은 계산(구역 면적 기준, `zone_coverage_ratio`)에서 나오며,
@@ -409,10 +440,12 @@ def classify_violation(
     OUT_OF_ZONE으로 확정하면 안 되고, 기존과 동일하게 NONE으로 둔다.
 
     참고: 이제 DOUBLE_PARK가 구역 면적 기준으로 넓게 잡히다 보니, 전용구역
-    (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
-    우선순위 때문에 RESTRICTED_ZONE 대신 DOUBLE_PARK로 보고된다. 옛 방식
-    (차체 접촉 필요)에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가
-    여전히 의도한 동작인지 팀 확인이 필요하다.
+    (RESTRICTED_ZONE, 그 특수화인 EV_OVERSTAY 포함)에 주차된 차가 동시에
+    남의 스팟을 침범한 경우 이 우선순위 때문에 RESTRICTED_ZONE/EV_OVERSTAY
+    대신 DOUBLE_PARK로 보고된다(자기 EV 구역을 오래 점유 중이면서 동시에
+    남의 스팟도 침범 중이면 EV_OVERSTAY는 가려짐). 옛 방식(차체 접촉 필요)
+    에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가 여전히 의도한
+    동작인지 팀 확인이 필요하다.
     """
 
     if not overlaps and blocked_zone is None and intruded_zone is None:
@@ -446,6 +479,13 @@ def classify_violation(
     if blocked_zone is not None:
         return ViolationStatus.DOUBLE_PARK, blocked_zone.zone, blocked_zone.ratio
     if restricted is not None:
+        zone = restricted.zone
+        if (
+            zone.zone_type in {ZoneType.EV_FAST, ZoneType.EV_SLOW}
+            and zone.allowed_minutes is not None
+            and dwell_seconds >= zone.allowed_minutes * 60.0
+        ):
+            return ViolationStatus.EV_OVERSTAY, zone, restricted.ratio
         return ViolationStatus.RESTRICTED_ZONE, restricted.zone, restricted.ratio
     if intruded_zone is not None:
         return ViolationStatus.LINE_CROSS, intruded_zone.zone, intruded_zone.ratio
@@ -504,8 +544,9 @@ class ViolationEvent:
     "자기 홈 구역이 아닌데 침범한" 스팟을 가리키며(DOUBLE_PARK는 그 스팟에
     이미 다른 차가 정착해 있는 경우, LINE_CROSS는 비어있는 경우),
     overlap_ratio도 그 구역 면적 대비 침범 비율(구역 기준)이다. AISLE_BLOCK/
-    RESTRICTED_ZONE에서는 zone_id가 이 차량 자신이 있는 구역을 가리키고
-    overlap_ratio도 이 차량 자신의 몸체 면적 기준(차체 기준)이라 의미가 다르다.
+    RESTRICTED_ZONE(및 그 특수화인 EV_OVERSTAY, 319번)에서는 zone_id가 이
+    차량 자신이 있는 구역을 가리키고 overlap_ratio도 이 차량 자신의 몸체
+    면적 기준(차체 기준)이라 의미가 다르다.
     OUT_OF_ZONE(리뷰 반영)은 애초에 매핑되는 구역이 없으므로 zone_id/
     zone_type은 항상 None이고 overlap_ratio도 항상 0.0으로 발행된다.
     """
@@ -1437,8 +1478,16 @@ class BaselineLogicTests(unittest.TestCase):
     """카메라·모델 없이 실행하는 순수 판정 로직 회귀 테스트."""
 
     @staticmethod
-    def make_zone(zone_id: str, zone_type: ZoneType, points: Sequence[tuple[float, float]]) -> ParkingZone:
-        return ParkingZone(zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(tuple(points)))
+    def make_zone(
+        zone_id: str,
+        zone_type: ZoneType,
+        points: Sequence[tuple[float, float]],
+        *,
+        allowed_minutes: float | None = None,
+    ) -> ParkingZone:
+        return ParkingZone(
+            zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(tuple(points)), allowed_minutes=allowed_minutes
+        )
 
     def test_polygon_area_of_square(self) -> None:
         polygon = NormalizedPolygon(((0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2)))
@@ -1492,6 +1541,92 @@ class BaselineLogicTests(unittest.TestCase):
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.OBSERVING)
+
+    def test_ev_overstay_flagged_after_allowed_minutes_exceeded(self) -> None:
+        """EV 충전구역에 allowed_minutes(구역별 허용 점유 시간, 분)를 넘겨 정차하면
+        RESTRICTED_ZONE이 아니라 EV_OVERSTAY로 판정한다(요구사항 정의서.md:25,
+        ERD.md:119-125, ERD.md의 parking_zones.allowed_minutes)."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+        status, zone_hit, _ratio = classify_violation(
+            overlaps, dwell_seconds=120.0 * 60.0, min_dwell_seconds=600.0
+        )
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+        assert zone_hit is not None
+        self.assertEqual(zone_hit.zone_id, "EV-01")
+
+    def test_ev_overstay_not_flagged_before_allowed_minutes_exceeded(self) -> None:
+        """allowed_minutes를 아직 안 넘겼으면(최소 정차 시간은 넘겼어도) 여전히
+        RESTRICTED_ZONE이다 — EV_OVERSTAY는 등록 여부 판정을 대체하지 않고,
+        시간 초과일 때만 더 구체적인 상태로 대체한다."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=120.0
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
+
+    def test_ev_overstay_boundary_at_exact_allowed_minutes(self) -> None:
+        """경계값 테스트: dwell_seconds가 allowed_minutes*60과 정확히 같으면
+        EV_OVERSTAY로 확정하고, 그 직전(1ms 미만)에는 아직 RESTRICTED_ZONE이다
+        (다른 경계값들과 동일하게 `>=` 기준 — OUT_OF_ZONE 317번 MR 리뷰에서
+        요청받았던 경계값 검증 패턴을 그대로 적용)."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=119.999, min_dwell_seconds=10.0)
+        self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
+
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=120.0, min_dwell_seconds=10.0)
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+
+    def test_ev_overstay_delayed_when_min_dwell_seconds_exceeds_allowed_minutes(self) -> None:
+        """운영 설정 실수 대비 문서화 테스트: `min_dwell_seconds`(정착 확정 시간)가
+        어떤 EV 구역의 `allowed_minutes*60`보다 크게 설정되면, 그 구역은
+        allowed_minutes를 이미 넘겼어도 min_dwell_seconds에 도달하기 전까지는
+        여전히 OBSERVING이다(다른 판정과 동일하게 정착 확정이 선행 조건이라
+        크래시나 이중 발행 없이 안전하게 '지연'되는 것만 확인 — allowed_minutes는
+        min_dwell_seconds보다 크게 설정하는 게 정상 사용법이다)."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
+        )  # allowed_minutes*60 = 120초
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+
+        # allowed_minutes(120초)는 넘었지만 min_dwell_seconds(600초)는 아직 미달
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=200.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+
+        # 둘 다 넘으면 정상적으로 EV_OVERSTAY
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+
+    def test_ev_overstay_not_flagged_when_allowed_minutes_unset(self) -> None:
+        """allowed_minutes가 설정 안 된 EV 구역은 아무리 오래 정차해도 여전히
+        RESTRICTED_ZONE이다(허용 시간 기준이 없으면 시간 초과를 판단할 수 없음)."""
+        zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100000.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
+
+    def test_ev_overstay_not_applicable_to_disabled_zone(self) -> None:
+        """장애인 구역(DISABLED)은 EV_OVERSTAY 대상이 아니다 — allowed_minutes가
+        설정돼 있어도(예: 백엔드가 일괄 기본값을 넣은 경우) 무시하고 RESTRICTED_ZONE."""
+        zone = self.make_zone(
+            "DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=1.0
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100000.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
 
     def test_out_of_zone_flagged_after_min_dwell_with_no_zone_overlap(self) -> None:
         """등록된 구역 어디에도 겹치지 않고 스팟 침범도 아니면, 최소 정차
@@ -1920,6 +2055,29 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_second), 1)
         self.assertEqual(events_second[0].status, ViolationStatus.RESTRICTED_ZONE)
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_monitor_ev_overstay_escalates_from_restricted_zone_without_duplicate(self) -> None:
+        """전기차 구역에 정착하면 먼저 RESTRICTED_ZONE이 발행되고(등록 여부 확인 필요),
+        allowed_minutes를 넘기면 같은 트랙 상태가 자동으로 EV_OVERSTAY로 한 번만
+        갱신 발행된다(같은 물리적 상황에 대해 중복 발행되지 않음)."""
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=0.05
+        )  # 0.05분 = 3초, 테스트를 짧게 유지하기 위한 값
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+        events_at = {}
+        for seconds in (0, 2, 4, 6):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+
+        self.assertEqual(len(events_at[0]), 0)  # 최소 정차 시간(1초) 미달, OBSERVING
+        self.assertEqual([e.status for e in events_at[2]], [ViolationStatus.RESTRICTED_ZONE])  # 정착 -> RESTRICTED_ZONE
+        self.assertEqual([e.status for e in events_at[4]], [ViolationStatus.EV_OVERSTAY])  # allowed_minutes(3초) 초과 -> EV_OVERSTAY로 갱신
+        self.assertEqual(len(events_at[6]), 0)  # 같은 EV_OVERSTAY가 계속 열려있으므로 중복 없음
 
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
@@ -2393,6 +2551,69 @@ class BaselineLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "zones.json"
             path.write_text(json.dumps({"zones": []}), encoding="utf-8")
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_parses_allowed_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "EV-01",
+                                "zone_type": "EV_FAST",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                                "allowed_minutes": 120,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = ZoneRegistry.from_file(path)
+        self.assertEqual(registry.get("EV-01").allowed_minutes, 120.0)
+
+    def test_zone_registry_from_file_defaults_allowed_minutes_to_none(self) -> None:
+        """기존 zones 파일(allowed_minutes 필드 없음)과의 호환성 확인."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "GEN-01",
+                                "zone_type": "GENERAL",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = ZoneRegistry.from_file(path)
+        self.assertIsNone(registry.get("GEN-01").allowed_minutes)
+
+    def test_zone_registry_from_file_rejects_non_positive_allowed_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zone_id": "EV-01",
+                                "zone_type": "EV_FAST",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                                "allowed_minutes": 0,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             with self.assertRaises(BaselineError):
                 ZoneRegistry.from_file(path)
 
