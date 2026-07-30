@@ -12,13 +12,18 @@ public class OpenApiConfig {
 
     @Bean
     public OpenAPI openAPI() {
-        String schemeName = "bearerAuth";
         return new OpenAPI()
                 .info(new Info().title("Parking API").version("v1"))
-                .components(new Components().addSecuritySchemes(schemeName,
-                        new SecurityScheme()
-                                .type(SecurityScheme.Type.HTTP)
-                                .scheme("bearer")
-                                .bearerFormat("JWT")));
+                .components(new Components()
+                        .addSecuritySchemes("bearerAuth",
+                                new SecurityScheme()
+                                        .type(SecurityScheme.Type.HTTP)
+                                        .scheme("bearer")
+                                        .bearerFormat("JWT"))
+                        .addSecuritySchemes("hwApiKey",
+                                new SecurityScheme()
+                                        .type(SecurityScheme.Type.APIKEY)
+                                        .in(SecurityScheme.In.HEADER)
+                                        .name("X-HW-API-Key")));
     }
 }
