@@ -25,8 +25,8 @@ const HEADER_TITLE: Record<RegisterCarStep, string> = {
 
 export default function RegisterCarScreen() {
   const handleRegistrationSuccess = () => {
-    // TODO: 'H-01. 내 차량 관리' 화면이 아직 없다. 화면과 라우트가 만들어지면
-    // 여기서 router.replace로 그 화면으로 이동시킨다.
+    // 등록 완료 후 내 차량 관리 화면으로 돌아간다. 등록 화면은 back stack에 남기지 않는다.
+    router.replace('/resident/vehicles');
   };
 
   const registerCar = useRegisterCarForm(handleRegistrationSuccess);
