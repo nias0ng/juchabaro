@@ -1,4 +1,5 @@
 import json
+import socket
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -176,6 +177,48 @@ def test_report_entry_raises_on_non_success_status_without_exception():
     entry_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
 
     with patch("http_entry_reporter.urllib_request.urlopen", return_value=_mock_response(status=305)):
+        with pytest.raises(EntryReportError):
+            reporter.report_entry(track_id=7, plate_number="12가3456", entry_time=entry_time)
+
+
+def test_report_entry_raises_value_error_on_naive_entry_time():
+    """리뷰 반영: naive datetime을 조용히 보내면 백엔드 OffsetDateTime 역직렬화가
+    나중에야 실패해 원인 추적이 어려워지므로, 호출 시점에 바로 막는다."""
+    reporter = HttpEntryReporter(base_url="http://jetson.local", api_key="k")
+    naive_entry_time = datetime(2026, 7, 30, 12, 0, 0)  # tzinfo 없음
+
+    with patch("http_entry_reporter.urllib_request.urlopen") as mock_urlopen:
+        with pytest.raises(ValueError):
+            reporter.report_entry(track_id=7, plate_number="12가3456", entry_time=naive_entry_time)
+    mock_urlopen.assert_not_called()
+
+
+def test_report_entry_raises_entry_report_error_on_timeout():
+    """리뷰 반영: socket.timeout(3.10+의 TimeoutError)은 URLError의 하위 클래스가
+    아니라서 기존 `except URLError`가 못 잡는다 — 응답 대기 중 타임아웃이 그대로
+    새어나가지 않고 EntryReportError로 변환되는지 확인한다."""
+    reporter = HttpEntryReporter(base_url="http://jetson.local", api_key="k")
+    entry_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    with patch("http_entry_reporter.urllib_request.urlopen", side_effect=socket.timeout("timed out")):
+        with pytest.raises(EntryReportError):
+            reporter.report_entry(track_id=7, plate_number="12가3456", entry_time=entry_time)
+
+
+def test_report_entry_raises_entry_report_error_on_missing_required_field():
+    """자체 재검토 중 발견: result에 필수 필드(accessDecision 등)가 없으면
+    raw KeyError가 아니라 EntryReportError로 일관되게 감싸져야 한다."""
+    reporter = HttpEntryReporter(base_url="http://jetson.local", api_key="k")
+    entry_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+    body = {
+        "httpStatus": "CREATED",
+        "isSuccess": True,
+        "message": "입차가 허용되었습니다.",
+        "code": 201,
+        "result": {"registered": True, "trackingId": "7", "duplicateRequest": False},  # accessDecision 누락
+    }
+
+    with patch("http_entry_reporter.urllib_request.urlopen", return_value=_mock_response(status=201, body=body)):
         with pytest.raises(EntryReportError):
             reporter.report_entry(track_id=7, plate_number="12가3456", entry_time=entry_time)
 

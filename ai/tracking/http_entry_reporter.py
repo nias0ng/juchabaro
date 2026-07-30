@@ -19,11 +19,10 @@ plate_number + 매칭에 쓰인 EntryEvent.captured_at)를 이 클래스로 백�
 한다. `parking_sessions.idempotency_key`는 `VARCHAR(100)` + UNIQUE 제약이며,
 SHA-256 hex(64자)는 여유 있게 들어간다.
 
-`entry_time`은 반드시 timezone-aware여야 한다 — naive datetime을 넘기면
-`isoformat()`에 UTC 오프셋이 안 붙어서, 백엔드의 `OffsetDateTime`
-역직렬화가 실패할 수 있다(`HttpResultPublisher.publish()`의 `detected_at`과
-동일한 기존 관례이며, 이 파일도 별도로 검증하지 않는다 — 호출부가
-`ai/tracking`의 다른 시각 필드처럼 항상 tz-aware라는 전제를 따른다).
+`entry_time`은 반드시 timezone-aware여야 한다(리뷰 반영, 명시적으로 검증함)
+— naive datetime을 넘기면 `isoformat()`에 UTC 오프셋이 안 붙어서, 백엔드의
+`OffsetDateTime` 역직렬화가 한참 뒤(HTTP 응답 단계)에야 실패해 원인 추적이
+어려워진다. `report_entry()`가 호출 시점에 바로 `ValueError`를 던진다.
 """
 
 from __future__ import annotations
@@ -104,7 +103,15 @@ class HttpEntryReporter:
 
         실패하면 `EntryReportError`를 던진다. DENY/REVIEW는 실패가 아니라
         정상 응답이므로 예외로 처리하지 않는다.
+
+        `entry_time`이 naive datetime(tzinfo 없음)이면 `ValueError`를 던진다
+        (리뷰 반영) — 조용히 오프셋 없는 문자열을 보내면 백엔드
+        `OffsetDateTime` 역직렬화가 나중에야 실패해 원인 추적이 어려워지므로,
+        여기서 바로 막는다.
         """
+
+        if entry_time.tzinfo is None:
+            raise ValueError("entry_time은 timezone-aware datetime이어야 합니다(naive datetime 불가).")
 
         payload: dict[str, Any] = {
             "trackingId": str(track_id),
@@ -135,6 +142,12 @@ class HttpEntryReporter:
             raise EntryReportError(f"백엔드 요청이 거부됐습니다(HTTP {exc.code}): {exc.reason}") from exc
         except URLError as exc:
             raise EntryReportError(f"백엔드({self._base_url})에 연결할 수 없습니다: {exc.reason}") from exc
+        except TimeoutError as exc:
+            # (리뷰 반영) socket.timeout(3.10+에서 TimeoutError의 별칭)은 URLError의
+            # 하위 클래스가 아니라서 위 `except URLError`가 못 잡는다 — urllib이 연결
+            # 단계의 OSError는 URLError로 감싸지만, 응답 대기 중 타임아웃은 감싸지지
+            # 않고 그대로 새어나올 수 있어 별도로 잡아야 한다(재현 확인됨).
+            raise EntryReportError(f"백엔드({self._base_url}) 응답 대기 중 타임아웃이 발생했습니다: {exc}") from exc
 
         if status >= 300:
             raise EntryReportError(f"백엔드가 실패 응답을 반환했습니다: HTTP {status}")
@@ -153,14 +166,20 @@ class HttpEntryReporter:
         if not isinstance(result, dict):
             raise EntryReportError("백엔드 응답에 result가 없습니다.")
 
-        return EntryReportResult(
-            access_decision=result["accessDecision"],
-            registered=result["registered"],
-            vehicle_id=result.get("vehicleId"),
-            is_disabled_vehicle=result.get("isDisabledVehicle"),
-            is_electric=result.get("isElectric"),
-            vehicle_status=result.get("vehicleStatus"),
-            tracking_id=result["trackingId"],
-            session_id=result.get("sessionId"),
-            duplicate_request=result["duplicateRequest"],
-        )
+        # (리뷰 대응 중 자체 발견) 필수 필드가 빠진 손상된 응답이면 raw KeyError
+        # 대신 EntryReportError로 감싼다 — naive datetime/timeout과 같은 이유로,
+        # 이 클래스가 던지는 예외 타입은 항상 EntryReportError로 일관돼야 한다.
+        try:
+            return EntryReportResult(
+                access_decision=result["accessDecision"],
+                registered=result["registered"],
+                vehicle_id=result.get("vehicleId"),
+                is_disabled_vehicle=result.get("isDisabledVehicle"),
+                is_electric=result.get("isElectric"),
+                vehicle_status=result.get("vehicleStatus"),
+                tracking_id=result["trackingId"],
+                session_id=result.get("sessionId"),
+                duplicate_request=result["duplicateRequest"],
+            )
+        except KeyError as exc:
+            raise EntryReportError(f"백엔드 응답에 필수 필드가 없습니다: {exc}") from exc
