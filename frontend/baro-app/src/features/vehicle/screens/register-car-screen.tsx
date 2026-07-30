@@ -58,51 +58,55 @@ export default function RegisterCarScreen() {
         edges={['top', 'right', 'left']}
       >
         <ResponsiveContainer>
-          <Stack gap={Spacing.xl}>
+          <Stack>
             <ScreenHeader title={HEADER_TITLE[step]} onBack={handleBack} />
 
-            {step === 'household' && (
-              <HouseholdCarForm
-                carType={registerCar.carType}
-                onChangeCarType={registerCar.selectCarType}
-                values={registerCar.householdValues}
-                onChange={registerCar.changeHouseholdValue}
-              />
-            )}
+            <Stack gap={Spacing.xl}>
+              {step === 'household' && (
+                <HouseholdCarForm
+                  carType={registerCar.carType}
+                  onChangeCarType={registerCar.selectCarType}
+                  values={registerCar.householdValues}
+                  onChange={registerCar.changeHouseholdValue}
+                />
+              )}
 
-            {step === 'visitor' && (
-              <VisitorCarForm
-                carType={registerCar.carType}
-                onChangeCarType={registerCar.selectCarType}
-                values={registerCar.visitorValues}
-                onChange={registerCar.changeVisitorValue}
-                onOpenVisitDatePicker={registerCar.openVisitDatePicker}
-              />
-            )}
+              {step === 'visitor' && (
+                <VisitorCarForm
+                  carType={registerCar.carType}
+                  onChangeCarType={registerCar.selectCarType}
+                  values={registerCar.visitorValues}
+                  onChange={registerCar.changeVisitorValue}
+                  onOpenVisitDatePicker={registerCar.openVisitDatePicker}
+                />
+              )}
 
-            {step === 'confirm' && (
-              <RegisterCarConfirmView
-                carType={registerCar.carType}
-                household={registerCar.householdValues}
-                visitor={registerCar.visitorValues}
-                isRegistering={isRegistering}
-                onConfirm={registerCar.handleCompleteRegistration}
-                onEdit={registerCar.goToInputStep}
-              />
-            )}
+              {step === 'confirm' && (
+                <RegisterCarConfirmView
+                  carType={registerCar.carType}
+                  household={registerCar.householdValues}
+                  visitor={registerCar.visitorValues}
+                  isRegistering={isRegistering}
+                  onConfirm={registerCar.handleCompleteRegistration}
+                  onEdit={registerCar.goToInputStep}
+                />
+              )}
 
-            {registerCar.errorMessage ? <FormErrorBanner message={registerCar.errorMessage} /> : null}
+              {registerCar.errorMessage ? (
+                <FormErrorBanner message={registerCar.errorMessage} />
+              ) : null}
 
-            {step !== 'confirm' && (
-              <AppButton
-                label="차량 등록"
-                variant="neutral"
-                size="lg"
-                fullWidth
-                disabled={!registerCar.canSubmitStep}
-                onPress={registerCar.goToConfirm}
-              />
-            )}
+              {step !== 'confirm' && (
+                <AppButton
+                  label="차량 등록"
+                  variant="neutral"
+                  size="lg"
+                  fullWidth
+                  disabled={!registerCar.canSubmitStep}
+                  onPress={registerCar.goToConfirm}
+                />
+              )}
+            </Stack>
           </Stack>
         </ResponsiveContainer>
       </Screen>

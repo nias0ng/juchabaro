@@ -1,6 +1,6 @@
-
 export type ParkingSessionStatus = 'PARKED' | 'VIOLATION';
 
+// GET /api/parking-sessions/me 응답의 result.sessions[] 항목.
 export type ParkingSession = {
   sessionId: number;
   vehicleId: number;

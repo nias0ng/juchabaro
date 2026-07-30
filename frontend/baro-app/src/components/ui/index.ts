@@ -4,6 +4,7 @@ export * from './back-button';
 export * from './bottom-nav-bar';
 export * from './checkbox-option';
 export * from './form-error-banner';
+export * from './icon-glyph';
 export * from './main-icon';
 export * from './responsive-container';
 export * from './screen';

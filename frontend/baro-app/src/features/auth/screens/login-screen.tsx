@@ -85,9 +85,10 @@ useEffect(() => {
   return (
     <Screen scroll avoidKeyboard backgroundColor={Palette.gray50}>
       <ResponsiveContainer>
-        <Stack gap={Spacing.xl}>
+        <Stack>
           <ScreenHeader title="로그인" />
 
+          <Stack gap={Spacing.xl}>
             <Stack gap={Spacing.xs}>
               <Text style={styles.heading}>반가워요!</Text>
               <Text style={styles.subheading}>{'주차바로를 이용하려면\n로그인이 필요합니다'}</Text>
@@ -138,6 +139,7 @@ useEffect(() => {
                 아직 계정이 없으신가요? <Text style={styles.footerLink}>회원가입</Text>
               </Text>
             </Pressable>
+          </Stack>
         </Stack>
       </ResponsiveContainer>
     </Screen>

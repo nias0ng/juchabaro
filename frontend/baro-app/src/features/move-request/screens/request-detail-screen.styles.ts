@@ -6,7 +6,6 @@ export const styles = StyleSheet.create({
   header: {
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.lg,
-    paddingBottom: Spacing.md,
   },
   requestTypeBadge: {
     borderRadius: Radius.full,

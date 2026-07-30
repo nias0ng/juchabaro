@@ -15,8 +15,8 @@ function resolveMockImageUri(source: number | string | { uri: string }): string 
 }
 
 // 실제 주차 사건 사진 대신 넣어둔 테스트용 로컬 이미지. imageUrl 타입(string)을 맞추려고 uri만 뽑아둔다.
-const mockPhoto1 = resolveMockImageUri(require('@/assets/images/resident/request-detail/mock-parking-photo-1.png'));
-const mockPhoto2 = resolveMockImageUri(require('@/assets/images/resident/request-detail/mock-parking-photo-2.png'));
+const mockPhoto1 = resolveMockImageUri(require('@/assets/images/move-request/request-detail/mock-parking-photo-1.png'));
+const mockPhoto2 = resolveMockImageUri(require('@/assets/images/move-request/request-detail/mock-parking-photo-2.png'));
 
 // Figma E-11 기준. 아직 응답 전(SENT) 상태라 dueAt/responses가 비어있다.
 // let인 이유: POST 응답 mock이 이 값을 실제로 바꿔서, 응답 제출 후 재조회하면 바뀐 상태를 볼 수 있게 한다.
