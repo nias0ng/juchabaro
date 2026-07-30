@@ -83,9 +83,8 @@ export default function RequestDetailScreen() {
         onBack={isWaiting && showDetail ? () => setShowDetail(false) : undefined}
         right={
           <RequestHeaderRight
-            isWaiting={isWaiting}
             requestSource={
-              display && !isCompleted
+              display && !isWaiting && !isCompleted
                 ? { label: display.requestSourceLabel, variant: display.requestSourceVariant }
                 : null
             }

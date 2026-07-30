@@ -5,6 +5,8 @@ import { ApiError } from '@/services/api-error';
 import type { MoveRequestDetail, MoveResponseRequest, MoveResponseResult } from './types';
 
 const MOCK_RESPONSE_DELAY_MS = 500;
+// mock 전용 : 15초 지나면 COMPLETED 상태로 전환.
+const MOCK_AUTO_COMPLETE_DELAY_MS = 15_000;
 
 // 네이티브에서 require()는 asset 번호를 돌려주고 resolveAssetSource로 uri를 뽑아야 하는데,
 // 웹(react-native-web)은 resolveAssetSource 자체가 없고 require()가 { uri, width, height } 객체를 바로 준다.
@@ -45,8 +47,25 @@ let mockRequestDetail: MoveRequestDetail = {
   history: [{ notificationType: 'MOVE_REQUEST', sentAt: new Date().toISOString() }],
 };
 
+// RESPONDED 상태로 진입한 시각(ms). 이 값 + MOCK_AUTO_COMPLETE_DELAY_MS가 지나면 자동으로 COMPLETED 처리한다.
+let mockRespondedAtMs: number | null = null;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// mock 전용: RESPONDED 상태가 일정 시간 유지되면 하드웨어가 이동을 감지해 COMPLETED로 넘어간 것처럼 흉내낸다.
+function applyMockAutoComplete(): void {
+  if (mockRequestDetail.requestStatus !== 'RESPONDED' || mockRespondedAtMs === null) return;
+  if (Date.now() < mockRespondedAtMs + MOCK_AUTO_COMPLETE_DELAY_MS) return;
+
+  const resolvedAt = new Date();
+  mockRequestDetail = {
+    ...mockRequestDetail,
+    requestStatus: 'COMPLETED',
+    history: [...mockRequestDetail.history, { notificationType: 'EVENT_RESOLVED', sentAt: resolvedAt.toISOString() }],
+  };
+  mockRespondedAtMs = null;
 }
 
 // E-13(이동 완료) 화면 확인용: /resident/request-detail?requestId=998 로 들어가면 완료 처리된 상태를 바로 볼 수 있다.
@@ -82,6 +101,8 @@ export async function getMoveRequestDetailMock(requestId: number): Promise<MoveR
   if (requestId === 998) {
     return buildCompletedMockDetail(requestId);
   }
+
+  applyMockAutoComplete();
 
   return { ...mockRequestDetail, requestId };
 }
@@ -129,6 +150,8 @@ export async function postMoveRequestResponseMock(
       },
     ],
   };
+
+  mockRespondedAtMs = requestStatus === 'RESPONDED' ? respondedAt.getTime() : null;
 
   return result;
 }

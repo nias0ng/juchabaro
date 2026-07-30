@@ -8,16 +8,10 @@ type RequestSource = {
 };
 
 type RequestHeaderRightProps = {
-  // 응답 완료(대기/상세 보기) 상태면 "저장" 링크, 응답 전이면 AUTO/MANUAL 배지를 보여준다.
-  isWaiting: boolean;
   requestSource: RequestSource | null;
 };
 
-export function RequestHeaderRight({ isWaiting, requestSource }: RequestHeaderRightProps) {
-  if (isWaiting) {
-    return <Text style={styles.saveLink}>저장</Text>;
-  }
-
+export function RequestHeaderRight({ requestSource }: RequestHeaderRightProps) {
   if (!requestSource) return null;
 
   const isManual = requestSource.variant === 'manual';

@@ -41,8 +41,7 @@ export function RequestCountdownRing({ label, progress }: RequestCountdownRingPr
           strokeDasharray={`${CIRCUMFERENCE} ${CIRCUMFERENCE}`}
           strokeDashoffset={dashoffset}
           fill="none"
-          rotation="-90"
-          origin={`${SIZE / 2}, ${SIZE / 2}`}
+          transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
         />
       </Svg>
 

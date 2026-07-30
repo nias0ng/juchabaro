@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getMoveRequestDetail } from '@/features/move-request/api/move-request-api';
 import type { MoveRequestDetail, MoveResponseResult } from '@/features/move-request/api/types';
 import { useAuth } from '@/providers/auth-provider';
+
+// 서버가 상태 변화를 push해줄 방법이 없어서(REST GET/POST뿐), RESPONDED로 대기하는 동안은
+// 이 주기로 다시 조회해서 백엔드가 이동을 확인해 COMPLETED로 바꿨는지 스스로 확인한다.
+const POLL_INTERVAL_MS = 10_000;
 
 export function useMoveRequestDetail(requestId: number | null) {
   const { accessToken, status } = useAuth();
@@ -11,6 +15,44 @@ export function useMoveRequestDetail(requestId: number | null) {
   const [error, setError] = useState<Error | null>(null);
   // fetch 이펙트를 다시 돌리기 위한 트리거. 값 자체는 의미 없고 바뀌기만 하면 된다.
   const [refetchTick, setRefetchTick] = useState(0);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const loadDetail = useCallback(
+    async (options: { showLoading: boolean }) => {
+      if (status !== 'authenticated' || !accessToken || requestId === null) return;
+
+      if (options.showLoading) setIsLoading(true);
+
+      try {
+        const result = await getMoveRequestDetail(requestId, accessToken);
+        if (!isMountedRef.current) return;
+        setDetail(result);
+        setError(null);
+      } catch (requestError: unknown) {
+        if (!isMountedRef.current) return;
+
+        // 백그라운드 폴링 실패는 화면을 비우지 않고 조용히 넘어간다. 다음 폴링에서 다시 시도된다.
+        if (options.showLoading) {
+          setDetail(null);
+          setError(
+            requestError instanceof Error
+              ? requestError
+              : new Error('이동 요청 정보를 불러오지 못했습니다.'),
+          );
+        }
+      } finally {
+        if (isMountedRef.current && options.showLoading) setIsLoading(false);
+      }
+    },
+    [status, accessToken, requestId],
+  );
 
   useEffect(() => {
     if (status !== 'authenticated' || !accessToken || requestId === null) {
@@ -20,32 +62,18 @@ export function useMoveRequestDetail(requestId: number | null) {
       return;
     }
 
-    let isMounted = true;
-    setIsLoading(true);
-    setError(null);
+    loadDetail({ showLoading: true });
+  }, [status, accessToken, requestId, refetchTick, loadDetail]);
 
-    getMoveRequestDetail(requestId, accessToken)
-      .then((result) => {
-        if (isMounted) setDetail(result);
-      })
-      .catch((requestError: unknown) => {
-        if (!isMounted) return;
+  useEffect(() => {
+    if (detail?.requestStatus !== 'RESPONDED') return;
 
-        setDetail(null);
-        setError(
-          requestError instanceof Error
-            ? requestError
-            : new Error('이동 요청 정보를 불러오지 못했습니다.'),
-        );
-      })
-      .finally(() => {
-        if (isMounted) setIsLoading(false);
-      });
+    const interval = setInterval(() => {
+      loadDetail({ showLoading: false });
+    }, POLL_INTERVAL_MS);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [status, accessToken, requestId, refetchTick]);
+    return () => clearInterval(interval);
+  }, [detail?.requestStatus, loadDetail]);
 
   const refetch = useCallback(() => {
     setRefetchTick((tick) => tick + 1);
