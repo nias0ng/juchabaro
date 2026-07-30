@@ -432,12 +432,14 @@ def classify_violation(
     intruded_zone: ZoneOverlap | None = None,
     in_ignored_zone: bool = False,
     deferred_intrusion: bool = False,
+    occupancy_seconds: float | None = None,
 ) -> tuple[ViolationStatus, ParkingZone | None, float]:
     """§5.1 규칙으로 겹침 구역·스팟 침범·정차 시간을 종합해 위반 상태를 판정한다.
 
-    여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
-    전기차 충전구역 장기 점유(EV_OVERSTAY) > 전용구역 점유(RESTRICTED_ZONE) >
-    선 침범(LINE_CROSS) > 구역 외 주차(OUT_OF_ZONE) 순으로 하나만 보고한다.
+    여러 조건이 동시에 걸리면 전기차 충전구역 장기 점유(EV_OVERSTAY) >
+    통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) > 전용구역 점유
+    (RESTRICTED_ZONE) > 선 침범(LINE_CROSS) > 구역 외 주차(OUT_OF_ZONE)
+    순으로 하나만 보고한다.
     OUT_OF_ZONE은 다른 어떤 위반 신호도 없을 때만 성립하는 배타적 폴백이며
     (우선순위표가 아니라 아래 early-return의 배타 조건), 새 위반 신호를
     추가하면 그 조건도 함께 확장해야 한다.
@@ -447,6 +449,11 @@ def classify_violation(
     **겹침 비율이 더 높은 쪽이 DISABLED여도 시간 초과 중인 EV 구역이 있으면
     EV_OVERSTAY를 보고한다**(319 리뷰 I-4). "비율이 가장 높은 전용구역"이
     아니라 "겹치는 전용구역 전체"에서 시간 초과를 찾기 때문이다.
+
+    EV_OVERSTAY가 최상위인 이유는 판정 근거가 다르기 때문이다 — 나머지는 모두
+    "지금 이 프레임의 기하학적 배치"를 보지만 EV_OVERSTAY는 "이 자리를 얼마나
+    오래 차지했는가"를 본다. 통행로를 막은 채 2시간 충전구역을 점유했다면
+    더 오래 지속된 쪽을 보고하는 게 운영 판단에 맞다.
 
     EV_OVERSTAY(요구사항 정의서.md:25, ERD.md:119-125 event_type)는
     RESTRICTED_ZONE의 특수화다 — 등록 여부와 무관하게 "전기차 충전구역을
@@ -471,12 +478,11 @@ def classify_violation(
     OUT_OF_ZONE으로 확정하면 안 되고, 기존과 동일하게 NONE으로 둔다.
 
     참고: 이제 DOUBLE_PARK가 구역 면적 기준으로 넓게 잡히다 보니, 전용구역
-    (RESTRICTED_ZONE, 그 특수화인 EV_OVERSTAY 포함)에 주차된 차가 동시에
-    남의 스팟을 침범한 경우 이 우선순위 때문에 RESTRICTED_ZONE/EV_OVERSTAY
-    대신 DOUBLE_PARK로 보고된다(자기 EV 구역을 오래 점유 중이면서 동시에
-    남의 스팟도 침범 중이면 EV_OVERSTAY는 가려짐). 옛 방식(차체 접촉 필요)
-    에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가 여전히 의도한
-    동작인지 팀 확인이 필요하다.
+    (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
+    우선순위 때문에 RESTRICTED_ZONE 대신 DOUBLE_PARK로 보고된다. 옛 방식
+    (차체 접촉 필요)에서는 드물었지만 이제는 흔해졌으니, 이 우선순위가
+    여전히 의도한 동작인지 팀 확인이 필요하다. 그 특수화인 EV_OVERSTAY는
+    위 C-1 변경으로 이 가림에서 빠졌다 — 시간 초과 판정이 최상위다.
     """
 
     if not overlaps and blocked_zone is None and intruded_zone is None:
@@ -500,16 +506,35 @@ def classify_violation(
     # 첫 번째, 위 restricted)만 보면 그 구역이 EV 충전구역이 아닐 때 실제로는 시간
     # 초과 중인 EV 구역이 영구히 가려진다(재현 확인됨) — 겹치는 전용구역 전체에서
     # 시간 초과 중인 구역이 있는지 먼저 확인한다.
+    #
+    # (319 리뷰 재검토, C-1) EV 시간 초과만 "구역 점유 시간"으로 잰다.
+    # dwell_seconds는 "연속 무이동 시간"이라 미세 이동/짧은 미탐지로 리셋되는데,
+    # 60~120분 임계값에서는 그 리셋이 상시 발생해 기능이 발화하지 않는다.
+    # occupancy_seconds를 안 넘기면 dwell_seconds로 폴백한다 — 이 함수를 직접
+    # 부르는 단위 테스트가 많아서 둔 기본값이고, 실제 호출부는 ViolationMonitor
+    # 하나뿐이며 항상 넘긴다.
+    ev_elapsed_seconds = dwell_seconds if occupancy_seconds is None else occupancy_seconds
     overstayed_restricted = next(
         (
             item
             for item in restricted_overlaps
             if item.zone.zone_type in EV_ZONE_TYPES
             and item.zone.allowed_minutes is not None
-            and dwell_seconds >= item.zone.allowed_minutes * 60.0
+            and ev_elapsed_seconds >= item.zone.allowed_minutes * 60.0
         ),
         None,
     )
+
+    # (319 리뷰 재검토, C-1) 점유 시계가 허용 시간을 넘겼으면 최소 정차 시간
+    # 게이트보다 먼저 확정한다. 게이트가 dwell_seconds(연속 무이동)를 쓰는데,
+    # 미세 이동이 min_dwell_seconds보다 잦으면 dwell이 영영 게이트를 못 넘어
+    # 2시간을 점유해도 OBSERVING에 머문다. 허용 시간(운영값 60~120분)을 넘긴
+    # 점유는 그 자체로 "정착했다"는 판단에 충분하다.
+    #
+    # allowed_minutes를 min_dwell_seconds보다 작게 설정하면 이 분기가 게이트를
+    # 실질적으로 무력화한다 — 그건 설정 오류이고 별도 지적사항(I-1)이다.
+    if overstayed_restricted is not None:
+        return ViolationStatus.EV_OVERSTAY, overstayed_restricted.zone, overstayed_restricted.ratio
 
     if dwell_seconds < min_dwell_seconds:
         # 정차는 감지됐지만 최소 정차 시간(FR-PARK-008, 확정치 10분)에 미달
@@ -525,8 +550,6 @@ def classify_violation(
         return ViolationStatus.AISLE_BLOCK, aisle.zone, aisle.ratio
     if blocked_zone is not None:
         return ViolationStatus.DOUBLE_PARK, blocked_zone.zone, blocked_zone.ratio
-    if overstayed_restricted is not None:
-        return ViolationStatus.EV_OVERSTAY, overstayed_restricted.zone, overstayed_restricted.ratio
     if restricted is not None:
         return ViolationStatus.RESTRICTED_ZONE, restricted.zone, restricted.ratio
     if intruded_zone is not None:
@@ -566,6 +589,13 @@ class TrackState:
     stationary_since: datetime
     plate_number: str | None = None
     open_violation: ViolationStatus = ViolationStatus.NONE
+    # (319 리뷰 재검토, C-1) 홈 구역 점유 시계. stationary_since와 분리한 이유는
+    # EV_OVERSTAY가 재는 값이 "안 움직인 시간"이 아니라 "이 자리를 차지한
+    # 시간"이기 때문이다 — 같은 자리에서 13px 흔들렸다고 2시간 타이머를 0으로
+    # 되돌리면 기능이 현장에서 발화하지 않는다. 홈 구역이 바뀌거나 구역을
+    # 벗어날 때만 리셋된다.
+    occupied_zone_id: str | None = None
+    zone_occupied_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -893,12 +923,16 @@ class ViolationMonitor:
                 if moved:
                     state.stationary_since = detection.captured_at
                     state.last_bbox = detection.bbox
-                    state.open_violation = ViolationStatus.NONE
+                    # (319 리뷰 재검토, C-1) open_violation은 여기서 리셋하지 않는다.
+                    # 미세 이동마다 "이미 발행한 사건"을 잊으면 같은 차·같은 자리에
+                    # 대해 같은 이벤트가 반복 발행돼 FR-PARK-010을 위반한다.
+                    # 리셋은 아래 홈 구역 변경 시점에 한다.
                 state.last_seen_at = detection.captured_at
 
         zone_overlaps_by_track: dict[int, list[ZoneOverlap]] = {}
         home_zone_by_track: dict[int, ZoneOverlap | None] = {}
         dwell_by_track: dict[int, float] = {}
+        occupancy_by_track: dict[int, float] = {}
         ignored_overlap_by_track: dict[int, ZoneOverlap | None] = {}
         for detection in detections:
             state = self._tracks[detection.track_id]
@@ -924,6 +958,21 @@ class ViolationMonitor:
             )
             state = self._tracks[detection.track_id]
             dwell_by_track[detection.track_id] = (detection.captured_at - state.stationary_since).total_seconds()
+            # (319 리뷰 재검토, C-1) 홈 구역 점유 시계 갱신. 같은 구역을 계속
+            # 점유하는 동안에는 미세 이동과 무관하게 시계를 이어간다.
+            home = home_zone_by_track[detection.track_id]
+            home_zone_id = home.zone.zone_id if home is not None else None
+            if home_zone_id != state.occupied_zone_id:
+                state.occupied_zone_id = home_zone_id
+                state.zone_occupied_since = detection.captured_at if home_zone_id is not None else None
+                # 자리를 옮겼거나 구역을 벗어났으면 이미 발행한 사건도 끝난 것으로
+                # 본다 — 여기가 open_violation 리셋의 유일한 지점이다.
+                state.open_violation = ViolationStatus.NONE
+            occupancy_by_track[detection.track_id] = (
+                (detection.captured_at - state.zone_occupied_since).total_seconds()
+                if state.zone_occupied_since is not None
+                else 0.0
+            )
 
         # 각 스팟 구역의 "진짜 주인" — 그 구역을 홈으로 삼고 최소 정차 시간을
         # 채운 트랙 중, 몸 겹침 비율이 가장 높은 트랙. 같은 구역을 두 트랙이
@@ -994,6 +1043,7 @@ class ViolationMonitor:
                 intruded_zone=intruded_zone,
                 in_ignored_zone=ignored_overlap_by_track[detection.track_id] is not None,
                 deferred_intrusion=deferred_intrusion,
+                occupancy_seconds=occupancy_by_track[detection.track_id],
             )
 
             if status not in (ViolationStatus.NONE, ViolationStatus.OBSERVING) and status != state.open_violation:
@@ -1686,26 +1736,46 @@ class BaselineLogicTests(unittest.TestCase):
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=120.0, min_dwell_seconds=10.0)
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
 
-    def test_ev_overstay_delayed_when_min_dwell_seconds_exceeds_allowed_minutes(self) -> None:
+    def test_ev_overstay_bypasses_min_dwell_gate_when_allowed_minutes_is_smaller(self) -> None:
         """운영 설정 실수 대비 문서화 테스트: `min_dwell_seconds`(정착 확정 시간)가
         어떤 EV 구역의 `allowed_minutes*60`보다 크게 설정되면, 그 구역은
-        allowed_minutes를 이미 넘겼어도 min_dwell_seconds에 도달하기 전까지는
-        여전히 OBSERVING이다(다른 판정과 동일하게 정착 확정이 선행 조건이라
-        크래시나 이중 발행 없이 안전하게 '지연'되는 것만 확인 — allowed_minutes는
-        min_dwell_seconds보다 크게 설정하는 게 정상 사용법이다)."""
+        min_dwell_seconds에 도달하기 전이라도 EV_OVERSTAY로 확정된다
+        (allowed_minutes는 min_dwell_seconds보다 크게 설정하는 게 정상
+        사용법이다).
+
+        기대값이 바뀐 이유(319 리뷰 C-1): 예전에는 최소 정차 시간 게이트가
+        EV 시간 초과 판정보다 앞서서 이 설정에서 OBSERVING으로 '지연'됐다.
+        그런데 게이트가 쓰는 dwell_seconds는 "연속 무이동 시간"이라 미세 이동이
+        min_dwell_seconds보다 잦으면 영영 게이트를 못 넘어, 2시간을 점유해도
+        EV_OVERSTAY가 발화하지 않는다(현장 상시 발생). 그래서 EV 시간 초과
+        판정을 게이트 앞으로 옮겼다 — 허용 시간을 넘긴 점유는 그 자체로
+        "정착했다"는 판단에 충분하기 때문이다.
+
+        그 결과 여기서 검증하던 '지연'은 더 이상 일어나지 않는다. 운영값
+        (allowed_minutes 60~120분 > min_dwell_seconds 10분)에서는 애초에
+        도달할 수 없는 조합이고, 이 조합 자체가 설정 오류다 — 설정 검증은
+        별도 지적사항(I-1)에서 다룬다. 테스트는 지우지 않고 "이 설정에서
+        게이트가 무력화된다"는 현재 동작을 그대로 고정해 둔다.
+        """
         zone = self.make_zone(
             "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)], allowed_minutes=2.0
         )  # allowed_minutes*60 = 120초
         bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
 
-        # allowed_minutes(120초)는 넘었지만 min_dwell_seconds(600초)는 아직 미달
+        # allowed_minutes(120초)는 넘었고 min_dwell_seconds(600초)는 미달 — 게이트보다
+        # EV 시간 초과가 앞서므로 지연 없이 EV_OVERSTAY로 확정된다
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=200.0, min_dwell_seconds=600.0)
-        self.assertEqual(status, ViolationStatus.OBSERVING)
+        self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
 
-        # 둘 다 넘으면 정상적으로 EV_OVERSTAY
+        # 둘 다 넘으면 당연히 EV_OVERSTAY
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
+
+        # 허용 시간에 미달하면 게이트가 정상 작동해 여전히 OBSERVING이다 —
+        # 게이트 자체가 없어진 게 아니라 EV 시간 초과만 앞으로 나온 것이다.
+        status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OBSERVING)
 
     def test_ev_overstay_not_flagged_when_allowed_minutes_unset(self) -> None:
         """allowed_minutes가 설정 안 된 EV 구역은 아무리 오래 정차해도 여전히
@@ -2307,6 +2377,61 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual([(e.status, e.zone_id) for e in events_at[2]], [(ViolationStatus.RESTRICTED_ZONE, "DIS-01")])
         self.assertEqual([(e.status, e.zone_id) for e in events_at[65]], [(ViolationStatus.EV_OVERSTAY, "EV-01")])
 
+    def test_ev_overstay_clock_survives_sub_threshold_jitter(self) -> None:
+        """같은 구역 안에서 미세 이동이 일어나도 EV 점유 시계가 리셋되지 않는다
+        (319 리뷰 C-1, 최우선).
+
+        수정 전에는 앵커 대비 movement_epsilon을 넘는 이동 한 번에
+        stationary_since가 0으로 돌아가, EV_OVERSTAY -> RESTRICTED_ZONE으로
+        강등 재발행된 뒤 다시 EV_OVERSTAY가 발행됐다(재현 확인). 같은 차·같은
+        자리에 대한 중복 발행이라 FR-PARK-010 위반이다.
+        """
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)], allowed_minutes=1.0
+        )
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0, movement_epsilon=0.01
+        )
+        anchor = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        nudged = BoundingBox(0.064, 0.064, 0.264, 0.264)  # 앵커 대비 0.014 > movement_epsilon
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        seen: list[ViolationStatus] = []
+        for seconds, bbox in ((0, anchor), (10, anchor), (61, anchor), (71, nudged), (85, nudged), (135, nudged)):
+            for event in monitor.update(
+                [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds,
+                            captured_at=base_time + timedelta(seconds=seconds))]
+            ):
+                seen.append(event.status)
+
+        self.assertEqual(seen, [ViolationStatus.RESTRICTED_ZONE, ViolationStatus.EV_OVERSTAY])
+
+    def test_open_violation_survives_sub_threshold_jitter(self) -> None:
+        """미세 이동으로 정차 시계가 리셋돼도 '이미 발행한 사건'은 유지된다.
+
+        open_violation 리셋을 moved가 아니라 홈 구역 변경에 연동한 결과다
+        (319 리뷰 C-1). 홈 구역이 그대로면 같은 사건이 계속되는 중이다.
+        """
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0, movement_epsilon=0.01
+        )
+        anchor = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        nudged = BoundingBox(0.064, 0.064, 0.264, 0.264)
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        seen: list[ViolationStatus] = []
+        for seconds, bbox in ((0, anchor), (10, anchor), (20, nudged), (40, nudged)):
+            for event in monitor.update(
+                [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds,
+                            captured_at=base_time + timedelta(seconds=seconds))]
+            ):
+                seen.append(event.status)
+
+        self.assertEqual(seen, [ViolationStatus.RESTRICTED_ZONE])
+
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
         이후 OUT_OF_ZONE 이벤트가 한 번 발행되고 중복 발행되지 않는다."""
@@ -2360,7 +2485,10 @@ class BaselineLogicTests(unittest.TestCase):
             )
         self.assertEqual(len(events_at[6]), 0)  # 이동 직후 정차 타이머 리셋, 1초 미달로 OBSERVING
         # 재정착 -> AISLE_BLOCK 1회 발행. 이전 OUT_OF_ZONE이 "자동으로 닫히는" 게
-        # 아니라, 이동 감지 시 open_violation이 NONE으로 리셋되기 때문이다(위 이동 시점 코드 참고).
+        # 아니라, 이번 프레임 판정(AISLE_BLOCK)이 열려 있는 사건(open_violation =
+        # OUT_OF_ZONE)과 달라서 새 이벤트로 나가는 것이다. (319 리뷰 C-1 이후
+        # open_violation 리셋은 이동이 아니라 홈 구역 변경 시점에만 일어나는데,
+        # 여기서는 구역 밖 -> AISLE 이동이라 홈 구역은 양쪽 모두 None이다.)
         self.assertEqual([e.status for e in events_at[8]], [ViolationStatus.AISLE_BLOCK])
         self.assertEqual(len(events_at[10]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
 
