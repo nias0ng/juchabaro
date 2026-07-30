@@ -79,10 +79,12 @@ class FakeSelector:
         self,
         error: BaseException | None = None,
         *,
-        earlier_frame_index: int = 1,
+        earlier_frame_index: object = 1,
+        later_frame_index: object | None = None,
     ) -> None:
         self.error = error
         self.earlier_frame_index = earlier_frame_index
+        self.later_frame_index = later_frame_index
         self.calls = 0
 
     def select_anchors(
@@ -95,7 +97,11 @@ class FakeSelector:
 
         return AnchorSelection(
             earlier_frame_index=self.earlier_frame_index,
-            later_frame_index=frames[-1].frame_index,
+            later_frame_index=(
+                frames[-1].frame_index
+                if self.later_frame_index is None
+                else self.later_frame_index
+            ),
         )
 
 
@@ -394,6 +400,37 @@ class PlateOcrPipelineTests(unittest.TestCase):
         self.assertEqual(result.status, ReadStatus.SUCCESS)
         self.assertEqual(detector.calls, [2, 5])
         self.assertEqual(geometry.estimate_calls, [(2, 5)])
+
+    def test_non_integer_selector_indices_are_rejected(self) -> None:
+        cases = (
+            ("earlier_bool", FakeSelector(earlier_frame_index=True)),
+            ("earlier_float", FakeSelector(earlier_frame_index=1.0)),
+            ("later_bool", FakeSelector(later_frame_index=True)),
+            ("later_float", FakeSelector(later_frame_index=5.0)),
+        )
+
+        for name, selector in cases:
+            with self.subTest(name=name):
+                pipeline, _, detector, _, _ = _pipeline(
+                    selector=selector,
+                )
+
+                with self.assertRaises(OcrRuntimeError):
+                    pipeline.read_plate(_frames())
+
+                self.assertEqual(detector.calls, [])
+
+    def test_non_integer_geometry_indices_are_rejected(self) -> None:
+        for frame_index in (True, 1.0):
+            with self.subTest(frame_index=frame_index):
+                pipeline, *_ = _pipeline(
+                    geometry=FakeGeometry(
+                        estimated_indices=(frame_index,)
+                    )
+                )
+
+                with self.assertRaises(OcrRuntimeError):
+                    pipeline.read_plate(_frames())
 
     def test_policy_mismatch_fails_before_components(self) -> None:
         pipeline, selector, detector, geometry, reader = _pipeline(

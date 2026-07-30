@@ -7,8 +7,8 @@
 profile로 조립됩니다.
 
 이 디렉터리는 모델 학습이나 모델 파일 다운로드를 담당하지 않습니다.
-모델 객체만 Streamlit 프로세스에서 캐시하며, 각 사용자 실행의 trace는
-해당 Streamlit session에만 보관합니다.
+모델과 이를 공유하는 runtime component·실행 lock을 Streamlit 프로세스에서
+캐시하며, 각 사용자 실행의 trace는 해당 Streamlit session에만 보관합니다.
 
 ## 모델 배치
 

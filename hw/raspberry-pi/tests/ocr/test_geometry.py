@@ -79,7 +79,7 @@ def _invalid_scene_detection(
 
 
 class PlateGeometryCharacterizationTests(unittest.TestCase):
-    """프레임 정책 변경 전 geometry의 실제 출력 범위를 기록한다."""
+    """가변 프레임 정책에서 geometry의 실제 출력 범위를 기록한다."""
 
     def test_later_single_anchor_produces_last_two_frames(self) -> None:
         for frame_count in (3, 6, 8):

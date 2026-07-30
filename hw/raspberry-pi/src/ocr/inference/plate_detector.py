@@ -446,8 +446,9 @@ def load_yolo_plate_detector(
 
     실패:
         모델 파일이 없거나 비어 있으면 파일 관련 예외가 발생한다.
-        Ultralytics import·모델 로드·선택적 warm-up 실패도 호출자에게
-        그대로 전달한다.
+        Ultralytics import·모델 로드 실패는 그대로 전달한다. 선택적
+        warm-up의 모델 호출 실패는 원인을 보존한 DetectorContractError로
+        전달한다.
     """
 
     resolved_path = model_path.expanduser().resolve()

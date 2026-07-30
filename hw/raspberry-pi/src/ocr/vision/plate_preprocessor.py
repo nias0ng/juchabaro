@@ -33,7 +33,7 @@ from ..types import BgrImage, PreparedPlate, RectifiedPlate
 
 
 class PlatePreprocessError(OcrComponentError, ValueError):
-    """번호판 이미지가 전처리 입력 계약을 만족하지 않는 경우."""
+    """전처리 입력·OpenCV 실행·출력 계약을 만족하지 않는 경우."""
 
 
 # [임시 전처리 값]
@@ -158,7 +158,7 @@ class PlatePreprocessor:
         self,
         image: BgrImage,
     ) -> BgrImage:
-        """가로세로 비율을 유지하며 설정된 높이로 resize한다."""
+        """가로세로 비율을 유지하며 고정 높이로 resize한다."""
 
         height, width = image.shape[:2]
         scale = _TARGET_HEIGHT / height

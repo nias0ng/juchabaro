@@ -27,8 +27,9 @@ class OcrRuntimeConfig:
     운영 OCR pipeline을 한 번 조립하는 데 필요한 startup 설정.
 
     ``policy``는 이후 카메라 촬영 코드와 공유할 프레임 정책이다.
-    모델 경로의 존재·파일 구성은 각 모델 loader가 검증하며, load 또는
-    선택적 warm-up 실패는 원래 예외 그대로 호출자에게 전달된다.
+    모델 경로의 존재·파일 구성은 각 모델 loader가 검증한다. 모델 import와
+    load 오류는 그대로 전달하고, warm-up 모델 호출 오류는 원인을 보존한
+    typed adapter 오류로 전달한다.
     """
 
     detector_model_path: Path
@@ -62,8 +63,9 @@ def load_plate_ocr_pipeline(
 
     실패:
         잘못된 runtime 설정, 모델 파일 누락, runtime import, 모델 load
-        또는 warm-up 오류를 숨기지 않고 그대로 전달한다. 실패한 경우
-        부분 초기화된 pipeline은 반환하지 않는다.
+        또는 warm-up 오류를 숨기지 않는다. 모델 호출 오류는 원인을 보존한
+        typed adapter 오류일 수 있으며, 실패 시 부분 초기화된 pipeline은
+        반환하지 않는다.
     """
 
     if not isinstance(config, OcrRuntimeConfig):

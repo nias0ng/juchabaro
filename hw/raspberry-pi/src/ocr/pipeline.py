@@ -484,6 +484,15 @@ class PlateOcrPipeline:
             selection.later_frame_index,
         )
 
+        if any(
+            isinstance(frame_index, bool)
+            or not isinstance(frame_index, int)
+            for frame_index in anchor_indices
+        ):
+            raise OcrRuntimeError(
+                "selector anchor index는 bool이 아닌 정수여야 합니다."
+            )
+
         if anchor_indices[0] not in range(
             self._policy.early_anchor_candidate_count
         ):
@@ -509,17 +518,26 @@ class PlateOcrPipeline:
         estimate_by_index: dict[int, EstimatedQuad] = {}
 
         for estimate in estimates:
-            if estimate.frame_index not in frame_by_index:
+            frame_index = estimate.frame_index
+            if (
+                isinstance(frame_index, bool)
+                or not isinstance(frame_index, int)
+            ):
+                raise OcrRuntimeError(
+                    "geometry frame_index는 bool이 아닌 정수여야 합니다."
+                )
+
+            if frame_index not in frame_by_index:
                 raise OcrRuntimeError(
                     "geometry가 입력에 없는 frame_index를 반환했습니다."
                 )
 
-            if estimate.frame_index in estimate_by_index:
+            if frame_index in estimate_by_index:
                 raise OcrRuntimeError(
                     "geometry 결과의 frame_index가 중복되었습니다."
                 )
 
-            estimate_by_index[estimate.frame_index] = estimate
+            estimate_by_index[frame_index] = estimate
         return estimate_by_index
 
     @staticmethod
