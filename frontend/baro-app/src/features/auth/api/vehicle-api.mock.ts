@@ -13,8 +13,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** visitDate("YYYY.MM.DD")를 기준으로 24시간 방문 등록 시작/종료 시각 문자열을 만든다. */
+function toVisitWindow(visitDate: string | undefined) {
+  if (!visitDate) return { visitStartAt: null, visitEndAt: null };
+
+  const start = `${visitDate} 00:00`;
+  const end = `${visitDate} 23:59`;
+  return { visitStartAt: start, visitEndAt: end };
+}
+
 export async function registerVehicleMock(request: RegisterVehicleRequest): Promise<VehicleResult> {
   await delay(MOCK_RESPONSE_DELAY_MS);
+
+  const isHousehold = request.ownerType === 'RESIDENT';
+  const { visitStartAt, visitEndAt } = toVisitWindow(request.visitDate);
 
   const vehicle: VehicleResult = {
     vehicleId: nextVehicleId++,
@@ -24,6 +36,11 @@ export async function registerVehicleMock(request: RegisterVehicleRequest): Prom
     visitDate: request.visitDate ?? null,
     isElectric: request.isElectric,
     isDisabled: request.isDisabled,
+    parkingSpotCode: isHousehold ? 'B1 · EV-01' : null,
+    registeredAt: isHousehold ? request.visitDate ?? null : null,
+    visitStartAt,
+    visitEndAt,
+    approvalStatus: 'APPROVED',
   };
 
   mockVehicles = [...mockVehicles, vehicle];
