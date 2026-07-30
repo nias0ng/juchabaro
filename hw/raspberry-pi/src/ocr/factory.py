@@ -15,9 +15,9 @@ from .inference.plate_detector import load_yolo_plate_detector
 from .inference.plate_reader import load_paddle_plate_reader
 from .pipeline import PlateOcrPipeline
 from .policy import OcrPipelinePolicy
-from .postprocessing.aggregator import AggregationPolicy, PlateAggregator
+from .postprocessing.aggregator import PlateAggregator
 from .vision.frame_selector import QualityFrameSelector
-from .vision.geometry import GeometryConfig, PlateGeometry
+from .vision.geometry import PlateGeometry
 from .vision.plate_preprocessor import PlatePreprocessor
 
 
@@ -69,14 +69,11 @@ def load_plate_ocr_pipeline(
     if not isinstance(config, OcrRuntimeConfig):
         raise TypeError("config는 OcrRuntimeConfig여야 합니다.")
 
-    geometry_config = GeometryConfig()
-    aggregation_policy = AggregationPolicy()
-
     # 정책·OpenCV 설정 오류는 무거운 모델을 읽기 전에 확인한다.
     selector = QualityFrameSelector(policy=config.policy)
-    geometry = PlateGeometry(geometry_config)
+    geometry = PlateGeometry()
     preprocessor = PlatePreprocessor()
-    aggregator = PlateAggregator(aggregation_policy)
+    aggregator = PlateAggregator()
 
     detector = load_yolo_plate_detector(
         config.detector_model_path,

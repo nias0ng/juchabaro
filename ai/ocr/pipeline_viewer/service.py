@@ -50,16 +50,13 @@ from ocr.pipeline import (  # noqa: E402
     OcrPipelinePolicy,
     PlateOcrPipeline,
 )
-from ocr.postprocessing.aggregator import (  # noqa: E402
-    AggregationPolicy,
-    PlateAggregator,
-)
+from ocr.postprocessing.aggregator import PlateAggregator  # noqa: E402
 from ocr.postprocessing.plate_text import (  # noqa: E402
     build_ocr_candidate,
 )
 from ocr.types import CapturedFrame, PlateReadResult  # noqa: E402
 from ocr.vision.frame_selector import QualityFrameSelector  # noqa: E402
-from ocr.vision.geometry import GeometryConfig, PlateGeometry  # noqa: E402
+from ocr.vision.geometry import PlateGeometry  # noqa: E402
 from ocr.vision.plate_preprocessor import PlatePreprocessor  # noqa: E402
 
 from .tracing import (  # noqa: E402
@@ -251,9 +248,6 @@ def load_runtime(
 
     selected_paths = paths or default_model_paths()
     validate_model_paths(selected_paths)
-    geometry_config = GeometryConfig()
-    aggregation_policy = AggregationPolicy()
-
     detector, detector_load_ms = _timed(
         lambda: load_yolo_plate_detector(
             selected_paths.detector,
@@ -278,10 +272,10 @@ def load_runtime(
         policy=DEFAULT_OCR_POLICY,
         selector=QualityFrameSelector(policy=DEFAULT_OCR_POLICY),
         detector=detector,
-        geometry=PlateGeometry(geometry_config),
+        geometry=PlateGeometry(),
         preprocessor=PlatePreprocessor(),
         reader=reader,
-        aggregator=PlateAggregator(aggregation_policy),
+        aggregator=PlateAggregator(),
         startup=StartupReport(
             detector_load_ms=detector_load_ms,
             detector_warm_up_ms=detector_warm_up_ms,
@@ -437,8 +431,8 @@ def run_debug_pipeline(
     trace = PipelineTrace()
     pipeline = _build_traced_pipeline(runtime, trace)
 
-    # 모델별 lock과 별개로 이벤트 전체를 직렬화해 trace와 시간 측정을
-    # 다른 Streamlit 세션의 추론이 교란하지 않도록 한다.
+    # 캐시된 component를 이벤트 전체에서 직렬화해 다른 Streamlit 세션이
+    # 공유 모델 상태와 trace 시간 측정을 교란하지 않도록 한다.
     with runtime.run_lock:
         try:
             result = run_traced_pipeline(

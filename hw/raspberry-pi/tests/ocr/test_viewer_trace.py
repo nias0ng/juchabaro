@@ -44,7 +44,6 @@ from ocr.types import (  # noqa: E402
     CapturedFrame,
     DetectedPlate,
     EstimatedQuad,
-    FrameQuality,
     OcrCandidate,
     PlateDecision,
     PlateReadResult,
@@ -72,22 +71,9 @@ class FakeSelector:
         self,
         frames: Sequence[CapturedFrame],
     ) -> AnchorSelection:
-        qualities = tuple(
-            FrameQuality(
-                frame_index=frame.frame_index,
-                sharpness=1.0,
-                contrast=1.0,
-                mean_brightness=100.0,
-                dark_ratio=0.0,
-                bright_ratio=0.0,
-                score=float(frame.frame_index),
-            )
-            for frame in frames
-        )
         return AnchorSelection(
             earlier_frame_index=0,
             later_frame_index=len(frames) - 1,
-            qualities=qualities,
         )
 
 
@@ -198,12 +184,11 @@ class FakeGeometry:
     def rectify(
         self,
         frame: CapturedFrame,
-        estimate: EstimatedQuad,
+        _estimate: EstimatedQuad,
     ) -> RectifiedPlate:
         return RectifiedPlate(
             frame_index=frame.frame_index,
             image=frame.image.copy(),
-            quad_estimate=estimate,
         )
 
 
@@ -212,8 +197,6 @@ class FakePreprocessor:
         return PreparedPlate(
             frame_index=plate.frame_index,
             image=plate.image.copy(),
-            quad_estimate=plate.quad_estimate,
-            preprocessing_applied=False,
         )
 
 
@@ -244,7 +227,6 @@ class FakeAggregator:
             valid_frames=len(candidate_tuple),
             vote_count=len(candidate_tuple),
             vote_ratio=1.0,
-            mean_rec_score=0.9,
         )
 
 
@@ -425,7 +407,6 @@ class ViewerTraceTest(unittest.TestCase):
         self.assertEqual(decision.valid_frames, 3)
         self.assertEqual(decision.vote_count, 3)
         self.assertEqual(decision.vote_ratio, 1.0)
-        self.assertEqual(decision.mean_rec_score, 0.9)
 
         self.assertEqual(len(run.trace.calls_for("detection")), 2)
         self.assertEqual(len(run.trace.calls_for("recognition")), 1)

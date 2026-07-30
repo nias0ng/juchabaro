@@ -329,7 +329,6 @@ class PlateGeometry:
         return RectifiedPlate(
             frame_index=frame.frame_index,
             image=rectified,
-            quad_estimate=estimate,
         )
 
     def _validate_quad(

@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
 from src.ocr import OcrPipelinePolicy
-from src.ocr.types import CapturedFrame, FrameQuality
+from src.ocr.types import CapturedFrame
 from src.ocr.vision import frame_selector as frame_selector_module
 from src.ocr.vision.frame_selector import (
     FrameSelectionError,
-    OpenCvFrameQualityEvaluator,
     QualityFrameSelector,
 )
 
@@ -26,36 +24,6 @@ def _frames(count: int) -> tuple[CapturedFrame, ...]:
         )
         for index in range(count)
     )
-
-
-class StubQualityEvaluator:
-    def __init__(self, scores: Sequence[float]) -> None:
-        self._scores = tuple(scores)
-        self.calls: list[tuple[int, ...]] = []
-
-    def evaluate(
-        self,
-        frames: Sequence[CapturedFrame],
-    ) -> tuple[FrameQuality, ...]:
-        self.calls.append(
-            tuple(frame.frame_index for frame in frames)
-        )
-        return tuple(
-            FrameQuality(
-                frame_index=frame.frame_index,
-                sharpness=score,
-                contrast=0.0,
-                mean_brightness=127.0,
-                dark_ratio=0.0,
-                bright_ratio=0.0,
-                score=score,
-            )
-            for frame, score in zip(
-                frames,
-                self._scores,
-                strict=True,
-            )
-        )
 
 
 class OcrPipelinePolicyTests(unittest.TestCase):
@@ -105,24 +73,26 @@ class OcrPipelinePolicyTests(unittest.TestCase):
                         early_anchor_candidate_count=early_count,
                     )
 
+
 class QualityFrameSelectorPolicyTests(unittest.TestCase):
-    def test_opencv_evaluator_accepts_variable_frame_sequences(
-        self,
-    ) -> None:
-        evaluator = OpenCvFrameQualityEvaluator()
+    def test_opencv_score_stays_in_unit_interval(self) -> None:
+        images = (
+            np.zeros((8, 12, 3), dtype=np.uint8),
+            np.full((8, 12, 3), 127, dtype=np.uint8),
+            np.full((8, 12, 3), 255, dtype=np.uint8),
+        )
 
-        for frame_count in (3, 6, 8):
-            with self.subTest(frame_count=frame_count):
-                qualities = evaluator.evaluate(_frames(frame_count))
-
-                self.assertEqual(len(qualities), frame_count)
-                self.assertEqual(
-                    tuple(
-                        quality.frame_index
-                        for quality in qualities
-                    ),
-                    tuple(range(frame_count)),
+        for frame_index, image in enumerate(images):
+            with self.subTest(frame_index=frame_index):
+                score = frame_selector_module._score_frame(
+                    CapturedFrame(
+                        frame_index=frame_index,
+                        image=image,
+                    )
                 )
+
+                self.assertGreaterEqual(score, 0.0)
+                self.assertLessEqual(score, 1.0)
 
     def test_selector_supports_three_six_and_eight_frames(self) -> None:
         for frame_count in (3, 6, 8):
@@ -130,16 +100,15 @@ class QualityFrameSelectorPolicyTests(unittest.TestCase):
                 scores = [0.1] * frame_count
                 scores[1] = 0.8
                 scores[2] = 1.0
-                evaluator = StubQualityEvaluator(scores)
                 policy = OcrPipelinePolicy(frame_count=frame_count)
-                selector = QualityFrameSelector(
-                    evaluator,
-                    policy=policy,
-                )
-
-                selection = selector.select_anchors(
-                    _frames(frame_count)
-                )
+                with patch.object(
+                    frame_selector_module,
+                    "_score_frame",
+                    side_effect=lambda frame: scores[frame.frame_index],
+                ) as score_frame:
+                    selection = QualityFrameSelector(
+                        policy=policy,
+                    ).select_anchors(_frames(frame_count))
 
                 self.assertEqual(selection.earlier_frame_index, 1)
                 self.assertEqual(
@@ -147,39 +116,55 @@ class QualityFrameSelectorPolicyTests(unittest.TestCase):
                     frame_count - 1,
                 )
                 self.assertEqual(
-                    evaluator.calls,
-                    [tuple(range(frame_count))],
+                    tuple(
+                        call.args[0].frame_index
+                        for call in score_frame.call_args_list
+                    ),
+                    (0, 1),
                 )
 
     def test_early_candidate_count_changes_selection_pool(self) -> None:
         frames = _frames(6)
         scores = (0.2, 0.8, 0.9, 1.0, 0.1, 0.1)
 
-        first_only = QualityFrameSelector(
-            StubQualityEvaluator(scores),
-            policy=OcrPipelinePolicy(
-                frame_count=6,
-                early_anchor_candidate_count=1,
-            ),
-        ).select_anchors(frames)
-        first_three = QualityFrameSelector(
-            StubQualityEvaluator(scores),
-            policy=OcrPipelinePolicy(
-                frame_count=6,
-                early_anchor_candidate_count=3,
-            ),
-        ).select_anchors(frames)
+        for early_count, expected_index in ((1, 0), (3, 2)):
+            with self.subTest(early_count=early_count):
+                with patch.object(
+                    frame_selector_module,
+                    "_score_frame",
+                    side_effect=lambda frame: scores[frame.frame_index],
+                ) as score_frame:
+                    selection = QualityFrameSelector(
+                        policy=OcrPipelinePolicy(
+                            frame_count=6,
+                            early_anchor_candidate_count=early_count,
+                        ),
+                    ).select_anchors(frames)
 
-        self.assertEqual(first_only.earlier_frame_index, 0)
-        self.assertEqual(first_three.earlier_frame_index, 2)
+                self.assertEqual(
+                    selection.earlier_frame_index,
+                    expected_index,
+                )
+                self.assertEqual(
+                    tuple(
+                        call.args[0].frame_index
+                        for call in score_frame.call_args_list
+                    ),
+                    tuple(range(early_count)),
+                )
 
     def test_equal_quality_prefers_later_frame_within_early_pool(
         self,
     ) -> None:
-        selection = QualityFrameSelector(
-            StubQualityEvaluator((0.5, 0.5, 1.0)),
-            policy=OcrPipelinePolicy(frame_count=3),
-        ).select_anchors(_frames(3))
+        scores = (0.5, 0.5, 1.0)
+        with patch.object(
+            frame_selector_module,
+            "_score_frame",
+            side_effect=lambda frame: scores[frame.frame_index],
+        ):
+            selection = QualityFrameSelector(
+                policy=OcrPipelinePolicy(frame_count=3),
+            ).select_anchors(_frames(3))
 
         self.assertEqual(selection.earlier_frame_index, 1)
         self.assertEqual(selection.later_frame_index, 2)

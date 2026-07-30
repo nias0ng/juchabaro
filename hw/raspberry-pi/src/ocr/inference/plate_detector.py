@@ -18,7 +18,6 @@ YOLOv8n-pose 모델로 anchor 프레임의 번호판과 네 꼭짓점을 검출�
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Lock
 from typing import Any, cast
 
 import numpy as np
@@ -106,8 +105,6 @@ class YoloPlateDetector:
     이미 로드된 YOLO pose 모델을 번호판 detector로 감싼다.
 
     이 객체는 서비스 시작 시 한 번 생성된 뒤 차량 이벤트마다 재사용한다.
-    pipeline event lock 밖에서 같은 adapter를 직접 공유하는 경로도 안전하도록
-    모델 호출 자체를 lock으로 직렬화한다.
 
     입력:
         ``detect()``는 BGR uint8 HxWx3 이미지를 가진 CapturedFrame을
@@ -156,7 +153,6 @@ class YoloPlateDetector:
         self._imgsz = imgsz
         self._confidence_threshold = confidence_threshold
         self._max_detections = max_detections
-        self._lock = Lock()
 
     def warm_up(self) -> None:
         """
@@ -391,21 +387,20 @@ class YoloPlateDetector:
         )
 
     def _predict(self, image: BgrImage) -> list[Any]:
-        """주입된 YOLO 모델을 lock 안에서 한 번 호출한다."""
+        """주입된 YOLO 모델을 한 번 호출하고 결과를 즉시 소비한다."""
 
         try:
-            with self._lock:
-                return list(
-                    self._model.predict(
-                        source=image,
-                        device=self._device,
-                        imgsz=self._imgsz,
-                        conf=self._confidence_threshold,
-                        max_det=self._max_detections,
-                        half=False,
-                        verbose=False,
-                    )
+            return list(
+                self._model.predict(
+                    source=image,
+                    device=self._device,
+                    imgsz=self._imgsz,
+                    conf=self._confidence_threshold,
+                    max_det=self._max_detections,
+                    half=False,
+                    verbose=False,
                 )
+            )
         except Exception as exc:
             raise DetectorContractError(
                 "YOLO 모델 실행에 실패했습니다."

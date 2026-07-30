@@ -85,7 +85,7 @@ streamlit run ai/ocr/pipeline_viewer/app.py
 ## 화면
 
 - 최종 판정, trace에서 복원한 후보와 단계 실패
-- 전체 프레임 품질과 선택된 두 anchor
+- 품질 비교로 선택된 앞쪽 anchor와 마지막 anchor
 - Anchor별 YOLO 후보 전체의 best-first 순위·bbox·confidence와 best 후보의
   네 keypoint overlay
 - 프레임별 검출·보간·외삽·재사용 quad

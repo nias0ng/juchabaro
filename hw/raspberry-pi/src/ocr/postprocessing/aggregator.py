@@ -15,14 +15,14 @@
     - OCR confidence를 이용한 문자열 추측 교정
     - 프레임별 OCR 후보 생성
 
-OCR confidence는 후보의 최소 품질 조건과 진단값으로만 사용한다.
+OCR confidence는 후보의 최소 품질 조건으로만 사용한다.
 소수 후보의 높은 confidence가 더 많이 관측된 번호판을 뒤집지는 않는다.
 """
 
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from numbers import Real
 from typing import Sequence
@@ -171,7 +171,6 @@ def _empty_decision(
         valid_frames=0,
         vote_count=0,
         vote_ratio=0.0,
-        mean_rec_score=0.0,
         error_message=message,
     )
 
@@ -228,9 +227,7 @@ class _VoteTally:
     valid_frames: int
     vote_count: int
     vote_ratio: float
-    mean_rec_score: float
     second_vote_count: int
-    tied_for_first: bool
 
     @property
     def margin_ratio(self) -> float:
@@ -250,27 +247,12 @@ def _tally_votes(
         candidate.normalized_text
         for candidate in candidates
     )
-    scores: defaultdict[str, list[float]] = defaultdict(list)
-    for candidate in candidates:
-        scores[candidate.normalized_text].append(
-            float(candidate.rec_score)
-        )
-
-    # confidence는 순위를 바꾸지 않는다. 문자열 정렬은 동률 상태의
-    # 진단값을 실행마다 동일하게 만들기 위한 결정적 기준일 뿐이다.
-    ranked = sorted(
-        counts,
-        key=lambda plate_number: (
-            -counts[plate_number],
-            plate_number,
-        ),
-    )
-    winner = ranked[0]
-    vote_count = counts[winner]
-    winner_scores = scores[winner]
+    # confidence는 순위를 바꾸지 않으며 최상위 동률은 아래 정책에서 거절한다.
+    ranked = counts.most_common(2)
+    winner, vote_count = ranked[0]
     valid_frames = len(candidates)
     second_vote_count = (
-        counts[ranked[1]]
+        ranked[1][1]
         if len(ranked) > 1
         else 0
     )
@@ -280,14 +262,7 @@ def _tally_votes(
         valid_frames=valid_frames,
         vote_count=vote_count,
         vote_ratio=vote_count / valid_frames,
-        mean_rec_score=(
-            math.fsum(winner_scores) / len(winner_scores)
-        ),
         second_vote_count=second_vote_count,
-        tied_for_first=(
-            len(ranked) > 1
-            and counts[ranked[0]] == counts[ranked[1]]
-        ),
     )
 
 
@@ -309,7 +284,6 @@ def _voted_decision(
         valid_frames=tally.valid_frames,
         vote_count=tally.vote_count,
         vote_ratio=tally.vote_ratio,
-        mean_rec_score=tally.mean_rec_score,
         error_message=error_message,
     )
 
@@ -322,7 +296,7 @@ def _apply_vote_policy(
 
     # 최상위 동률은 confidence로 깨지 않는다. 같은 수의 독립
     # 관측이므로 어느 번호판도 확정할 근거가 충분하지 않다.
-    if tally.tied_for_first:
+    if tally.vote_count == tally.second_vote_count:
         return _voted_decision(
             status=ReadStatus.AMBIGUOUS,
             tally=tally,
@@ -387,8 +361,7 @@ class PlateAggregator:
     출력:
         최종 상태, 확정 번호판 또는 투표 진단값을 가진 PlateDecision.
         ``valid_frames``는 형식과 최소 confidence를 통과한 후보 수,
-        ``vote_ratio``는 그중 winner의 득표 비율, ``mean_rec_score``는
-        winner에 투표한 후보들만의 평균 confidence다.
+        ``vote_ratio``는 그중 winner의 득표 비율이다.
 
     실패:
         후보의 frame_index가 유효하지 않거나 중복되면

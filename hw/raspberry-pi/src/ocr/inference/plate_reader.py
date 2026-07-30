@@ -21,7 +21,6 @@ import math
 from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
-from threading import Lock
 from typing import Any, Sequence
 
 import numpy as np
@@ -125,9 +124,7 @@ class PaddlePlateReader:
     이미 로드된 PaddleOCR recognition 모델로 번호판 batch를 읽는다.
 
     이 객체는 서비스 시작 시 한 번 생성한 뒤 차량 이벤트마다 재사용한다.
-    모델 호출과 generator 소비를 하나의 lock 안에서 수행해 동시 추론으로
-    모델 상태가 충돌하지 않게 한다. 이 lock은 같은 adapter를 여러
-    pipeline이나 caller가 공유하는 경우에도 단일 모델 호출을 보호한다.
+    모델이 반환한 generator는 호출 안에서 즉시 list로 소비한다.
 
     입력:
         ``recognize()``는 전처리가 끝난 PreparedPlate 시퀀스를 받는다.
@@ -162,7 +159,6 @@ class PaddlePlateReader:
 
         self._model = model
         self._batch_size = batch_size
-        self._lock = Lock()
 
     def warm_up(self) -> None:
         """
@@ -261,20 +257,19 @@ class PaddlePlateReader:
         self,
         images: list[BgrImage],
     ) -> list[Any]:
-        """공유 모델 호출과 lazy 결과 소비를 같은 lock 안에서 수행한다.
+        """주입된 모델 호출 결과를 같은 호출 안에서 즉시 소비한다.
 
         ``images``의 배열은 caller가 소유한 read-only 참조이며 adapter가
         별도 복사하지 않는다.
         """
 
         try:
-            with self._lock:
-                return list(
-                    self._model.predict(
-                        input=images,
-                        batch_size=self._batch_size,
-                    )
+            return list(
+                self._model.predict(
+                    input=images,
+                    batch_size=self._batch_size,
                 )
+            )
         except Exception as exc:
             raise PaddleResultError(
                 "PaddleOCR 모델 실행에 실패했습니다."

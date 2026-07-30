@@ -18,20 +18,7 @@ from src.ocr.inference.plate_reader import (
     _parse_paddle_result,
     load_paddle_plate_reader,
 )
-from src.ocr.types import (
-    EstimatedQuad,
-    PreparedPlate,
-    Quad,
-    QuadSource,
-)
-
-
-PLATE_QUAD: Quad = (
-    (0.0, 0.0),
-    (11.0, 0.0),
-    (11.0, 7.0),
-    (0.0, 7.0),
-)
+from src.ocr.types import PreparedPlate
 
 
 class FakePaddleModel:
@@ -100,13 +87,6 @@ def _plates(count: int) -> tuple[PreparedPlate, ...]:
         PreparedPlate(
             frame_index=index,
             image=np.zeros((8, 12, 3), dtype=np.uint8),
-            quad_estimate=EstimatedQuad(
-                frame_index=index,
-                quad=PLATE_QUAD,
-                source=QuadSource.INTERPOLATED,
-                source_anchor_indices=(0, count - 1),
-            ),
-            preprocessing_applied=True,
         )
         for index in range(count)
     )

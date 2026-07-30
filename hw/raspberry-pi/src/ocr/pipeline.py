@@ -154,7 +154,7 @@ class PlateOcrPipeline:
         self._policy = policy or OcrPipelinePolicy()
 
         # 한 pipeline 인스턴스에서 두 차량 이벤트의 여러 stage가 서로
-        # 섞이지 않게 한다. Adapter lock은 별도로 공유된 모델 호출을 지킨다.
+        # 섞이지 않게 하며 공유 모델과 CLAHE의 동시 사용도 방지한다.
         self._event_lock = Lock()
 
     def read_plate(

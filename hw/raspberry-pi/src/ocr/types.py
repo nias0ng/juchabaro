@@ -57,7 +57,7 @@ class QuadSource(str, Enum):
     REUSED = "REUSED"
 
 
-# [입력 프레임과 품질 정보]
+# [입력 프레임과 anchor 선택]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,30 +76,11 @@ class CapturedFrame:
 
 
 @dataclass(frozen=True, slots=True)
-class FrameQuality:
-    """
-    전체 프레임에서 계산한 저비용 품질 지표.
-
-    번호판 crop이 생기기 전에 계산하므로 번호판 자체 품질이 아닌
-    전체 프레임 품질의 근사치라는 한계가 있다.
-    """
-
-    frame_index: int
-    sharpness: float
-    contrast: float
-    mean_brightness: float
-    dark_ratio: float
-    bright_ratio: float
-    score: float
-
-
-@dataclass(frozen=True, slots=True)
 class AnchorSelection:
     """YOLO를 실행할 앞쪽 anchor와 마지막 anchor 선택 결과."""
 
     earlier_frame_index: int
     later_frame_index: int
-    qualities: tuple[FrameQuality, ...]
 
 
 # [번호판 검출과 기하 처리 결과]
@@ -140,7 +121,6 @@ class RectifiedPlate:
 
     frame_index: int
     image: BgrImage
-    quad_estimate: EstimatedQuad
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,8 +133,6 @@ class PreparedPlate:
 
     frame_index: int
     image: BgrImage
-    quad_estimate: EstimatedQuad
-    preprocessing_applied: bool
 
 
 # [OCR 인식과 문자열 처리 결과]
@@ -174,7 +152,6 @@ class OcrCandidate:
     """문자열 정규화와 지원 번호판 형식 검사를 마친 OCR 후보."""
 
     frame_index: int
-    raw_text: str
     normalized_text: str
     rec_score: float
     valid_format: bool
@@ -192,7 +169,6 @@ class PlateDecision:
     valid_frames: int
     vote_count: int
     vote_ratio: float
-    mean_rec_score: float
     error_message: str | None = None
 
 

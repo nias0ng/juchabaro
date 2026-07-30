@@ -103,7 +103,6 @@ def build_ocr_candidate(result: RawOcrResult) -> OcrCandidate:
 
     return OcrCandidate(
         frame_index=result.frame_index,
-        raw_text=result.raw_text,
         normalized_text=normalized_text,
         rec_score=result.rec_score,
         valid_format=is_supported_plate_number(normalized_text),

@@ -21,7 +21,6 @@ def _candidate(
 ) -> OcrCandidate:
     return OcrCandidate(
         frame_index=frame_index,
-        raw_text=plate_number,
         normalized_text=plate_number,
         rec_score=score,
         valid_format=True,
@@ -67,6 +66,7 @@ class AggregationPolicyTests(unittest.TestCase):
                 with self.assertRaises(AggregationError):
                     AggregationPolicy(min_valid_frames=value)
 
+
 class PlateAggregatorDecisionTests(unittest.TestCase):
     def test_duplicate_frame_candidate_is_rejected(self) -> None:
         with self.assertRaises(AggregationError):
@@ -82,7 +82,6 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
             (
                 OcrCandidate(
                     frame_index=0,
-                    raw_text="---",
                     normalized_text="",
                     rec_score=0.9,
                     valid_format=False,
@@ -98,7 +97,6 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
             (
                 OcrCandidate(
                     frame_index=0,
-                    raw_text="ABC",
                     normalized_text="ABC",
                     rec_score=0.9,
                     valid_format=False,
@@ -148,8 +146,14 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
         self.assertEqual(decision.vote_count, 1)
         self.assertIsNone(decision.plate_number)
 
-    def test_two_different_candidates_are_ambiguous(self) -> None:
-        decision = PlateAggregator().aggregate(
+    def test_tie_is_ambiguous_even_when_thresholds_allow_it(self) -> None:
+        aggregator = PlateAggregator(
+            AggregationPolicy(
+                min_vote_ratio=0.50,
+                min_margin_ratio=0.0,
+            )
+        )
+        decision = aggregator.aggregate(
             (
                 _candidate(0, "12가3456"),
                 _candidate(1, "34나5678"),
@@ -176,18 +180,6 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
         self.assertEqual(decision.status, ReadStatus.SUCCESS)
         self.assertEqual(decision.vote_count, 3)
         self.assertEqual(decision.vote_ratio, 0.6)
-
-    def test_winner_mean_score_uses_only_winning_candidates(self) -> None:
-        decision = PlateAggregator().aggregate(
-            (
-                _candidate(0, "12가3456", score=0.4),
-                _candidate(1, "12가3456", score=0.8),
-                _candidate(2, "34나5678", score=1.0),
-            )
-        )
-
-        self.assertEqual(decision.status, ReadStatus.SUCCESS)
-        self.assertAlmostEqual(decision.mean_rec_score, 0.6)
 
     def test_half_of_four_is_rejected_by_vote_ratio(self) -> None:
         decision = PlateAggregator().aggregate(

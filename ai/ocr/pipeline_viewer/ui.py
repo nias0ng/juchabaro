@@ -569,29 +569,6 @@ def _render_frame_selection(run: DebugRun) -> None:
         st.warning("Frame selector 출력이 없습니다.")
         return
 
-    anchor_indices = {
-        selection.earlier_frame_index,
-        selection.later_frame_index,
-    }
-    quality_rows = [
-        {
-            "frame": f"F{quality.frame_index + 1}",
-            "file": _frame_name(run, quality.frame_index),
-            "anchor": quality.frame_index in anchor_indices,
-            "sharpness": round(float(quality.sharpness), 3),
-            "contrast": round(float(quality.contrast), 3),
-            "mean_brightness": round(float(quality.mean_brightness), 3),
-            "dark_ratio": round(float(quality.dark_ratio), 4),
-            "bright_ratio": round(float(quality.bright_ratio), 4),
-            "score": round(float(quality.score), 4),
-        }
-        for quality in selection.qualities
-    ]
-    st.dataframe(
-        quality_rows,
-        hide_index=True,
-        use_container_width=True,
-    )
     st.caption(
         f"선택된 anchor: F{selection.earlier_frame_index + 1}, "
         f"F{selection.later_frame_index + 1}"
@@ -833,7 +810,6 @@ def _render_preprocessing(run: DebugRun) -> None:
                         "frame": f"F{frame_index + 1}",
                         "input_shape": None,
                         "output_shape": None,
-                        "applied": None,
                         "elapsed_ms": round(call.elapsed_ms, 3),
                         "error": message,
                     }
@@ -856,7 +832,6 @@ def _render_preprocessing(run: DebugRun) -> None:
                 else None
             )
             if call.succeeded and prepared_image is not None:
-                prepared = call.output
                 columns[1].image(
                     prepared_image,
                     channels="BGR",
@@ -871,7 +846,6 @@ def _render_preprocessing(run: DebugRun) -> None:
                         "frame": f"F{frame_index + 1}",
                         "input_shape": tuple(rectified_image.shape),
                         "output_shape": tuple(prepared_image.shape),
-                        "applied": prepared.preprocessing_applied,
                         "elapsed_ms": round(call.elapsed_ms, 3),
                         "error": "",
                     }
@@ -885,7 +859,6 @@ def _render_preprocessing(run: DebugRun) -> None:
                         "frame": f"F{frame_index + 1}",
                         "input_shape": tuple(rectified_image.shape),
                         "output_shape": None,
-                        "applied": None,
                         "elapsed_ms": round(call.elapsed_ms, 3),
                         "error": message,
                     }
@@ -897,7 +870,6 @@ def _render_preprocessing(run: DebugRun) -> None:
                         "frame": f"F{frame_index + 1}",
                         "input_shape": tuple(rectified_image.shape),
                         "output_shape": None,
-                        "applied": None,
                         "elapsed_ms": round(call.elapsed_ms, 3),
                         "error": _call_error(call),
                     }

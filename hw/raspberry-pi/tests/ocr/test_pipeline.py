@@ -22,7 +22,6 @@ from src.ocr.types import (
     CapturedFrame,
     DetectedPlate,
     EstimatedQuad,
-    FrameQuality,
     OcrCandidate,
     PlateReadResult,
     PreparedPlate,
@@ -97,18 +96,6 @@ class FakeSelector:
         return AnchorSelection(
             earlier_frame_index=self.earlier_frame_index,
             later_frame_index=frames[-1].frame_index,
-            qualities=tuple(
-                FrameQuality(
-                    frame_index=frame.frame_index,
-                    sharpness=1.0,
-                    contrast=1.0,
-                    mean_brightness=127.0,
-                    dark_ratio=0.0,
-                    bright_ratio=0.0,
-                    score=1.0,
-                )
-                for frame in frames
-            ),
         )
 
 
@@ -200,7 +187,7 @@ class FakeGeometry:
     def rectify(
         self,
         frame: CapturedFrame,
-        estimate: EstimatedQuad,
+        _estimate: EstimatedQuad,
     ) -> RectifiedPlate:
         self.rectify_calls.append(frame.frame_index)
         error = self.rectify_errors.get(frame.frame_index)
@@ -209,7 +196,6 @@ class FakeGeometry:
         return RectifiedPlate(
             frame_index=frame.frame_index,
             image=frame.image,
-            quad_estimate=estimate,
         )
 
 
@@ -221,8 +207,6 @@ class FakePreprocessor:
         return PreparedPlate(
             frame_index=plate.frame_index,
             image=plate.image,
-            quad_estimate=plate.quad_estimate,
-            preprocessing_applied=True,
         )
 
 
