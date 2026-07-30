@@ -36,11 +36,27 @@ export default function RequestDetailScreen() {
       <ScreenHeader
         title="이동 요청"
         style={styles.header}
-        right={
-          <View style={styles.urgentBadge}>
-            <Text style={styles.urgentText}>긴급</Text>
+        right={display ? (
+          <View
+            style={[
+              styles.requestTypeBadge,
+              display.requestSourceVariant === 'manual'
+                ? styles.manualRequestBadge
+                : styles.aiRequestBadge,
+            ]}
+          >
+            <Text
+              style={[
+                styles.requestTypeText,
+                display.requestSourceVariant === 'manual'
+                  ? styles.manualRequestText
+                  : styles.aiRequestText,
+              ]}
+            >
+              {display.requestSourceLabel}
+            </Text>
           </View>
-        }
+        ) : null}
       />
 
       {statusMessage || !display ? (

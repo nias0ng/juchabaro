@@ -4,6 +4,7 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
+    marginTop: Spacing.sm,
     gap: Spacing.base + 2,
   },
   heading: {

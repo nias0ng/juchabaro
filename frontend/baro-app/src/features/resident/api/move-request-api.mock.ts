@@ -1,6 +1,20 @@
+import { Image } from 'react-native';
+
 import type { MoveRequestDetail } from './types';
 
 const MOCK_RESPONSE_DELAY_MS = 500;
+
+// 네이티브에서 require()는 asset 번호를 돌려주고 resolveAssetSource로 uri를 뽑아야 하는데,
+// 웹(react-native-web)은 resolveAssetSource 자체가 없고 require()가 { uri, width, height } 객체를 바로 준다.
+function resolveMockImageUri(source: number | string | { uri: string }): string {
+  if (typeof source === 'string') return source;
+  if (typeof source === 'object' && source !== null && 'uri' in source) return source.uri;
+  return Image.resolveAssetSource(source).uri;
+}
+
+// 실제 주차 사건 사진 대신 넣어둔 테스트용 로컬 이미지. imageUrl 타입(string)을 맞추려고 uri만 뽑아둔다.
+const mockPhoto1 = resolveMockImageUri(require('@/assets/images/resident/request-detail/mock-parking-photo-1.png'));
+const mockPhoto2 = resolveMockImageUri(require('@/assets/images/resident/request-detail/mock-parking-photo-2.png'));
 
 // Figma E-11 기준. 아직 응답 전(SENT) 상태라 dueAt/responses가 비어있다.
 const mockRequestDetail: MoveRequestDetail = {
@@ -19,10 +33,9 @@ const mockRequestDetail: MoveRequestDetail = {
     eventType: 'DOUBLE_PARKING', // BAD_PARKING, DISABLED_ZONE_VIOLATION, EV_OVERSTAY, OUT_OF_ZONE, DOUBLE_PARKING
     reason: '출차 통로를 막고 있어 차량 이동을 요청했습니다.',
     zoneNumber: 'B-14',
-    // 실제 저장소 URL이 아니라, 스와이프 동작 확인용 로딩 가능한 placeholder 이미지.
     images: [
-      { imageId: 401, imageType: 'PARKING_STATE', imageUrl: 'https://picsum.photos/seed/parking-event-1/800/600' },
-      { imageId: 402, imageType: 'PARKING_STATE', imageUrl: 'https://picsum.photos/seed/parking-event-2/800/600' },
+      { imageId: 401, imageType: 'PARKING_STATE', imageUrl: mockPhoto1 },
+      { imageId: 402, imageType: 'PARKING_STATE', imageUrl: mockPhoto2 },
     ],
   },
   responses: [],

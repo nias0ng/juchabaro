@@ -6,18 +6,28 @@ export const styles = StyleSheet.create({
   header: {
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.lg,
-    paddingBottom: Spacing.xs,
+    paddingBottom: Spacing.md,
   },
-  urgentBadge: {
-    backgroundColor: Palette.peach100,
+  requestTypeBadge: {
     borderRadius: Radius.full,
     paddingHorizontal: Spacing.sm + 4,
     paddingVertical: Spacing.xs + 1,
   },
-  urgentText: {
+  manualRequestBadge: {
+    backgroundColor: Palette.sky100,
+  },
+  aiRequestBadge: {
+    backgroundColor: Palette.teal100,
+  },
+  requestTypeText: {
     fontSize: 10.5,
     fontWeight: FontWeight.bold,
-    color: Palette.orange600,
+  },
+  manualRequestText: {
+    color: Palette.blue600,
+  },
+  aiRequestText: {
+    color: Palette.teal600,
   },
   statusContainer: {
     flex: 1,
@@ -34,8 +44,6 @@ export const styles = StyleSheet.create({
   mainCard: {
     gap: Spacing.base + 1,
     backgroundColor: Palette.gray50,
-    borderTopLeftRadius: Radius.xl + 4,
-    borderTopRightRadius: Radius.xl + 4,
     paddingTop: Spacing.lg + 4,
     paddingBottom: Spacing.lg,
     paddingHorizontal: Spacing.md + 4,
