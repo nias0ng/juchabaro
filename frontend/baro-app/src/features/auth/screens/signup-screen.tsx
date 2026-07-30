@@ -13,7 +13,7 @@ import { styles } from './signup-screen.styles';
 export default function SignupScreen() {
   const signup = useSignupForm();
   const isCompleteStep = signup.step === 4;
-  const goToAuthenticatedArea = (href: '/resident' | '/resident/vehicles') => {
+  const goToAuthenticatedArea = (href: '/resident' | '/auth/register-car') => {
     router.replace(signup.autoLoginFailed ? '/auth/login' : href);
   };
 
@@ -36,7 +36,7 @@ export default function SignupScreen() {
 
           <SignupSteps
             signup={signup}
-            onRegisterVehicle={() => goToAuthenticatedArea('/resident/vehicles')}
+            onRegisterVehicle={() => goToAuthenticatedArea('/auth/register-car')}
             onGoHome={() => goToAuthenticatedArea('/resident')}
           />
 
