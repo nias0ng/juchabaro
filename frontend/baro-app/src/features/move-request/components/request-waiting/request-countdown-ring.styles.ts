@@ -1,15 +1,17 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette } from '@/styles';
+import { FontWeight, Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   ring: {
     width: 170,
     height: 170,
-    borderRadius: 85,
-    backgroundColor: Palette.violet100,
+    marginTop: Spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  svg: {
+    position: 'absolute',
   },
   dial: {
     width: 142,

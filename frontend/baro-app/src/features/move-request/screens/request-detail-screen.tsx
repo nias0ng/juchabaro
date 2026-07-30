@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { FormErrorBanner, Screen, ScreenHeader } from '@/components/ui';
@@ -30,7 +31,20 @@ export default function RequestDetailScreen() {
 
   // E-12: 응답 완료 후 차량 이동을 기다리는 상태. 이 화면 하나가 requestStatus에 따라 다르게 그려진다.
   const isWaiting = detail?.requestStatus === 'RESPONDED';
-  const countdown = useCountdown(isWaiting ? detail?.dueAt ?? null : null);
+  // "요청 상세 보기"를 눌러서 대기 화면 대신 상세(E-11 레이아웃, 응답 버튼 없음)를 보고 있는 상태.
+  const [showDetail, setShowDetail] = useState(false);
+  // 다른 요청으로 넘어갔는데 이전 요청에서 눌러둔 "상세 보기" 상태가 남아있지 않도록 초기화한다.
+  useEffect(() => {
+    setShowDetail(false);
+  }, [normalizedRequestId]);
+  const showWaitingView = isWaiting && !showDetail;
+  const showResponseActions = !isWaiting;
+
+  const latestResponse = detail?.responses[detail.responses.length - 1] ?? null;
+  const countdown = useCountdown(
+    isWaiting ? detail?.dueAt ?? null : null,
+    isWaiting ? latestResponse?.respondedAt ?? null : null,
+  );
   const waitingDisplay = isWaiting && detail ? toRequestWaitingDisplay(detail) : null;
 
   const hasResponded = detail ? detail.responses.length > 0 : false;
@@ -58,6 +72,7 @@ export default function RequestDetailScreen() {
       <ScreenHeader
         title="이동 요청"
         style={styles.header}
+        onBack={isWaiting && showDetail ? () => setShowDetail(false) : undefined}
         right={
           isWaiting ? (
             <Text style={styles.saveLink}>저장</Text>
@@ -89,22 +104,22 @@ export default function RequestDetailScreen() {
         <View style={styles.statusContainer}>
           <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
-      ) : isWaiting && waitingDisplay ? (
+      ) : showWaitingView && waitingDisplay ? (
         <View style={styles.waitingContent}>
           <View style={styles.waitingPill}>
             <Text style={styles.waitingPillText}>이동 대기중</Text>
           </View>
           <Text style={styles.waitingLabel}>차량 이동까지</Text>
 
-          <RequestCountdownRing label={countdown.label} />
+          <RequestCountdownRing label={countdown.label} progress={countdown.progress} />
 
           <RequestProgressCard
             dueTimeLabel={waitingDisplay.dueTimeLabel}
             respondedTimeLabel={waitingDisplay.respondedTimeLabel}
           />
 
-          <Pressable accessibilityRole="button" style={styles.statusButton} onPress={() => refetch()}>
-            <Text style={styles.statusButtonText}>요청 상태 보기</Text>
+          <Pressable accessibilityRole="button" style={styles.statusButton} onPress={() => setShowDetail(true)}>
+            <Text style={styles.statusButtonText}>요청 상세 보기</Text>
           </Pressable>
         </View>
       ) : (
@@ -123,17 +138,21 @@ export default function RequestDetailScreen() {
               location={display.location}
             />
 
-            <RequestReminderNotice message={REMINDER_MESSAGE} />
+            {showResponseActions ? (
+              <>
+                <RequestReminderNotice message={REMINDER_MESSAGE} />
 
-            {submitError ? <FormErrorBanner message={submitError} /> : null}
+                {submitError ? <FormErrorBanner message={submitError} /> : null}
 
-            <RequestTimeActions
-              disabled={hasResponded || isSubmitting}
-              onPressImmediate={() => respond('WILL_MOVE', 10)}
-              onPress30Min={() => respond('WILL_MOVE', 30)}
-              onPress60Min={() => respond('WILL_MOVE', 60)}
-              onPressDecline={() => respond('CANNOT_MOVE_NOW', null)}
-            />
+                <RequestTimeActions
+                  disabled={hasResponded || isSubmitting}
+                  onPressImmediate={() => respond('WILL_MOVE', 10)}
+                  onPress30Min={() => respond('WILL_MOVE', 30)}
+                  onPress60Min={() => respond('WILL_MOVE', 60)}
+                  onPressDecline={() => respond('CANNOT_MOVE_NOW', null)}
+                />
+              </>
+            ) : null}
           </View>
         </>
       )}
