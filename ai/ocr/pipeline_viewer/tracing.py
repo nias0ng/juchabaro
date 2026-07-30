@@ -37,7 +37,7 @@ class StageCall:
 
 @dataclass(slots=True)
 class PipelineTrace:
-    """단일 6프레임 이벤트에서 발생한 호출을 실행 순서대로 보관한다."""
+    """단일 burst 이벤트에서 발생한 호출을 실행 순서대로 보관한다."""
 
     calls: list[StageCall] = field(default_factory=list)
 

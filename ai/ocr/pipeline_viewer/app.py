@@ -1,4 +1,4 @@
-"""6프레임 번호판 OCR 파이프라인의 단계별 입출력을 보여주는 앱."""
+"""설정된 burst 크기의 번호판 OCR 단계별 입출력을 보여주는 앱."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from pipeline_viewer.service import (  # noqa: E402
     BurstInputError,
     DebugRun,
     DebugRuntime,
+    EXPECTED_FRAME_COUNT,
     UploadPayload,
     decode_burst,
     default_model_paths,
@@ -140,21 +141,30 @@ def main() -> None:
     st.divider()
     st.header("연속 프레임 입력")
     uploads = st.file_uploader(
-        "촬영 시간순 파일명으로 된 사진 6장을 선택하세요.",
+        "촬영 시간순 파일명으로 된 사진 "
+        f"{EXPECTED_FRAME_COUNT}장을 선택하세요.",
         type=("jpg", "jpeg", "png", "bmp", "webp"),
         accept_multiple_files=True,
         help=(
-            "파일명을 자연 정렬해 frame_index 0~5를 부여합니다. "
-            "예: 01.jpg, 02.jpg, ..., 06.jpg"
+            "파일명을 자연 정렬해 frame_index "
+            f"0~{EXPECTED_FRAME_COUNT - 1}을 부여합니다. "
+            "예: 01.jpg, 02.jpg, ..., "
+            f"{EXPECTED_FRAME_COUNT:02d}.jpg"
         ),
     )
 
     if not uploads:
-        st.info("사진 6장을 업로드하면 입력 순서와 해상도를 확인합니다.")
+        st.info(
+            f"사진 {EXPECTED_FRAME_COUNT}장을 업로드하면 "
+            "입력 순서와 해상도를 확인합니다."
+        )
         return
 
-    if len(uploads) != 6:
-        st.warning(f"사진은 정확히 6장이 필요합니다: actual={len(uploads)}")
+    if len(uploads) != EXPECTED_FRAME_COUNT:
+        st.warning(
+            f"사진은 정확히 {EXPECTED_FRAME_COUNT}장이 필요합니다: "
+            f"actual={len(uploads)}"
+        )
         return
 
     payloads = tuple(
@@ -181,7 +191,9 @@ def main() -> None:
     )
 
     if run_requested and runtime is not None:
-        with st.spinner("6프레임 OCR 파이프라인을 실행합니다..."):
+        with st.spinner(
+            f"{EXPECTED_FRAME_COUNT}프레임 OCR 파이프라인을 실행합니다..."
+        ):
             try:
                 debug_run = run_debug_pipeline(runtime, burst)
             except Exception as exc:

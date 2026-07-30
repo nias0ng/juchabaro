@@ -25,8 +25,8 @@ from dataclasses import dataclass
 import math
 
 import cv2
-import numpy as np
 
+from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, PreparedPlate, RectifiedPlate
 
 
@@ -235,14 +235,7 @@ class PlatePreprocessor:
     def _validate_image(image: BgrImage) -> BgrImage:
         """이미지가 비어 있지 않은 BGR uint8 HxWx3인지 검사한다."""
 
-        if (
-            not isinstance(image, np.ndarray)
-            or image.dtype != np.uint8
-            or image.ndim != 3
-            or image.shape[2] != 3
-            or image.shape[0] <= 0
-            or image.shape[1] <= 0
-        ):
+        if not is_nonempty_bgr_uint8_image(image):
             raise PlatePreprocessError(
                 "번호판 이미지는 비어 있지 않은 BGR uint8 HxWx3 "
                 "배열이어야 합니다."

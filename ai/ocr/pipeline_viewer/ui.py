@@ -264,7 +264,8 @@ def render_burst_preview(burst: DecodedBurst) -> None:
 
     st.subheader("입력 순서")
     st.caption(
-        "파일명을 자연 정렬한 뒤 F1~F6을 부여합니다. "
+        "파일명을 자연 정렬한 뒤 "
+        f"F1~F{len(burst.frames)}을 부여합니다. "
         "이 순서가 실제 촬영 시간순인지 실행 전에 확인하세요."
     )
 

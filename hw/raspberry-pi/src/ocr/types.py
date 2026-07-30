@@ -60,8 +60,8 @@ class CapturedFrame:
     """
     한 번의 촬영 burst에 포함된 시간순 프레임.
 
-    ``frame_index``는 burst 내부 인덱스 0~5이고, ``image``는
-    BGR uint8 HxWx3 배열이다.
+    ``frame_index``는 0부터 시작하는 burst 내부 연속 인덱스이고,
+    ``image``는 BGR uint8 HxWx3 배열이다.
     """
 
     frame_index: int

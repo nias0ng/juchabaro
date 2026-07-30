@@ -5,13 +5,13 @@ Raspberry Pi 입구 카메라의 번호판 OCR 파이프라인 공개 API.
 필요로 하는 파이프라인과 핵심 입출력 타입만 이 패키지에서 공개한다.
 """
 
-from .pipeline import PipelinePolicy, PlateOcrPipeline
+from .pipeline import OcrPipelinePolicy, PlateOcrPipeline
 from .types import CapturedFrame, PlateReadResult, ReadStatus
 
 
 __all__ = [
     "CapturedFrame",
-    "PipelinePolicy",
+    "OcrPipelinePolicy",
     "PlateOcrPipeline",
     "PlateReadResult",
     "ReadStatus",

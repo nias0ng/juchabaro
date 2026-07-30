@@ -24,6 +24,7 @@ from typing import Any, cast
 
 import numpy as np
 
+from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, CapturedFrame, DetectedPlate, Quad
 
 
@@ -57,13 +58,7 @@ def _validate_bgr_image(image: BgrImage) -> None:
             "YOLO 입력은 numpy.ndarray여야 합니다."
         )
 
-    if (
-        image.dtype != np.uint8
-        or image.ndim != 3
-        or image.shape[2] != 3
-        or image.shape[0] == 0
-        or image.shape[1] == 0
-    ):
+    if not is_nonempty_bgr_uint8_image(image):
         raise DetectorContractError(
             "YOLO 입력은 비어 있지 않은 BGR uint8 HxWx3 "
             f"배열이어야 합니다: dtype={image.dtype}, "

@@ -2,11 +2,11 @@
 촬영 burst의 프레임 품질을 평가하고 YOLO를 실행할 anchor를 선택한다.
 
 파이프라인 위치:
-    CapturedFrame 6장 → frame_selector → plate_detector
+    CapturedFrame burst → frame_selector → plate_detector
 
 주요 기능:
     - 필요할 때 전체 프레임을 축소해 선명도·대비·노출을 저비용으로 평가
-    - 앞쪽 F1~F2 중 품질이 좋은 프레임과 마지막 F6을 anchor로 선택
+    - 정책이 정한 앞쪽 후보 중 품질이 좋은 프레임과 마지막 프레임 선택
 
 담당하지 않는 기능:
     - 번호판 영역 검출
@@ -23,85 +23,8 @@ from typing import Sequence
 import cv2
 import numpy as np
 
+from ..policy import OcrPipelinePolicy
 from ..types import CapturedFrame, FrameQuality, AnchorSelection
-
-
-# [입력 계약과 예외]
-
-
-EXPECTED_FRAME_COUNT = 6
-EXPECTED_FRAME_INDICES = tuple(range(EXPECTED_FRAME_COUNT))
-
-
-class FrameSelectionError(ValueError):
-    """촬영 burst가 프레임 선택 입력 계약을 만족하지 않는 경우."""
-
-
-def _validated_frames(
-    frames: Sequence[CapturedFrame],
-) -> tuple[CapturedFrame, ...]:
-    """
-    프레임 수·시간순 인덱스·이미지 형식을 검사한다.
-
-    입력:
-        촬영 시간순으로 정렬된 CapturedFrame 시퀀스.
-
-    출력:
-        길이가 6으로 고정된 tuple.
-
-    실패:
-        인덱스가 0~5 순서가 아니거나 이미지가 비어 있는
-        BGR uint8 HxWx3 형식이 아니면 FrameSelectionError가 발생한다.
-    """
-
-    validated = tuple(frames)
-
-    if len(validated) != EXPECTED_FRAME_COUNT:
-        raise FrameSelectionError(
-            f"프레임은 정확히 {EXPECTED_FRAME_COUNT}장이어야 합니다: "
-            f"actual={len(validated)}"
-        )
-
-    if any(
-        not isinstance(frame, CapturedFrame)
-        for frame in validated
-    ):
-        raise FrameSelectionError(
-            "frames의 모든 항목은 CapturedFrame이어야 합니다."
-        )
-
-    if any(
-        isinstance(frame.frame_index, bool)
-        or not isinstance(frame.frame_index, int)
-        for frame in validated
-    ):
-        raise FrameSelectionError(
-            "frame_index는 bool이 아닌 정수여야 합니다."
-        )
-
-    indices = tuple(frame.frame_index for frame in validated)
-    if indices != EXPECTED_FRAME_INDICES:
-        raise FrameSelectionError(
-            "프레임은 촬영 시간순이며 frame_index가 0~5여야 합니다: "
-            f"actual={indices}"
-        )
-
-    for frame in validated:
-        image = frame.image
-        if (
-            not isinstance(image, np.ndarray)
-            or image.dtype != np.uint8
-            or image.ndim != 3
-            or image.shape[2] != 3
-            or image.shape[0] <= 0
-            or image.shape[1] <= 0
-        ):
-            raise FrameSelectionError(
-                "프레임 이미지는 비어 있지 않은 BGR uint8 HxWx3 "
-                f"배열이어야 합니다: frame_index={frame.frame_index}"
-            )
-
-    return validated
 
 
 # [품질 측정 설정]
@@ -152,14 +75,14 @@ class OpenCvFrameQualityEvaluator:
     anchor로 사용하기 좋은 프레임을 뜻한다.
 
     입력:
-        BGR uint8 HxWx3 형식의 CapturedFrame 6장.
+        pipeline 진입 검증을 통과한 BGR uint8 CapturedFrame 시퀀스.
 
     출력:
-        입력 순서를 유지한 FrameQuality 6개.
+        입력 순서를 유지한 FrameQuality tuple.
 
     실패:
-        프레임 계약이 잘못되면 FrameSelectionError가 발생한다.
-        설정값이 유효하지 않으면 ValueError가 발생한다.
+        설정값이 유효하지 않으면 ValueError가 발생한다. OpenCV 연산
+        실패는 원래 예외로 전달한다.
     """
 
     def __init__(
@@ -198,20 +121,18 @@ class OpenCvFrameQualityEvaluator:
         frames: Sequence[CapturedFrame],
     ) -> tuple[FrameQuality, ...]:
         """
-        여섯 프레임의 선명도·대비·밝기·clipping 비율을 계산한다.
+        각 프레임의 선명도·대비·밝기·clipping 비율을 계산한다.
 
         입력:
-            촬영 시간순이며 frame_index가 0~5인 프레임 6장.
+            pipeline 진입 검증을 통과한 시간순 프레임.
 
         출력:
             각 지표의 원시값과 0~1 종합 점수를 담은 FrameQuality tuple.
 
-        실패:
-            입력 프레임 계약이 잘못되면 FrameSelectionError가 발생한다.
+        입력 계약은 pipeline 경계에서 한 번 검증하며 여기서 반복하지 않는다.
         """
 
-        validated = _validated_frames(frames)
-        return tuple(self._evaluate_one(frame) for frame in validated)
+        return tuple(self._evaluate_one(frame) for frame in frames)
 
     def _evaluate_one(self, frame: CapturedFrame) -> FrameQuality:
         """한 프레임을 공통 크기로 바꾼 뒤 품질 지표를 계산한다."""
@@ -287,53 +208,54 @@ class QualityFrameSelector:
     """
     품질 평가 결과와 촬영 순서를 함께 사용해 YOLO anchor 두 장을 고른다.
 
-    앞쪽 anchor를 F1~F2로 제한해 마지막 F6과의 시간 간격을 확보한다.
-    이렇게 하면 나머지 프레임의 좌표를 긴 거리로 외삽하는 대신 두
-    anchor 사이에서 보간할 수 있다.
+    정책이 정한 앞쪽 후보에서 earlier anchor를 선택하고 마지막 프레임을
+    later anchor로 사용해 두 anchor 사이를 보간할 수 있게 한다.
 
     입력:
-        BGR uint8 HxWx3 CapturedFrame 6장.
+        pipeline 진입 검증을 통과한 BGR uint8 CapturedFrame 시퀀스.
 
     출력:
         앞쪽 품질 우수 프레임과 마지막 프레임의 인덱스 및 품질 정보.
 
-    실패:
-        입력 프레임 계약이 잘못되면 FrameSelectionError가 발생한다.
+    입력 계약은 pipeline 경계에서 한 번 검증하며 여기서 반복하지 않는다.
     """
 
     def __init__(
         self,
         evaluator: OpenCvFrameQualityEvaluator | None = None,
+        *,
+        policy: OcrPipelinePolicy | None = None,
     ) -> None:
         self._evaluator = evaluator or OpenCvFrameQualityEvaluator()
+        self._policy = policy or OcrPipelinePolicy()
 
     def select_anchors(
         self,
         frames: Sequence[CapturedFrame],
     ) -> AnchorSelection:
         """
-        F1~F2 중 고품질 프레임과 F6을 YOLO 실행 대상으로 선택한다.
+        앞쪽 후보 중 고품질 프레임과 마지막 프레임을 anchor로 선택한다.
 
         입력:
-            촬영 시간순이며 frame_index가 0~5인 프레임 6장.
+            정책의 frame_count와 일치하는 시간순 프레임.
 
         출력:
             earlier/later anchor 인덱스와 전체 품질 평가 결과.
 
         실패:
-            품질 평가가 불가능하면 FrameSelectionError가 발생한다.
+            OpenCV 품질 평가가 실패하면 해당 예외를 전달한다.
         """
 
         qualities = self._evaluator.evaluate(frames)
 
         # 점수가 같으면 정지선에 조금 더 가까울 가능성이 있는 뒤 프레임을 쓴다.
         earlier = max(
-            qualities[:2],
+            qualities[: self._policy.early_anchor_candidate_count],
             key=lambda quality: (quality.score, quality.frame_index),
         )
 
         return AnchorSelection(
             earlier_frame_index=earlier.frame_index,
-            later_frame_index=EXPECTED_FRAME_INDICES[-1],
+            later_frame_index=self._policy.frame_count - 1,
             qualities=qualities,
         )

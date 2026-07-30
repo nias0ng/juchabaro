@@ -25,10 +25,12 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, PreparedPlate, RawOcrResult
 
 
-# 한 차량의 최대 6개 crop을 기본적으로 한 backend batch에서 처리한다.
+# PaddleOCR predict에 전달할 기본 recognition batch 크기다. Burst의
+# frame_count와는 별도이며 입력 crop 시퀀스 전체를 predict에 전달한다.
 DEFAULT_RECOGNITION_BATCH_SIZE = 6
 
 
@@ -50,13 +52,7 @@ def _validate_bgr_image(image: BgrImage, *, frame_index: int) -> None:
             f"frame {frame_index}: OCR 입력은 numpy.ndarray여야 합니다."
         )
 
-    if (
-        image.dtype != np.uint8
-        or image.ndim != 3
-        or image.shape[2] != 3
-        or image.shape[0] == 0
-        or image.shape[1] == 0
-    ):
+    if not is_nonempty_bgr_uint8_image(image):
         raise PaddleResultError(
             f"frame {frame_index}: OCR 입력은 비어 있지 않은 "
             "BGR uint8 HxWx3 배열이어야 합니다: "

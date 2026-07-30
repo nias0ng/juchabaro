@@ -1,5 +1,5 @@
 """
-촬영된 여섯 프레임을 전체 번호판 문자열로 변환하는 OCR 흐름을 조율한다.
+촬영된 프레임 burst를 전체 번호판 문자열로 변환하는 OCR 흐름을 조율한다.
 
 파이프라인 순서:
     frame selection → YOLO → geometry → image preprocessing
@@ -12,14 +12,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 import logging
 from threading import Lock
 import time
 from typing import Protocol
 
-import numpy as np
-
+from .image_validation import is_nonempty_bgr_uint8_image
+from .policy import OcrPipelinePolicy
 from .postprocessing.plate_text import build_ocr_candidate
 from .types import (
     AnchorSelection,
@@ -112,43 +111,16 @@ class PlateAggregatorPort(Protocol):
         """전체 문자열 기준 다수결 판정을 반환한다."""
 
 
-# [실행 정책]
-
-
-@dataclass(frozen=True, slots=True)
-class PipelinePolicy:
-    """
-    단일 차량 OCR 이벤트의 입력 및 모델 호출 정책.
-
-    현재 카메라 계약은 시간순 여섯 프레임이며, 시간적으로 떨어진 두
-    anchor에 YOLO를 정확히 한 번씩 실행한다. 운영 데이터가 바뀌면
-    selector 정책과 함께 재검토해야 한다.
-    """
-
-    expected_frame_count: int = 6
-    max_detector_calls: int = 2
-
-    def __post_init__(self) -> None:
-        if self.expected_frame_count != 6:
-            raise ValueError(
-                "현재 OCR 파이프라인은 프레임 6장을 전제로 합니다."
-            )
-
-        if self.max_detector_calls != 2:
-            raise ValueError(
-                "현재 anchor 선택 정책은 YOLO 호출 2회를 전제로 합니다."
-            )
-
-
 # [OCR 파이프라인]
 
 
 class PlateOcrPipeline:
     """
-    여섯 프레임에서 전체 번호판을 읽는 재사용 가능한 파이프라인.
+    시간순 프레임 burst에서 전체 번호판을 읽는 재사용 가능한 파이프라인.
 
     입력:
-        촬영 시간순이며 frame_index가 0~5인 BGR uint8 프레임 여섯 장.
+        정책의 ``frame_count``와 길이가 같고 frame_index가 0부터
+        연속적인 BGR uint8 프레임.
 
     출력:
         성공 여부, 전체 번호판, 프레임별 후보와 진단 정보를 포함한
@@ -172,7 +144,7 @@ class PlateOcrPipeline:
             [RawOcrResult],
             OcrCandidate,
         ] = build_ocr_candidate,
-        policy: PipelinePolicy | None = None,
+        policy: OcrPipelinePolicy | None = None,
     ) -> None:
         self._selector = selector
         self._detector = detector
@@ -181,7 +153,7 @@ class PlateOcrPipeline:
         self._reader = reader
         self._aggregator = aggregator
         self._text_processor = text_processor
-        self._policy = policy or PipelinePolicy()
+        self._policy = policy or OcrPipelinePolicy()
 
         # 동일 모델 객체에 두 차량 이벤트가 섞여 들어가지 않게 한다.
         self._event_lock = Lock()
@@ -194,7 +166,8 @@ class PlateOcrPipeline:
         한 번의 차량 촬영 burst를 처리해 전체 번호판 판정을 반환한다.
 
         입력:
-            촬영 시간순이며 frame_index가 0~5인 CapturedFrame 6장.
+            정책의 ``frame_count``와 길이가 같고 촬영 시간순인
+            CapturedFrame 시퀀스.
 
         출력:
             성공 번호, 실패 상태, 후보·단계별 진단·실행 지표를 담은
@@ -637,9 +610,9 @@ class PlateOcrPipeline:
         self,
         frames: Sequence[CapturedFrame],
     ) -> None:
-        """여섯 프레임의 순서, dtype, shape와 해상도 계약을 확인한다."""
+        """Burst의 수, 순서, dtype, shape와 해상도 계약을 확인한다."""
 
-        expected_count = self._policy.expected_frame_count
+        expected_count = self._policy.frame_count
 
         if len(frames) != expected_count:
             raise ValueError(
@@ -672,7 +645,8 @@ class PlateOcrPipeline:
 
         if actual_indices != expected_indices:
             raise ValueError(
-                "frame_index는 촬영 시간순 0~5여야 합니다: "
+                "frame_index는 촬영 시간순 "
+                f"0~{expected_count - 1}이어야 합니다: "
                 f"actual={actual_indices}"
             )
 
@@ -681,14 +655,7 @@ class PlateOcrPipeline:
         for frame in frames:
             image = frame.image
 
-            if (
-                not isinstance(image, np.ndarray)
-                or image.dtype != np.uint8
-                or image.ndim != 3
-                or image.shape[2] != 3
-                or image.shape[0] == 0
-                or image.shape[1] == 0
-            ):
+            if not is_nonempty_bgr_uint8_image(image):
                 raise ValueError(
                     f"frame_index={frame.frame_index}: "
                     "BGR uint8 HxWx3 이미지가 필요합니다."
@@ -699,7 +666,7 @@ class PlateOcrPipeline:
         # 동일 좌표 보간을 사용하므로 burst 안의 해상도는 같아야 한다.
         if len(image_shapes) != 1:
             raise ValueError(
-                "한 burst의 여섯 프레임 해상도는 같아야 합니다."
+                "한 burst의 모든 프레임 해상도는 같아야 합니다."
             )
 
     def _validate_selection(
@@ -714,14 +681,18 @@ class PlateOcrPipeline:
             selection.later_frame_index,
         )
 
+        if any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            for index in anchor_indices
+        ):
+            raise ValueError(
+                "anchor frame_index는 bool이 아닌 정수여야 합니다."
+            )
+
         if len(set(anchor_indices)) != len(anchor_indices):
             raise ValueError(
                 "두 anchor의 frame_index가 중복되었습니다."
-            )
-
-        if len(anchor_indices) > self._policy.max_detector_calls:
-            raise ValueError(
-                "Anchor 수가 YOLO 호출 제한을 초과했습니다."
             )
 
         if any(
@@ -735,6 +706,20 @@ class PlateOcrPipeline:
         if anchor_indices[0] >= anchor_indices[1]:
             raise ValueError(
                 "earlier anchor는 later anchor보다 앞서야 합니다."
+            )
+
+        if (
+            anchor_indices[0]
+            >= self._policy.early_anchor_candidate_count
+        ):
+            raise ValueError(
+                "earlier anchor가 정책의 품질 비교 후보 범위를 "
+                "벗어났습니다."
+            )
+
+        if anchor_indices[1] != self._policy.frame_count - 1:
+            raise ValueError(
+                "later anchor는 burst의 마지막 프레임이어야 합니다."
             )
 
         quality_indices = tuple(

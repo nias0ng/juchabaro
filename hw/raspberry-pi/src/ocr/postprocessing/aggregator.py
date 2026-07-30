@@ -7,7 +7,7 @@
 주요 기능:
     - 번호판 형식과 OCR confidence에 따른 후보 선별
     - 정규화된 전체 번호판 문자열의 정확 일치 투표
-    - 득표 수·득표율·차순위와의 격차에 따른 성공 여부 판정
+    - 유효 프레임 수·득표율·차순위와의 격차에 따른 성공 여부 판정
     - 실패 원인을 ReadStatus와 진단값으로 표현
 
 담당하지 않는 기능:
@@ -45,12 +45,9 @@ class AggregationPolicy:
     """
     여러 프레임의 번호판 후보를 확정하기 위한 최소 조건.
 
-    현재 기본값은 운영 데이터로 다시 조정해야 하는 초기값이다.
-
     입력:
         ``min_rec_score``는 후보로 인정할 최소 OCR confidence다.
-        ``min_valid_frames``와 ``min_vote_count``는 각각 최소 유효
-        프레임 수와 최다 후보의 최소 득표 수다.
+        ``min_valid_frames``는 최소 유효 프레임 수다.
         ``min_vote_ratio``는 유효 프레임 중 최다 후보의 최소 비율이며,
         ``min_margin_ratio``는 차순위 후보와의 최소 비율 차이다.
 
@@ -59,9 +56,8 @@ class AggregationPolicy:
         AggregationError가 발생한다.
     """
 
-    min_rec_score: float = 0.60
-    min_valid_frames: int = 3
-    min_vote_count: int = 2
+    min_rec_score: float = 0.40
+    min_valid_frames: int = 2
     min_vote_ratio: float = 0.60
     min_margin_ratio: float = 0.20
 
@@ -79,10 +75,6 @@ class AggregationPolicy:
         _validate_positive_integer(
             "min_valid_frames",
             self.min_valid_frames,
-        )
-        _validate_positive_integer(
-            "min_vote_count",
-            self.min_vote_count,
         )
         object.__setattr__(
             self,
@@ -396,16 +388,6 @@ class PlateAggregator:
                 error_message=(
                     f"유효 프레임 {valid_frames}개가 최소 요구값 "
                     f"{self._policy.min_valid_frames}개에 미달했습니다."
-                ),
-                **common,
-            )
-
-        if vote_count < self._policy.min_vote_count:
-            return _voted_decision(
-                status=ReadStatus.AMBIGUOUS,
-                error_message=(
-                    f"최다 후보 득표수 {vote_count}개가 최소 요구값 "
-                    f"{self._policy.min_vote_count}개에 미달했습니다."
                 ),
                 **common,
             )
