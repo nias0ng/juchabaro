@@ -2,11 +2,13 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, Text } from 'react-native';
 
-import { AppButton, ErrorBanner, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { AppButton, ResponsiveContainer, Screen, Stack } from '@/components/ui';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 import { Palette, Spacing } from '@/styles';
 
+import { AuthErrorBanner } from '../components/auth-error-banner';
+import { AuthHeader } from '../components/auth-header';
 import { CheckboxOption } from '../components/checkbox-option';
 import { TextField } from '../components/text-field';
 import { useSavedUsername } from '../hooks/use-saved-username';
@@ -79,7 +81,7 @@ useEffect(() => {
     <Screen scroll avoidKeyboard backgroundColor={Palette.gray50}>
       <ResponsiveContainer>
         <Stack gap={Spacing.xl}>
-          <ScreenHeader title="로그인" style={styles.header} />
+          <AuthHeader title="로그인" />
 
             <Stack gap={Spacing.xs}>
               <Text style={styles.heading}>반가워요!</Text>
@@ -106,7 +108,7 @@ useEffect(() => {
               />
             </Stack>
 
-            {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+            {errorMessage ? <AuthErrorBanner message={errorMessage} /> : null}
 
             <Stack direction="row" gap={Spacing.lg}>
               <CheckboxOption label="로그인 유지" checked={keepSignedIn} onChange={setKeepSignedIn} />

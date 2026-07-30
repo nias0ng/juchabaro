@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   complexCard: {
@@ -73,7 +73,11 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.white,
     paddingHorizontal: 17,
     paddingVertical: 16,
-    ...Shadows.control,
+    shadowColor: Palette.gray975,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 9,
+    elevation: 1,
   },
   verificationOptionSelected: {
     borderColor: Palette.violet500,

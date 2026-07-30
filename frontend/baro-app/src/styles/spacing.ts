@@ -21,7 +21,6 @@ export const Radius = {
   lg: 16,
   xl: 24,
   xxl: 32,
-  card: 34,
   full: 999,
   /** 폼 인풋 필드 전용 (18~20px 사이 값을 20으로 통일) */
   input: 20,

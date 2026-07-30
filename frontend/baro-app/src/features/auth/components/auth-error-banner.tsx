@@ -2,13 +2,13 @@ import { Text, View } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
 
-import { styles } from './error-banner.styles';
+import { styles } from './auth-error-banner.styles';
 
-type ErrorBannerProps = {
+type AuthErrorBannerProps = {
   message: string;
 };
 
-export function ErrorBanner({ message }: ErrorBannerProps) {
+export function AuthErrorBanner({ message }: AuthErrorBannerProps) {
   const theme = useTheme();
 
   return (

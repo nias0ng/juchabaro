@@ -1,20 +1,20 @@
 import { router } from 'expo-router';
-import type { ReactNode } from 'react';
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { styles } from './screen-header.styles';
+import { Stack } from '@/components/ui';
+import { Spacing } from '@/styles';
 
-type ScreenHeaderProps = {
+import { styles } from './auth-header.styles';
+
+type AuthHeaderProps = {
   title: string;
   onBack?: () => void;
-  /** 뒤로가기/제목 옆에 붙는 오른쪽 콘텐츠 (예: 배지). 없으면 렌더링하지 않는다. */
-  right?: ReactNode;
   style?: StyleProp<ViewStyle>;
 };
 
-export function ScreenHeader({ title, onBack, right, style }: ScreenHeaderProps) {
+export function AuthHeader({ title, onBack, style }: AuthHeaderProps) {
   return (
-    <View style={[styles.container, style]}>
+    <Stack direction="row" align="center" gap={Spacing.base} style={[styles.container, style]}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="뒤로 가기"
@@ -23,10 +23,7 @@ export function ScreenHeader({ title, onBack, right, style }: ScreenHeaderProps)
       >
         <View style={styles.backIcon} />
       </Pressable>
-
       <Text style={styles.title}>{title}</Text>
-
-      {right}
-    </View>
+    </Stack>
   );
 }
