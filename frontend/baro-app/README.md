@@ -75,10 +75,14 @@ npm.cmd run typecheck
 
 ```text
 src/
-├─ app/          화면과 라우팅
-├─ components/   공통 UI 컴포넌트
-├─ constants/    색상과 공통 상수
-└─ hooks/        공통 React 훅
+├─ app/             Expo Router 라우트
+├─ features/        auth, home, parking, vehicle 등 기능별 코드
+├─ components/ui/   여러 기능이 공유하는 UI
+├─ providers/       앱 전체 Provider
+├─ services/        공통 API 클라이언트와 저장소
+├─ hooks/           공통 React 훅
+├─ styles/          디자인 토큰
+└─ types/           전역 타입 선언
 ```
 
-`api`, `store`, `types`, `utils` 폴더는 실제로 필요한 기능을 구현할 때 추가합니다.
+기능 전용 `api`, `components`, `hooks`, `screens`, `types`, `utils`는 해당 `features/<기능>` 안에 둡니다.
