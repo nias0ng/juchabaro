@@ -156,10 +156,13 @@ class PaddlePlateReader:
 
     이 객체는 서비스 시작 시 한 번 생성한 뒤 차량 이벤트마다 재사용한다.
     모델 호출과 generator 소비를 하나의 lock 안에서 수행해 동시 추론으로
-    모델 상태가 충돌하지 않게 한다.
+    모델 상태가 충돌하지 않게 한다. 이 lock은 같은 adapter를 여러
+    pipeline이나 caller가 공유하는 경우에도 단일 모델 호출을 보호한다.
 
     입력:
         ``recognize()``는 전처리가 끝난 PreparedPlate 시퀀스를 받는다.
+        이미지 buffer를 deep copy하거나 변경하지 않고 모델에 전달하므로
+        호출이 끝날 때까지 caller도 해당 buffer를 변경하면 안 된다.
 
     출력:
         입력 순서와 frame_index를 보존한 RawOcrResult tuple.
@@ -225,7 +228,8 @@ class PaddlePlateReader:
 
         입력:
             frame_index가 중복되지 않고 BGR uint8 이미지를 가진
-            PreparedPlate 시퀀스.
+            PreparedPlate 시퀀스. 이미지 배열은 read-only 입력으로
+            취급하며 batch 구성 시 deep copy하지 않는다.
 
         출력:
             입력과 동일한 순서로 정렬된 RawOcrResult tuple.
@@ -287,7 +291,11 @@ class PaddlePlateReader:
         self,
         images: list[BgrImage],
     ) -> list[Any]:
-        """PaddleOCR 호출과 lazy 결과 소비를 같은 lock 안에서 수행한다."""
+        """공유 모델 호출과 lazy 결과 소비를 같은 lock 안에서 수행한다.
+
+        ``images``의 배열은 caller가 소유한 read-only 참조이며 adapter가
+        별도 복사하지 않는다.
+        """
 
         try:
             with self._lock:

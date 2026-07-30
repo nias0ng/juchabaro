@@ -5,6 +5,13 @@ OCR 파이프라인 모듈 사이에서 전달되는 공통 데이터 타입을 
 담당한다. 모델 실행, 영상 처리, 문자열 판정 로직은 포함하지 않는다.
 촬영 시각은 카메라·입차 이벤트 계층의 책임이므로 현재 계약에서 제외한다.
 데이터 클래스는 경량 전달 객체이며 유효성은 각 처리 단계 입구에서 검증한다.
+
+``frozen=True``는 필드 재할당만 막으며 ``numpy.ndarray``의 내부 값까지
+불변으로 만들지는 않는다. 입력 이미지 buffer의 소유권은 caller에게 있고
+pipeline과 component는 이를 deep copy하지 않은 read-only 참조로 다룬다.
+caller는 OCR 실행 중 buffer를 변경하거나 재사용하면 안 된다. 원근 보정과
+전처리처럼 이미지를 생성하는 단계의 결과만 별도 buffer로 전달한다.
+카메라 buffer와 독립된 소유권이 필요하면 촬영 경계에서 한 번 확보한다.
 """
 
 from __future__ import annotations
@@ -58,7 +65,9 @@ class CapturedFrame:
     한 번의 촬영 burst에 포함된 시간순 프레임.
 
     ``frame_index``는 0부터 시작하는 burst 내부 연속 인덱스이고,
-    ``image``는 BGR uint8 HxWx3 배열이다.
+    ``image``는 BGR uint8 HxWx3 배열이다. 이미지 buffer는 caller가
+    소유하며 이 객체를 만들 때 deep copy하지 않는다. OCR 실행이 끝날
+    때까지 같은 buffer를 변경하거나 다른 촬영에 재사용하면 안 된다.
     """
 
     frame_index: int
@@ -122,7 +131,11 @@ class EstimatedQuad:
 
 @dataclass(frozen=True, slots=True)
 class RectifiedPlate:
-    """4점 원근 보정이 끝난 번호판 이미지."""
+    """4점 원근 보정이 끝난 별도 buffer의 번호판 이미지.
+
+    ``image``는 원본 CapturedFrame을 변경하지 않고 원근 보정 단계가 새로
+    만든 배열이다. 후속 component는 이 배열도 read-only로 다룬다.
+    """
 
     frame_index: int
     image: BgrImage
@@ -131,7 +144,11 @@ class RectifiedPlate:
 
 @dataclass(frozen=True, slots=True)
 class PreparedPlate:
-    """화질 전처리를 마친 PaddleOCR 입력 이미지."""
+    """화질 전처리를 마친 별도 buffer의 PaddleOCR 입력 이미지.
+
+    ``image``는 RectifiedPlate와 공유하지 않는 전처리 결과 배열이다.
+    PaddleOCR adapter는 이를 deep copy하거나 변경하지 않고 읽기만 한다.
+    """
 
     frame_index: int
     image: BgrImage

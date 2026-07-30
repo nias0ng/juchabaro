@@ -5,13 +5,18 @@
     CapturedFrame burst → frame_selector → plate_detector
 
 주요 기능:
-    - 필요할 때 전체 프레임을 축소해 선명도·대비·노출을 저비용으로 평가
+    - 전체 프레임을 축소해 선명도·대비·노출을 저비용으로 평가
     - 정책이 정한 앞쪽 후보 중 품질이 좋은 프레임과 마지막 프레임 선택
 
 담당하지 않는 기능:
     - 번호판 영역 검출
     - 번호판 crop 자체의 품질 판정
     - 원근 보정과 OCR 추론
+
+Anchor 선택 자체는 앞쪽 후보의 품질과 마지막 frame index만 사용한다.
+다만 ``AnchorSelection.qualities``는 pipeline 계약과 viewer 진단을 위해
+현재 전체 N장의 품질을 보존한다. 운영 계산과 진단 계산의 분리는 실제
+Raspberry Pi burst benchmark로 비용과 진단 가치를 확인한 뒤 진행한다.
 """
 
 from __future__ import annotations
@@ -84,6 +89,7 @@ class OpenCvFrameQualityEvaluator:
 
     입력:
         pipeline 진입 검증을 통과한 BGR uint8 CapturedFrame 시퀀스.
+        원본 이미지 buffer를 deep copy하거나 변경하지 않고 읽기만 한다.
 
     출력:
         입력 순서를 유지한 FrameQuality tuple.
@@ -223,7 +229,8 @@ class QualityFrameSelector:
         pipeline 진입 검증을 통과한 BGR uint8 CapturedFrame 시퀀스.
 
     출력:
-        앞쪽 품질 우수 프레임과 마지막 프레임의 인덱스 및 품질 정보.
+        앞쪽 품질 우수 프레임과 마지막 프레임의 인덱스 및 전체 입력
+        프레임의 품질 진단 정보.
 
     입력 계약은 pipeline 경계에서 한 번 검증하며 여기서 반복하지 않는다.
     """
@@ -248,13 +255,15 @@ class QualityFrameSelector:
             정책의 frame_count와 일치하는 시간순 프레임.
 
         출력:
-            earlier/later anchor 인덱스와 전체 품질 평가 결과.
+            earlier/later anchor 인덱스와 전체 N장의 품질 평가 결과.
 
         실패:
             OpenCV 품질 평가가 실패하면 원인을 보존한
             FrameSelectionError가 발생한다.
         """
 
+        # Anchor 선택에는 앞쪽 후보만 필요하지만 전체 qualities는 pipeline
+        # 검증과 viewer 진단 계약이다. 실장 benchmark 없이 축소하지 않는다.
         try:
             qualities = self._evaluator.evaluate(frames)
         except cv2.error as exc:

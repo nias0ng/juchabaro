@@ -51,6 +51,9 @@ class AggregationPolicy:
         ``min_valid_frames``는 최소 유효 프레임 수다.
         ``min_vote_ratio``는 유효 프레임 중 최다 후보의 최소 비율이며,
         ``min_margin_ratio``는 차순위 후보와의 최소 비율 차이다.
+        기본값 0.60/0.20에서는 vote ratio 통과가 margin 통과를
+        수학적으로 보장하지만, 두 기준은 custom policy에서 독립적으로
+        조정할 수 있도록 명시적인 정책값으로 유지한다.
 
     실패:
         점수·비율 값이 0~1 범위를 벗어나거나 개수 값이 1 미만이면
@@ -420,6 +423,9 @@ class PlateAggregator:
 
     출력:
         최종 상태, 확정 번호판 또는 투표 진단값을 가진 PlateDecision.
+        ``valid_frames``는 형식과 최소 confidence를 통과한 후보 수,
+        ``vote_ratio``는 그중 winner의 득표 비율, ``mean_rec_score``는
+        winner에 투표한 후보들만의 평균 confidence다.
 
     실패:
         후보 입력 계약이 잘못되면 AggregationError가 발생한다.

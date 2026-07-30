@@ -156,44 +156,85 @@ class FakeDetector:
     def __init__(self, *, detected: bool = True) -> None:
         self._detected = detected
 
-    def detect(self, frame: CapturedFrame) -> DetectedPlate | None:
+    def detect(
+        self,
+        frame: CapturedFrame,
+    ) -> tuple[DetectedPlate, ...]:
         if not self._detected:
-            return None
-        return DetectedPlate(
-            frame_index=frame.frame_index,
-            bbox_xyxy=(4.0, 4.0, 24.0, 14.0),
-            quad=PLATE_QUAD,
-            detector_score=0.9,
+            return ()
+        return (
+            DetectedPlate(
+                frame_index=frame.frame_index,
+                bbox_xyxy=(4.0, 4.0, 24.0, 14.0),
+                quad=PLATE_QUAD,
+                detector_score=0.9,
+            ),
         )
 
 
 class MalformedDisplayDetector(FakeDetector):
-    def detect(self, frame: CapturedFrame) -> DetectedPlate:
-        return DetectedPlate(
-            frame_index=frame.frame_index,
-            bbox_xyxy=(  # type: ignore[arg-type]
-                "bad",
-                4.0,
-                24.0,
-                14.0,
+    def detect(
+        self,
+        frame: CapturedFrame,
+    ) -> tuple[DetectedPlate, ...]:
+        return (
+            DetectedPlate(
+                frame_index=frame.frame_index,
+                bbox_xyxy=(  # type: ignore[arg-type]
+                    "bad",
+                    4.0,
+                    24.0,
+                    14.0,
+                ),
+                quad=PLATE_QUAD,
+                detector_score=0.9,
             ),
-            quad=PLATE_QUAD,
-            detector_score=0.9,
         )
 
 
 class InvalidSceneDetector(FakeDetector):
-    def detect(self, frame: CapturedFrame) -> DetectedPlate:
-        return DetectedPlate(
-            frame_index=frame.frame_index,
-            bbox_xyxy=(-10.0, -10.0, -1.0, -1.0),
-            quad=(
-                (-10.0, -10.0),
-                (-1.0, -10.0),
-                (-1.0, -1.0),
-                (-10.0, -1.0),
+    def detect(
+        self,
+        frame: CapturedFrame,
+    ) -> tuple[DetectedPlate, ...]:
+        return (
+            DetectedPlate(
+                frame_index=frame.frame_index,
+                bbox_xyxy=(-10.0, -10.0, -1.0, -1.0),
+                quad=(
+                    (-10.0, -10.0),
+                    (-1.0, -10.0),
+                    (-1.0, -1.0),
+                    (-10.0, -1.0),
+                ),
+                detector_score=0.9,
             ),
-            detector_score=0.9,
+        )
+
+
+class MultipleCandidateDetector(FakeDetector):
+    def detect(
+        self,
+        frame: CapturedFrame,
+    ) -> tuple[DetectedPlate, ...]:
+        return (
+            DetectedPlate(
+                frame_index=frame.frame_index,
+                bbox_xyxy=(4.0, 4.0, 24.0, 14.0),
+                quad=PLATE_QUAD,
+                detector_score=0.95,
+            ),
+            DetectedPlate(
+                frame_index=frame.frame_index,
+                bbox_xyxy=(6.0, 6.0, 20.0, 12.0),
+                quad=(
+                    (6.0, 6.0),
+                    (20.0, 6.0),
+                    (20.0, 12.0),
+                    (6.0, 12.0),
+                ),
+                detector_score=0.80,
+            ),
         )
 
 
@@ -491,6 +532,39 @@ def _render_with_stub(
     return stub.events
 
 
+def _render_detection_with_stub(
+    run: DebugRun,
+) -> list[tuple[object, ...]]:
+    assert viewer_ui is not None
+    stub = StreamlitStub()
+    with patch.object(viewer_ui, "st", stub):
+        viewer_ui._render_detection(run)
+    return stub.events
+
+
+def _detection_only_run(output: object) -> DebugRun:
+    frame = CapturedFrame(
+        frame_index=0,
+        image=np.zeros((20, 30, 3), dtype=np.uint8),
+    )
+    return DebugRun(
+        request_signature="detection-only",
+        file_names=("01.jpg",),
+        result=None,
+        trace=PipelineTrace(
+            calls=[
+                StageCall(
+                    stage="detection",
+                    frame_indices=(0,),
+                    inputs=frame,
+                    output=output,
+                    elapsed_ms=1.0,
+                ),
+            ],
+        ),
+    )
+
+
 def _stage_signature(
     trace: PipelineTrace,
 ) -> tuple[tuple[str, tuple[int, ...]], ...]:
@@ -580,6 +654,106 @@ class ViewerTraceTest(unittest.TestCase):
             ),
         )
 
+    @unittest.skipIf(viewer_ui is None, "streamlit is not installed")
+    def test_multiple_candidates_keep_one_call_per_anchor_and_render_best_first(
+        self,
+    ) -> None:
+        run = run_debug_pipeline(
+            _runtime(detector=MultipleCandidateDetector()),
+            _burst(),
+        )
+
+        detection_calls = run.trace.calls_for("detection")
+        self.assertEqual(len(detection_calls), 2)
+        self.assertTrue(
+            all(
+                isinstance(call.output, tuple)
+                and tuple(
+                    candidate.detector_score
+                    for candidate in call.output
+                )
+                == (0.95, 0.80)
+                for call in detection_calls
+            )
+        )
+
+        events = _render_detection_with_stub(run)
+        dataframe_events = [
+            event
+            for event in events
+            if event[0] == "dataframe"
+        ]
+        self.assertEqual(len(dataframe_events), 1)
+        rows = dataframe_events[0][1][0]
+        self.assertEqual(
+            [row["candidate"] for row in rows],
+            ["BEST", "#2", "BEST", "#2"],
+        )
+        self.assertTrue(
+            any(
+                event[0] == "success"
+                and "후보 2개" in str(event[1])
+                for event in events
+            )
+        )
+
+    @unittest.skipIf(viewer_ui is None, "streamlit is not installed")
+    def test_malformed_detection_batches_render_without_iteration(
+        self,
+    ) -> None:
+        valid = DetectedPlate(
+            frame_index=0,
+            bbox_xyxy=(4.0, 4.0, 24.0, 14.0),
+            quad=PLATE_QUAD,
+            detector_score=0.9,
+        )
+        malformed_outputs = (
+            None,
+            [valid],
+            InterruptingIterable(),
+            (valid, valid, valid, valid),
+            (
+                DetectedPlate(
+                    frame_index=1,
+                    bbox_xyxy=(4.0, 4.0, 24.0, 14.0),
+                    quad=PLATE_QUAD,
+                    detector_score=0.9,
+                ),
+            ),
+        )
+
+        for output in malformed_outputs:
+            with self.subTest(output_type=type(output).__name__):
+                events = _render_detection_with_stub(
+                    _detection_only_run(output)
+                )
+                self.assertTrue(
+                    any(event[0] == "error" for event in events)
+                )
+
+    @unittest.skipIf(viewer_ui is None, "streamlit is not installed")
+    def test_large_finite_detection_coordinates_render_safely(
+        self,
+    ) -> None:
+        detection = DetectedPlate(
+            frame_index=0,
+            bbox_xyxy=(-1e300, -1e300, 1e300, 1e300),
+            quad=(
+                (-1e300, -1e300),
+                (1e300, -1e300),
+                (1e300, 1e300),
+                (-1e300, 1e300),
+            ),
+            detector_score=0.9,
+        )
+
+        events = _render_detection_with_stub(
+            _detection_only_run((detection,))
+        )
+
+        self.assertTrue(any(event[0] == "image" for event in events))
+        self.assertFalse(any(event[0] == "error" for event in events))
+
     def test_repeated_runs_keep_trace_state_isolated(self) -> None:
         runtime = _runtime()
         burst = _burst()
@@ -618,7 +792,7 @@ class ViewerTraceTest(unittest.TestCase):
         self.assertEqual(len(detection_calls), 2)
         self.assertTrue(
             all(
-                call.succeeded and call.output is None
+                call.succeeded and call.output == ()
                 for call in detection_calls
             )
         )

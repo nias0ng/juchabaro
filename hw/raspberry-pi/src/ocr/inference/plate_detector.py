@@ -7,7 +7,7 @@ YOLOv8n-pose 모델로 anchor 프레임의 번호판과 네 꼭짓점을 검출�
 주요 기능:
     - 서비스 시작 시 주입된 YOLO 모델 재사용
     - BGR 프레임 입력과 YOLO 출력 계약 검증
-    - 여러 검출 후보 중 대표 번호판 한 개 선택
+    - 여러 검출 후보를 confidence와 bbox 면적 순으로 정렬
 
 담당하지 않는 기능:
     - 모델 파일 다운로드
@@ -17,7 +17,6 @@ YOLOv8n-pose 모델로 anchor 프레임의 번호판과 네 꼭짓점을 검출�
 
 from __future__ import annotations
 
-from inspect import Parameter, signature
 from pathlib import Path
 from threading import Lock
 from typing import Any, cast
@@ -107,8 +106,8 @@ class YoloPlateDetector:
     이미 로드된 YOLO pose 모델을 번호판 detector로 감싼다.
 
     이 객체는 서비스 시작 시 한 번 생성된 뒤 차량 이벤트마다 재사용한다.
-    모델 호출은 lock으로 직렬화해 동시에 들어온 추론이 같은 모델 상태를
-    변경하지 못하게 한다.
+    pipeline event lock 밖에서 같은 adapter를 직접 공유하는 경로도 안전하도록
+    모델 호출 자체를 lock으로 직렬화한다.
 
     입력:
         ``detect()``는 BGR uint8 HxWx3 이미지를 가진 CapturedFrame을
@@ -116,7 +115,9 @@ class YoloPlateDetector:
         좌상→우상→우하→좌하 순서여야 한다.
 
     출력:
-        사용할 후보가 있으면 DetectedPlate 한 개, 없으면 None.
+        confidence와 bbox 면적 우선순위로 정렬된 DetectedPlate tuple.
+        빈 tuple은 정상 미검출을 뜻한다. 후보의 geometry 유효성은 다음
+        단계에서 검사하므로 여기서 대표 후보 하나를 확정하지 않는다.
 
     실패:
         입력 이미지나 YOLO 결과의 개수·shape·값이 계약과 다르면
@@ -180,16 +181,17 @@ class YoloPlateDetector:
     def detect(
         self,
         frame: CapturedFrame,
-    ) -> DetectedPlate | None:
+    ) -> tuple[DetectedPlate, ...]:
         """
-        한 anchor 프레임에서 대표 번호판 후보와 네 꼭짓점을 검출한다.
+        한 anchor 프레임에서 번호판 후보들과 네 꼭짓점을 검출한다.
 
         입력:
             시간순 인덱스와 BGR uint8 HxWx3 이미지를 가진 CapturedFrame.
 
         출력:
-            confidence가 가장 높은 DetectedPlate. confidence가 같으면
-            bbox 면적이 더 큰 후보를 선택하며, 후보가 없으면 None.
+            confidence 내림차순, 동률이면 bbox 면적 내림차순인
+            DetectedPlate tuple. 두 값이 모두 같으면 모델의 원래 순서를
+            유지하며, 후보가 없으면 빈 tuple이다.
 
         실패:
             입력 이미지 또는 YOLO 출력이 detector 계약을 위반하면
@@ -203,7 +205,7 @@ class YoloPlateDetector:
         raw_candidates = self._extract_candidate_arrays(result)
 
         if raw_candidates is None:
-            return None
+            return ()
 
         box_count, boxes, scores, keypoints = raw_candidates
         candidates = self._parse_candidates(
@@ -213,7 +215,7 @@ class YoloPlateDetector:
             scores=scores,
             keypoints=keypoints,
         )
-        return self._select_candidate(candidates)
+        return self._rank_candidates(candidates)
 
     @staticmethod
     def _extract_candidate_arrays(
@@ -371,17 +373,20 @@ class YoloPlateDetector:
         return tuple(candidates)
 
     @staticmethod
-    def _select_candidate(
+    def _rank_candidates(
         candidates: tuple[DetectedPlate, ...],
-    ) -> DetectedPlate:
-        """Confidence와 bbox 면적 순으로 대표 후보 한 개를 선택한다."""
+    ) -> tuple[DetectedPlate, ...]:
+        """Geometry 검증 전 후보를 confidence와 bbox 면적 순으로 정렬한다."""
 
-        # 입구에는 한 번에 차량 한 대가 접근한다는 현재 운영 가정이다.
-        return max(
-            candidates,
-            key=lambda candidate: (
-                candidate.detector_score,
-                _bbox_area(candidate.bbox_xyxy),
+        # 오름차순 key에 음수를 사용해 완전 동률일 때 YOLO 원래 순서를
+        # 보존하는 stable sort의 의미를 분명히 한다.
+        return tuple(
+            sorted(
+                candidates,
+                key=lambda candidate: (
+                    -candidate.detector_score,
+                    -_bbox_area(candidate.bbox_xyxy),
+                ),
             ),
         )
 
@@ -421,30 +426,6 @@ class YoloPlateDetector:
 # [모델 로더]
 
 
-def _create_yolo_model(yolo_class: Any, model_path: Path) -> Any:
-    """
-    지원되는 Ultralytics API에서는 모델 task를 pose로 명시한다.
-
-    일부 구버전 constructor에는 ``task`` 인자가 없으므로 signature를
-    확인하고 그 경우에만 모델 경로만 전달한다.
-    """
-
-    try:
-        parameters = signature(yolo_class).parameters.values()
-    except (TypeError, ValueError):
-        parameters = ()
-
-    supports_task = any(
-        parameter.name == "task"
-        or parameter.kind is Parameter.VAR_KEYWORD
-        for parameter in parameters
-    )
-
-    if supports_task:
-        return yolo_class(str(model_path), task="pose")
-    return yolo_class(str(model_path))
-
-
 def load_yolo_plate_detector(
     model_path: Path,
     *,
@@ -455,7 +436,7 @@ def load_yolo_plate_detector(
     warm_up: bool = True,
 ) -> YoloPlateDetector:
     """
-    로컬 ``best.pt``를 로드해 재사용 가능한 번호판 detector를 만든다.
+    로컬 YOLOv8n-pose ``.pt``를 로드해 재사용 가능한 detector를 만든다.
 
     운영에서는 ``load_plate_ocr_pipeline()``이 서비스 시작 단계에서
     이 loader를 한 번 호출한다. 차량 이벤트마다 모델을 다시 읽지 않는다.
@@ -488,8 +469,10 @@ def load_yolo_plate_detector(
     # 무거운 runtime dependency는 실제 loader가 호출되는 시점에만 읽는다.
     from ultralytics import YOLO
 
+    # requirements.txt에 고정한 Ultralytics constructor 계약을 직접 사용한다.
+    # 지원하지 않는 구버전은 fallback하지 않고 startup에서 드러낸다.
     detector = YoloPlateDetector(
-        _create_yolo_model(YOLO, resolved_path),
+        YOLO(str(resolved_path), task="pose"),
         device=device,
         imgsz=imgsz,
         confidence_threshold=confidence_threshold,

@@ -213,7 +213,7 @@ class TracedFrameSelector:
 
 
 class TracedPlateDetector:
-    """번호판 detector의 프레임별 호출을 기록하는 투명 wrapper."""
+    """번호판 detector의 anchor별 best-first 후보 batch를 한 호출로 기록한다."""
 
     def __init__(self, target: Any, trace: PipelineTrace) -> None:
         self._target = target

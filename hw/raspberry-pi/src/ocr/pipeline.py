@@ -61,8 +61,8 @@ class PlateDetectorPort(Protocol):
     def detect(
         self,
         frame: CapturedFrame,
-    ) -> DetectedPlate | None:
-        """한 프레임에서 사용할 번호판 후보 하나를 반환한다."""
+    ) -> tuple[DetectedPlate, ...]:
+        """한 프레임의 번호판 후보를 우선순위 순으로 반환한다."""
 
 
 class PlateGeometryPort(Protocol):
@@ -157,7 +157,8 @@ class PlateOcrPipeline:
         self._text_processor = text_processor
         self._policy = policy or OcrPipelinePolicy()
 
-        # 동일 모델 객체에 두 차량 이벤트가 섞여 들어가지 않게 한다.
+        # 한 pipeline 인스턴스에서 두 차량 이벤트의 여러 stage가 서로
+        # 섞이지 않게 한다. Adapter lock은 별도로 공유된 모델 호출을 지킨다.
         self._event_lock = Lock()
 
     def read_plate(
@@ -179,8 +180,12 @@ class PlateOcrPipeline:
             OpenCV·내부 invariant 오류는 OcrRuntimeError가 발생한다.
             예상하지 못한 component 예외는 변환하지 않는다.
 
-        YOLO가 한 anchor에서 정상적으로 ``None``을 반환하거나 geometry가
-        장면상 사용할 수 없는 프레임 좌표를 생략하면 나머지로 계속한다.
+        YOLO가 한 anchor에서 정상적으로 빈 후보 tuple을 반환하거나
+        geometry가 장면상 사용할 수 없는 프레임 좌표를 생략하면
+        나머지로 계속한다.
+
+        입력 ndarray는 복사하지 않고 읽기 전용으로 취급한다. 호출자는
+        이 메서드가 끝날 때까지 원본 buffer를 변경하거나 재사용하면 안 된다.
         """
 
         with self._event_lock:
@@ -266,15 +271,15 @@ class PlateOcrPipeline:
         frame_by_index: dict[int, CapturedFrame],
         anchor_indices: tuple[int, int],
     ) -> list[DetectedPlate]:
-        """두 anchor를 모두 검사하고 정상 미검출은 제외한다."""
+        """두 anchor의 후보를 호출·반환 순서대로 평탄화한다."""
 
         detections: list[DetectedPlate] = []
 
-        # 첫 anchor의 정상 미검출(None)과 무관하게 두 번째도 실행해
+        # 첫 anchor의 정상 미검출(빈 tuple)과 무관하게 두 번째도 실행해
         # single-anchor fallback 가능성을 유지한다.
         for frame_index in anchor_indices:
             try:
-                detection = self._detector.detect(
+                returned_candidates = self._detector.detect(
                     frame_by_index[frame_index]
                 )
             except OcrComponentError as exc:
@@ -283,18 +288,23 @@ class PlateOcrPipeline:
                     exc,
                 ) from exc
 
-            if detection is None:
-                continue
-            if not isinstance(detection, DetectedPlate):
+            if not isinstance(returned_candidates, tuple):
                 raise OcrRuntimeError(
-                    "detector는 DetectedPlate 또는 None을 반환해야 합니다."
+                    "detector는 DetectedPlate tuple을 반환해야 합니다."
                 )
-            self._validate_matching_frame_index(
-                component="detector",
-                actual=detection.frame_index,
-                expected=frame_index,
-            )
-            detections.append(detection)
+            candidates = returned_candidates
+
+            for candidate in candidates:
+                if not isinstance(candidate, DetectedPlate):
+                    raise OcrRuntimeError(
+                        "detector 후보는 DetectedPlate여야 합니다."
+                    )
+                self._validate_matching_frame_index(
+                    component="detector",
+                    actual=candidate.frame_index,
+                    expected=frame_index,
+                )
+                detections.append(candidate)
 
         return detections
 

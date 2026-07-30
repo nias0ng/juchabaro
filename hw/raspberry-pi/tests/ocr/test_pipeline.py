@@ -65,12 +65,13 @@ def _detection(
     frame_index: int,
     *,
     quad: Quad = PLATE_QUAD,
+    score: float = 0.9,
 ) -> DetectedPlate:
     return DetectedPlate(
         frame_index=frame_index,
         bbox_xyxy=(5.0, 5.0, 25.0, 15.0),
         quad=quad,
-        detector_score=0.9,
+        detector_score=score,
     )
 
 
@@ -123,7 +124,7 @@ class FakeDetector:
         self,
         responses: dict[
             int,
-            DetectedPlate | None | BaseException | object,
+            tuple[DetectedPlate, ...] | BaseException | object,
         ]
         | None = None,
     ) -> None:
@@ -133,15 +134,22 @@ class FakeDetector:
     def detect(
         self,
         frame: CapturedFrame,
-    ) -> DetectedPlate | None:
+    ) -> tuple[DetectedPlate, ...]:
         self.calls.append(frame.frame_index)
         if self.responses is None:
-            return _detection(frame.frame_index)
+            return (_detection(frame.frame_index),)
 
-        response = self.responses.get(frame.frame_index)
+        response = self.responses.get(frame.frame_index, ())
         if isinstance(response, BaseException):
             raise response
         return response  # type: ignore[return-value]
+
+
+class UnexpectedlyIteratedDetectorOutput:
+    """Tuple 타입 검사 전에 순회하면 테스트를 실패시키는 detector 출력."""
+
+    def __iter__(self):
+        raise AssertionError("non-tuple detector output must not be iterated")
 
 
 class FakeGeometry:
@@ -160,6 +168,7 @@ class FakeGeometry:
         self.estimate_error = estimate_error
         self.rectify_errors = rectify_errors or {}
         self.estimate_calls: list[tuple[int, ...]] = []
+        self.estimate_inputs: list[tuple[DetectedPlate, ...]] = []
         self.rectify_calls: list[int] = []
 
     def estimate_quads(
@@ -167,11 +176,14 @@ class FakeGeometry:
         frames: Sequence[CapturedFrame],
         detections: Sequence[DetectedPlate],
     ) -> tuple[EstimatedQuad, ...]:
-        anchor_indices = tuple(
+        candidate_tuple = tuple(detections)
+        self.estimate_inputs.append(candidate_tuple)
+        candidate_indices = tuple(
             detection.frame_index
-            for detection in detections
+            for detection in candidate_tuple
         )
-        self.estimate_calls.append(anchor_indices)
+        self.estimate_calls.append(candidate_indices)
+        anchor_indices = tuple(dict.fromkeys(candidate_indices))
 
         if self.estimate_error is not None:
             raise self.estimate_error
@@ -440,6 +452,37 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         self.assertEqual(geometry.estimate_calls, [(1, 5)])
         self.assertEqual(reader.calls, [(0, 1, 2, 3, 4, 5)])
 
+    def test_detector_candidates_keep_anchor_and_batch_order(
+        self,
+    ) -> None:
+        earlier_candidates = (
+            _detection(1, score=0.95),
+            _detection(1, score=0.80),
+        )
+        later_candidates = (
+            _detection(5, score=0.90),
+            _detection(5, score=0.70),
+        )
+        geometry = FakeGeometry()
+        pipeline, _, detector, _, _, _ = _pipeline(
+            detector=FakeDetector(
+                {
+                    1: earlier_candidates,
+                    5: later_candidates,
+                }
+            ),
+            geometry=geometry,
+        )
+
+        result = pipeline.read_plate(_frames())
+
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(detector.calls, [1, 5])
+        self.assertEqual(
+            geometry.estimate_inputs,
+            [(*earlier_candidates, *later_candidates)],
+        )
+
     def test_pipeline_supports_configured_three_six_and_eight_frames(
         self,
     ) -> None:
@@ -624,7 +667,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                 "detector_index",
                 lambda: _pipeline(
                     detector=FakeDetector(
-                        {1: _detection(0)}
+                        {1: (_detection(0),)}
                     )
                 )[0],
             ),
@@ -632,7 +675,41 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
                 "detector_bool_index",
                 lambda: _pipeline(
                     detector=FakeDetector(
-                        {1: _detection(True)}
+                        {1: (_detection(True),)}
+                    )
+                )[0],
+            ),
+            (
+                "detector_none",
+                lambda: _pipeline(
+                    detector=FakeDetector({1: None})
+                )[0],
+            ),
+            (
+                "detector_single_candidate",
+                lambda: _pipeline(
+                    detector=FakeDetector({1: _detection(1)})
+                )[0],
+            ),
+            (
+                "detector_string_iterable",
+                lambda: _pipeline(
+                    detector=FakeDetector({1: "not candidates"})
+                )[0],
+            ),
+            (
+                "detector_list",
+                lambda: _pipeline(
+                    detector=FakeDetector(
+                        {1: [_detection(1)]}
+                    )
+                )[0],
+            ),
+            (
+                "detector_non_tuple_iterable",
+                lambda: _pipeline(
+                    detector=FakeDetector(
+                        {1: UnexpectedlyIteratedDetectorOutput()}
                     )
                 )[0],
             ),
@@ -884,8 +961,8 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
 
     def test_pipeline_continues_when_only_one_anchor_is_detected(self) -> None:
         cases = (
-            ({1: _detection(1), 5: None}, (1,)),
-            ({1: None, 5: _detection(5)}, (5,)),
+            ({1: (_detection(1),), 5: ()}, (1,)),
+            ({1: (), 5: (_detection(5),)}, (5,)),
         )
 
         for responses, expected_detection_indices in cases:
@@ -940,13 +1017,17 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
         pipeline, *_ = _pipeline(
             detector=FakeDetector(
                 {
-                    1: _detection(
-                        1,
-                        quad=INVALID_PLATE_QUAD,
+                    1: (
+                        _detection(
+                            1,
+                            quad=INVALID_PLATE_QUAD,
+                        ),
                     ),
-                    5: _detection(
-                        5,
-                        quad=INVALID_PLATE_QUAD,
+                    5: (
+                        _detection(
+                            5,
+                            quad=INVALID_PLATE_QUAD,
+                        ),
                     ),
                 }
             ),
@@ -963,10 +1044,37 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
             ),
         )
 
+    def test_invalid_top_candidate_does_not_hide_valid_candidate(
+        self,
+    ) -> None:
+        pipeline, _, detector, _, _, reader = _pipeline(
+            detector=FakeDetector(
+                {
+                    1: (
+                        _detection(
+                            1,
+                            quad=INVALID_PLATE_QUAD,
+                            score=0.95,
+                        ),
+                        _detection(1, score=0.90),
+                    ),
+                    5: (),
+                }
+            ),
+            geometry=PlateGeometry(),
+        )
+
+        result = pipeline.read_plate(_frames())
+
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(result.plate_number, PLATE_NUMBER)
+        self.assertEqual(detector.calls, [1, 5])
+        self.assertEqual(reader.calls, [(0, 1, 2)])
+
     def test_no_detection_returns_no_plate_region(self) -> None:
         geometry = FakeGeometry()
         pipeline, _, detector, _, _, _ = _pipeline(
-            detector=FakeDetector({1: None, 5: None}),
+            detector=FakeDetector({1: (), 5: ()}),
             geometry=geometry,
         )
 
@@ -983,7 +1091,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
     ) -> None:
         pipeline, _, _, _, _, reader = _pipeline(
             detector=FakeDetector(
-                {1: None, 5: _detection(5)}
+                {1: (), 5: (_detection(5),)}
             ),
             geometry=PlateGeometry(),
         )
@@ -999,7 +1107,7 @@ class PlateOcrPipelineContractTests(unittest.TestCase):
     ) -> None:
         pipeline, *_ = _pipeline(
             detector=FakeDetector(
-                {1: None, 5: _detection(5)}
+                {1: (), 5: (_detection(5),)}
             ),
             geometry=PlateGeometry(),
             reader=FakeReader(

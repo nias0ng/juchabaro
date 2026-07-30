@@ -14,9 +14,9 @@
     - 번호판 위치 검출과 4점 원근 보정
     - OCR 추론과 문자열 판정
 
-기본값은 ``ai/ocr/Test/ocr_benchmark.py``에서 비교한 설정을 유지한다.
-좋은 이미지에서 약간의 손실이 있더라도 저화질 이미지의 개선 효과가 더
-크다는 현재 실험 결과를 반영해 전처리를 기본 활성화한다.
+기본값은 ``ai/ocr/tests/ocr_benchmark.py``의 비교용 초기 설정과 맞춘
+값이다. 실제 Raspberry Pi 촬영 데이터에서의 정확도와 latency 개선은
+아직 검증되지 않았으므로 운영 데이터를 수집한 뒤 재평가해야 한다.
 """
 
 from __future__ import annotations
@@ -46,8 +46,9 @@ class PlatePreprocessConfig:
     """
     OCR 화질 전처리 단계에서 사용할 설정.
 
-    기본값은 ocr_benchmark.py의 비교 실험값이다. 실제 Raspberry Pi
-    촬영 데이터가 쌓이면 인식 정확도와 latency를 함께 재평가해야 한다.
+    기본값은 ``ai/ocr/tests/ocr_benchmark.py``의 비교용 초기값이다.
+    실제 Raspberry Pi 촬영 데이터가 쌓이면 인식 정확도와 latency를
+    함께 재평가해야 한다.
 
     실패:
         크기·비율·CLAHE·blur 설정이 유효하지 않으면 ValueError가 발생한다.
@@ -101,6 +102,8 @@ class PlatePreprocessor:
 
     서비스 시작 시 한 번 생성한 뒤 차량 이벤트마다 재사용할 수 있다.
     모든 OpenCV 연산은 새 배열을 만들며 입력 이미지를 직접 변경하지 않는다.
+    입력 RectifiedPlate의 buffer는 caller가 소유하고, 반환하는
+    PreparedPlate만 별도 buffer를 소유한다.
 
     입력:
         BGR uint8 HxWx3 이미지를 가진 RectifiedPlate.
@@ -128,7 +131,7 @@ class PlatePreprocessor:
         plate: RectifiedPlate,
     ) -> PreparedPlate:
         """
-        번호판 한 장에 benchmark 전처리 단계를 순서대로 적용한다.
+        번호판 한 장에 설정된 전처리 단계를 순서대로 적용한다.
 
         입력:
             원근 보정이 완료된 RectifiedPlate.
@@ -170,9 +173,9 @@ class PlatePreprocessor:
         image: BgrImage,
     ) -> BgrImage:
         """
-        국부 명암을 보정한 뒤 benchmark의 약한 unsharp mask를 적용한다.
+        국부 명암을 보정한 뒤 설정된 약한 unsharp mask를 적용한다.
 
-        기본값은 benchmark의 1.5/-0.5이며 PlatePreprocessConfig로
+        기본 가중치는 1.5/-0.5이며 PlatePreprocessConfig로
         조정할 수 있다.
         """
 

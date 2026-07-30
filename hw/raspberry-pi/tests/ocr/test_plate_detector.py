@@ -1,4 +1,4 @@
-"""YOLO adapter의 출력 계약과 대표 후보 선택 규칙을 검증한다."""
+"""YOLO adapter의 출력 계약과 후보 우선순위 규칙을 검증한다."""
 
 from __future__ import annotations
 
@@ -124,9 +124,9 @@ class YoloPlateDetectorTests(unittest.TestCase):
             ReturningYoloModel(EmptyYoloResult())
         )
 
-        self.assertIsNone(detector.detect(self._frame()))
+        self.assertEqual(detector.detect(self._frame()), ())
 
-    def test_highest_confidence_candidate_keeps_keypoint_order(
+    def test_candidates_are_returned_by_confidence_and_keep_keypoint_order(
         self,
     ) -> None:
         result = ArrayYoloResult(
@@ -152,10 +152,10 @@ class YoloPlateDetectorTests(unittest.TestCase):
         )
         detector = YoloPlateDetector(ReturningYoloModel(result))
 
-        selected = detector.detect(self._frame())
+        candidates = detector.detect(self._frame())
 
-        self.assertIsNotNone(selected)
-        assert selected is not None
+        self.assertEqual(len(candidates), 2)
+        selected = candidates[0]
         self.assertEqual(
             selected.bbox_xyxy,
             (10.0, 10.0, 20.0, 15.0),
@@ -170,8 +170,12 @@ class YoloPlateDetectorTests(unittest.TestCase):
             ),
         )
         self.assertEqual(selected.detector_score, 0.90)
+        self.assertEqual(
+            candidates[1].bbox_xyxy,
+            (0.0, 0.0, 30.0, 20.0),
+        )
 
-    def test_equal_confidence_selects_larger_bbox_area(self) -> None:
+    def test_equal_confidence_ranks_larger_bbox_area_first(self) -> None:
         result = ArrayYoloResult(
             boxes=(
                 (0.0, 0.0, 10.0, 10.0),
@@ -195,13 +199,48 @@ class YoloPlateDetectorTests(unittest.TestCase):
         )
         detector = YoloPlateDetector(ReturningYoloModel(result))
 
-        selected = detector.detect(self._frame())
+        candidates = detector.detect(self._frame())
 
-        self.assertIsNotNone(selected)
-        assert selected is not None
         self.assertEqual(
-            selected.bbox_xyxy,
-            (0.0, 0.0, 20.0, 10.0),
+            tuple(candidate.bbox_xyxy for candidate in candidates),
+            (
+                (0.0, 0.0, 20.0, 10.0),
+                (0.0, 0.0, 10.0, 10.0),
+            ),
+        )
+
+    def test_complete_ranking_tie_preserves_model_order(self) -> None:
+        result = ArrayYoloResult(
+            boxes=(
+                (0.0, 0.0, 20.0, 10.0),
+                (5.0, 5.0, 25.0, 15.0),
+            ),
+            confidence=(0.85, 0.85),
+            keypoints=(
+                (
+                    (0.0, 0.0),
+                    (20.0, 0.0),
+                    (20.0, 10.0),
+                    (0.0, 10.0),
+                ),
+                (
+                    (5.0, 5.0),
+                    (25.0, 5.0),
+                    (25.0, 15.0),
+                    (5.0, 15.0),
+                ),
+            ),
+        )
+        detector = YoloPlateDetector(ReturningYoloModel(result))
+
+        candidates = detector.detect(self._frame())
+
+        self.assertEqual(
+            tuple(candidate.bbox_xyxy for candidate in candidates),
+            (
+                (0.0, 0.0, 20.0, 10.0),
+                (5.0, 5.0, 25.0, 15.0),
+            ),
         )
 
     def test_nan_and_invalid_keypoint_shape_are_contract_errors(

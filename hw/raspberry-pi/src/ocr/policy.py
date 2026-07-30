@@ -59,7 +59,11 @@ def validate_ocr_policy_compatibility(
     aggregation_policy: _AggregationPolicyLike,
     geometry_config: _GeometryConfigLike,
 ) -> None:
-    """프레임·anchor 확장·집계 정책의 실행 가능한 조합을 검증한다."""
+    """프레임·anchor 확장·집계 정책의 실행 가능한 조합을 검증한다.
+
+    단일 anchor를 인접 프레임에 재사용하는 성공 가능 fallback(정책 A)이
+    최소 유효 프레임을 실제로 만들 수 있는지도 startup에서 확인한다.
+    """
 
     min_valid_frames = aggregation_policy.min_valid_frames
     if min_valid_frames > policy.frame_count:

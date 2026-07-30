@@ -6,6 +6,7 @@ YOLO anchor의 번호판 4점 좌표를 프레임별로 추정하고 원근 보�
 
 주요 기능:
     - 좌상→우상→우하→좌하 순서의 4점 좌표 검증
+    - anchor별 우선순위 후보 중 첫 geometry-valid 후보 선택
     - 두 anchor 사이의 좌표 보간과 제한적인 외삽
     - 단일 anchor 검출 시 인접 프레임에 한정한 좌표 재사용
     - 번호판의 자연스러운 가로·세로 크기를 유지한 perspective warp
@@ -66,6 +67,8 @@ class GeometryConfig:
     min_aspect_ratio: float = 1.2
     max_aspect_ratio: float = 8.0
     max_extrapolation_frames: int = 1
+    # 확정 정책 A: 단일 anchor도 인접 프레임까지 재사용해 성공 가능성을
+    # 유지한다. 운영 factory가 aggregation 최소 프레임 수와 교차 검증한다.
     single_anchor_reuse_radius: int = 1
 
     def __post_init__(self) -> None:
@@ -109,14 +112,15 @@ class PlateGeometry:
 
     입력:
         pipeline 진입 검증을 통과한 시간순 CapturedFrame 시퀀스와
-        최대 2개의 DetectedPlate anchor.
+        최대 2개 anchor 프레임에 속한 우선순위순 DetectedPlate 후보.
 
     출력:
         프레임별 EstimatedQuad 또는 원근 보정된 RectifiedPlate.
 
     실패:
-        좌표나 anchor 구성이 잘못되거나 유효한 anchor가 하나도 없으면
-        GeometryError가 발생한다.
+        장면상 유효한 anchor가 하나도 없으면 GeometryError가 발생한다.
+        후보 타입·구성·좌표 shape 같은 내부 계약이 깨지면
+        GeometryProcessingError가 발생한다.
     """
 
     def __init__(
@@ -131,11 +135,12 @@ class PlateGeometry:
         detections: Sequence[DetectedPlate],
     ) -> tuple[EstimatedQuad, ...]:
         """
-        최대 두 anchor의 좌표로 사용할 수 있는 프레임의 4점을 추정한다.
+        최대 두 anchor의 후보에서 사용할 좌표를 골라 프레임별로 추정한다.
 
         입력:
-            연속 frame_index를 가진 시간순 BGR 프레임과 서로 다른
-            프레임에서 얻은 DetectedPlate 1~2개.
+            연속 frame_index를 가진 시간순 BGR 프레임과 1~2개 anchor
+            프레임에서 얻은 DetectedPlate 후보들. 같은 프레임의 후보는
+            detector 우선순위가 높은 순서여야 한다.
 
         출력:
             frame_index 순으로 정렬된 유효한 EstimatedQuad tuple.
@@ -157,18 +162,20 @@ class PlateGeometry:
         }
         supplied_detections = tuple(detections)
 
-        if not 1 <= len(supplied_detections) <= 2:
+        if not supplied_detections:
             raise GeometryProcessingError(
-                "번호판 anchor 검출 결과는 1개 또는 2개여야 합니다."
+                "번호판 anchor 검출 후보가 하나 이상 필요합니다."
             )
 
         detection_indices = tuple(
             detection.frame_index
             for detection in supplied_detections
         )
-        if len(set(detection_indices)) != len(detection_indices):
+        anchor_indices = tuple(dict.fromkeys(detection_indices))
+        if len(anchor_indices) > 2:
             raise GeometryProcessingError(
-                "같은 프레임의 anchor 검출 결과가 중복되었습니다."
+                "번호판 후보는 최대 2개 anchor 프레임에만 속해야 합니다: "
+                f"actual={anchor_indices}"
             )
         if any(index not in frame_by_index for index in detection_indices):
             raise GeometryProcessingError(
@@ -179,16 +186,30 @@ class PlateGeometry:
         usable_anchors: list[tuple[int, Quad]] = []
         rejected_reasons: list[str] = []
 
-        for detection in supplied_detections:
-            frame = frame_by_index[detection.frame_index]
-            try:
-                quad = self._validate_quad(detection.quad, frame)
-            except GeometryError as exc:
-                rejected_reasons.append(
-                    f"frame_index={detection.frame_index}: {exc}"
-                )
-            else:
-                usable_anchors.append((detection.frame_index, quad))
+        for anchor_index in anchor_indices:
+            frame = frame_by_index[anchor_index]
+            anchor_candidates = tuple(
+                detection
+                for detection in supplied_detections
+                if detection.frame_index == anchor_index
+            )
+
+            # Detector가 정한 score·bbox 우선순위는 유지하되, 장면상
+            # 부적합한 quad 하나가 뒤의 정상 후보를 가리지 않게 한다.
+            for candidate_rank, detection in enumerate(
+                anchor_candidates,
+                start=1,
+            ):
+                try:
+                    quad = self._validate_quad(detection.quad, frame)
+                except GeometryError as exc:
+                    rejected_reasons.append(
+                        f"frame_index={anchor_index}, "
+                        f"candidate_rank={candidate_rank}: {exc}"
+                    )
+                else:
+                    usable_anchors.append((anchor_index, quad))
+                    break
 
         if not usable_anchors:
             detail = "; ".join(rejected_reasons)

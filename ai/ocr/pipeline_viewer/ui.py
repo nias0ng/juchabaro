@@ -58,6 +58,10 @@ _QUAD_COLORS = {
     "REUSED": (255, 0, 200),
 }
 
+# 현재 viewer 기본 detector profile의 ``max_detections``와 같다. Trace가
+# 깨졌더라도 과도한 후보를 한 번에 렌더링하지 않도록 표시 경계에서도 막는다.
+_MAX_DISPLAYED_DETECTION_CANDIDATES = 3
+
 
 # [공통 표시 helper]
 
@@ -138,21 +142,44 @@ def _put_label(
 
 
 def draw_detection(image: np.ndarray, detection: Any | None) -> np.ndarray:
-    """원본 복사본 위에 detector bbox와 TL→TR→BR→BL quad를 그린다."""
+    """원본 복사본 위에 best 후보의 bbox와 네 keypoint를 그린다."""
 
     canvas = image.copy()
     if detection is None:
         return canvas
 
+    image_height, image_width = canvas.shape[:2]
+
+    def clipped_pixel(value: Real, upper_bound: int) -> int:
+        """유한한 detector 좌표를 OpenCV가 안전하게 받는 이미지 좌표로 자른다."""
+
+        return int(
+            round(
+                min(
+                    max(float(value), 0.0),
+                    float(upper_bound - 1),
+                )
+            )
+        )
+
     x1, y1, x2, y2 = (
-        int(round(float(value)))
-        for value in detection.bbox_xyxy
+        clipped_pixel(detection.bbox_xyxy[0], image_width),
+        clipped_pixel(detection.bbox_xyxy[1], image_height),
+        clipped_pixel(detection.bbox_xyxy[2], image_width),
+        clipped_pixel(detection.bbox_xyxy[3], image_height),
     )
     cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 220, 0), 2)
 
-    points = np.rint(
-        np.asarray(detection.quad, dtype=np.float32)
-    ).astype(np.int32)
+    points = np.asarray(
+        tuple(
+            (
+                clipped_pixel(point[0], image_width),
+                clipped_pixel(point[1], image_height),
+            )
+            for point in detection.quad
+        ),
+        dtype=np.int32,
+    )
     cv2.polylines(
         canvas,
         [points.reshape((-1, 1, 2))],
@@ -177,7 +204,7 @@ def draw_detection(image: np.ndarray, detection: Any | None) -> np.ndarray:
 
     _put_label(
         canvas,
-        f"score={float(detection.detector_score):.3f}",
+        f"best score={float(detection.detector_score):.3f}",
         (x1, y1 - 8),
         (0, 220, 0),
     )
@@ -263,18 +290,16 @@ def _is_frame_index(value: Any) -> bool:
 
 
 def _is_displayable_quad(value: Any) -> bool:
-    points = _materialize_sequence(value)
-    if points is None or len(points) != 4:
+    if not isinstance(value, tuple) or len(value) != 4:
         return False
 
-    for point in points:
-        coordinates = _materialize_sequence(point)
+    for point in value:
         if (
-            coordinates is None
-            or len(coordinates) != 2
+            not isinstance(point, tuple)
+            or len(point) != 2
             or any(
                 _finite_float(coordinate) is None
-                for coordinate in coordinates
+                for coordinate in point
             )
         ):
             return False
@@ -299,21 +324,82 @@ def _is_displayable_quality(value: Any) -> bool:
     )
 
 
-def _is_displayable_detection(value: Any) -> bool:
+def _is_displayable_detection(
+    value: Any,
+    *,
+    expected_frame_index: int | None = None,
+) -> bool:
+    score = (
+        _finite_float(value.detector_score)
+        if isinstance(value, DetectedPlate)
+        else None
+    )
     if (
         not isinstance(value, DetectedPlate)
         or not _is_frame_index(value.frame_index)
-        or _finite_float(value.detector_score) is None
+        or (
+            expected_frame_index is not None
+            and value.frame_index != expected_frame_index
+        )
+        or score is None
+        or not 0.0 <= score <= 1.0
         or not _is_displayable_quad(value.quad)
+        or not isinstance(value.bbox_xyxy, tuple)
     ):
         return False
 
-    bbox = _materialize_sequence(value.bbox_xyxy)
-    return (
-        bbox is not None
-        and len(bbox) == 4
-        and all(_finite_float(coordinate) is not None for coordinate in bbox)
-    )
+    bbox = value.bbox_xyxy
+    coordinates = tuple(_finite_float(coordinate) for coordinate in bbox)
+    if len(coordinates) != 4 or any(
+        coordinate is None
+        for coordinate in coordinates
+    ):
+        return False
+
+    x1, y1, x2, y2 = coordinates
+    assert x1 is not None
+    assert y1 is not None
+    assert x2 is not None
+    assert y2 is not None
+    return x2 > x1 and y2 > y1
+
+
+def _detection_output_view(
+    value: Any,
+    *,
+    expected_frame_index: int,
+) -> tuple[
+    tuple[DetectedPlate, ...],
+    str | None,
+]:
+    """Best-first 후보 tuple을 bounded display payload로 검증한다."""
+
+    if not isinstance(value, tuple):
+        return (
+            (),
+            "Detector 출력은 best-first DetectedPlate tuple이어야 "
+            f"합니다: actual={type(value).__name__}",
+        )
+
+    if len(value) > _MAX_DISPLAYED_DETECTION_CANDIDATES:
+        return (
+            (),
+            "표시 가능한 후보 수를 초과했습니다: "
+            f"actual={len(value)}, "
+            f"max={_MAX_DISPLAYED_DETECTION_CANDIDATES}",
+        )
+
+    for rank, candidate in enumerate(value, start=1):
+        if not _is_displayable_detection(
+            candidate,
+            expected_frame_index=expected_frame_index,
+        ):
+            return (
+                (),
+                f"후보 #{rank}의 표시 계약이 유효하지 않습니다.",
+            )
+
+    return value, None
 
 
 def _is_displayable_estimate(value: Any) -> bool:
@@ -420,7 +506,9 @@ def _normal_result_message(run: DebugRun) -> str:
 
     detection_calls = run.trace.calls_for("detection")
     if detection_calls and all(
-        call.succeeded and call.output is None
+        call.succeeded
+        and isinstance(call.output, tuple)
+        and not call.output
         for call in detection_calls
     ):
         return "선택된 anchor에서 번호판이 검출되지 않았습니다."
@@ -863,41 +951,52 @@ def _render_detection(run: DebugRun) -> None:
     columns = st.columns(min(2, len(calls)))
     for column, call in zip(columns, calls, strict=True):
         frame = call.inputs
-        invalid_output = (
-            call.succeeded
-            and call.output is not None
-            and not _is_displayable_detection(call.output)
-        )
-        detection = (
-            call.output
-            if (
-                call.succeeded
-                and _is_displayable_detection(call.output)
+        candidates, output_error = (
+            _detection_output_view(
+                call.output,
+                expected_frame_index=frame.frame_index,
             )
+            if call.succeeded
+            else ((), None)
+        )
+        candidate_count = (
+            len(call.output)
+            if call.succeeded and isinstance(call.output, tuple)
             else None
         )
+        best_candidate = candidates[0] if candidates else None
+
         with column:
             st.image(
-                draw_detection(frame.image, detection),
+                draw_detection(frame.image, best_candidate),
                 channels="BGR",
                 use_container_width=True,
             )
             if not call.succeeded:
                 st.error(_call_error(call))
                 state = "ERROR"
-            elif invalid_output:
-                st.error(
-                    "Detector 출력의 타입 또는 내부 필드 계약이 "
-                    "유효하지 않습니다."
+            elif output_error is not None:
+                st.error(output_error)
+                preview = (
+                    call.output[
+                        :_MAX_DISPLAYED_DETECTION_CANDIDATES
+                    ]
+                    if isinstance(call.output, tuple)
+                    else {
+                        "type": type(call.output).__name__,
+                        "contract": "expected tuple[DetectedPlate, ...]",
+                    }
                 )
-                st.json(summarize_value(call.output))
+                st.json(summarize_value(preview))
                 state = "INVALID_OUTPUT"
-            elif detection is None:
+            elif not candidates:
                 st.warning("번호판 미검출")
                 state = "NO_DETECTION"
             else:
                 st.success(
-                    f"score={float(detection.detector_score):.4f}"
+                    f"후보 {candidate_count}개 · "
+                    f"best score="
+                    f"{float(best_candidate.detector_score):.4f}"
                 )
                 state = "DETECTED"
             st.caption(
@@ -905,23 +1004,46 @@ def _render_detection(run: DebugRun) -> None:
                 f"{_frame_name(run, frame.frame_index)}"
             )
 
-        rows.append(
-            {
-                "frame": f"F{frame.frame_index + 1}",
-                "state": state,
-                "score": (
-                    round(float(detection.detector_score), 4)
-                    if detection is not None
-                    else None
-                ),
-                "bbox_xyxy": (
-                    tuple(round(float(value), 2) for value in detection.bbox_xyxy)
-                    if detection is not None
-                    else None
-                ),
-                "elapsed_ms": round(call.elapsed_ms, 3),
-            }
-        )
+        if candidates:
+            for rank, candidate in enumerate(candidates, start=1):
+                rows.append(
+                    {
+                        "frame": f"F{frame.frame_index + 1}",
+                        "output_state": state,
+                        "candidate": (
+                            "BEST"
+                            if rank == 1
+                            else f"#{rank}"
+                        ),
+                        "score": round(
+                            float(candidate.detector_score),
+                            4,
+                        ),
+                        "bbox_xyxy": tuple(
+                            round(float(value), 2)
+                            for value in candidate.bbox_xyxy
+                        ),
+                        "quad": tuple(
+                            tuple(round(float(value), 2) for value in point)
+                            for point in candidate.quad
+                        ),
+                        "candidate_count": candidate_count,
+                        "elapsed_ms": round(call.elapsed_ms, 3),
+                    }
+                )
+        else:
+            rows.append(
+                {
+                    "frame": f"F{frame.frame_index + 1}",
+                    "output_state": state,
+                    "candidate": None,
+                    "score": None,
+                    "bbox_xyxy": None,
+                    "quad": None,
+                    "candidate_count": candidate_count,
+                    "elapsed_ms": round(call.elapsed_ms, 3),
+                }
+            )
 
     st.dataframe(rows, hide_index=True, use_container_width=True)
 

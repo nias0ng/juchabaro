@@ -1,7 +1,10 @@
 # OCR Pipeline Viewer
 
 `hw/raspberry-pi/src/ocr`의 운영 파이프라인을 PC에서 그대로 실행하고,
-6프레임 처리 단계별 입출력을 Streamlit으로 관찰하는 도구입니다.
+현재 viewer 기본 profile인 6프레임 처리의 단계별 입출력을 Streamlit으로
+관찰하는 도구입니다. 운영 OCR pipeline 자체는 공유 정책에 따라 다른
+프레임 수도 지원하지만, 이 viewer의 업로드 UI와 기본 runtime은 6프레임
+profile로 조립됩니다.
 
 이 디렉터리는 모델 학습이나 모델 파일 다운로드를 담당하지 않습니다.
 모델 객체만 Streamlit 프로세스에서 캐시하며, 각 사용자 실행의 trace는
@@ -36,8 +39,8 @@ conda create -n plate-ocr-viewer python=3.13 pip -y
 conda activate plate-ocr-viewer
 
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install --upgrade paddlepaddle -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-python -m pip install --upgrade paddleocr "paddlex[ocr-core]" ultralytics streamlit pillow
+python -m pip install paddlepaddle==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+python -m pip install paddleocr==3.7.0 "paddlex[ocr-core]==3.7.2" ultralytics==8.4.108 streamlit pillow
 python -m pip check
 ```
 
@@ -71,7 +74,7 @@ streamlit run ai/ocr/pipeline_viewer/app.py
 반복하지 않습니다. 모델 파일을 교체한 경우 사이드바의
 `모델 다시 로드` 버튼으로 명시적으로 갱신합니다.
 
-## 입력 계약
+## 현재 viewer 기본 profile의 입력 계약
 
 - 사진은 정확히 6장이어야 합니다.
 - 파일명을 자연 정렬한 순서가 실제 촬영 시간순이어야 합니다.
@@ -83,7 +86,8 @@ streamlit run ai/ocr/pipeline_viewer/app.py
 
 - 최종 판정, trace에서 복원한 후보와 단계 실패
 - 전체 프레임 품질과 선택된 두 anchor
-- YOLO bbox, 네 keypoint와 confidence
+- Anchor별 YOLO 후보 전체의 best-first 순위·bbox·confidence와 best 후보의
+  네 keypoint overlay
 - 프레임별 검출·보간·외삽·재사용 quad
 - 원근 보정 및 OCR 전처리 전후 이미지
 - PaddleOCR 원문, confidence, 정규화 문자열과 형식 검사
@@ -98,3 +102,8 @@ root부터 원인까지 type과 message chain을 보존한다.
 
 이미지는 원본 배열을 수정하지 않은 복사본에만 overlay합니다. 원시
 입출력 JSON에서는 NumPy 배열을 복사하지 않고 shape와 dtype만 보여줍니다.
+Detector trace는 anchor 호출마다 한 번만 기록하며, 출력은 best-first
+`DetectedPlate` tuple입니다. 빈 tuple은 정상 미검출입니다. 화면에서는
+best 후보를 overlay하고 표시 계약을 통과한 전체 후보는 제한된 표로
+보여줍니다. 잘못된 후보 tuple이나 내부 필드는 실행 결과와 분리된 진단
+오류로 표시합니다.
