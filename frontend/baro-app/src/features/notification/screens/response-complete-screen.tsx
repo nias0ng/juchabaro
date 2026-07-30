@@ -1,5 +1,5 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 
@@ -25,11 +25,14 @@ export default function ResponseCompleteScreen() {
   const latestResponse = detail && detail.responses.length > 0 ? detail.responses[detail.responses.length - 1] : null;
 
   useEffect(() => {
-    if (secondsLeft > 0) return;
-    // TODO(E-12): 10초 카운트다운이 끝나면 화면 문구("이동 요청 페이지로 이동합니다")대로
-    // 'E-12. 이동 예정(약속 대기)' 화면/라우트로 연결해야 한다. 그 화면이 아직 없어서
-    // (다른 개발자 작업 중) 지금은 router.replace를 걸지 않고 자리만 남겨둔다.
-  }, [secondsLeft]);
+    if (secondsLeft > 0 || normalizedRequestId === null) return;
+    // E-12(이동 예정/약속 대기)는 별도 화면이 아니라 request-detail-screen이 requestStatus=RESPONDED일 때
+    // 그 자리에서 그려주는 뷰라서, 카운트다운이 끝나면 그 라우트로 되돌아가면 된다.
+    router.replace({
+      pathname: '/resident/request-detail',
+      params: { requestId: String(normalizedRequestId) },
+    });
+  }, [secondsLeft, normalizedRequestId]);
 
   const statusMessage = isLoading
     ? '응답 정보를 불러오는 중입니다'

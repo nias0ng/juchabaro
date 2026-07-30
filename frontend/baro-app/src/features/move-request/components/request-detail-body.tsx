@@ -1,5 +1,7 @@
+import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 
+import type { MoveResponseType } from '@/features/move-request/api/types';
 import type { RequestDetailViewModel } from '@/features/move-request/hooks/use-request-detail-view-model';
 
 import { styles } from './request-detail-body.styles';
@@ -29,6 +31,16 @@ type RequestDetailBodyProps = {
 // 아주 많은 상태를 가지므로, 어떤 섹션을 보여줄지 고르는 로직만 이 컴포넌트에 모아둔다.
 export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDetailBodyProps) {
   const { display } = vm;
+
+  // WILL_MOVE 응답이 성공하면 F-02(응답 완료)로 넘어간다. F-02의 10초 카운트다운이 끝나면
+  // 다시 이 라우트로 돌아오는데, 그때는 requestStatus가 이미 RESPONDED라서 자동으로 E-12(대기 화면)가 그려진다.
+  // CANNOT_MOVE_NOW는 F-02에 해당하는 Figma 화면이 없어 이 화면에서 바로 NEED_ADMIN 안내로 전환한다.
+  const handleRespond = async (responseType: MoveResponseType, estimatedMinutes: number | null) => {
+    const result = await vm.respond(responseType, estimatedMinutes);
+    if (result && responseType === 'WILL_MOVE') {
+      router.push({ pathname: '/resident/response-complete', params: { requestId: String(result.requestId) } });
+    }
+  };
 
   if (statusMessage || !display) {
     return (
@@ -97,10 +109,10 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
       noticeMessage={vm.isNeedAdmin ? NEED_ADMIN_MESSAGE : undefined}
       submitError={vm.submitError}
       actionsDisabled={vm.hasResponded || vm.isSubmitting}
-      onPressImmediate={() => vm.respond('WILL_MOVE', 10)}
-      onPress30Min={() => vm.respond('WILL_MOVE', 30)}
-      onPress60Min={() => vm.respond('WILL_MOVE', 60)}
-      onPressDecline={() => vm.respond('CANNOT_MOVE_NOW', null)}
+      onPressImmediate={() => handleRespond('WILL_MOVE', 10)}
+      onPress30Min={() => handleRespond('WILL_MOVE', 30)}
+      onPress60Min={() => handleRespond('WILL_MOVE', 60)}
+      onPressDecline={() => handleRespond('CANNOT_MOVE_NOW', null)}
     />
   );
 }
