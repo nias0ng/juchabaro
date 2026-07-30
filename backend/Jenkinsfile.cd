@@ -43,6 +43,10 @@ pipeline {
                         string(
                             credentialsId: 'parking-prod-jwt-secret',
                             variable: 'JWT_SECRET'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-hw-api-key',
+                            variable: 'HW_API_KEY'
                         )
                     ]) {
                     dir('backend') {
