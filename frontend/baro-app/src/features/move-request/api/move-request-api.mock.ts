@@ -2,7 +2,14 @@ import { Image } from 'react-native';
 
 import { ApiError } from '@/services/api-error';
 
-import type { MoveRequestDetail, MoveResponseRequest, MoveResponseResult } from './types';
+import type {
+  MoveRequestDetail,
+  MoveRequestListResult,
+  MoveRequestScope,
+  MoveRequestSummary,
+  MoveResponseRequest,
+  MoveResponseResult,
+} from './types';
 
 const MOCK_RESPONSE_DELAY_MS = 500;
 // mock 전용 : 15초 지나면 COMPLETED 상태로 전환.
@@ -284,4 +291,64 @@ export async function postMoveRequestResponseMock(
   mockRespondedAtMs = requestStatus === 'RESPONDED' ? respondedAt.getTime() : null;
 
   return result;
+}
+
+const mockMoveRequestSummaries: MoveRequestSummary[] = [
+  {
+    requestId: 201,
+    eventId: 101,
+    requesterUserId: null,
+    targetVehicleId: 10,
+    targetPlateNumber: '12가3456',
+    requestType: 'AUTO',
+    requestStatus: 'SENT',
+    eventType: 'DOUBLE_PARKING',
+    message: '출차 통로를 막고 있어 차량 이동을 요청했습니다.',
+    requestedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    dueAt: null,
+    reminderCount: 0,
+  },
+  {
+    requestId: 998,
+    eventId: 108,
+    requesterUserId: null,
+    targetVehicleId: 10,
+    targetPlateNumber: '12가3456',
+    requestType: 'AUTO',
+    requestStatus: 'COMPLETED',
+    eventType: 'BAD_PARKING',
+    message: '비상 통로를 막고 있어 이동 요청되었습니다.',
+    requestedAt: new Date(Date.now() - 20 * 60 * 60_000).toISOString(),
+    dueAt: null,
+    reminderCount: 0,
+  },
+  {
+    requestId: 996,
+    eventId: 109,
+    requesterUserId: null,
+    targetVehicleId: 10,
+    targetPlateNumber: '12가3456',
+    requestType: 'AUTO',
+    requestStatus: 'NEED_ADMIN',
+    eventType: 'OUT_OF_ZONE',
+    message: '지정 구역 외 주차로 이동 요청되었습니다.',
+    requestedAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+    dueAt: null,
+    reminderCount: 1,
+  },
+];
+
+export async function getMoveRequestsMock(scope: MoveRequestScope): Promise<MoveRequestListResult> {
+  await delay(MOCK_RESPONSE_DELAY_MS);
+
+  // 이 mock 사용자는 항상 "받는 입장"만 테스트하므로, SENT(내가 보낸 요청)는 비워둔다.
+  const moveRequests = scope === 'SENT' ? [] : mockMoveRequestSummaries;
+
+  return {
+    moveRequests,
+    page: 0,
+    size: 20,
+    totalElements: moveRequests.length,
+    totalPages: 1,
+  };
 }

@@ -17,7 +17,7 @@ export type LoginResult = {
   role: UserRole;
 };
 
-export type UserStatus = 'ACTIVE' | 'DELETED' | 'SUSPENDED';
+export type UserStatus = 'PENDING' | 'ACTIVE' | 'REJECTED' | 'SUSPENDED' | 'DELETED';
 
 // GET /api/users/me 응답의 result. buildingNumber/unitNumber는 관리자 계정이면 null일 수 있다.
 export type UserProfile = {
