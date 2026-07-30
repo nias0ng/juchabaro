@@ -1747,8 +1747,8 @@ class BaselineLogicTests(unittest.TestCase):
 
     def test_monitor_vehicle_inside_entry_exit_zone_is_not_out_of_zone(self) -> None:
         """리뷰 반영(C-1): 게이트(ENTRY_EXIT) 구역 안에 대기 중인 차량은 판정
-        제외 구역 안에 있으므로 OUT_OF_ZONE이 아니어야 한다(§74-75 판정 제외
-        불변식, §5.1)."""
+        제외 구역 안에 있으므로 OUT_OF_ZONE이 아니어야 한다
+        (`IGNORED_ZONE_TYPES_FOR_PARKING` 판정 제외 불변식, §5.1)."""
         ent = self.make_zone("ENT-1", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
         monitor = ViolationMonitor(ZoneRegistry([ent]), min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
         base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
