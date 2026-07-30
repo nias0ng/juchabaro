@@ -21,6 +21,16 @@ export function useNotificationSettings() {
   const setEvOverstay = (value: boolean) => setSettings((prev) => ({ ...prev, evOverstay: value }));
   const setOfficeNotice = (value: boolean) => setSettings((prev) => ({ ...prev, officeNotice: value }));
   const setChannel = (value: NotificationChannel) => setSettings((prev) => ({ ...prev, channel: value }));
+  const setQuietHoursStart = (value: string) => setSettings((prev) => ({ ...prev, quietHoursStart: value }));
+  const setQuietHoursEnd = (value: string) => setSettings((prev) => ({ ...prev, quietHoursEnd: value }));
 
-  return { settings, setResponseReminder, setEvOverstay, setOfficeNotice, setChannel };
+  return {
+    settings,
+    setResponseReminder,
+    setEvOverstay,
+    setOfficeNotice,
+    setChannel,
+    setQuietHoursStart,
+    setQuietHoursEnd,
+  };
 }

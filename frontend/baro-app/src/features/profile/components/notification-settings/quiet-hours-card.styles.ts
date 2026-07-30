@@ -31,6 +31,9 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.lg + 2,
     padding: Spacing.base + 2,
   },
+  timeBoxPressed: {
+    backgroundColor: '#ecebf7',
+  },
   timeLabel: {
     fontSize: 11,
     color: Palette.gray400,
@@ -39,17 +42,5 @@ export const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: FontWeight.semibold,
     color: Palette.gray975,
-  },
-  notice: {
-    backgroundColor: '#fff6f1',
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md - 1,
-    paddingVertical: Spacing.base,
-  },
-  noticeText: {
-    fontSize: 12,
-    lineHeight: 20.4,
-    color: '#a35b3d',
-    textAlign: 'center',
   },
 });
