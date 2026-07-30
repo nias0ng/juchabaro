@@ -742,7 +742,7 @@ class ViolationMonitor:
     유지한다 — 매 프레임 최소 하나의 탐지가 있어야 경과 시간을 계산할 수
     있어, 프레임이 통째로 비는 동안에는 유예 판정이 지연될 수 있다.
 
-    `track_grace_seconds`를 넘겨 트랙이 삭제된 뒤에도, 같은 track_id가
+    `track_grace_seconds`를 넘겨 트랙이 삭제된 뒤에도, 같은 자리에 차가
     `dwell_reunification_seconds` 이내에 다시 나타나면 정차 시작 시각
     (`stationary_since`)과 마지막으로 발행한 상태(`open_violation`)를
     복원한다(리뷰 반영, C-1/319) — `track_grace_seconds`는 짧게 유지하되
@@ -753,6 +753,9 @@ class ViolationMonitor:
     `dwell_reunification_seconds`보다 오래 끊기면 여전히 새 트랙으로
     취급되어 정차 시간이 리셋된다 — 이 상한을 얼마로 잡을지는 실제
     운영 환경의 가림/미탐지 지속 시간을 관찰해서 정해야 한다.
+    재식별은 track_id가 아니라 중심점 근접으로 한다 — ByteTrack은
+    track_buffer(기본 30프레임)를 넘기면 새 번호를 발급하므로 번호로는 이을
+    수 없다.
 
     통행로를 막는 "일반적인 이중주차"(차 여러 대의 진출입로를 막는 경우)는
     AISLE_BLOCK이 담당한다(구역 폴리곤만 있으면 판정 가능). DOUBLE_PARK와
@@ -807,7 +810,7 @@ class ViolationMonitor:
         # 데이터로 재검증되지 않았다.
         entry_match_window_seconds: float = 10.0,
         entry_zone_min_overlap_ratio: float = 0.40,
-        dwell_reunification_seconds: float = 120.0,
+        dwell_reunification_seconds: float = 30.0,
     ) -> None:
         self._zones = zones
         self._min_overlap_ratio = min_overlap_ratio
@@ -819,22 +822,52 @@ class ViolationMonitor:
         self._entry_zone_min_overlap_ratio = entry_zone_min_overlap_ratio
         self._dwell_reunification_seconds = dwell_reunification_seconds
         self._tracks: dict[int, TrackState] = {}
-        # track_grace_seconds를 넘겨 self._tracks에서 삭제된 트랙을 잠시
-        # 보관한다(리뷰 반영, C-1/319) — dwell_reunification_seconds 이내에
-        # 같은 track_id가 재등장하면 여기서 꺼내 stationary_since/
-        # open_violation을 이어간다. 그 창을 넘기면 _prune_reunification_archive가
-        # 완전히 버린다(메모리 누수 방지).
-        self._reunification_archive: dict[int, TrackState] = {}
+        # track_grace_seconds를 넘겨 self._tracks에서 삭제된 트랙을 잠시 보관한다
+        # (319 리뷰 재검토, C-1). dwell_reunification_seconds 이내에 같은 자리에
+        # 차가 다시 나타나면 여기서 꺼내 정차·점유 시계를 이어간다. 그 창을 넘기면
+        # _prune_reunification_archive가 버린다(메모리 누수 방지).
+        #
+        # track_id를 키로 쓰지 않는 이유는 _claim_reunifiable의 docstring 참고.
+        self._reunification_archive: list[TrackState] = []
         self._pending_entry_events: list[EntryEvent] = []
 
     def _prune_reunification_archive(self, now: datetime) -> None:
-        expired = [
-            track_id
-            for track_id, state in self._reunification_archive.items()
-            if (now - state.last_seen_at).total_seconds() > self._dwell_reunification_seconds
+        self._reunification_archive = [
+            state
+            for state in self._reunification_archive
+            if (now - state.last_seen_at).total_seconds() <= self._dwell_reunification_seconds
         ]
-        for track_id in expired:
-            del self._reunification_archive[track_id]
+
+    def _claim_reunifiable(self, detection: VehicleBox) -> TrackState | None:
+        """보관함에서 이 탐지와 같은 차로 볼 수 있는 트랙을 찾아 꺼낸다.
+
+        track_id로 찾지 않는 이유: ByteTrack은 track_buffer(bytetrack.yaml 기본
+        30프레임, --frame-interval-ms 200이면 약 6초)를 넘겨 사라진 트랙을 잊고,
+        재등장 시 새 번호를 발급한다. 번호로 찾으면 그 시점부터 영영 못 잇는다.
+
+        근접 판정에 movement_epsilon을 그대로 쓴다 — 앵커 이동 판정과 같은
+        잣대라 "같은 자리"의 정의가 한 곳으로 유지된다.
+
+        보관함 길이는 "방금 사라진 트랙" 수라 한 자릿수다. 선형 스캔이지만
+        프레임당 비용은 무시할 수준이고 새 할당도 없다.
+        """
+
+        best_index: int | None = None
+        best_distance: float | None = None
+        for index, archived in enumerate(self._reunification_archive):
+            elapsed = (detection.captured_at - archived.last_seen_at).total_seconds()
+            if not (0.0 <= elapsed <= self._dwell_reunification_seconds):
+                continue
+            distance = _centroid_distance(archived.last_bbox, detection.bbox)
+            if distance > self._movement_epsilon:
+                continue
+            if best_distance is None or distance < best_distance:
+                best_index, best_distance = index, distance
+        if best_index is None:
+            return None
+        state = self._reunification_archive.pop(best_index)
+        state.track_id = detection.track_id  # 추적기가 새 번호를 붙였을 수 있다
+        return state
 
     def attach_plate(self, track_id: int, plate_number: str) -> None:
         """트랙에 직접 번호판을 연결한다 (자동 매칭 없이 수동으로 붙일 때 사용)."""
@@ -922,19 +955,13 @@ class ViolationMonitor:
             state = self._tracks.get(detection.track_id)
             is_new_track = state is None
             if is_new_track:
-                # (리뷰 반영, C-1/319) track_grace_seconds를 넘겨 삭제된 트랙이라도
-                # dwell_reunification_seconds 이내에 같은 track_id로 재등장하면
+                # (319 리뷰 재검토, C-1) track_grace_seconds를 넘겨 삭제된 트랙이라도
+                # 같은 자리에 dwell_reunification_seconds 이내로 다시 나타나면
                 # "새 트랙"이 아니라 이어진 것으로 본다 — 안 그러면 잠깐의
-                # 미탐지/가림 한 번으로 stationary_since가 리셋돼, 수십~백분
-                # 단위 누적 시간을 재는 EV_OVERSTAY 같은 판정이 사실상
-                # 무력화된다(재현 확인됨).
-                archived = self._reunification_archive.pop(detection.track_id, None)
-                reunifiable = (
-                    archived is not None
-                    and (detection.captured_at - archived.last_seen_at).total_seconds()
-                    <= self._dwell_reunification_seconds
-                )
-                if reunifiable:
+                # 미탐지/가림 한 번으로 정차·점유 시계가 리셋돼, 수십~백분 단위
+                # 누적 시간을 재는 EV_OVERSTAY 같은 판정이 무력화된다(재현 확인됨).
+                archived = self._claim_reunifiable(detection)
+                if archived is not None:
                     state = archived
                     is_new_track = False
                 else:
@@ -1154,10 +1181,10 @@ class ViolationMonitor:
                 and (now - state.last_seen_at).total_seconds() > self._track_grace_seconds
             ]
             for track_id in stale_ids:
-                # (리뷰 반영, C-1/319) 바로 버리지 않고 재결합 보관함으로 옮긴다 —
-                # dwell_reunification_seconds 이내에 같은 track_id가 돌아오면
-                # stationary_since/open_violation을 이어간다.
-                self._reunification_archive[track_id] = self._tracks.pop(track_id)
+                # (319 리뷰 재검토, C-1) 바로 버리지 않고 재결합 보관함으로 옮긴다 —
+                # dwell_reunification_seconds 이내에 같은 자리에 차가 돌아오면
+                # 정차·점유 시계와 open_violation을 이어간다.
+                self._reunification_archive.append(self._tracks.pop(track_id))
             self._prune_reunification_archive(now)
 
         return events
@@ -1507,7 +1534,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-dwell-seconds", type=float, default=600.0, help="위반 후보 등록 전 최소 정차 시간(§5.1 확정치, FR-PARK-008).")
     parser.add_argument("--movement-epsilon", type=float, default=0.01, help="정차 판정을 위한 중심 이동 허용 오차(정규화 단위).")
     parser.add_argument("--track-grace-seconds", type=float, default=2.0, help="트랙이 잠깐 안 보여도 상태를 유지하는 유예 시간.")
-    parser.add_argument("--dwell-reunification-seconds", type=float, default=120.0, help="track-grace-seconds를 넘겨 트랙이 삭제된 뒤에도, 같은 트랙이 이 시간 이내에 재등장하면 정차 시작 시각을 이어간다(리뷰 반영, C-1/319) — EV_OVERSTAY처럼 장시간 임계값을 쓰는 구역이 있다면 예상되는 최대 가림/미탐지 지속 시간보다 넉넉히 크게 설정해야 한다.")
+    parser.add_argument("--dwell-reunification-seconds", type=float, default=30.0, help="track-grace-seconds를 넘겨 트랙이 삭제된 뒤에도, 같은 자리(중심점이 movement-epsilon 이내)에 이 시간 이내로 차가 다시 나타나면 정차·점유 시각을 이어간다(리뷰 반영, C-1/319). track_id가 아니라 위치로 재식별하므로 ByteTrack이 새 번호를 붙여도 이어진다. 너무 크게 잡으면 앞차가 나가고 뒷차가 같은 자리에 들어온 것을 같은 차로 오인할 수 있다.")
     parser.add_argument("--entry-match-window-seconds", type=float, default=10.0, help="게이트 OCR 입차 이벤트와 신규 트랙을 매칭하는 시간창(§2.2).")
     parser.add_argument("--entry-zone-min-overlap-ratio", type=float, default=0.40, help="ENTRY_EXIT 구역 진입 판정 임계값.")
     parser.add_argument("--frame-interval-ms", type=int, default=200)
@@ -2481,7 +2508,9 @@ class BaselineLogicTests(unittest.TestCase):
         step(11, include_track_1=False)
         step(12, include_track_1=False)
         step(13, include_track_1=False)
-        self.assertIn(1, monitor._reunification_archive)
+        # (319 리뷰 재검토, C-1) 보관함은 dict가 아니라 리스트다 — 재결합을
+        # track_id가 아니라 위치로 판단하므로 키가 필요없다.
+        self.assertEqual([s.track_id for s in monitor._reunification_archive], [1])
         self.assertNotIn(1, monitor._tracks)
 
         step(14, include_track_1=True)  # 재등장 - stationary_since는 t=0 그대로 이어져야 함
@@ -2764,6 +2793,151 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertAlmostEqual(payload["occupancy_seconds"], 65.0)
         self.assertAlmostEqual(payload["dwell_seconds"], 35.0)
 
+    def test_ev_overstay_not_reset_by_track_id_change(self) -> None:
+        """추적기가 같은 차에 새 track_id를 붙여도 점유 시계가 이어진다
+        (319 리뷰 C-1).
+
+        ByteTrack은 track_buffer(기본 30프레임 = 5fps에서 약 6초)를 넘겨 사라진
+        트랙을 잊고 재등장 시 새 번호를 발급한다. 번호로만 재결합하면 그
+        시점부터 영영 못 잇는다 — 위치로 재식별한다.
+        """
+        zone = self.make_zone(
+            "EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)], allowed_minutes=1.0
+        )
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0,
+            movement_epsilon=0.01, track_grace_seconds=2.0,
+        )
+        bbox = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        other = BoundingBox(0.60, 0.60, 0.80, 0.80)
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        def step(seconds: float, track_ids: tuple[int, ...]) -> list[ViolationEvent]:
+            dets = []
+            for track_id in track_ids:
+                dets.append(
+                    VehicleBox(
+                        track_id=track_id,
+                        bbox=bbox if track_id != 99 else other,
+                        confidence=0.9,
+                        frame_id=int(seconds),
+                        captured_at=base_time + timedelta(seconds=seconds),
+                    )
+                )
+            return monitor.update(dets)
+
+        step(0, (1, 99))
+        first = step(10, (1, 99))
+        self.assertEqual([e.status for e in first if e.track_id == 1], [ViolationStatus.RESTRICTED_ZONE])
+
+        # track 1이 8초간 사라진다 — track_grace_seconds(2초)도 ByteTrack의
+        # track_buffer(약 6초)도 넘긴다. 다른 차(99)는 계속 보여 update()는 돈다.
+        for seconds in (11, 13, 15, 17):
+            step(seconds, (99,))
+
+        # 같은 자리에 새 번호(2)로 재등장
+        step(18, (2, 99))
+        later = step(61, (2, 99))
+        self.assertEqual([e.status for e in later if e.track_id == 2], [ViolationStatus.EV_OVERSTAY])
+
+    def test_track_not_reunified_when_reappearing_elsewhere(self) -> None:
+        """다른 자리에서 재등장하면 재결합하지 않는다 — 차량 교체 오탐 방어.
+
+        위치 기반 재결합의 위험은 A가 나간 자리에 B가 들어왔을 때 B가 A의
+        점유 시계를 물려받는 것이다. 중심점이 movement_epsilon을 넘게 다르면
+        같은 차로 보지 않는다.
+        """
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0,
+            movement_epsilon=0.01, track_grace_seconds=2.0,
+        )
+        here = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        far = BoundingBox(0.60, 0.60, 0.80, 0.80)
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.update([VehicleBox(track_id=1, bbox=here, confidence=0.9, frame_id=0, captured_at=base_time)])
+        for seconds in (5, 6):
+            monitor.update(
+                [VehicleBox(track_id=98, bbox=far, confidence=0.9, frame_id=int(seconds),
+                            captured_at=base_time + timedelta(seconds=seconds))]
+            )
+        self.assertNotIn(1, monitor._tracks)
+
+        # 전혀 다른 자리에서 새 번호로 등장 -> 이어받지 않는다.
+        events = monitor.update(
+            [VehicleBox(track_id=2, bbox=BoundingBox(0.30, 0.30, 0.50, 0.50), confidence=0.9,
+                        frame_id=7, captured_at=base_time + timedelta(seconds=7))]
+        )
+        self.assertEqual(events, [])
+        self.assertEqual(monitor._tracks[2].stationary_since, base_time + timedelta(seconds=7))
+
+    def test_reunification_preserves_moved_since_last_decision(self) -> None:
+        """재결합은 moved_since_last_decision(sticky 플래그)까지 보존한다
+        (319 리뷰 C-1 2/2).
+
+        이 플래그는 "마지막 판정 이후 차가 실제로 움직였는가"라는 사실이고,
+        트랙이 잠깐 안 보였다는 것이 그 사실을 무효화하지는 않는다. 재결합
+        시점에 초기화하면 아래 시나리오에서 이벤트가 통째로 유실된다:
+        DIS-01에서 RESTRICTED_ZONE이 발행된 차가 DIS-02로 옮겨 정차 시간을
+        채우는 도중 가려졌다 재등장하는 경우, 중복 판정 키의 zone_id 변경을
+        믿을 근거(플래그)가 사라져 status/zone_id가 (RESTRICTED_ZONE, DIS-01)에
+        머물고 서버는 영영 DIS-01이 점유됐다고 알게 된다.
+
+        반대 방향(오발행) 위험은 없다: 플래그는 앵커 대비 movement_epsilon을
+        넘는 실제 이동에서만 세워지고, 같은 구역 안에서 움직인 경우에는
+        zone_id가 같아 zone_changed가 False로 남는다.
+        """
+        zone_1 = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        zone_2 = self.make_zone("DIS-02", ZoneType.DISABLED, [(0.5, 0.0), (0.8, 0.0), (0.8, 0.3), (0.5, 0.3)])
+        registry = ZoneRegistry([zone_1, zone_2])
+        monitor = ViolationMonitor(
+            registry, min_overlap_ratio=0.40, min_dwell_seconds=10.0,
+            movement_epsilon=0.01, track_grace_seconds=2.0,
+        )
+        at_1 = BoundingBox(0.05, 0.05, 0.25, 0.25)
+        at_2 = BoundingBox(0.55, 0.05, 0.75, 0.25)
+        elsewhere = BoundingBox(0.85, 0.85, 0.95, 0.95)  # 어느 구역과도 안 겹치는 무관한 차량
+        base_time = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        seen: list[tuple[int, ViolationStatus, str | None, float]] = []
+
+        def step(seconds: float, track_id: int | None, bbox: BoundingBox | None) -> None:
+            captured_at = base_time + timedelta(seconds=seconds)
+            dets = [VehicleBox(track_id=99, bbox=elsewhere, confidence=0.9, frame_id=int(seconds), captured_at=captured_at)]
+            if track_id is not None and bbox is not None:
+                dets.append(
+                    VehicleBox(track_id=track_id, bbox=bbox, confidence=0.9, frame_id=int(seconds), captured_at=captured_at)
+                )
+            for event in monitor.update(dets):
+                if event.track_id != 99:
+                    seen.append((event.track_id, event.status, event.zone_id, event.dwell_seconds))
+
+        step(0, 1, at_1)
+        step(10, 1, at_1)  # dwell=10s -> RESTRICTED_ZONE(DIS-01) 발행, 플래그는 여기서 clear된다
+        step(11, 1, at_2)  # DIS-02로 이동 -> 플래그 set, 정차 시계 리셋(아직 OBSERVING)
+        step(14, None, None)  # track_grace_seconds(2초) 초과 -> 보관함으로 이동
+        step(16, None, None)
+        self.assertNotIn(1, monitor._tracks)
+
+        step(17, 2, at_2)  # 같은 자리에 새 번호로 재등장 -> 위치로 재결합
+        reunified = monitor._tracks[2]
+        self.assertTrue(reunified.moved_since_last_decision)  # 보존됐다
+        self.assertEqual(reunified.stationary_since, base_time + timedelta(seconds=11))
+        self.assertEqual(reunified.open_violation_zone_id, "DIS-01")
+
+        step(22, 2, at_2)  # dwell=11s -> DIS-02에서 새 사건으로 발행돼야 한다
+
+        self.assertEqual(
+            seen,
+            [
+                (1, ViolationStatus.RESTRICTED_ZONE, "DIS-01", 10.0),
+                (2, ViolationStatus.RESTRICTED_ZONE, "DIS-02", 11.0),
+            ],
+        )
+
     def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
         """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
         이후 OUT_OF_ZONE 이벤트가 한 번 발행되고 중복 발행되지 않는다."""
@@ -3024,8 +3198,8 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertNotIn(1, monitor._tracks)
 
-        # (리뷰 반영, C-1/319) dwell_reunification_seconds(기본 120초) 이내에
-        # 재등장하면 재결합 보관함에서 stationary_since를 이어받는다 —
+        # (리뷰 반영, C-1/319) dwell_reunification_seconds(기본 30초) 이내에
+        # 같은 자리로 재등장하면 재결합 보관함에서 stationary_since를 이어받는다 —
         # 정차 시작(t=0)부터 재등장(t=11)까지 이미 min_dwell_seconds(10초)를
         # 채웠으므로 즉시 RESTRICTED_ZONE이 발행돼야 한다(dwell이 0으로
         # 리셋되지 않음).
@@ -3059,7 +3233,7 @@ class BaselineLogicTests(unittest.TestCase):
                 )
             ]
         )
-        self.assertNotIn(1, monitor._reunification_archive)  # 이미 정리(prune)됐어야 함
+        self.assertEqual(monitor._reunification_archive, [])  # 이미 정리(prune)됐어야 함
 
         events = monitor.update(
             [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=41))]
