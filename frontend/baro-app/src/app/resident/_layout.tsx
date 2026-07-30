@@ -1,13 +1,47 @@
+import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { TabBarIcon, TabBarLabel } from '@/components/ui';
+import { BottomNavBar, type NavItem } from '@/components/ui';
 import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
 
-// Figma BottomTabBar(node 121:108) 기준 색상. 기존 토큰과 정확히 일치하지 않아 로컬 상수로 둔다.
-const TAB_BAR_INACTIVE_COLOR = '#c8c4d7';
-const TAB_BAR_BORDER_COLOR = '#e5e1ed';
+const RESIDENT_NAV_ITEMS: NavItem[] = [
+  { key: 'index', label: '홈', icon: 'home' },
+  { key: 'requests', label: '요청', icon: 'request' },
+  { key: 'notifications', label: '알림', icon: 'bell' },
+  { key: 'my-page', label: '내정보', icon: 'user' },
+];
+
+function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
+  const { bottom } = useSafeAreaInsets();
+  const activeKey = state.routes[state.index]?.name ?? 'index';
+
+  const handlePressItem = (routeName: string) => {
+    const route = state.routes.find((item) => item.name === routeName);
+    if (!route) return;
+
+    const event = navigation.emit({
+      type: 'tabPress',
+      target: route.key,
+      canPreventDefault: true,
+    });
+
+    if (!event.defaultPrevented) {
+      navigation.navigate(route.name, route.params);
+    }
+  };
+
+  return (
+    <BottomNavBar
+      items={RESIDENT_NAV_ITEMS}
+      activeKey={activeKey}
+      bottomInset={bottom}
+      onPressItem={handlePressItem}
+    />
+  );
+}
 
 /*
   ResidentLayout : 입주민 앱의 탭바 레이아웃
@@ -32,55 +66,33 @@ export default function ResidentLayout() {
 
   return (
     <Tabs
+      tabBar={(props) => <ResidentBottomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: Palette.violet600,
-        tabBarInactiveTintColor: TAB_BAR_INACTIVE_COLOR,
-        tabBarStyle: {
-          backgroundColor: Palette.white,
-          borderTopColor: TAB_BAR_BORDER_COLOR,
-          paddingTop: 12,
-        },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: '홈',
-          tabBarIcon: ({ color }) => <TabBarIcon name="home" color={color} />,
-          tabBarLabel: ({ focused, color }) => (
-            <TabBarLabel label="홈" focused={focused} color={color} />
-          ),
         }}
       />
       <Tabs.Screen
         name="requests"
         options={{
           title: '요청',
-          tabBarIcon: ({ color }) => <TabBarIcon name="bell" color={color} />,
-          tabBarLabel: ({ focused, color }) => (
-            <TabBarLabel label="요청" focused={focused} color={color} />
-          ),
         }}
       />
       <Tabs.Screen
         name="notifications"
         options={{
           title: '알림',
-          tabBarIcon: ({ color }) => <TabBarIcon name="bell" color={color} />,
-          tabBarLabel: ({ focused, color }) => (
-            <TabBarLabel label="알림" focused={focused} color={color} />
-          ),
         }}
       />
       <Tabs.Screen
         name="my-page"
         options={{
           title: '내 정보',
-          tabBarIcon: ({ color }) => <TabBarIcon name="user" color={color} />,
-          tabBarLabel: ({ focused, color }) => (
-            <TabBarLabel label="내 정보" focused={focused} color={color} />
-          ),
         }}
       />
       {/* 탭바에는 없지만(Figma BottomTabBar 기준) 홈 화면의 "내 차량" 바로가기로는 계속 접근 가능해야 해서 라우트는 남기고 탭에서만 숨긴다. */}

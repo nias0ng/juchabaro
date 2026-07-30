@@ -1,6 +1,5 @@
 // Figma Z-02. BottomNavBar(node 2087:2)의 아이콘 path.
-// home/bell/user는 components/ui/tab-bar-icon.tsx와 동일한 값이며,
-// 병합 후 BottomNavBar 연동 시 tab-bar-icon.tsx가 대체되면서 중복이 자연히 사라진다
+// 실제 resident 탭 레이아웃은 이 아이콘 세트를 사용하는 BottomNavBar로 렌더링한다.
 // (docs/superpowers/specs/2026-07-30-global-shared-components-design.md 참고).
 
 export const STROKE_ICON_PATHS = {

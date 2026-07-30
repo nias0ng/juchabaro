@@ -9,7 +9,6 @@ export * from './responsive-container';
 export * from './screen';
 export * from './screen-header';
 export * from './stack';
-export * from './tab-bar-icon';
 export * from './text-field';
 export * from './themed-text';
 export * from './themed-view';
