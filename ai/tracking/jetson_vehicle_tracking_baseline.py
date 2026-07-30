@@ -27,10 +27,45 @@ Nano + TensorRT로 내보낸 가중치로 `--model-path`만 교체하는 것을 
   누적되지 않으면, 그 스팟은 계속 "미확정" 상태로 남아 침범 판정 자체가
   무기한 보류될 수 있다 — 현장 데이터로 실제 발생 빈도를 확인하고, 필요하면
   "N초 이상 미확정이면 미점유로 간주" 같은 타임아웃을 추가해야 할 수 있다.
+- OUT_OF_ZONE(리뷰 반영, 317번 MR 코드리뷰 I-1/I-2/I-4) 관련, 알려진 한계:
+  · AISLE(통행로) 폴리곤은 보통 길고 얇게 그려지는데, OUT_OF_ZONE의
+    "구역 없음" 판단이 몸체 겹침 40%(min_overlap_ratio) 기준이라, 통행로
+    입구를 앞머리로만 살짝 막은 흔한 통행 방해 상황은 몸체 겹침이 40%에
+    못 미쳐 AISLE_BLOCK 대신 OUT_OF_ZONE으로 잘못 분류될 수 있다. AISLE도
+    구역 면적 기준(zone_coverage_ratio) 판정을 도입하는 게 정석이나 이번
+    MR 범위에서는 보류했다.
+  · 관리자가 카메라 화면 전체를 폴리곤으로 덮을 의무는 없으므로(§5.0),
+    인접 도로·주차장 밖 노면처럼 "감시 영역이지만 등록 안 된 곳"에 있는
+    차량도 전부 OUT_OF_ZONE으로 잡힌다. 다른 위반들은 폴리곤 겹침이
+    있어야 발동해 미등록 구역에서는 미탐(안전) 쪽으로 기우는데, 이
+    판정만 반대로 오탐(위험) 쪽으로 기운다. 주차장 외곽 경계 폴리곤
+    도입이나 CLI 온/오프 플래그로 파일럿 기간 리스크를 낮추는 방안이
+    필요하다(팀 확인 필요).
+  · `min_dwell_seconds=0`이면 이동 중인 차량도 프레임마다 즉시
+    OUT_OF_ZONE이 확정되고, 이동 감지 시 상태가 리셋되어 매 프레임
+    이벤트가 발행될 수 있다(다른 위반 판정도 동일한 구조적 한계를
+    공유하나, OUT_OF_ZONE은 대상 면적이 훨씬 넓어 영향이 커진다).
+  · (N-1 수정 후에도 남는 것, N-2) 게이트에 앞머리만 걸친 차량(예:
+    entry_zone_min_overlap_ratio 기준 몸겹침 25%)은 여전히 OUT_OF_ZONE으로
+    발행된다 — I-1(AISLE 부분겹침)과 같은 뿌리 원인(몸체 겹침 임계값
+    미달)이다. 게이트는 차가 정당하게 오래 서 있을 수 있는 유일한
+    장소라, 파일럿에서 `--min-dwell-seconds`를 낮추면 체감 빈도가 올라갈
+    수 있다.
+  · (N-3) 피해 차량이 흔들려 정착(min_dwell_seconds)이 풀렸다가 다시
+    정착하면, 같은 물리적 상황에 대해 DOUBLE_PARK가 두 번 발행될 수
+    있다 — 이건 이번 MR이 만든 게 아니라, `pending_home_zone_ids` 보류
+    메커니즘이 막으려던 "이벤트만 바뀌며 중복 발행"의 잔여 형태다. 후속
+    정리가 필요하다.
 
 CLI 모드: 웹캠 점검(`--probe-camera`), 캘리브레이션용 프레임 저장
 (`--capture-frame`), 실시간 루프(`--run`), 하드웨어 비의존 자체 테스트
 (`--self-test`).
+
+배포 시 주의: 이 스크립트는 단독 실행 파일이 아니다. 같은 디렉터리의
+`calibration_utils.py`(왜곡 보정 파라미터 로딩)와 `camera_calibration.json`을
+함께 복사해야 `--calibration`이 동작한다. remap 관련 테스트는 이 파일의
+`--self-test`가 아니라 `ai/training/tests/`(pytest)에 있다 — cv2/numpy가 필요해
+"하드웨어·의존성 없이 도는 자체 테스트"라는 `--self-test`의 성격과 맞지 않기 때문.
 """
 
 from __future__ import annotations
@@ -39,6 +74,7 @@ import argparse
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import hashlib
 import json
 import logging
 import math
@@ -51,6 +87,10 @@ import unittest
 
 
 LOGGER = logging.getLogger("jetson_vehicle_tracking_baseline")
+
+# 왜곡 보정 시 crop(0)~풀 화각 유지(1) 비율. 학습 데이터를 만든 extract_pilot_frames.py와
+# 반드시 같은 값이어야 한다 — 다르면 같은 K/D로도 다른 좌표계가 나온다.
+DEFAULT_REMAP_BALANCE = 0.5
 
 
 class BaselineError(RuntimeError):
@@ -84,6 +124,7 @@ class ViolationStatus(str, Enum):
     LINE_CROSS = "LINE_CROSS"
     AISLE_BLOCK = "AISLE_BLOCK"
     DOUBLE_PARK = "DOUBLE_PARK"
+    OUT_OF_ZONE = "OUT_OF_ZONE"
 
 
 @dataclass(frozen=True)
@@ -312,6 +353,28 @@ def _home_zone_overlap(overlaps: Sequence[ZoneOverlap]) -> ZoneOverlap | None:
     return None
 
 
+def _ignored_zone_overlap(
+    bbox: BoundingBox, zones: Sequence[ParkingZone], *, min_overlap_ratio: float
+) -> ZoneOverlap | None:
+    """차량이 판정 제외 구역(§IGNORED_ZONE_TYPES_FOR_PARKING, 예: ENTRY_EXIT)에
+    min_overlap_ratio 이상 겹치는지 확인한다(리뷰 반영, C-1).
+
+    `classify_zone_overlaps`는 이 구역들을 애초에 후보에서 제외하므로, 그
+    결과만으로는 "판정 제외 구역 안에 있다"와 "정말 아무 구역도 없다"를
+    구분할 수 없다. OUT_OF_ZONE 판정이 게이트에서 대기 중인 차량까지
+    "구역 외 주차"로 오인하지 않으려면 이 구분이 반드시 필요하다.
+    """
+
+    best: ZoneOverlap | None = None
+    for zone in zones:
+        if zone.zone_type not in IGNORED_ZONE_TYPES_FOR_PARKING:
+            continue
+        ratio = overlap_ratio(zone.polygon, bbox)
+        if ratio >= min_overlap_ratio and (best is None or ratio > best.ratio):
+            best = ZoneOverlap(zone, ratio)
+    return best
+
+
 def classify_violation(
     overlaps: Sequence[ZoneOverlap],
     *,
@@ -319,11 +382,16 @@ def classify_violation(
     min_dwell_seconds: float,
     blocked_zone: ZoneOverlap | None = None,
     intruded_zone: ZoneOverlap | None = None,
+    in_ignored_zone: bool = False,
+    deferred_intrusion: bool = False,
 ) -> tuple[ViolationStatus, ParkingZone | None, float]:
     """§5.1 규칙으로 겹침 구역·스팟 침범·정차 시간을 종합해 위반 상태를 판정한다.
 
     여러 조건이 동시에 걸리면 통행 방해(AISLE_BLOCK) > 이중주차(DOUBLE_PARK) >
-    전용구역 점유(RESTRICTED_ZONE) > 선 침범(LINE_CROSS) 순으로 하나만 보고한다.
+    전용구역 점유(RESTRICTED_ZONE) > 선 침범(LINE_CROSS) > 구역 외 주차
+    (OUT_OF_ZONE) 순으로 하나만 보고한다. OUT_OF_ZONE은 다른 어떤 위반 신호도
+    없을 때만 성립하는 배타적 폴백이며(우선순위표가 아니라 아래 early-return의
+    배타 조건), 새 위반 신호를 추가하면 그 조건도 함께 확장해야 한다.
 
     `blocked_zone`/`intruded_zone`은 둘 다 "내 홈 구역이 아닌 스팟을 얼마나
     덮었는가"라는 같은 계산(구역 면적 기준, `zone_coverage_ratio`)에서 나오며,
@@ -331,6 +399,14 @@ def classify_violation(
     `intruded_zone`(LINE_CROSS)으로 나뉜다 — 어떤 차량이 어느 구역의 진짜
     주인인지는 이 함수가 아니라 호출부(ViolationMonitor)가 구역별 최고
     점유자 정보로 결정한다(시간순이 아니라 공간 정보 기준).
+
+    `in_ignored_zone`/`deferred_intrusion`(리뷰 반영, C-1/C-2): `overlaps`가
+    비어 있는 이유는 최소 세 가지로 서로 다르다 — ① 정말 어느 구역과도
+    안 겹침(OUT_OF_ZONE 대상), ② ENTRY_EXIT 같은 판정 제외 구역 안에 있음
+    (`in_ignored_zone`), ③ 다른 트랙이 아직 정착 확정 못 해 해당 구역이
+    `pending_home_zone_ids`로 보류 중이라 이번 프레임엔 침범 여부를 알 수
+    없음(`deferred_intrusion`). ②·③은 "구역 없음"이 아니라 "판정 보류"이므로
+    OUT_OF_ZONE으로 확정하면 안 되고, 기존과 동일하게 NONE으로 둔다.
 
     참고: 이제 DOUBLE_PARK가 구역 면적 기준으로 넓게 잡히다 보니, 전용구역
     (RESTRICTED_ZONE)에 주차된 차가 동시에 남의 스팟을 침범한 경우 이
@@ -340,7 +416,17 @@ def classify_violation(
     """
 
     if not overlaps and blocked_zone is None and intruded_zone is None:
-        return ViolationStatus.NONE, None, 0.0
+        if in_ignored_zone or deferred_intrusion:
+            # 판정 제외 구역(게이트 등) 안에 있거나, 다른 트랙의 정착 미확정으로
+            # 이번 프레임엔 침범 여부를 알 수 없다 — "구역 없음"이 아니므로
+            # OUT_OF_ZONE으로 확정하지 않고 기존과 동일하게 NONE으로 둔다.
+            return ViolationStatus.NONE, None, 0.0
+        # 어떤 구역(통행로 포함)에도 겹치지 않고 스팟 침범도, 판정 제외/보류
+        # 대상도 아니다 — 등록된 주차구역 밖에 서 있다는 뜻이다. 최소 정차
+        # 시간을 채우기 전에는 다른 위반들과 동일하게 OBSERVING으로만 표시한다.
+        if dwell_seconds < min_dwell_seconds:
+            return ViolationStatus.OBSERVING, None, 0.0
+        return ViolationStatus.OUT_OF_ZONE, None, 0.0
 
     aisle = next((item for item in overlaps if item.zone.zone_type is ZoneType.AISLE), None)
     restricted = next((item for item in overlaps if item.zone.zone_type in RESTRICTED_ZONE_TYPES), None)
@@ -420,6 +506,8 @@ class ViolationEvent:
     overlap_ratio도 그 구역 면적 대비 침범 비율(구역 기준)이다. AISLE_BLOCK/
     RESTRICTED_ZONE에서는 zone_id가 이 차량 자신이 있는 구역을 가리키고
     overlap_ratio도 이 차량 자신의 몸체 면적 기준(차체 기준)이라 의미가 다르다.
+    OUT_OF_ZONE(리뷰 반영)은 애초에 매핑되는 구역이 없으므로 zone_id/
+    zone_type은 항상 None이고 overlap_ratio도 항상 0.0으로 발행된다.
     """
 
     track_id: int
@@ -524,9 +612,15 @@ class ViolationMonitor:
     주인이 있으면 DOUBLE_PARK(그 주인이 피해자), 비어있으면 LINE_CROSS로
     판정한다. 판정은 시간순(누가 먼저 왔는지)이 아니라 순수하게 공간
     정보(누가 그 구역의 더 정당한 주인인지)로만 한다. 이 방식은 피해
-    차량이 스팟 구역(zone) 안에 있어야 동작한다 — 구역 밖(비주차구역)에
-    정차한 차량을 다른 차가 막는 경우는 잡지 못한다(NO_PARKING_ZONE
-    미구현과 연결된 별도 한계).
+    차량이 스팟 구역(zone) 안에 있어야 동작한다.
+
+    등록된 구역 어디에도 매핑되지 않는 차량은 `classify_violation`이
+    최소 정차 시간 이후 OUT_OF_ZONE으로 별도 판정한다(리뷰 반영 - 인용 정정:
+    요구사항 정의서.md:25 주차 상태 분류, ERD.md:119-125 event_type과 대응).
+    다만 "구역 밖에 정차한 차량을 다른
+    차가 막는" 복합 상황까지는 다루지 않는다 — 그 경우 피해 차량은
+    독립적으로 OUT_OF_ZONE만 보고되고, 막은 차량 쪽에서 별도 판정이
+    나오지 않는 한 "누가 누구를 막았는지"는 연결되지 않는다.
 
     §2.2 입차-트래킹 매칭(초안): `add_entry_event`로 게이트 OCR 이벤트를
     받아두면, ENTRY_EXIT 구역 안에 있고 아직 plate_number가 없는 트랙에
@@ -673,6 +767,7 @@ class ViolationMonitor:
         zone_overlaps_by_track: dict[int, list[ZoneOverlap]] = {}
         home_zone_by_track: dict[int, ZoneOverlap | None] = {}
         dwell_by_track: dict[int, float] = {}
+        ignored_overlap_by_track: dict[int, ZoneOverlap | None] = {}
         for detection in detections:
             state = self._tracks[detection.track_id]
             if state.plate_number is None:
@@ -686,6 +781,15 @@ class ViolationMonitor:
             )
             zone_overlaps_by_track[detection.track_id] = overlaps
             home_zone_by_track[detection.track_id] = _home_zone_overlap(overlaps)
+            ignored_overlap_by_track[detection.track_id] = _ignored_zone_overlap(
+                # (리뷰 반영, N-1) "게이트 안에 있다"는 같은 기하학적 질문을 §2.2
+                # 입차매칭(_try_match_entry_event)도 판단하는데, 거기는
+                # entry_zone_min_overlap_ratio를 쓴다. 여기서 min_overlap_ratio(0.40,
+                # 스팟 판정용)를 쓰면 --entry-zone-min-overlap-ratio를 낮췄을 때
+                # "입차매칭은 게이트로 인정 + OUT_OF_ZONE은 게이트 아님"이라는
+                # 모순된 판정이 같은 프레임에 나온다 — 같은 질문에는 같은 임계값을 써야 한다.
+                detection.bbox, self._zones.all(), min_overlap_ratio=self._entry_zone_min_overlap_ratio
+            )
             state = self._tracks[detection.track_id]
             dwell_by_track[detection.track_id] = (detection.captured_at - state.stationary_since).total_seconds()
 
@@ -725,11 +829,19 @@ class ViolationMonitor:
 
             blocked_zone: ZoneOverlap | None = None
             intruded_zone: ZoneOverlap | None = None
+            deferred_intrusion = False
             for zone in self._zones.all():
                 if zone.zone_type not in _SPOT_ZONE_TYPES or zone.zone_id == own_zone_id_if_rightful:
                     continue  # 통행로/입출차 구역이거나, 내가 정당한 주인인 내 홈 구역이면 침범이 아니다
                 if zone.zone_id in pending_home_zone_ids:
-                    continue  # 점유 여부가 아직 불확실한 구역은 이번 프레임엔 판정 보류
+                    # 점유 여부가 아직 불확실한 구역은 이번 프레임엔 판정 보류.
+                    # 다만 보류 중인 구역을 이미 침범 기준(spot_intrusion_ratio)
+                    # 이상 덮고 있다면(리뷰 반영, C-2), 그건 "구역 없음"이 아니라
+                    # "판정 보류"이므로 OUT_OF_ZONE으로 확정되면 안 된다는 신호를
+                    # classify_violation에 넘겨야 한다.
+                    if zone_coverage_ratio(zone, detection.bbox) >= self._spot_intrusion_ratio:
+                        deferred_intrusion = True
+                    continue
                 intrusion_ratio = zone_coverage_ratio(zone, detection.bbox)
                 if intrusion_ratio < self._spot_intrusion_ratio:
                     continue
@@ -748,6 +860,8 @@ class ViolationMonitor:
                 min_dwell_seconds=self._min_dwell_seconds,
                 blocked_zone=blocked_zone,
                 intruded_zone=intruded_zone,
+                in_ignored_zone=ignored_overlap_by_track[detection.track_id] is not None,
+                deferred_intrusion=deferred_intrusion,
             )
 
             if status not in (ViolationStatus.NONE, ViolationStatus.OBSERVING) and status != state.open_violation:
@@ -841,6 +955,125 @@ class OpenCvWebcamFrameSource:
             capture.release()
 
 
+def calibration_fingerprint(calibration_path: Path | None, balance: float) -> dict[str, Any]:
+    """zone 폴리곤이 어떤 보정 좌표계에서 찍혔는지 식별하는 지문.
+
+    remap은 1080p/balance 0.5에서 픽셀을 평균 44px, 최대 133px 옮긴다. 보정 없이 찍은
+    구 zone 파일을 `--calibration`과 함께 쓰면 아무 에러 없이 폴리곤이 그만큼 어긋나
+    위반 판정이 전부 틀어지므로, 캡처 시점의 설정을 기록해두고 실행 시 비교한다.
+    """
+
+    if calibration_path is None:
+        return {"remap": False}
+    try:
+        digest = hashlib.sha256(calibration_path.read_bytes()).hexdigest()[:16]
+    except OSError as exc:
+        raise BaselineError(f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}") from exc
+    return {"remap": True, "calibration_sha256": digest, "balance": round(float(balance), 6)}
+
+
+def _import_calibration_utils() -> Any:
+    try:
+        import calibration_utils
+    except ImportError as exc:
+        raise BaselineError(
+            f"calibration_utils import에 실패했습니다(ai/tracking/calibration_utils.py 확인). 원인: {exc}"
+        ) from exc
+    return calibration_utils
+
+
+class RemapFrameSource:
+    """다른 FrameSource가 공급하는 프레임에 fisheye remap(왜곡 보정)을 씌운다.
+
+    `ai/tracking/calibrate_camera.py`(#301)로 계산한 캘리브레이션 값을 실시간
+    캡처 루프에 적용하는 역할이다. 학습 데이터도 `extract_pilot_frames.py`
+    (#313)로 동일하게 remap 보정된 프레임을 썼으므로, 추론 시에도 같은 보정을
+    거치지 않으면 모델이 학습 때 본 적 없는 원본(왜곡) 화면을 받게 된다.
+
+    보정 맵은 첫 프레임의 실제 크기를 확인한 뒤 한 번만 계산해 재사용한다
+    (캘리브레이션 사진 해상도와 카메라 해상도가 다르면 자동으로 스케일링). 스트림
+    중간에 해상도가 바뀌면(USB 재연결·v4l2 재협상) 캐시된 맵이 조용히 잘못된 좌표를
+    만들기 때문에 — cv2.remap은 크기가 달라도 예외를 던지지 않고 원본 맵 크기의
+    이미지를 반환한다 — 매 프레임 크기를 확인하고 달라지면 맵을 다시 만든다.
+    """
+
+    def __init__(self, *, inner: Any, calibration_path: str, balance: float = DEFAULT_REMAP_BALANCE) -> None:
+        self._inner = inner
+        self._calibration_path = calibration_path
+        self._balance = balance
+        self._map1: Any | None = None
+        self._map2: Any | None = None
+        self._map_size: tuple[int, int] | None = None
+        self._dst: Any | None = None
+
+    def open(self) -> None:
+        self._inner.open()
+
+    def capture(self) -> CapturedFrame:
+        frame = self._inner.capture()
+        cv2 = _import_cv2()
+        frame_size = self._frame_size(frame.image)
+        if self._map1 is None or frame_size != self._map_size:
+            if self._map_size is not None:
+                LOGGER.warning(
+                    "프레임 해상도가 %s에서 %s로 바뀌어 보정 맵을 다시 만듭니다.", self._map_size, frame_size
+                )
+            self._map1, self._map2 = self._build_maps(frame_size, cv2)
+            self._map_size = frame_size
+            self._dst = None
+        # dst 버퍼를 재사용해 프레임당 수 MB 할당을 없앤다(측정상 30% 이상 빠름).
+        undistorted = cv2.remap(
+            frame.image,
+            self._map1,
+            self._map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            dst=self._dst,
+        )
+        self._dst = undistorted
+        return CapturedFrame(frame_id=frame.frame_id, captured_at=frame.captured_at, image=undistorted)
+
+    @staticmethod
+    def _frame_size(image: Any) -> tuple[int, int]:
+        """(width, height)를 돌려주되, 보정 맵을 만들 수 없는 프레임은 미리 걸러낸다.
+
+        하류 트래커에도 같은 가드가 있지만(빈 프레임에서 ZeroDivisionError 방지),
+        remap은 그보다 상류라 여기서 막지 않으면 cv2.remap이 생짜 cv2.error를 던진다.
+        """
+
+        shape = getattr(image, "shape", None)
+        if shape is None or len(shape) < 2:
+            raise BaselineError("프레임 이미지 크기를 확인할 수 없습니다.")
+        height, width = int(shape[0]), int(shape[1])
+        if height <= 0 or width <= 0:
+            raise BaselineError(f"프레임 크기가 올바르지 않아 왜곡 보정을 할 수 없습니다: shape={shape}")
+        return width, height
+
+    def _build_maps(self, frame_size: tuple[int, int], cv2: Any) -> tuple[Any, Any]:
+        calibration_utils = _import_calibration_utils()
+        import numpy as np
+
+        try:
+            K_cal, D, cal_size = calibration_utils.load_calibration(self._calibration_path)
+            K = calibration_utils.scale_K(K_cal, cal_size, frame_size)
+        except calibration_utils.CalibrationError as exc:
+            raise BaselineError(str(exc)) from exc
+        if cal_size != frame_size:
+            LOGGER.info("캘리브레이션 해상도 %s를 프레임 해상도 %s로 스케일링했습니다.", cal_size, frame_size)
+        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            K, D, frame_size, np.eye(3), balance=self._balance
+        )
+        return cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, frame_size, cv2.CV_16SC2)
+
+    def close(self) -> None:
+        # 맵/버퍼는 1080p에서 12~22MB라, 재연결 루프가 추가될 경우를 대비해 여기서 놓아준다.
+        self._map1 = None
+        self._map2 = None
+        self._map_size = None
+        self._dst = None
+        self._inner.close()
+
+
 class UltralyticsVehicleTracker:
     """Ultralytics YOLO + ByteTrack 결과를 정규화 VehicleBox로 변환하는 어댑터.
 
@@ -898,9 +1131,15 @@ class UltralyticsVehicleTracker:
         if image_height <= 0 or image_width <= 0:
             # 카메라가 순간적으로 빈 프레임을 반환하는 경우(리뷰 반영) 나눗셈 전에 걸러낸다.
             raise BaselineError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
+        cv2 = _import_cv2()
+        # CapturedFrame.image는 RGB인데 Ultralytics는 ndarray source를 BGR로 해석한다
+        # (ultralytics/data/loaders.py: "NumPy color inputs are assumed to use
+        # OpenCV-compatible BGR order"). 학습 데이터는 cv2.imwrite로 BGR 저장 → BGR로
+        # 로드되므로, 여기서 되돌리지 않으면 R/B가 뒤바뀐 입력으로 추론하게 된다.
+        source_bgr = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
         try:
             results = self._model.track(
-                source=frame.image,
+                source=source_bgr,
                 persist=True,
                 tracker=self._tracker_config,
                 conf=self._confidence,
@@ -982,6 +1221,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--zones-file", type=Path, default=None, help="ParkingZone 목록 JSON (--run에 필수).")
+    parser.add_argument(
+        "--calibration",
+        type=Path,
+        default=None,
+        help="camera_calibration.json 경로. 캡처된 프레임에 fisheye remap 보정을 적용한다(#323). --run에는 필수.",
+    )
+    parser.add_argument(
+        "--remap-balance",
+        type=float,
+        default=DEFAULT_REMAP_BALANCE,
+        help="remap 시 crop(0)~풀 화각 유지(1) 비율. 학습 데이터 생성 시 쓴 값과 같아야 한다.",
+    )
     parser.add_argument("--model-path", default="yolov8n.pt")
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
@@ -1025,17 +1276,52 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BaselineError("entry-zone-min-overlap-ratio는 0~1 범위여야 합니다.")
     if args.frame_interval_ms < 0:
         raise BaselineError("frame-interval-ms는 0 이상이어야 합니다.")
+    if not (0.0 <= args.remap_balance <= 1.0):
+        # OpenCV는 범위를 벗어난 balance도 조용히 받아들여 엉뚱한 new_K를 만든다.
+        raise BaselineError("remap-balance는 0~1 범위여야 합니다.")
+    # 캘리브레이션 파일은 첫 프레임에서야 읽히므로, 여기서 미리 확인하지 않으면 Jetson에서
+    # TensorRT 엔진 로딩을 다 기다린 뒤에 경로 오타를 발견하게 된다.
+    if args.calibration is not None and not args.calibration.is_file():
+        raise BaselineError(f"calibration 파일을 찾을 수 없습니다: {args.calibration}")
     if args.run:
         if args.zones_file is None:
             raise BaselineError("--run에는 --zones-file이 필요합니다.")
         if not args.zones_file.is_file():
             raise BaselineError(f"zones-file을 찾을 수 없습니다: {args.zones_file}")
+        if args.calibration is None:
+            # 모델은 remap 보정된 프레임으로 학습됐다. 보정 없이 추론하면 조용히 정확도만
+            # 떨어져 원인 파악이 어려우므로 실행 자체를 막는다.
+            raise BaselineError(
+                "--run에는 --calibration이 필요합니다(모델이 remap 보정된 프레임으로 학습됨). "
+                "ai/tracking/camera_calibration.json 경로를 지정하세요."
+            )
+
+
+def _build_frame_source(args: argparse.Namespace) -> FrameSource:
+    """웹캠 FrameSource를 만들고, `--calibration`이 지정되면 remap 보정을 씌운다.
+
+    zone 폴리곤 캘리브레이션(`--capture-frame`)도 실시간 탐지(`--run`)와 같은
+    보정된 좌표계를 봐야 폴리곤과 탐지 bbox가 어긋나지 않으므로, 세 진입점
+    (probe/capture-frame/run) 모두 이 헬퍼를 통해 FrameSource를 만든다.
+    """
+
+    source: FrameSource = OpenCvWebcamFrameSource(
+        camera_index=args.camera_index, width=args.width, height=args.height
+    )
+    if args.calibration is None:
+        # --run은 validate_args에서 이미 막혔으므로, 여기 오는 건 probe/capture-frame뿐이다.
+        LOGGER.warning("--calibration이 없어 왜곡 보정 없이 원본 프레임을 사용합니다.")
+        return source
+    LOGGER.info("왜곡 보정을 적용합니다(calibration=%s, balance=%s).", args.calibration, args.remap_balance)
+    return RemapFrameSource(
+        inner=source, calibration_path=str(args.calibration), balance=args.remap_balance
+    )
 
 
 def probe_camera(args: argparse.Namespace) -> dict[str, Any]:
     """모델 없이 웹캠 초기화와 한 프레임 촬영만 점검한다."""
 
-    source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    source = _build_frame_source(args)
     source.open()
     try:
         frame = source.capture()
@@ -1053,26 +1339,59 @@ def probe_camera(args: argparse.Namespace) -> dict[str, Any]:
 def capture_calibration_frame(args: argparse.Namespace, path: Path) -> dict[str, Any]:
     """모델 없이 전체 웹캠 프레임을 지정한 경로에 저장한다(구역 폴리곤 좌표 산출용)."""
 
-    source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    source = _build_frame_source(args)
     source.open()
     try:
         frame = source.capture()
         save_rgb_image(path, frame.image)
     finally:
         source.close()
+    fingerprint = calibration_fingerprint(args.calibration, args.remap_balance)
+    # 이 프레임 위에 폴리곤을 찍어 zones.json을 만들 사람이 그대로 복사해 넣도록 남긴다.
+    # zones.json의 최상위에 "calibration" 키로 넣으면 --run이 좌표계 일치를 검증한다.
+    sidecar = path.with_suffix(path.suffix + ".provenance.json")
+    sidecar.write_text(json.dumps({"calibration": fingerprint}, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "status": "SUCCESS",
         "path": str(path),
+        "provenance_path": str(sidecar),
+        "calibration": fingerprint,
         "frame_shape": list(frame.image.shape),
         "captured_at": frame.captured_at.isoformat(),
     }
+
+
+def verify_zone_calibration(args: argparse.Namespace) -> None:
+    """zones 파일이 현재 보정 설정과 같은 좌표계에서 찍혔는지 확인한다.
+
+    `--capture-frame`이 남긴 `calibration` 지문을 zones.json에 복사해둔 경우에만 검증할 수
+    있다. 없으면 경고만 하고 통과시킨다(기존 zones 파일과의 호환).
+    """
+
+    payload = json.loads(args.zones_file.read_text(encoding="utf-8"))
+    recorded = payload.get("calibration")
+    expected = calibration_fingerprint(args.calibration, args.remap_balance)
+    if recorded is None:
+        LOGGER.warning(
+            "zones 파일에 calibration 지문이 없어 좌표계 일치를 검증할 수 없습니다(%s). "
+            "보정 없이 캡처한 폴리곤이면 최대 130px 어긋날 수 있습니다 — "
+            "--capture-frame으로 다시 캡처하고 생성된 provenance를 zones에 복사하세요.",
+            args.zones_file,
+        )
+        return
+    if recorded != expected:
+        raise BaselineError(
+            f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones={recorded}, 현재={expected}. "
+            f"같은 --calibration/--remap-balance로 --capture-frame을 다시 실행해 폴리곤을 재작성하세요."
+        )
 
 
 def run_monitor(args: argparse.Namespace) -> int:
     """웹캠 → 트래커 → 위반 판정 → 발행까지 이어지는 실시간 루프를 실행한다."""
 
     zones = ZoneRegistry.from_file(args.zones_file)
-    frame_source = OpenCvWebcamFrameSource(camera_index=args.camera_index, width=args.width, height=args.height)
+    verify_zone_calibration(args)
+    frame_source = _build_frame_source(args)
     tracker = UltralyticsVehicleTracker(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence
     )
@@ -1173,6 +1492,67 @@ class BaselineLogicTests(unittest.TestCase):
         overlaps = classify_zone_overlaps(bbox, [zone], min_overlap_ratio=0.40)
         status, _zone, _ratio = classify_violation(overlaps, dwell_seconds=100.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.OBSERVING)
+
+    def test_out_of_zone_flagged_after_min_dwell_with_no_zone_overlap(self) -> None:
+        """등록된 구역 어디에도 겹치지 않고 스팟 침범도 아니면, 최소 정차
+        시간 이후 OUT_OF_ZONE으로 판정한다(요구사항 정의서.md:25, ERD.md:119-125)."""
+        status, zone_hit, ratio = classify_violation([], dwell_seconds=700.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OUT_OF_ZONE)
+        self.assertIsNone(zone_hit)
+        self.assertEqual(ratio, 0.0)
+
+    def test_out_of_zone_observing_before_min_dwell(self) -> None:
+        """구역 겹침이 전혀 없어도, 최소 정차 시간을 채우기 전에는 다른
+        위반들과 동일하게 OBSERVING으로만 표시하고 OUT_OF_ZONE으로 확정하지 않는다."""
+        status, zone_hit, _ratio = classify_violation([], dwell_seconds=100.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+        self.assertIsNone(zone_hit)
+
+    def test_out_of_zone_boundary_at_exact_min_dwell(self) -> None:
+        """dwell_seconds가 min_dwell_seconds와 정확히 같으면(리뷰 반영, 경계값
+        테스트), 다른 위반 판정들과 동일하게 '미달'이 아니므로 OUT_OF_ZONE으로 확정한다."""
+        status, _zone, _ratio = classify_violation([], dwell_seconds=600.0, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OUT_OF_ZONE)
+
+        status, _zone, _ratio = classify_violation([], dwell_seconds=599.999, min_dwell_seconds=600.0)
+        self.assertEqual(status, ViolationStatus.OBSERVING)
+
+    def test_out_of_zone_not_flagged_when_intruded_zone_present(self) -> None:
+        """구역 겹침(overlaps)은 없어도 spot_intrusion_ratio 기준 침범(intruded_zone)이
+        있으면, 그건 OUT_OF_ZONE이 아니라 LINE_CROSS 판정으로 이어져야 한다."""
+        gen = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.3), (0.0, 0.3)])
+        intruded_zone = ZoneOverlap(gen, 0.5)
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, intruded_zone=intruded_zone
+        )
+        self.assertEqual(status, ViolationStatus.LINE_CROSS)
+
+    def test_out_of_zone_not_flagged_when_blocked_zone_present(self) -> None:
+        """리뷰 반영(I-5): intruded_zone과 대칭 — overlaps가 비어도 blocked_zone이
+        있으면 OUT_OF_ZONE이 아니라 DOUBLE_PARK여야 한다."""
+        gen = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.3), (0.0, 0.3)])
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, blocked_zone=ZoneOverlap(gen, 0.5)
+        )
+        self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
+
+    def test_out_of_zone_not_flagged_when_in_ignored_zone(self) -> None:
+        """리뷰 반영(C-1): 판정 제외 구역(ENTRY_EXIT 등) 안에 있다는 신호가
+        오면, overlaps가 비어 있어도 OUT_OF_ZONE이 아니라 기존과 동일하게
+        NONE으로 유지한다."""
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, in_ignored_zone=True
+        )
+        self.assertEqual(status, ViolationStatus.NONE)
+
+    def test_out_of_zone_not_flagged_when_intrusion_deferred(self) -> None:
+        """리뷰 반영(C-2): 다른 트랙의 정착 미확정으로 침범 판정이 보류
+        중이라는 신호가 오면, overlaps가 비어 있어도 OUT_OF_ZONE으로
+        확정하지 않고 기존과 동일하게 NONE으로 유지한다."""
+        status, _zone, _ratio = classify_violation(
+            [], dwell_seconds=700.0, min_dwell_seconds=600.0, deferred_intrusion=True
+        )
+        self.assertEqual(status, ViolationStatus.NONE)
 
     def test_line_cross_uses_intruded_zone(self) -> None:
         """LINE_CROSS는 이제 classify_zone_overlaps의 len(overlaps)>=2가 아니라
@@ -1393,7 +1773,14 @@ class BaselineLogicTests(unittest.TestCase):
 
     def test_monitor_double_park_not_flagged_when_victim_has_no_home_zone(self) -> None:
         """피해 후보가 어떤 스팟 구역과도 40% 이상 안 겹치는 애매한 위치에 있으면
-        (홈 구역이 없으면), 그 차를 기준으로 다른 차를 이중주차로 판정하지 않는다."""
+        (홈 구역이 없으면), 그 차를 기준으로 다른 차를 이중주차로 판정하지 않는다.
+
+        (리뷰 반영, I-3) 두 차량 다 등록 구역(GEN-A)과 전혀 안 겹치는 위치라
+        각자 독립적으로 정착 시점에 OUT_OF_ZONE이 한 번씩 발행된다(track 1은
+        6초째, track 2는 자신의 정착 시점인 12초째) — 루프의 마지막
+        `update()` 반환값만 보면 track 2 것만 보이므로, 전체 프레임에 걸쳐
+        발행된 이벤트를 다 모아서 정확히 단정한다. 핵심은 어느 프레임에서도
+        DOUBLE_PARK는 절대 나오면 안 된다는 것이다."""
         spot_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.00, 0.0), (0.20, 0.0), (0.20, 0.3), (0.00, 0.3)])
         registry = ZoneRegistry([spot_a])
         monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=5.0, spot_intrusion_ratio=0.15)
@@ -1404,16 +1791,21 @@ class BaselineLogicTests(unittest.TestCase):
 
         monitor.update([VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=1, captured_at=base_time)])
 
-        events = []
+        all_events: list[ViolationEvent] = []
         for seconds in (6, 12):
-            events = monitor.update(
-                [
-                    VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                    VehicleBox(track_id=2, bbox=overlapping_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
-                ]
+            all_events.extend(
+                monitor.update(
+                    [
+                        VehicleBox(track_id=1, bbox=ambiguous_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                        VehicleBox(track_id=2, bbox=overlapping_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds)),
+                    ]
+                )
             )
 
-        self.assertEqual(events, [])
+        self.assertEqual(
+            [(event.track_id, event.status) for event in all_events],
+            [(1, ViolationStatus.OUT_OF_ZONE), (2, ViolationStatus.OUT_OF_ZONE)],
+        )
 
     def test_monitor_double_park_respects_custom_threshold(self) -> None:
         """spot_intrusion_ratio를 높이면 약한 침범(20%)은 더 이상 안 잡힌다 —
@@ -1528,6 +1920,128 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_second), 1)
         self.assertEqual(events_second[0].status, ViolationStatus.RESTRICTED_ZONE)
         self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_monitor_out_of_zone_flagged_when_parked_outside_all_zones(self) -> None:
+        """등록된 구역과 전혀 겹치지 않는 곳에 정착하면(요구사항 정의서.md:25), 최소 정차 시간
+        이후 OUT_OF_ZONE 이벤트가 한 번 발행되고 중복 발행되지 않는다."""
+        zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.2, 0.0), (0.2, 0.2), (0.0, 0.2)])
+        registry = ZoneRegistry([zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        outside_bbox = BoundingBox(0.6, 0.6, 0.8, 0.8)  # 등록 구역과 전혀 겹치지 않는 위치
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+        first = VehicleBox(track_id=1, bbox=outside_bbox, confidence=0.9, frame_id=1, captured_at=base_time)
+        second = VehicleBox(
+            track_id=1, bbox=outside_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=2)
+        )
+        third = VehicleBox(
+            track_id=1, bbox=outside_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=4)
+        )
+
+        events_first = monitor.update([first])
+        events_second = monitor.update([second])
+        events_third = monitor.update([third])
+
+        self.assertEqual(len(events_first), 0)  # 최소 정차 시간(1초) 미달로 아직 OBSERVING
+        self.assertEqual(len(events_second), 1)
+        self.assertEqual(events_second[0].status, ViolationStatus.OUT_OF_ZONE)
+        self.assertIsNone(events_second[0].zone_id)
+        self.assertEqual(len(events_third), 0)  # 같은 위반이 계속 열려 있으므로 중복 발행하지 않음
+
+    def test_monitor_out_of_zone_transitions_to_aisle_block_after_moving(self) -> None:
+        """리뷰 반영: 구역 외(OUT_OF_ZONE)에 정착해있던 차량이 이동해서 통행로에
+        들어가면, 이전 OUT_OF_ZONE 상태는 자동으로 닫히고 AISLE_BLOCK이 새로
+        (중복 없이 한 번만) 발행돼야 한다."""
+        aisle = self.make_zone("AISLE-1", ZoneType.AISLE, [(0.5, 0.0), (0.9, 0.0), (0.9, 0.3), (0.5, 0.3)])
+        registry = ZoneRegistry([aisle])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        outside_bbox = BoundingBox(0.0, 0.5, 0.2, 0.7)  # 등록 구역과 안 겹침
+        aisle_bbox = BoundingBox(0.55, 0.05, 0.85, 0.25)  # AISLE 구역 안
+
+        events_at = {}
+        for seconds in (0, 2, 4):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=outside_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+        self.assertEqual(len(events_at[0]), 0)  # 정착 전(1초 미달), OBSERVING
+        self.assertEqual([e.status for e in events_at[2]], [ViolationStatus.OUT_OF_ZONE])  # 정착 -> OUT_OF_ZONE 1회 발행
+        self.assertEqual(len(events_at[4]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
+
+        for seconds in (6, 8, 10):
+            events_at[seconds] = monitor.update(
+                [VehicleBox(track_id=1, bbox=aisle_bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
+            )
+        self.assertEqual(len(events_at[6]), 0)  # 이동 직후 정차 타이머 리셋, 1초 미달로 OBSERVING
+        # 재정착 -> AISLE_BLOCK 1회 발행. 이전 OUT_OF_ZONE이 "자동으로 닫히는" 게
+        # 아니라, 이동 감지 시 open_violation이 NONE으로 리셋되기 때문이다(위 이동 시점 코드 참고).
+        self.assertEqual([e.status for e in events_at[8]], [ViolationStatus.AISLE_BLOCK])
+        self.assertEqual(len(events_at[10]), 0)  # 같은 위반 계속 열려있으므로 중복 없음
+
+    def test_monitor_vehicle_inside_entry_exit_zone_is_not_out_of_zone(self) -> None:
+        """리뷰 반영(C-1): 게이트(ENTRY_EXIT) 구역 안에 대기 중인 차량은 판정
+        제외 구역 안에 있으므로 OUT_OF_ZONE이 아니어야 한다
+        (`IGNORED_ZONE_TYPES_FOR_PARKING` 판정 제외 불변식, §5.1)."""
+        ent = self.make_zone("ENT-1", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
+        monitor = ViolationMonitor(ZoneRegistry([ent]), min_overlap_ratio=0.40, min_dwell_seconds=1.0, movement_epsilon=0.01)
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        at_gate = BoundingBox(0.1, 0.1, 0.4, 0.4)  # ENTRY_EXIT 안에 100% 포함
+
+        monitor.update([VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=0, captured_at=base_time)])
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=at_gate, confidence=0.9, frame_id=1, captured_at=base_time + timedelta(seconds=2))]
+        )
+        self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events])
+
+    def test_monitor_gate_overlap_uses_entry_zone_threshold_not_general_threshold(self) -> None:
+        """리뷰 반영(N-1): "게이트 안에 있다" 판단은 §2.2 입차매칭과 같은
+        entry_zone_min_overlap_ratio를 써야 한다. 몸겹침이 entry_zone_min_overlap_ratio는
+        넘고(그래서 입차매칭은 성공) min_overlap_ratio(스팟 판정용, 더 높음)는 못 넘는
+        차량이, 같은 프레임에서 "게이트에 있다(번호판 매칭 성공)"와 "구역 외 주차"라는
+        모순된 판정을 동시에 받으면 안 된다."""
+        ent = self.make_zone("ENT-1", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([ent]),
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=1.0,
+            movement_epsilon=0.01,
+            entry_zone_min_overlap_ratio=0.20,
+        )
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        # ENT-1과 몸겹침 37.5% — entry_zone_min_overlap_ratio(0.20)는 넘지만
+        # min_overlap_ratio(0.40)는 못 넘는 위치.
+        gate_bbox = BoundingBox(0.35, 0.0, 0.75, 0.3)
+
+        monitor.add_entry_event(EntryEvent(plate_number="12가3456", captured_at=base_time))
+        monitor.update([VehicleBox(track_id=1, bbox=gate_bbox, confidence=0.9, frame_id=0, captured_at=base_time)])
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=gate_bbox, confidence=0.9, frame_id=1, captured_at=base_time + timedelta(seconds=2))]
+        )
+        self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events])
+
+    def test_monitor_out_of_zone_not_flagged_while_neighbor_home_zone_pending(self) -> None:
+        """리뷰 반영(C-2): 옆 트랙이 홈 구역에 정착하지 못해 그 구역이
+        pending_home_zone_ids로 보류 중이면, 그 구역을 침범 기준 이상 덮고
+        있는 다른 트랙도 OUT_OF_ZONE으로 잘못 확정되면 안 된다(판정 보류 유지)."""
+        gen_a = self.make_zone("GEN-A", ZoneType.GENERAL, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([gen_a]), min_overlap_ratio=0.40, min_dwell_seconds=5.0, spot_intrusion_ratio=0.15, movement_epsilon=0.01
+        )
+        base_time = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+        # track1: 매 프레임 살짝 위치가 바뀌어(움직임 감지) 계속 정착 실패 -> GEN-A가 pending으로 남음
+        track1_positions = [BoundingBox(0.0, 0.0, 0.25, 0.25), BoundingBox(0.02, 0.02, 0.27, 0.27)]
+        # track2: GEN-A 몸겹침은 40% 미만(overlaps=[])이지만, 구역 면적 기준으로는 침범 후보(>=15%)
+        track2_bbox = BoundingBox(0.15, 0.0, 0.55, 0.3)
+
+        events: list[ViolationEvent] = []
+        for i, seconds in enumerate((0, 3, 6, 9, 12)):
+            events = monitor.update(
+                [
+                    VehicleBox(track_id=1, bbox=track1_positions[i % 2], confidence=0.9, frame_id=i, captured_at=base_time + timedelta(seconds=seconds)),
+                    VehicleBox(track_id=2, bbox=track2_bbox, confidence=0.9, frame_id=i, captured_at=base_time + timedelta(seconds=seconds)),
+                ]
+            )
+            self.assertNotIn(ViolationStatus.OUT_OF_ZONE, [e.status for e in events if e.track_id == 2])
 
     def test_monitor_multi_vehicle_frame_does_not_mix_up_track_state(self) -> None:
         """한 프레임에 차량이 2대 이상 잡혀도, 마지막 차량이 아닌 다른 차량의
