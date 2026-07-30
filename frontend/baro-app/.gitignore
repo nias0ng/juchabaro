@@ -41,3 +41,6 @@ example
 # generated native folders
 /ios
 /android
+
+# 산출물 빌드 방지
+dist/
