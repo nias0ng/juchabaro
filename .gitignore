@@ -64,4 +64,4 @@ hw/**/weights/
 .worktrees/
 
 # 리플레이 검증 산출물 (오버레이 mp4 / 이벤트 JSONL)
-out/
+/out/

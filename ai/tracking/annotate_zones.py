@@ -76,6 +76,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """주석 작업 실행 전 수치 범위와 파일 존재를 검증한다.
+
+    `--calibration`은 여기서는 필수로 만들지 않는다 — 보정 안 된 프레임에 일부러
+    폴리곤을 찍고 싶은 경우(예: 임시 점검)가 있을 수 있어서다. 대신 생략 시 아래
+    LOGGER.warning으로 결과물의 좌표계와 이후 리플레이가 막힐 것임을 크게 알린다.
+    """
+
+    if not (0.0 <= args.remap_balance <= 1.0):
+        # OpenCV는 범위를 벗어난 balance도 조용히 받아들여 엉뚱한 new_K를 만든다.
+        raise BaselineError("remap-balance는 0~1 범위여야 합니다.")
+    if args.calibration is not None and not args.calibration.is_file():
+        raise BaselineError(f"calibration 파일을 찾을 수 없습니다: {args.calibration}")
+    if args.calibration is None:
+        LOGGER.warning(
+            "--calibration 없이 폴리곤을 찍습니다 — 생성될 폴리곤은 왜곡 보정 전(원본) "
+            "좌표계 기준입니다. 이 zones 파일의 calibration 지문에는 remap: false만 "
+            "기록되므로, verify_zone_calibration은 나중에 이 파일을 다른 보정 설정과 "
+            "함께 쓰더라도 이 좌표계 불일치를 잡아내지 못합니다. 그리고 "
+            "replay_pilot_video.py는 이제 --calibration을 필수로 요구하므로, 이 zones "
+            "파일로 리플레이를 실행하면 그 자리에서 거부됩니다."
+        )
+
+
 def grab_reference_frame(args: argparse.Namespace):
     """리플레이와 같은 코드 경로로 보정된 기준 프레임 한 장을 얻는다."""
 
@@ -160,6 +184,7 @@ def save(args: argparse.Namespace, annotator: ZoneAnnotator) -> None:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
+    validate_args(args)
     if args.out.exists():
         answer = input(f"{args.out}가 이미 있습니다. 덮어쓸까요? [y/N]: ").strip().lower()
         if answer != "y":

@@ -291,10 +291,30 @@ class ZoneRegistry:
         zones = [cls._parse_zone(item) for item in payload.get("zones", [])]
         if not zones:
             raise BaselineError(f"구역 정의가 비어 있습니다: {path}")
+        # zoneId가 이제 사람이 직접 매기는 정수라, 폴리곤을 고치다가 구역 블록을
+        # 복사-붙여넣기하면 zoneId나 zoneNumber가 중복될 수 있다. ZoneRegistry.__init__은
+        # zone_id로 dict를 만들어 나중 항목이 앞 항목을 조용히 덮어쓰므로, 여기서 막지
+        # 않으면 판정의 유일한 입력인 zones 파일에서 구역 하나가 에러 없이 사라진다.
+        seen_ids: set[int] = set()
+        seen_numbers: set[str] = set()
+        for zone in zones:
+            if zone.zone_id in seen_ids:
+                raise BaselineError(f"구역 정의에 zoneId가 중복되었습니다: {zone.zone_id} ({path})")
+            if zone.zone_number in seen_numbers:
+                raise BaselineError(f"구역 정의에 zoneNumber가 중복되었습니다: {zone.zone_number} ({path})")
+            seen_ids.add(zone.zone_id)
+            seen_numbers.add(zone.zone_number)
         return cls(zones)
 
     @staticmethod
     def _parse_zone(item: Mapping[str, Any]) -> ParkingZone:
+        # 예약된 wire 키: allowedMinutes(카멜케이스)는 전기차 구역의 초과주차 허용
+        # 시간(분) 필드로 백엔드 계약과 zones_pilot.json이 이미 이 이름을 쓴다.
+        # 이 파서는 아직 allowedMinutes를 읽어 ParkingZone에 담지 않는다(319번
+        # 초과주차 판정 작업에서 이어받을 몫). 나중에 파싱을 추가할 때는 반드시
+        # allowedMinutes(카멜케이스) 그대로 읽어야 한다 — snake_case(allowed_minutes)로
+        # 읽으면 우리 zones_pilot.json에서는 항상 None이 나와 EV 구역의 초과주차
+        # 위반이 조용히 무시된다.
         try:
             zone_id = int(item["zoneId"])
             zone_number = str(item["zoneNumber"])
@@ -2546,6 +2566,62 @@ class BaselineLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "zones.json"
             path.write_text(json.dumps({"zones": []}), encoding="utf-8")
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_duplicate_zone_id(self) -> None:
+        """zoneId 중복을 조용히 덮어쓰면 구역 하나가 판정에서 통째로 사라진다."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            },
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-02",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_duplicate_zone_number(self) -> None:
+        """zoneNumber 중복은 zoneId가 달라도 오버레이·로그 라벨이 모호해진다."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            },
+                            {
+                                "zoneId": 2,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             with self.assertRaises(BaselineError):
                 ZoneRegistry.from_file(path)
 

@@ -87,9 +87,10 @@ class ZoneAnnotator:
         if not zone_number:
             raise BaselineError("zone_number가 비어 있습니다.")
         if any(zone["zoneNumber"] == zone_number for zone in self._zones):
-            # 계약 스펙 §6.1에서 zone_number는 전역 UNIQUE이고, ZoneRegistry는
-            # 중복을 ZoneRegistry.__init__의 dict comprehension이 조용히
-            # 덮어써서 구역 하나가 사라진다.
+            # 계약 스펙 §6.1에서 zone_number는 전역 UNIQUE다 — 시드 POST가 중복을
+            # 409로 거부하고, 그 전 단계인 여기서도 미리 막지 않으면 오버레이·로그가
+            # 어느 구역을 가리키는지 라벨이 모호해진다. (ZoneRegistry.__init__의
+            # dict는 zone_number가 아니라 zone_id로 키를 잡으므로 이 중복과는 무관하다.)
             raise BaselineError(f"이미 사용한 zone_number입니다: {zone_number}")
         if zone_type in _ALLOWED_MINUTES_REQUIRED and allowed_minutes is None:
             raise BaselineError(f"{zone_type.value} 구역은 allowed_minutes가 필수입니다.")

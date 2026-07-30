@@ -79,6 +79,30 @@ def coerce_numeric_args(args: argparse.Namespace) -> None:
         setattr(args, name, float(getattr(args, name)))
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """리플레이 실행 전 필수 옵션과 수치 범위를 검증한다.
+
+    jetson_vehicle_tracking_baseline.validate_args가 `--run`에 요구하는 것과 같은
+    검증을 여기서도 그대로 요구한다 — 이 스크립트가 그 검증을 우회하면, 캘리브레이션
+    없는 zones 파일과 캘리브레이션 없는 리플레이가 지문상 서로 일치해버려서(둘 다
+    remap=false), 왜곡이 남은 원본 프레임으로 오버레이와 "검증됨" 판정을 만들어낼 수
+    있다 — 모델은 remap 보정된 프레임으로 학습됐는데도.
+    """
+
+    if not (0.0 <= args.remap_balance <= 1.0):
+        # OpenCV는 범위를 벗어난 balance도 조용히 받아들여 엉뚱한 new_K를 만든다.
+        raise BaselineError("remap-balance는 0~1 범위여야 합니다.")
+    if args.calibration is None:
+        # 모델은 remap 보정된 프레임으로 학습됐다. 보정 없이 리플레이하면 조용히
+        # 정확도만 떨어져 원인 파악이 어려우므로 실행 자체를 막는다.
+        raise BaselineError(
+            "리플레이에는 --calibration이 필요합니다(모델이 remap 보정된 프레임으로 "
+            "학습됨). ai/tracking/camera_calibration.json 경로를 지정하세요."
+        )
+    if not args.calibration.is_file():
+        raise BaselineError(f"calibration 파일을 찾을 수 없습니다: {args.calibration}")
+
+
 def warn_if_dwell_exceeds_video(min_dwell_seconds: float, video_seconds: float) -> None:
     """이 설정으로 위반이 발생할 수 없으면 알린다.
 
@@ -181,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s %(message)s")
     coerce_numeric_args(args)
+    validate_args(args)
     return run(args)
 
 
