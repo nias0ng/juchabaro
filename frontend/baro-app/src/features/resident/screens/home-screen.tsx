@@ -12,7 +12,7 @@ import { useParkingZoneSummary } from '@/features/resident/hooks/use-parking-zon
 import { pickPrimarySession, toVehicleStatusDisplay } from '@/features/resident/utils/parking-session';
 import { toParkingStatusDisplay } from '@/features/resident/utils/parking-zone';
 import { useAuth } from '@/providers/auth-provider';
-import { Gradients, Palette } from '@/styles';
+import { Palette } from '@/styles';
 
 import { styles } from './home-screen.styles';
 
@@ -65,7 +65,7 @@ export default function HomeScreen() {
 
   return (
     <LinearGradient
-      colors={Gradients.homeBackground}
+      colors={['#ddf3f0', '#eae7fb', '#f7f6fb']}
       locations={[0, 0.46, 0.78]}
       style={styles.gradient}
     >

@@ -27,7 +27,7 @@ import { Pressable, Text, View } from 'react-native';
 
 React Native 앱의 실행, 빌드, 라이브러리 연결을 편하게 도와주는 도구입니다.
 
-이 프로젝트는 **Expo SDK 54**를 사용합니다.
+이 프로젝트는 **Expo SDK 57**을 사용합니다.
 
 ### Expo Router
 
@@ -918,3 +918,4 @@ npm.cmd run lint
 - [ ] `npm.cmd run lint`가 통과하는가?
 - [ ] 디버그용 `console.log`가 남아 있지 않은가?
 - [ ] 변경한 화면을 직접 실행해 확인했는가?
+

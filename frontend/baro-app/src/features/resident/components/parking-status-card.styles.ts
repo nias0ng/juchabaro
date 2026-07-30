@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
@@ -37,10 +37,14 @@ export const styles = StyleSheet.create({
   card: {
     width: '100%',
     backgroundColor: Palette.white,
-    borderRadius: Radius.card,
+    borderRadius: Radius.xxl + 2,
     padding: Spacing.md + 1,
     gap: Spacing.base,
-    ...Shadows.dashboardCard,
+    shadowColor: Palette.gray975,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 13,
+    elevation: 2,
   },
 
   legendRow: {

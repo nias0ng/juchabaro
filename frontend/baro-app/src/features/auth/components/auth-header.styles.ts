@@ -4,9 +4,7 @@ import { FontWeight, Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.base,
+    paddingTop: Spacing.lg,
   },
   backButton: {
     width: 40,
@@ -25,7 +23,6 @@ export const styles = StyleSheet.create({
     transform: [{ rotate: '135deg' }],
   },
   title: {
-    flex: 1,
     fontSize: 16,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
