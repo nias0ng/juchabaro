@@ -4,7 +4,15 @@ OCR 파이프라인 모듈 사이에서 전달되는 공통 데이터 타입을 
 이 파일은 촬영된 프레임부터 최종 번호판 판정까지의 데이터 계약만
 담당한다. 모델 실행, 영상 처리, 문자열 판정 로직은 포함하지 않는다.
 촬영 시각은 카메라·입차 이벤트 계층의 책임이므로 현재 계약에서 제외한다.
-데이터 클래스는 경량 전달 객체이며 유효성은 각 처리 단계 입구에서 검증한다.
+데이터 클래스는 경량 전달 객체다. 외부 입력과 모델 adapter 경계에서
+유효성을 검증하고, 그 뒤의 내부 단계는 앞 단계가 만든 계약을 신뢰한다.
+
+``frozen=True``는 필드 재할당만 막으며 ``numpy.ndarray``의 내부 값까지
+불변으로 만들지는 않는다. 입력 이미지 buffer의 소유권은 caller에게 있고
+pipeline과 component는 이를 deep copy하지 않은 read-only 참조로 다룬다.
+caller는 OCR 실행 중 buffer를 변경하거나 재사용하면 안 된다. 원근 보정과
+전처리처럼 이미지를 생성하는 단계의 결과만 별도 buffer로 전달한다.
+카메라 buffer와 독립된 소유권이 필요하면 촬영 경계에서 한 번 확보한다.
 """
 
 from __future__ import annotations
@@ -33,14 +41,11 @@ class ReadStatus(str, Enum):
     """OCR 파이프라인이 반환할 수 있는 최종 처리 상태."""
 
     SUCCESS = "SUCCESS"
-    INVALID_INPUT = "INVALID_INPUT"
     NO_PLATE_REGION = "NO_PLATE_REGION"
     OCR_EMPTY = "OCR_EMPTY"
     INVALID_FORMAT = "INVALID_FORMAT"
     LOW_SCORE = "LOW_SCORE"
     AMBIGUOUS = "AMBIGUOUS"
-    MODEL_ERROR = "MODEL_ERROR"
-    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 class QuadSource(str, Enum):
@@ -52,7 +57,7 @@ class QuadSource(str, Enum):
     REUSED = "REUSED"
 
 
-# [입력 프레임과 품질 정보]
+# [입력 프레임과 anchor 선택]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,30 +65,14 @@ class CapturedFrame:
     """
     한 번의 촬영 burst에 포함된 시간순 프레임.
 
-    ``frame_index``는 burst 내부 인덱스 0~5이고, ``image``는
-    BGR uint8 HxWx3 배열이다.
+    ``frame_index``는 0부터 시작하는 burst 내부 연속 인덱스이고,
+    ``image``는 BGR uint8 HxWx3 배열이다. 이미지 buffer는 caller가
+    소유하며 이 객체를 만들 때 deep copy하지 않는다. OCR 실행이 끝날
+    때까지 같은 buffer를 변경하거나 다른 촬영에 재사용하면 안 된다.
     """
 
     frame_index: int
     image: BgrImage
-
-
-@dataclass(frozen=True, slots=True)
-class FrameQuality:
-    """
-    전체 프레임에서 계산한 저비용 품질 지표.
-
-    번호판 crop이 생기기 전에 계산하므로 번호판 자체 품질이 아닌
-    전체 프레임 품질의 근사치라는 한계가 있다.
-    """
-
-    frame_index: int
-    sharpness: float
-    contrast: float
-    mean_brightness: float
-    dark_ratio: float
-    bright_ratio: float
-    score: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +81,6 @@ class AnchorSelection:
 
     earlier_frame_index: int
     later_frame_index: int
-    qualities: tuple[FrameQuality, ...]
 
 
 # [번호판 검출과 기하 처리 결과]
@@ -125,21 +113,26 @@ class EstimatedQuad:
 
 @dataclass(frozen=True, slots=True)
 class RectifiedPlate:
-    """4점 원근 보정이 끝난 번호판 이미지."""
+    """4점 원근 보정이 끝난 별도 buffer의 번호판 이미지.
+
+    ``image``는 원본 CapturedFrame을 변경하지 않고 원근 보정 단계가 새로
+    만든 배열이다. 후속 component는 이 배열도 read-only로 다룬다.
+    """
 
     frame_index: int
     image: BgrImage
-    quad_estimate: EstimatedQuad
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedPlate:
-    """화질 전처리를 마친 PaddleOCR 입력 이미지."""
+    """화질 전처리를 마친 별도 buffer의 PaddleOCR 입력 이미지.
+
+    ``image``는 RectifiedPlate와 공유하지 않는 전처리 결과 배열이다.
+    PaddleOCR adapter는 이를 deep copy하거나 변경하지 않고 읽기만 한다.
+    """
 
     frame_index: int
     image: BgrImage
-    quad_estimate: EstimatedQuad
-    preprocessing_applied: bool
 
 
 # [OCR 인식과 문자열 처리 결과]
@@ -147,7 +140,7 @@ class PreparedPlate:
 
 @dataclass(frozen=True, slots=True)
 class RawOcrResult:
-    """PaddleOCR가 직접 반환한 아직 정규화되지 않은 인식 결과."""
+    """PaddleOCR adapter가 만든 아직 정규화되지 않은 인식 결과."""
 
     frame_index: int
     raw_text: str
@@ -159,13 +152,12 @@ class OcrCandidate:
     """문자열 정규화와 지원 번호판 형식 검사를 마친 OCR 후보."""
 
     frame_index: int
-    raw_text: str
     normalized_text: str
     rec_score: float
     valid_format: bool
 
 
-# [최종 판정과 파이프라인 진단]
+# [최종 판정과 공개 결과]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,49 +169,15 @@ class PlateDecision:
     valid_frames: int
     vote_count: int
     vote_ratio: float
-    mean_rec_score: float
     error_message: str | None = None
-
-
-@dataclass(slots=True)
-class PipelineMetrics:
-    """단일 차량 이벤트의 단계별 실행 시간과 모델 호출 횟수."""
-
-    frame_selection_ms: float = 0.0
-    detection_ms: float = 0.0
-    geometry_ms: float = 0.0
-    preprocessing_ms: float = 0.0
-    recognition_ms: float = 0.0
-    postprocessing_ms: float = 0.0
-    total_ms: float = 0.0
-    detector_calls: int = 0
-    recognizer_calls: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class StageFailure:
-    """일부 프레임 처리 실패를 최종 결과에 남기는 진단 정보."""
-
-    stage: str
-    frame_index: int | None
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
 class PlateReadResult:
-    """상위 입차 서비스에 반환하는 OCR 파이프라인 최종 결과."""
+    """상위 입차 서비스에 반환하는 최소 OCR 판독 결과."""
 
     status: ReadStatus
     plate_number: str | None
-    total_frames: int
-    valid_frames: int
-    vote_count: int
-    vote_ratio: float
-    mean_rec_score: float
-    candidates: tuple[OcrCandidate, ...]
-    failures: tuple[StageFailure, ...]
-    metrics: PipelineMetrics
-    error_message: str | None = None
 
     @property
     def succeeded(self) -> bool:

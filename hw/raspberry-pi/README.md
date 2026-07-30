@@ -7,7 +7,7 @@
 - Python 3.13.5
 - Debian GNU/Linux 13 (trixie)
 
-## 처리 흐름
+## 목표 처리 흐름
 
 1. 프로그램 실행
 2. OCR 모델 1회 로드
@@ -44,3 +44,33 @@ python scripts/download_models.py --models-dir ./models
 
 - `plate_detector/bestv1_1.pt`: Hugging Face 공개 저장소의 고정 커밋
 - `plate_recognizer/`: `korean_PP-OCRv5_mobile_rec` inference 모델
+
+## OCR pipeline 조립 API
+
+운영 OCR은 서비스 startup에서 공개 factory를 한 번 호출하고 반환된
+pipeline을 차량 이벤트마다 재사용한다. 카메라 촬영 코드도 같은
+`OcrPipelinePolicy` 인스턴스를 사용해야 burst 수가 어긋나지 않는다.
+
+```python
+from pathlib import Path
+
+from src.ocr import (
+    OcrPipelinePolicy,
+    OcrRuntimeConfig,
+    load_plate_ocr_pipeline,
+)
+
+policy = OcrPipelinePolicy()
+model_root = Path("/home/e202/models")
+ocr_pipeline = load_plate_ocr_pipeline(
+    OcrRuntimeConfig(
+        detector_model_path=model_root / "plate_detector" / "bestv1_1.pt",
+        recognizer_model_dir=model_root / "plate_recognizer",
+        policy=policy,
+    )
+)
+```
+
+Factory는 모델 load와 선택적 warm-up 실패를 숨기지 않는다. 현재
+`src.main`의 카메라·차량 이벤트 wiring은 별도 통합 작업 범위이며,
+위 API를 아직 호출하지 않는다.

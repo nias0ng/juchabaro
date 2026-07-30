@@ -43,7 +43,13 @@ from ocr.inference.plate_detector import (  # noqa: E402
 from ocr.inference.plate_reader import (  # noqa: E402
     load_paddle_plate_reader,
 )
-from ocr.pipeline import PlateOcrPipeline  # noqa: E402
+from ocr.image_validation import (  # noqa: E402
+    is_nonempty_bgr_uint8_image,
+)
+from ocr.pipeline import (  # noqa: E402
+    OcrPipelinePolicy,
+    PlateOcrPipeline,
+)
 from ocr.postprocessing.aggregator import PlateAggregator  # noqa: E402
 from ocr.postprocessing.plate_text import (  # noqa: E402
     build_ocr_candidate,
@@ -62,10 +68,12 @@ from .tracing import (  # noqa: E402
     TracedPlatePreprocessor,
     TracedPlateReader,
     TracedTextProcessor,
+    run_traced_pipeline,
 )
 
 
-EXPECTED_FRAME_COUNT = 6
+DEFAULT_OCR_POLICY = OcrPipelinePolicy()
+EXPECTED_FRAME_COUNT = DEFAULT_OCR_POLICY.frame_count
 PADDLE_REQUIRED_FILES = (
     "inference.json",
     "inference.pdiparams",
@@ -81,7 +89,7 @@ class ModelConfigurationError(RuntimeError):
 
 
 class BurstInputError(ValueError):
-    """업로드된 6프레임 burst가 파이프라인 입력 계약을 위반한 경우."""
+    """업로드된 burst가 파이프라인 입력 계약을 위반한 경우."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +128,7 @@ class DebugRuntime:
 
     model_paths: ModelPaths
     device: str
+    policy: OcrPipelinePolicy
     selector: Any
     detector: Any
     geometry: Any
@@ -150,7 +159,7 @@ class DecodedFrame:
 
 @dataclass(frozen=True, slots=True)
 class DecodedBurst:
-    """정렬·검증이 끝난 연속 프레임 여섯 장."""
+    """정렬·검증이 끝난 연속 프레임 burst."""
 
     frames: tuple[DecodedFrame, ...]
     signature: str
@@ -158,11 +167,15 @@ class DecodedBurst:
 
 @dataclass(slots=True)
 class DebugRun:
-    """한 번의 실제 파이프라인 결과와 해당 호출 trace."""
+    """한 번의 pipeline 결과와 예외에서도 보존되는 호출 trace.
+
+    ``result``는 pipeline이 정상 판독 결과를 반환했을 때만 존재한다.
+    실행 예외의 타입과 메시지는 ``trace.pipeline_call``에 남는다.
+    """
 
     request_signature: str
     file_names: tuple[str, ...]
-    result: PlateReadResult
+    result: PlateReadResult | None
     trace: PipelineTrace
 
 
@@ -235,7 +248,6 @@ def load_runtime(
 
     selected_paths = paths or default_model_paths()
     validate_model_paths(selected_paths)
-
     detector, detector_load_ms = _timed(
         lambda: load_yolo_plate_detector(
             selected_paths.detector,
@@ -257,7 +269,8 @@ def load_runtime(
     return DebugRuntime(
         model_paths=selected_paths,
         device=device,
-        selector=QualityFrameSelector(),
+        policy=DEFAULT_OCR_POLICY,
+        selector=QualityFrameSelector(policy=DEFAULT_OCR_POLICY),
         detector=detector,
         geometry=PlateGeometry(),
         preprocessor=PlatePreprocessor(),
@@ -310,13 +323,7 @@ def _decode_image(payload: UploadPayload) -> np.ndarray:
             f"{payload.file_name}: 이미지를 해석할 수 없습니다."
         ) from exc
 
-    if (
-        bgr.dtype != np.uint8
-        or bgr.ndim != 3
-        or bgr.shape[2] != 3
-        or bgr.shape[0] == 0
-        or bgr.shape[1] == 0
-    ):
+    if not is_nonempty_bgr_uint8_image(bgr):
         raise BurstInputError(
             f"{payload.file_name}: BGR uint8 HxWx3 변환에 실패했습니다."
         )
@@ -337,7 +344,7 @@ def _burst_signature(payloads: Sequence[UploadPayload]) -> str:
 
 
 def decode_burst(payloads: Sequence[UploadPayload]) -> DecodedBurst:
-    """사진 여섯 장을 파일명 자연순으로 정렬하고 입력 계약을 검증한다."""
+    """정책 수만큼의 사진을 자연 정렬하고 입력 계약을 검증한다."""
 
     supplied = tuple(payloads)
     if len(supplied) != EXPECTED_FRAME_COUNT:
@@ -377,7 +384,7 @@ def decode_burst(payloads: Sequence[UploadPayload]) -> DecodedBurst:
             for frame in decoded
         )
         raise BurstInputError(
-            "여섯 프레임의 해상도가 모두 같아야 합니다: "
+            "한 burst의 모든 프레임 해상도가 같아야 합니다: "
             f"{shape_details}"
         )
 
@@ -404,6 +411,7 @@ def _build_traced_pipeline(
         reader=TracedPlateReader(runtime.reader, trace),
         aggregator=TracedPlateAggregator(runtime.aggregator, trace),
         text_processor=TracedTextProcessor(build_ocr_candidate, trace),
+        policy=runtime.policy,
     )
 
 
@@ -423,10 +431,19 @@ def run_debug_pipeline(
     trace = PipelineTrace()
     pipeline = _build_traced_pipeline(runtime, trace)
 
-    # 모델별 lock과 별개로 이벤트 전체를 직렬화해 trace와 시간 측정을
-    # 다른 Streamlit 세션의 추론이 교란하지 않도록 한다.
+    # 캐시된 component를 이벤트 전체에서 직렬화해 다른 Streamlit 세션이
+    # 공유 모델 상태와 trace 시간 측정을 교란하지 않도록 한다.
     with runtime.run_lock:
-        result = pipeline.read_plate(captured_frames)
+        try:
+            result = run_traced_pipeline(
+                trace=trace,
+                frames=captured_frames,
+                operation=lambda: pipeline.read_plate(captured_frames),
+            )
+        except Exception:
+            # 운영 pipeline의 예외 계약은 유지하되, viewer 경계에서는
+            # 실패한 호출의 trace도 화면에서 조사할 수 있게 보존한다.
+            result = None
 
     return DebugRun(
         request_signature=burst.signature,
