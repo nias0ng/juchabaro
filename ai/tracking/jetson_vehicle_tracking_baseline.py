@@ -969,7 +969,28 @@ def calibration_fingerprint(calibration_path: Path | None, balance: float) -> di
         digest = hashlib.sha256(calibration_path.read_bytes()).hexdigest()[:16]
     except OSError as exc:
         raise BaselineError(f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}") from exc
-    return {"remap": True, "calibration_sha256": digest, "balance": round(float(balance), 6)}
+    return {"remap": True, "calibrationSha256": digest, "balance": round(float(balance), 6)}
+
+
+def normalize_fingerprint(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """서버·캐시·사이드카에서 온 지문을 비교 가능한 정규형으로 바꾼다.
+
+    dict를 통째로 비교하면 두 군데서 깨진다(구역 계약 스펙 §7.2). remap=False일 때
+    이 파일은 {"remap": False} 한 키만 만들지만 서버는 나머지를 null로 채워 보내고,
+    balance는 MySQL DECIMAL(8,6)을 거치며 0.5가 0.500000으로 돌아온다. 둘 다
+    정상 상황인데 불일치로 판정되면 기동이 거부된다.
+    """
+
+    if not bool(raw.get("remap", False)):
+        return {"remap": False}
+    try:
+        return {
+            "remap": True,
+            "calibrationSha256": str(raw["calibrationSha256"]).lower(),
+            "balance": round(float(raw["balance"]), 6),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BaselineError(f"calibration 지문 형식이 올바르지 않습니다: {raw!r} ({exc})") from exc
 
 
 def _import_calibration_utils() -> Any:
@@ -1379,7 +1400,7 @@ def verify_zone_calibration(args: argparse.Namespace) -> None:
             args.zones_file,
         )
         return
-    if recorded != expected:
+    if normalize_fingerprint(recorded) != normalize_fingerprint(expected):
         raise BaselineError(
             f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones={recorded}, 현재={expected}. "
             f"같은 --calibration/--remap-balance로 --capture-frame을 다시 실행해 폴리곤을 재작성하세요."
