@@ -33,4 +33,17 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: '#d4553a',
   },
+  detailButton: {
+    width: '100%',
+    marginTop: 'auto',
+    backgroundColor: Palette.gray975,
+    borderRadius: Radius.full,
+    paddingVertical: Spacing.base + 3,
+    alignItems: 'center',
+  },
+  detailButtonText: {
+    fontSize: 14,
+    fontWeight: FontWeight.bold,
+    color: Palette.white,
+  },
 });

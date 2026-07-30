@@ -18,6 +18,8 @@ type RequestDetailSectionProps = {
   // 이미 응답한 요청을 "상세 보기"로 열람할 때는 안내 문구/응답 버튼을 뺀다.
   showActions: boolean;
   reminderMessage: string;
+  // showActions가 false일 때만 쓰인다. 응답 버튼 자리에 대신 보여줄 안내(예: 관리사무소 전달 안내).
+  noticeMessage?: string;
   submitError?: string;
   actionsDisabled: boolean;
   onPressImmediate: () => void;
@@ -36,6 +38,7 @@ export function RequestDetailSection({
   location,
   showActions,
   reminderMessage,
+  noticeMessage,
   submitError,
   actionsDisabled,
   onPressImmediate,
@@ -69,6 +72,8 @@ export function RequestDetailSection({
               onPressDecline={onPressDecline}
             />
           </>
+        ) : noticeMessage ? (
+          <RequestReminderNotice message={noticeMessage} />
         ) : null}
       </View>
     </>

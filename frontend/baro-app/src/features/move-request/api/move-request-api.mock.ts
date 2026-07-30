@@ -95,11 +95,141 @@ function buildCompletedMockDetail(requestId: number): MoveRequestDetail {
   };
 }
 
+// E-16 확인용: /resident/request-detail?requestId=993 로 들어가면 재알림(1차)까지 나갔다가 완료된 상태.
+// 완료 화면 타임라인에 "1차 재알림 전송" 이력이 같이 보여야 한다.
+function buildCompletedWithReminderMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 90 * 60_000);
+  const respondedAt = new Date(Date.now() - 85 * 60_000);
+  const reminderAt = new Date(Date.now() - 40 * 60_000);
+  const resolvedAt = new Date();
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'COMPLETED',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: null,
+    responses: [
+      {
+        responseId: 9002,
+        responseType: 'WILL_MOVE',
+        estimatedMinutes: 30,
+        respondedAt: respondedAt.toISOString(),
+      },
+    ],
+    history: [
+      { notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() },
+      { notificationType: 'REMINDER', sentAt: reminderAt.toISOString() },
+      { notificationType: 'EVENT_RESOLVED', sentAt: resolvedAt.toISOString() },
+    ],
+  };
+}
+
+// E-11 무응답 확인용: /resident/request-detail?requestId=997 로 들어가면 1차 재알림까지 나간 상태(응답 버튼은 그대로 있음).
+function buildReminderSentMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 70 * 60_000);
+  const reminderAt = new Date(Date.now() - 10 * 60_000);
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'REMINDER_SENT',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: null,
+    responses: [],
+    history: [
+      { notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() },
+      { notificationType: 'REMINDER', sentAt: reminderAt.toISOString() },
+    ],
+  };
+}
+
+// E-14 확인용: /resident/request-detail?requestId=995 로 들어가면 응답은 했지만 dueAt이 지난(아직 재알림 전) 상태.
+function buildOverdueMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 40 * 60_000);
+  const respondedAt = new Date(Date.now() - 35 * 60_000);
+  const dueAt = new Date(Date.now() - 5 * 60_000);
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'RESPONDED',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: dueAt.toISOString(),
+    responses: [
+      { responseId: 9101, responseType: 'WILL_MOVE', estimatedMinutes: 30, respondedAt: respondedAt.toISOString() },
+    ],
+    history: [{ notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() }],
+  };
+}
+
+// E-15 확인용: /resident/request-detail?requestId=994 로 들어가면 응답 후 약속을 어겨서 1차 재알림까지 나간 상태.
+function buildReminderOverdueMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 60 * 60_000);
+  const respondedAt = new Date(Date.now() - 55 * 60_000);
+  const dueAt = new Date(Date.now() - 25 * 60_000);
+  const reminderAt = new Date(Date.now() - 10 * 60_000);
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'REMINDER_SENT',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: dueAt.toISOString(),
+    responses: [
+      { responseId: 9102, responseType: 'WILL_MOVE', estimatedMinutes: 30, respondedAt: respondedAt.toISOString() },
+    ],
+    history: [
+      { notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() },
+      { notificationType: 'REMINDER', sentAt: reminderAt.toISOString() },
+    ],
+  };
+}
+
+// 관리사무소 전달 확인용: /resident/request-detail?requestId=996 로 들어가면 NEED_ADMIN 상태(응답 버튼 없이 안내만).
+function buildNeedAdminMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 130 * 60_000);
+  const reminderAt = new Date(Date.now() - 70 * 60_000);
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'NEED_ADMIN',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: null,
+    responses: [],
+    history: [
+      { notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() },
+      { notificationType: 'REMINDER', sentAt: reminderAt.toISOString() },
+    ],
+  };
+}
+
 export async function getMoveRequestDetailMock(requestId: number): Promise<MoveRequestDetail> {
   await delay(MOCK_RESPONSE_DELAY_MS);
 
   if (requestId === 998) {
     return buildCompletedMockDetail(requestId);
+  }
+
+  if (requestId === 993) {
+    return buildCompletedWithReminderMockDetail(requestId);
+  }
+
+  if (requestId === 997) {
+    return buildReminderSentMockDetail(requestId);
+  }
+
+  if (requestId === 996) {
+    return buildNeedAdminMockDetail(requestId);
+  }
+
+  if (requestId === 995) {
+    return buildOverdueMockDetail(requestId);
+  }
+
+  if (requestId === 994) {
+    return buildReminderOverdueMockDetail(requestId);
   }
 
   applyMockAutoComplete();

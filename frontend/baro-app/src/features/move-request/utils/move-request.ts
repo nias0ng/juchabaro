@@ -3,6 +3,7 @@ import type {
   MoveRequestDetail,
   MoveRequestType,
 } from '@/features/move-request/api/types';
+import type { RequestOverdueTimelineStep } from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
 
 const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   BAD_PARKING: '불편 주차',
@@ -86,7 +87,12 @@ export type RequestCompletedTimelineStep = {
   label: string;
   detail: string;
   isFinal: boolean;
+  // 기본(에메랄드/보라) 조합과 다른 색이 필요할 때만 지정한다. (재알림 이력 표시용)
+  dotColor?: string;
+  labelColor?: string;
 };
+
+const REMINDER_ROUND_LABELS = ['1차 재알림', '2차 재알림', '3차 재알림'] as const;
 
 export type RequestCompletedDisplay = {
   endTimeLabel: string;
@@ -94,14 +100,19 @@ export type RequestCompletedDisplay = {
   timeline: RequestCompletedTimelineStep[];
 };
 
-// "18분" / "1시간 5분" 형태로 변환. 음수(데이터 이상)면 표시하지 않는다.
-function formatDurationLabel(startIso: string, endIso: string): string | null {
-  const minutes = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000);
-  if (minutes < 0) return null;
+// 분 단위 숫자를 "18분" / "1시간 5분" 형태로 변환.
+export function formatMinutesLabel(minutes: number): string {
   if (minutes < 60) return `${minutes}분`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest > 0 ? `${hours}시간 ${rest}분` : `${hours}시간`;
+}
+
+// "18분" / "1시간 5분" 형태로 변환. 음수(데이터 이상)면 표시하지 않는다.
+function formatDurationLabel(startIso: string, endIso: string): string | null {
+  const minutes = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000);
+  if (minutes < 0) return null;
+  return formatMinutesLabel(minutes);
 }
 
 // 이동 완료(COMPLETED) 화면(E-13)에서 표시할 문자열로 변환
@@ -118,11 +129,94 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
     timeline.push({ label: '이동 진행', detail: formatTime24(latestResponse.respondedAt), isFinal: false });
   }
 
+  // 약속을 어겨서 재알림이 나갔던 적이 있으면, 완료 화면에서도 그 이력을 그대로 보여준다.
+  detail.history
+    .filter((item) => item.notificationType === 'REMINDER')
+    .forEach((reminder, index) => {
+      const roundLabel = REMINDER_ROUND_LABELS[index] ?? `${index + 1}차 재알림`;
+      timeline.push({
+        label: `${roundLabel} 전송`,
+        detail: formatTime24(reminder.sentAt),
+        isFinal: false,
+        dotColor: '#e5493d',
+        labelColor: '#c8492e',
+      });
+    });
+
   timeline.push({ label: '완료', detail: '정상 처리되었습니다', isFinal: true });
 
   return {
     endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : '--:--',
     durationLabel: resolvedEntry ? formatDurationLabel(detail.requestedAt, resolvedEntry.sentAt) : null,
     timeline,
+  };
+}
+
+// E-14/E-15의 "진행 기록" 앞부분(요청 전송 → 이동 예정 시간 → 미이동 확인)은 두 화면이 동일하게 쓴다.
+function buildOverdueLeadingSteps(
+  detail: MoveRequestDetail,
+  firstStepDetail: string,
+): RequestOverdueTimelineStep[] {
+  const latestResponse = detail.responses[detail.responses.length - 1];
+  const steps: RequestOverdueTimelineStep[] = [
+    { label: '이동 요청 전송', detail: firstStepDetail, dotColor: '#7a6ff0' },
+  ];
+
+  if (latestResponse && detail.dueAt) {
+    const minutesLabel = latestResponse.estimatedMinutes ? ` · ${latestResponse.estimatedMinutes}분 이내` : '';
+    steps.push({ label: '이동 예정 시간', detail: `${formatTime12(detail.dueAt)}${minutesLabel}`, dotColor: '#7a6ff0' });
+  }
+
+  if (detail.dueAt) {
+    steps.push({
+      label: '미이동 확인',
+      detail: `${formatTime12(detail.dueAt)} · 재알림 대상`,
+      dotColor: '#ff8f6b',
+      labelColor: '#d4553a',
+    });
+  }
+
+  return steps;
+}
+
+export type RequestOverdueDisplay = {
+  timeline: RequestOverdueTimelineStep[];
+};
+
+// RESPONDED 상태인데 dueAt이 지난 경우(E-14). 아직 재알림은 안 나갔고, 곧 나갈 예정인 상태.
+export function toRequestOverdueDisplay(detail: MoveRequestDetail): RequestOverdueDisplay {
+  return { timeline: buildOverdueLeadingSteps(detail, formatTime12(detail.requestedAt)) };
+}
+
+export type RequestReminderDisplay = {
+  reminderRoundLabel: string;
+  timeline: RequestOverdueTimelineStep[];
+  pendingStep: { label: string; status: string };
+};
+
+// REMINDER_SENT + 응답 있음(E-15). 약속을 어겨서 재알림까지 나간 상태.
+export function toRequestReminderDisplay(detail: MoveRequestDetail): RequestReminderDisplay {
+  const reminders = detail.history.filter((item) => item.notificationType === 'REMINDER');
+  const timeline = buildOverdueLeadingSteps(
+    detail,
+    `${formatTime12(detail.requestedAt)} · ${detail.targetVehicle.plateNumber}`,
+  );
+
+  reminders.forEach((reminder, index) => {
+    const roundLabel = REMINDER_ROUND_LABELS[index] ?? `${index + 1}차 재알림`;
+    timeline.push({
+      label: `${roundLabel} 전송`,
+      detail: formatTime12(reminder.sentAt),
+      dotColor: '#e5493d',
+      labelColor: '#c8492e',
+    });
+  });
+
+  const latestRoundLabel = REMINDER_ROUND_LABELS[reminders.length - 1] ?? `${reminders.length}차 재알림`;
+
+  return {
+    reminderRoundLabel: latestRoundLabel,
+    timeline,
+    pendingStep: { label: '이동 확인 대기', status: '진행중' },
   };
 }

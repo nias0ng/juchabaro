@@ -66,7 +66,9 @@ export function useMoveRequestDetail(requestId: number | null) {
   }, [status, accessToken, requestId, refetchTick, loadDetail]);
 
   useEffect(() => {
-    if (detail?.requestStatus !== 'RESPONDED') return;
+    // RESPONDED(이동 대기)와 REMINDER_SENT(재알림까지 나간 상태) 둘 다, 서버가 COMPLETED/NEED_ADMIN으로
+    // 바꿔줘도 알려줄 방법이 없어서 계속 다시 확인해야 한다.
+    if (detail?.requestStatus !== 'RESPONDED' && detail?.requestStatus !== 'REMINDER_SENT') return;
 
     const interval = setInterval(() => {
       loadDetail({ showLoading: false });

@@ -26,7 +26,7 @@ export function useCountdown(dueAt: string | null, startAt: string | null = null
   }, [dueAt]);
 
   if (!dueAt) {
-    return { label: '00:00', progress: 0, isOverdue: false };
+    return { label: '00:00', progress: 0, isOverdue: false, elapsedLabel: '00:00' };
   }
 
   const dueMs = new Date(dueAt).getTime();
@@ -38,5 +38,7 @@ export function useCountdown(dueAt: string | null, startAt: string | null = null
     label: formatRemaining(remainingMs),
     progress,
     isOverdue: remainingMs <= 0,
+    // dueAt이 지난 뒤로 얼마나 지났는지 mm:ss로. 아직 안 지났으면 00:00.
+    elapsedLabel: remainingMs < 0 ? formatRemaining(-remainingMs) : '00:00',
   };
 }
