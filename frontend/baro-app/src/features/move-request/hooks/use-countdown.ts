@@ -18,6 +18,9 @@ export function useCountdown(dueAt: string | null, startAt: string | null = null
   useEffect(() => {
     if (!dueAt) return;
 
+    // dueAt이 새로 생기는(또는 바뀌는) 순간 now를 다시 찍는다. 그냥 두면 컴포넌트가
+    // 처음 마운트됐을 때(dueAt이 아직 null이던 시점)의 오래된 now가 그대로 남아있게 된다.
+    setNow(Date.now());
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [dueAt]);

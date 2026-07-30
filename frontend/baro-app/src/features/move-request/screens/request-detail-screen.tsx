@@ -1,14 +1,11 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
-import { FormErrorBanner, Screen, ScreenHeader } from '@/components/ui';
-import { RequestInfoCard } from '@/features/move-request/components/request-detail/request-info-card';
-import { RequestPhoto } from '@/features/move-request/components/request-detail/request-photo';
-import { RequestReminderNotice } from '@/features/move-request/components/request-detail/request-reminder-notice';
-import { RequestTimeActions } from '@/features/move-request/components/request-detail/request-time-actions';
-import { RequestCountdownRing } from '@/features/move-request/components/request-waiting/request-countdown-ring';
-import { RequestProgressCard } from '@/features/move-request/components/request-waiting/request-progress-card';
+import { Screen, ScreenHeader } from '@/components/ui';
+import { RequestDetailSection } from '@/features/move-request/components/request-detail/request-detail-section';
+import { RequestHeaderRight } from '@/features/move-request/components/request-header-right';
+import { RequestWaitingSection } from '@/features/move-request/components/request-waiting/request-waiting-section';
 import { useCountdown } from '@/features/move-request/hooks/use-countdown';
 import { useMoveRequestDetail } from '@/features/move-request/hooks/use-move-request-detail';
 import { useMoveRequestResponse } from '@/features/move-request/hooks/use-move-request-response';
@@ -25,7 +22,7 @@ export default function RequestDetailScreen() {
   const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
   const requestId = requestIdParam ? Number(requestIdParam) : null;
   const normalizedRequestId = requestId !== null && !Number.isNaN(requestId) ? requestId : null;
-  const { detail, isLoading, error, refetch } = useMoveRequestDetail(normalizedRequestId);
+  const { detail, isLoading, error, applyResponse } = useMoveRequestDetail(normalizedRequestId);
   const { submit, isSubmitting, errorMessage: submitError } = useMoveRequestResponse(normalizedRequestId);
   const display = detail ? toRequestDetailDisplay(detail) : null;
 
@@ -50,8 +47,10 @@ export default function RequestDetailScreen() {
   const hasResponded = detail ? detail.responses.length > 0 : false;
 
   const respond = async (responseType: 'WILL_MOVE' | 'CANNOT_MOVE_NOW', estimatedMinutes: number | null) => {
-    const succeeded = await submit({ responseType, estimatedMinutes });
-    if (succeeded) refetch();
+    // refetch()로 다시 조회하면 그 왕복 시간만큼 카운트다운이 이미 흐른 채로 시작되니,
+    // 서버가 이 응답 자체에서 돌려준 결과를 바로 반영한다.
+    const result = await submit({ responseType, estimatedMinutes });
+    if (result) applyResponse(result);
   };
 
   const statusMessage = isLoading
@@ -74,29 +73,12 @@ export default function RequestDetailScreen() {
         style={styles.header}
         onBack={isWaiting && showDetail ? () => setShowDetail(false) : undefined}
         right={
-          isWaiting ? (
-            <Text style={styles.saveLink}>저장</Text>
-          ) : display ? (
-            <View
-              style={[
-                styles.requestTypeBadge,
-                display.requestSourceVariant === 'manual'
-                  ? styles.manualRequestBadge
-                  : styles.aiRequestBadge,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.requestTypeText,
-                  display.requestSourceVariant === 'manual'
-                    ? styles.manualRequestText
-                    : styles.aiRequestText,
-                ]}
-              >
-                {display.requestSourceLabel}
-              </Text>
-            </View>
-          ) : null
+          <RequestHeaderRight
+            isWaiting={isWaiting}
+            requestSource={
+              display ? { label: display.requestSourceLabel, variant: display.requestSourceVariant } : null
+            }
+          />
         }
       />
 
@@ -105,56 +87,30 @@ export default function RequestDetailScreen() {
           <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
       ) : showWaitingView && waitingDisplay ? (
-        <View style={styles.waitingContent}>
-          <View style={styles.waitingPill}>
-            <Text style={styles.waitingPillText}>이동 대기중</Text>
-          </View>
-          <Text style={styles.waitingLabel}>차량 이동까지</Text>
-
-          <RequestCountdownRing label={countdown.label} progress={countdown.progress} />
-
-          <RequestProgressCard
-            dueTimeLabel={waitingDisplay.dueTimeLabel}
-            respondedTimeLabel={waitingDisplay.respondedTimeLabel}
-          />
-
-          <Pressable accessibilityRole="button" style={styles.statusButton} onPress={() => setShowDetail(true)}>
-            <Text style={styles.statusButtonText}>요청 상세 보기</Text>
-          </Pressable>
-        </View>
+        <RequestWaitingSection
+          countdownLabel={countdown.label}
+          progress={countdown.progress}
+          dueTimeLabel={waitingDisplay.dueTimeLabel}
+          respondedTimeLabel={waitingDisplay.respondedTimeLabel}
+          onPressDetail={() => setShowDetail(true)}
+        />
       ) : (
-        <>
-          <RequestPhoto photos={display.photos} />
-
-          <View style={styles.mainCard}>
-            <View style={styles.summary}>
-              <Text style={styles.summaryTitle}>{SUMMARY_TITLE}</Text>
-              <Text style={styles.summaryReason}>{display.reasonQuote}</Text>
-            </View>
-
-            <RequestInfoCard
-              violationType={display.violationTypeLabel}
-              plateNumber={display.plateNumber}
-              location={display.location}
-            />
-
-            {showResponseActions ? (
-              <>
-                <RequestReminderNotice message={REMINDER_MESSAGE} />
-
-                {submitError ? <FormErrorBanner message={submitError} /> : null}
-
-                <RequestTimeActions
-                  disabled={hasResponded || isSubmitting}
-                  onPressImmediate={() => respond('WILL_MOVE', 10)}
-                  onPress30Min={() => respond('WILL_MOVE', 30)}
-                  onPress60Min={() => respond('WILL_MOVE', 60)}
-                  onPressDecline={() => respond('CANNOT_MOVE_NOW', null)}
-                />
-              </>
-            ) : null}
-          </View>
-        </>
+        <RequestDetailSection
+          photos={display.photos}
+          summaryTitle={SUMMARY_TITLE}
+          reasonQuote={display.reasonQuote}
+          violationType={display.violationTypeLabel}
+          plateNumber={display.plateNumber}
+          location={display.location}
+          showActions={showResponseActions}
+          reminderMessage={REMINDER_MESSAGE}
+          submitError={submitError}
+          actionsDisabled={hasResponded || isSubmitting}
+          onPressImmediate={() => respond('WILL_MOVE', 10)}
+          onPress30Min={() => respond('WILL_MOVE', 30)}
+          onPress60Min={() => respond('WILL_MOVE', 60)}
+          onPressDecline={() => respond('CANNOT_MOVE_NOW', null)}
+        />
       )}
     </Screen>
   );

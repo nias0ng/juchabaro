@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { getMoveRequestDetail } from '@/features/move-request/api/move-request-api';
-import type { MoveRequestDetail } from '@/features/move-request/api/types';
+import type { MoveRequestDetail, MoveResponseResult } from '@/features/move-request/api/types';
 import { useAuth } from '@/providers/auth-provider';
 
 export function useMoveRequestDetail(requestId: number | null) {
@@ -51,5 +51,28 @@ export function useMoveRequestDetail(requestId: number | null) {
     setRefetchTick((tick) => tick + 1);
   }, []);
 
-  return { detail, isLoading, error, refetch };
+  // 응답 제출 직후, 서버 재조회(refetch) 왕복을 기다리지 않고 방금 받은 결과로 바로 반영한다.
+  // refetch로만 갱신하면 mock/네트워크 지연만큼 카운트다운이 이미 흐른 채로 시작해버린다.
+  const applyResponse = useCallback((result: MoveResponseResult) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+
+      return {
+        ...prev,
+        requestStatus: result.requestStatus,
+        dueAt: result.dueAt,
+        responses: [
+          ...prev.responses,
+          {
+            responseId: result.responseId,
+            responseType: result.responseType,
+            estimatedMinutes: result.estimatedMinutes,
+            respondedAt: result.respondedAt,
+          },
+        ],
+      };
+    });
+  }, []);
+
+  return { detail, isLoading, error, refetch, applyResponse };
 }
