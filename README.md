@@ -196,17 +196,17 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 - 시스템 아키텍처
 
-![아키텍처](./docs/diagram/architecture.png)
+![아키텍처](./docs/diagram/Architecture.png)
 
 - ERD
 
-![ERD](./docs/diagram/erd.png)
+![ERD](./docs/diagram/ERD.png)
 
 🔺주요 엔티티 : 사용자, 차량, 주차장, 주차면, 예약, 입출차 이력, 결제, 요금 정책, 관리자
 
 - FlowChart
 
-![유스케이스](./docs/diagram/usecase.png)
+![플로우차트](./docs/diagram/FlowChart.png)
 
 ---
 
@@ -214,7 +214,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 - 와이어프레임 (Figma)
 
-![와이어프레임](./docs/images/wireframe.png)
+![와이어프레임](./docs/images/Wireframe.png)
 
 
 ---
