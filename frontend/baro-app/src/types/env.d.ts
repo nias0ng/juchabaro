@@ -4,6 +4,7 @@ declare namespace NodeJS {
     EXPO_PUBLIC_USE_MOCK_AUTH?: string;
     EXPO_PUBLIC_USE_MOCK_PARKING?: string;
     EXPO_PUBLIC_USE_MOCK_MOVE_REQUEST?: string;
+    EXPO_PUBLIC_USE_MOCK_VEHICLES?: string;
     EXPO_PUBLIC_USE_MOCK_NOTIFICATION?: string;
   }
 }

@@ -4,7 +4,7 @@ import { getMyParkingSessionsMock, getParkingZoneSummaryMock } from './parking-a
 import type { ParkingSession, ParkingZoneSummary } from './types';
 
 // TODO(parking-api): 백엔드에서 /api/parking-sessions/me, /api/parking-zones/summary가 실제로 배포되면 이 값을 false로 바꾼다.
-const useMockParking = __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_PARKING === 'true';
+const useMockParking = process.env.EXPO_PUBLIC_USE_MOCK_PARKING === 'true';
 
 type ParkingSessionsResult = {
   sessions: ParkingSession[];

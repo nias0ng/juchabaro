@@ -86,4 +86,14 @@ public class MoveRequest extends BaseEntity {
         this.dueAt = dueAt;
         this.reminderCount = 0;
     }
+
+    public void markResponded(java.time.LocalDateTime dueAt) {
+        this.requestStatus = MoveRequestStatus.RESPONDED;
+        this.dueAt = dueAt;
+    }
+
+    public void markNeedAdmin() {
+        this.requestStatus = MoveRequestStatus.NEED_ADMIN;
+        this.dueAt = null;
+    }
 }
