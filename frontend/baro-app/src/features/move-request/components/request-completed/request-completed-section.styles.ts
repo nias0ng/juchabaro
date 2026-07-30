@@ -28,6 +28,18 @@ export const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 21.25,
   },
+  pill: {
+    marginTop: Spacing.xxs,
+    backgroundColor: Palette.white,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm + 4,
+    paddingVertical: Spacing.xs + 1,
+  },
+  pillText: {
+    fontSize: 10.5,
+    fontWeight: FontWeight.bold,
+    color: '#5c4fe0',
+  },
   homeButton: {
     width: '100%',
     marginTop: 'auto',

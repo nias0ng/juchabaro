@@ -100,6 +100,7 @@ export default function RequestDetailScreen() {
       ) : isCompleted && completedDisplay ? (
         <RequestCompletedSection
           endTimeLabel={completedDisplay.endTimeLabel}
+          durationLabel={completedDisplay.durationLabel}
           timeline={completedDisplay.timeline}
           onPressHome={() => router.replace('/resident')}
         />

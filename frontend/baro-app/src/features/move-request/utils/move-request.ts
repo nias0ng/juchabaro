@@ -90,8 +90,19 @@ export type RequestCompletedTimelineStep = {
 
 export type RequestCompletedDisplay = {
   endTimeLabel: string;
+  durationLabel: string | null;
   timeline: RequestCompletedTimelineStep[];
 };
+
+// "18분" / "1시간 5분" 형태로 변환. 음수(데이터 이상)면 표시하지 않는다.
+function formatDurationLabel(startIso: string, endIso: string): string | null {
+  const minutes = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000);
+  if (minutes < 0) return null;
+  if (minutes < 60) return `${minutes}분`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours}시간 ${rest}분` : `${hours}시간`;
+}
 
 // 이동 완료(COMPLETED) 화면(E-13)에서 표시할 문자열로 변환
 export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCompletedDisplay {
@@ -111,6 +122,7 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
 
   return {
     endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : '--:--',
+    durationLabel: resolvedEntry ? formatDurationLabel(detail.requestedAt, resolvedEntry.sentAt) : null,
     timeline,
   };
 }
