@@ -67,6 +67,7 @@ export default function ResidentLayout() {
   return (
     <Tabs
       tabBar={(props) => <ResidentBottomTabBar {...props} />}
+      backBehavior="history"
       screenOptions={{
         headerShown: false,
       }}

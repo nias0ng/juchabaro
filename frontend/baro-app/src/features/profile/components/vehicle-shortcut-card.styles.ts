@@ -15,6 +15,8 @@ export const styles = StyleSheet.create({
   iconBadge: {
     width: 34,
     height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: Spacing.base,
     backgroundColor: 'rgba(255,255,255,0.22)',
   },
