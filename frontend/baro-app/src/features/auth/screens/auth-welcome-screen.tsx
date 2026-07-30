@@ -5,7 +5,7 @@ import { Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton, Stack } from '@/components/ui';
-import { Spacing } from '@/styles';
+import { Gradients, Spacing } from '@/styles';
 
 import { styles } from './auth-welcome-screen.styles';
 
@@ -14,7 +14,7 @@ const logo = require('@/assets/images/auth/welcome-logo.png');
 export default function AuthWelcomeScreen() {
   return (
     <LinearGradient
-      colors={['#dcd7fb', '#c9ece7']}
+      colors={Gradients.authWelcome}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
       style={styles.gradient}

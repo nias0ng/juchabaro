@@ -1,16 +1,13 @@
 import { router } from 'expo-router';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
-import { Palette, Spacing } from '@/styles';
+import { ErrorBanner, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { Gradients, Palette, Spacing } from '@/styles';
 
-import { AuthErrorBanner } from '../components/auth-error-banner';
-import { AuthHeader } from '../components/auth-header';
 import { SignupProgress } from '../components/signup/signup-progress';
 import { SignupStepActions } from '../components/signup/signup-step-actions';
 import { SignupSteps } from '../components/signup/signup-steps';
 import { useSignupForm } from '../hooks/use-signup-form';
-
-const COMPLETE_BACKGROUND_GRADIENT = ['#eae7fb', '#f7f6fb'] as const;
+import { styles } from './signup-screen.styles';
 
 export default function SignupScreen() {
   const signup = useSignupForm();
@@ -24,13 +21,14 @@ export default function SignupScreen() {
       scroll
       avoidKeyboard
       backgroundColor={Palette.gray50}
-      backgroundGradient={isCompleteStep ? COMPLETE_BACKGROUND_GRADIENT : undefined}
+      backgroundGradient={isCompleteStep ? Gradients.signupCompleteBackground : undefined}
     >
       <ResponsiveContainer> 
         <Stack gap={Spacing.xl}>
-          <AuthHeader
+          <ScreenHeader
             title={isCompleteStep ? '회원가입 완료' : '회원가입'}
             onBack={signup.goToPreviousStep}
+            style={styles.header}
           />
 
           {!isCompleteStep && <SignupProgress step={signup.step} />}
@@ -41,7 +39,7 @@ export default function SignupScreen() {
             onGoHome={() => goToAuthenticatedArea('/resident')}
           />
 
-          {signup.errorMessage ? <AuthErrorBanner message={signup.errorMessage} /> : null}
+          {signup.errorMessage ? <ErrorBanner message={signup.errorMessage} /> : null}
 
           {!isCompleteStep && (
             <SignupStepActions
