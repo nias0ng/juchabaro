@@ -97,6 +97,8 @@ export default function ResidentLayout() {
       />
       {/* 탭바에는 없지만(Figma BottomTabBar 기준) 홈 화면의 "내 차량" 바로가기로는 계속 접근 가능해야 해서 라우트는 남기고 탭에서만 숨긴다. */}
       <Tabs.Screen name="vehicles" options={{ href: null }} />
+      {/* 이동 요청 상세는 URL/알림에서 접근하지만 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="request-detail" options={{ href: null }} />
     </Tabs>
   );
 }

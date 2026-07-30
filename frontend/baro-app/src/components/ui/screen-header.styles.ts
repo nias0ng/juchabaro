@@ -27,4 +27,7 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
   },
+  right: {
+    marginLeft: 'auto',
+  },
 });
