@@ -286,11 +286,41 @@ class ParkingZone:
     `allowed_minutes`(ERD `parking_zones.allowed_minutes`)는 전기차 충전구역
     (EV_FAST/EV_SLOW)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
     타입에는 의미가 없어 기본값 None(백엔드 미설정 시 무제한 허용, 안전
-    쪽으로 기움)이다. `ViolationMonitor.min_dwell_seconds`(정착 확정 시간)보다
-    `allowed_minutes * 60`이 작게 설정되면(운영 실수), 정착 확정 전까지는
-    이미 시간 초과 상태라도 OBSERVING으로만 표시된다 — 크래시나 오탐은
-    없지만 EV_OVERSTAY 발행이 min_dwell_seconds까지 지연되므로,
-    allowed_minutes는 min_dwell_seconds보다 충분히 크게 설정해야 한다.
+    쪽으로 기움)이다.
+
+    `allowed_minutes * 60`을 `ViolationMonitor.min_dwell_seconds`(정착 확정
+    시간, 기본 600초)보다 작게 설정하면 안 된다. 예전 이 docstring은 그 경우
+    "정착 확정 전까지 OBSERVING으로만 표시되고 EV_OVERSTAY 발행이
+    min_dwell_seconds까지 지연된다"고 적고 있었는데, **게이트 우회가 들어온
+    뒤로 둘 다 거짓이다**(319 최종 리뷰에서 정정). 실제 동작은 이렇다
+    (`classify_violation`의 EV 분기가 `min_dwell_seconds` 게이트 앞에 있고,
+    `test_ev_overstay_bypasses_min_dwell_gate_when_allowed_minutes_is_smaller`가
+    이를 고정한다):
+
+    - **지연되지 않는다.** EV_OVERSTAY는 게이트를 우회하므로 점유 시간이
+      `allowed_minutes * 60`을 넘는 순간 발행된다. `allowed_minutes=1`,
+      `min_dwell_seconds=600`이면 첫 이벤트가 600초가 아니라 60초에 나간다.
+    - **그 구역에서는 RESTRICTED_ZONE이 한 번도 발행되지 않을 수 있다.**
+      `allowed_minutes * 60 <= min_dwell_seconds`면 게이트가 열리는 시점에 이미
+      시간 초과가 성립해 EV_OVERSTAY로 바로 대체되므로, RESTRICTED_ZONE은
+      영구히 스킵된다(경계값 포함 확인). 즉 "OBSERVING으로만 표시"가 아니라
+      더 이른 이벤트 1건 + 신호 1종 누락이다. RESTRICTED_ZONE은 "등록 차량
+      여부 서버 조회"를 촉발하는 신호이므로 그것까지 같이 사라진다.
+      이것은 원래 리뷰의 I-1 지적사항이고 **이번 MR 범위 밖(후속)이다** —
+      값 검증/경고를 여기서 추가하지 않았다.
+    - 위 스킵은 `allowed_minutes * 60 > min_dwell_seconds`인 정상 설정에서도
+      일어날 수 있다(실측 확인). 점유 시계는 미세 이동으로 리셋되지 않지만
+      게이트가 쓰는 `dwell_seconds`는 리셋되므로, 미세 이동이 잦은 차는
+      `dwell_seconds`가 게이트를 못 넘는 동안 점유 시계만 자라 RESTRICTED_ZONE
+      없이 EV_OVERSTAY가 첫 이벤트로 나간다(그때 이벤트에는
+      `dwell_seconds ≈ 0`과 큰 `occupancy_seconds`가 함께 실린다).
+      두 시계를 분리한 것(C-1)의 의도된 대가이지, 설정 실수에만 국한된
+      현상이 아니다.
+
+    DB 컬럼이 `INT`(분)이라 1~10분은 정상적으로 입력 가능한 값이고
+    `min_dwell_seconds` 기본값은 600초다 — 즉 위 조합은 운영에서 실제로
+    만들어질 수 있다. `allowed_minutes`는 `min_dwell_seconds`보다 충분히 크게
+    설정해야 한다(운영값 60~120분).
     """
 
     zone_id: str
@@ -555,6 +585,25 @@ def classify_violation(
         # 초과 자체가 "정착했다"의 증거이므로 게이트가 더 붙잡아 둘 이유가 없고,
         # 같은 차에 대해 게이트만 우회한 EV_OVERSTAY와 게이트에 걸린
         # AISLE_BLOCK을 섞으면 우선순위가 뒤집힌다.
+        #
+        # 그 결과 무엇이 새로 발행될 수 있는가(319 최종 재리뷰: acceptable but
+        # must be documented) — 게이트 우회가 EV_OVERSTAY뿐 아니라 여기의
+        # AISLE_BLOCK/DOUBLE_PARK에도 적용되므로, 시간 초과 중인 차가 방금
+        # 움직여 dwell_seconds가 리셋된 프레임에도 판정이 즉시 확정된다.
+        # 두 갈래로 갈린다:
+        #   ① 재배치 후 계속 통행로를 막는 경우 — 즉시 보고가 옳다. 게이트가 묻는
+        #      질문("주차한 건가 지나가는 건가")은 이미 60~120분 점유로 답이 나와
+        #      있고, 소방 진입로 보고를 min_dwell_seconds만큼 더 늦출 이유가 없다.
+        #   ② 자리에서 빠져나가는 중인 경우 — 일시적으로 통행로에 걸치면서
+        #      AISLE_BLOCK 1건이 새로 나간다. 이건 신규 오탐이다(56e3bb8에서는
+        #      OBSERVING, 4ce596d에서는 이미 열린 EV_OVERSTAY 키가 안 바뀌어
+        #      무이벤트였다).
+        # 오탐이 유계인 근거: 온셋 이벤트 1건이고((status, zone_id) 키가 중복을
+        # 막는다), EV 겹침이 min_overlap_ratio 아래로 떨어지는 순간 이 분기 자체가
+        # 성립하지 않아 자연히 끝나며, 발행되는 이벤트에 dwell_seconds ≈ 0과
+        # occupancy_seconds >= allowed_minutes*60이 함께 실리므로 서버가 이 경우를
+        # ①과 구분할 수 있다. 도착(입차) 시점은 영향받지 않는다 — 누적 점유가
+        # 없으면 애초에 overstayed_restricted가 None이라 이 분기에 들어오지 못한다.
         if aisle is not None:
             return ViolationStatus.AISLE_BLOCK, aisle.zone, aisle.ratio
         if blocked_zone is not None:
