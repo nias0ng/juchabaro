@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import NewType
+from uuid import UUID
 
 
 TrackSegmentId = NewType("TrackSegmentId", int)
-PhysicalVehicleId = NewType("PhysicalVehicleId", str)
+PhysicalVehicleId = NewType("PhysicalVehicleId", UUID)
 ParkingSessionId = NewType("ParkingSessionId", int)
 VehicleId = NewType("VehicleId", int)
 

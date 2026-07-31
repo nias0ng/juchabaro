@@ -2,24 +2,37 @@
 
 import json
 from datetime import datetime, timezone
+from uuid import UUID
 
 import pytest
 from src.communication.outbox import JsonlOutbox, OutboxError, transition_to_jsonable
 from src.parking.models import (
     Incident,
+    IncidentId,
     IncidentKey,
     IncidentState,
     IncidentTransition,
     IncidentTransitionType,
+    ZoneId,
+    ZoneVisitId,
 )
+from src.tracking.models import PhysicalVehicleId
 
 NOW = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
+PHYSICAL_ID = PhysicalVehicleId(UUID(int=1))
+VISIT_ID = ZoneVisitId(UUID(int=2))
+INCIDENT_ID = IncidentId(UUID(int=3))
 
 
 def make_open_transition() -> IncidentTransition:
-    key = IncidentKey(physical_vehicle_id="pv-1", rule_code="DISABLED_ZONE_UNAUTHORIZED", zone_visit_id="visit-1", zone_id=7)
+    key = IncidentKey(
+        physical_vehicle_id=PHYSICAL_ID,
+        rule_code="DISABLED_ZONE_UNAUTHORIZED",
+        zone_visit_id=VISIT_ID,
+        zone_id=ZoneId(7),
+    )
     incident = Incident(
-        incident_id="inc-1",
+        incident_id=INCIDENT_ID,
         key=key,
         state=IncidentState.EDGE_CONFIRMED,
         revision=1,
@@ -33,12 +46,12 @@ def test_transition_to_jsonable_maps_open_fields():
     payload = transition_to_jsonable(make_open_transition())
 
     assert payload["transitionType"] == "OPEN"
-    assert payload["incidentId"] == "inc-1"
+    assert payload["incidentId"] == str(INCIDENT_ID)
     assert payload["revision"] == 1
     assert payload["state"] == "EDGE_CONFIRMED"
     assert payload["ruleCode"] == "DISABLED_ZONE_UNAUTHORIZED"
-    assert payload["physicalVehicleId"] == "pv-1"
-    assert payload["zoneVisitId"] == "visit-1"
+    assert payload["physicalVehicleId"] == str(PHYSICAL_ID)
+    assert payload["zoneVisitId"] == str(VISIT_ID)
     assert payload["zoneId"] == 7
     assert payload["parkingEpisodeId"] is None
     assert payload["victimPhysicalVehicleId"] is None
@@ -65,7 +78,7 @@ def test_append_writes_one_json_line_per_call(tmp_path):
     assert len(lines) == 2
     for line in lines:
         parsed = json.loads(line)
-        assert parsed["incidentId"] == "inc-1"
+        assert parsed["incidentId"] == str(INCIDENT_ID)
 
 
 def test_creates_missing_parent_directories(tmp_path):

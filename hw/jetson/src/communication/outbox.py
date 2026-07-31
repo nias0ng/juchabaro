@@ -16,12 +16,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from src.parking.models import IncidentTransition
 
 
 class OutboxError(RuntimeError):
     """사건 전이를 outbox에 기록하는 데 실패했다."""
+
+
+def _uuid_to_wire(value: UUID | None) -> str | None:
+    """Jetson 내부 UUID를 JSON 계약의 문자열로 변환한다."""
+
+    return None if value is None else str(value)
 
 
 def transition_to_jsonable(transition: IncidentTransition) -> dict[str, Any]:
@@ -31,15 +38,15 @@ def transition_to_jsonable(transition: IncidentTransition) -> dict[str, Any]:
     key = incident.key
     return {
         "transitionType": transition.transition_type.value,
-        "incidentId": incident.incident_id,
+        "incidentId": _uuid_to_wire(incident.incident_id),
         "revision": incident.revision,
         "state": incident.state.value,
         "ruleCode": key.rule_code,
-        "physicalVehicleId": key.physical_vehicle_id,
-        "parkingEpisodeId": key.parking_episode_id,
-        "zoneVisitId": key.zone_visit_id,
+        "physicalVehicleId": _uuid_to_wire(key.physical_vehicle_id),
+        "parkingEpisodeId": _uuid_to_wire(key.parking_episode_id),
+        "zoneVisitId": _uuid_to_wire(key.zone_visit_id),
         "zoneId": key.zone_id,
-        "victimPhysicalVehicleId": key.victim_physical_vehicle_id,
+        "victimPhysicalVehicleId": _uuid_to_wire(key.victim_physical_vehicle_id),
         "firstObservedAt": incident.first_observed_at.isoformat(),
         "confirmedAt": None if incident.confirmed_at is None else incident.confirmed_at.isoformat(),
         "resolvedAt": None if incident.resolved_at is None else incident.resolved_at.isoformat(),
