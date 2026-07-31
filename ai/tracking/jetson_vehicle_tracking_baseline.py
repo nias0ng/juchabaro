@@ -516,6 +516,8 @@ class TrackState:
     stationary_since: datetime
     plate_number: str | None = None
     open_violation: ViolationStatus = ViolationStatus.NONE
+    # 매칭된 EntryEvent.gate_tracking_id(383번) — 라즈베리파이 발급 UUID.
+    gate_tracking_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -569,10 +571,19 @@ class ViolationEvent:
 
 @dataclass(frozen=True)
 class EntryEvent:
-    """게이트 OCR이 인식한 입차 이벤트(§2.2). 실제 필드 형식은 OCR 팀과 확정 필요."""
+    """게이트 OCR이 인식한 입차 이벤트(§2.2).
+
+    `gate_tracking_id`(383번)는 라즈베리파이가 입차 건마다 발급하는 UUID다.
+    ByteTrack이 이 트랙에 부여하는 정수 `track_id`와는 이름이 비슷하지만
+    완전히 다른 값이다 — 게이트 쪽 사건 식별자와 카메라 쪽 추적 식별자를
+    혼동하지 않도록 필드명을 다르게 뒀다. 매칭에는 쓰이지 않고(매칭은
+    `plate_number`/`captured_at`만 사용), 매칭 성공 시 `TrackState`에
+    실려 이후 위반 이벤트를 원래 입차 건과 대조할 수 있게 한다.
+    """
 
     plate_number: str
     captured_at: datetime
+    gate_tracking_id: str | None = None
 
 
 def to_jsonable(value: Any) -> Any:
@@ -771,7 +782,9 @@ class ViolationMonitor:
             return
         matched = eligible[0]
         self._pending_entry_events.remove(matched)
-        self._tracks[detection.track_id].plate_number = matched.plate_number
+        state = self._tracks[detection.track_id]
+        state.plate_number = matched.plate_number
+        state.gate_tracking_id = matched.gate_tracking_id
 
     def track_snapshot(self, now: datetime) -> dict[int, TrackSnapshot]:
         """현재 트랙별 정차 상태를 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다.
@@ -2358,6 +2371,27 @@ class BaselineLogicTests(unittest.TestCase):
             ]
         )
         self.assertEqual(monitor._tracks[1].plate_number, "1234")
+
+    def test_entry_event_match_carries_gate_tracking_id_onto_track(self) -> None:
+        """리뷰 반영(383): 라즈베리파이가 발급한 UUID(gate_tracking_id)가 매칭된
+        트랙에 실려야, 이후 위반 이벤트를 원래 입차 건과 대조할 수 있다."""
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        registry = ZoneRegistry([entry_zone])
+        monitor = ViolationMonitor(registry, min_overlap_ratio=0.40, entry_match_window_seconds=10.0)
+        base_time = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(
+            EntryEvent(plate_number="1234", captured_at=base_time, gate_tracking_id="11111111-1111-1111-1111-111111111111")
+        )
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        self.assertEqual(monitor._tracks[1].gate_tracking_id, "11111111-1111-1111-1111-111111111111")
 
     def test_entry_event_not_matched_outside_entry_zone(self) -> None:
         entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
