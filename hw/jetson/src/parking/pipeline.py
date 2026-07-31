@@ -1,6 +1,6 @@
 """차량 스냅샷을 구역 방문·주차 에피소드·사건 전이로 변환하는 파이프라인.
 
-관통 1단계(T-08)만 다룬다 — `restricted_zone` 규칙 하나, `ZoneVisit` 상태축
+관통 1단계(440)만 다룬다 — `restricted_zone` 규칙 하나, `ZoneVisit` 상태축
 하나만으로 프레임이 사건까지 도달하는 경로다. `ParkingEpisode`(600초 확정,
 T-09), `ev_overstay`/`bad_parking` 규칙, `assignment_resolver`(T-10)는
 범위 밖이다.

@@ -1,4 +1,4 @@
-"""ParkingPipeline 통합 회귀 테스트 (T-08, 관통 1단계).
+"""ParkingPipeline 통합 회귀 테스트 (440, 관통 1단계).
 
 test_zone_visit_incident_flow.py가 검증한 ZoneVisitTracker→restricted_zone→
 IncidentReducer 연결 계약을, 실제 TrackingBatch를 입력으로 받는 조립기

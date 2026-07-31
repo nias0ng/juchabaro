@@ -1,4 +1,4 @@
-"""MonitoringPipeline 관통 통합 테스트 (T-08).
+"""MonitoringPipeline 관통 통합 테스트 (440).
 
 camera(가짜 프레임) → tracking(가짜 탐지기) → parking(진짜 ZoneVisitTracker/
 restricted_zone/IncidentReducer) → outbox(진짜 JSONL 파일)까지 전부 실제

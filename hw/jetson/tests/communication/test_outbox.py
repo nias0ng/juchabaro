@@ -1,4 +1,4 @@
-"""JsonlOutbox 회귀 테스트 (T-08)."""
+"""JsonlOutbox 회귀 테스트 (440)."""
 
 import json
 from datetime import datetime, timezone
