@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
 
+    # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
+    # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
+    entry_match_window_seconds: float = 10.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

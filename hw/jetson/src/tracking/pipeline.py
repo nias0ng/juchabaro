@@ -1,8 +1,11 @@
 """프레임 관측을 PhysicalVehicleSnapshot 목록으로 변환하는 추적 파이프라인(436).
 
 Detector, EntityResolver, MotionEstimator를 조립해 TrackingBatch를 만든다.
-ContextMatcher는 이번 티켓 범위 밖이다(383 미해결분, T-16) — 그래서
-PhysicalVehicleSnapshot.context는 지금은 항상 None이다.
+`context`는 여기서 항상 `None`이다 — 의도적이다. `ContextMatcher`(T-16)는
+구역(zone) 지오메트리를 모르게 설계돼 있고, "입구 구역에 있는가"는
+`parking.zone_registry`가 있어야 계산할 수 있다. tracking 계층이 parking을
+알게 되는 것을 막기 위해 그 계산과 매칭은 `application.context_enrichment.
+EntryContextEnricher`가 tracking과 parking 사이에서 대신한다.
 
 `source_available`은 항상 True다 — 이 클래스는 프레임을 성공적으로 캡처한
 뒤에만 호출되므로, 카메라 장애(source_available=False)는 이 파이프라인이
