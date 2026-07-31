@@ -134,7 +134,9 @@ def test_unknown_preserves_already_accumulated_time() -> None:
     feed(tracker, PresenceSignal.PRESENT, 0)
     feed(tracker, PresenceSignal.PRESENT, 2.0)  # 누적 2.0
     feed(tracker, PresenceSignal.UNKNOWN, 50.0)  # 사슬만 끊김, 누적 2.0 보존
-    feed(tracker, PresenceSignal.PRESENT, 51.0)  # 간격 0 기여, 누적 2.0
+    # 간격 0 기여, 누적 2.0 — 아직 미확인이어야 한다. 벽시계로 재면 여기서
+    # 이미 51초 경과로 확인돼버려 이 assert가 깨진다.
+    assert feed(tracker, PresenceSignal.PRESENT, 51.0).state is ZoneVisitState.ENTERING
     assert feed(tracker, PresenceSignal.PRESENT, 52.0).state is ZoneVisitState.INSIDE  # 누적 3.0
 
 
