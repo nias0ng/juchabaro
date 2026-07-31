@@ -19,6 +19,7 @@ from src.parking.models import (
     ZoneVisitId,
     ZoneVisitState,
 )
+from src.parking.time_guard import ensure_forward_observation
 from src.tracking.models import PhysicalVehicleId
 
 
@@ -45,9 +46,14 @@ class _VisitSlot:
     `accumulated_seconds`는 현재 전이(진입 확인 또는 이탈 확인)를 향해 **관측된**
     시간의 합이다. 벽시계 경과가 아니다. `last_observed_at`이 `None`이면 직전에
     UNKNOWN을 만나 누적 사슬이 끊긴 상태이며, 다음 관측은 간격 0을 기여한다.
+
+    `last_updated_at`은 신호 종류와 무관하게 `update()`가 마지막으로 이 슬롯을
+    건드린 시각이다. UNKNOWN에 끊기는 `last_observed_at`과 달리 항상 채워져 있어
+    관측 순서 검사의 기준이 된다.
     """
 
     visit: ZoneVisit
+    last_updated_at: datetime
     accumulated_seconds: float = 0.0
     last_observed_at: datetime | None = None
     closed_reported: bool = False
@@ -105,13 +111,21 @@ class InMemoryZoneVisitTracker:
         방문이 닫히는 프레임에서는 `exited_at`이 채워진 방문을 한 번 반환한다 —
         규칙이 `matched=false`를 만들어 RESOLVE를 일으키려면 종료를 봐야 한다.
         그 다음 프레임부터는 None이다.
-        """
 
-        if observed_at.tzinfo is None:
-            raise ValueError("observed_at은 timezone-aware datetime이어야 합니다.")
+        `observed_at`은 timezone-aware여야 하고 같은 (차량, 구역) 쌍의 직전
+        관측보다 과거일 수 없다. 위반하면 ValueError다(`time_guard` 참조).
+        """
 
         key = (physical_vehicle_id, zone_id)
         slot = self._slots.get(key)
+        # 뒤로 간 관측을 그대로 받으면 accumulate()가 음수를 더해 진입·이탈 확정이
+        # 조용히 늦어진다. 상태가 (차량, 구역)별로 독립이므로 순서도 쌍별로 본다 —
+        # 한 프레임 안에서 쌍들을 어떤 순서로 갱신하든 무관해야 하기 때문이다.
+        ensure_forward_observation(
+            observed_at, None if slot is None else slot.last_updated_at
+        )
+        if slot is not None:
+            slot.last_updated_at = observed_at
 
         if signal is PresenceSignal.UNKNOWN:
             # 시간을 누적하지 않고 상태도 바꾸지 않는다. 이미 쌓인 누적은
@@ -166,7 +180,9 @@ class InMemoryZoneVisitTracker:
             state=ZoneVisitState.ENTERING,
             entered_candidate_at=observed_at,
         )
-        slot = _VisitSlot(visit=visit, last_observed_at=observed_at)
+        slot = _VisitSlot(
+            visit=visit, last_updated_at=observed_at, last_observed_at=observed_at
+        )
         self._slots[key] = slot
         # 확인시간이 0이면 첫 관측으로 즉시 확정한다.
         if self._entry_confirm_seconds <= 0.0:

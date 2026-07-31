@@ -222,3 +222,38 @@ def test_naive_datetime_is_rejected() -> None:
             signal=PresenceSignal.PRESENT,
             observed_at=datetime(2026, 7, 31, 10, 0, 0),
         )
+
+
+def test_backwards_observation_is_rejected() -> None:
+    """뒤로 간 관측을 받아들이면 누적이 음수가 돼 진입 확정이 조용히 늦어진다."""
+    tracker = make_tracker(entry=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 10.0)
+    with pytest.raises(ValueError, match="과거"):
+        feed(tracker, PresenceSignal.PRESENT, 5.0)
+
+
+def test_backwards_observation_does_not_drive_accumulation_negative() -> None:
+    """거부가 상태를 망가뜨리지 않는지까지 본다 — 이후 정상 관측은 그대로 동작한다."""
+    tracker = make_tracker(entry=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 10.0)
+    with pytest.raises(ValueError):
+        feed(tracker, PresenceSignal.PRESENT, 5.0)
+    # 5.0초를 되감았다면 누적이 -5.0이 돼 13.0에서 확정되지 못한다.
+    assert feed(tracker, PresenceSignal.PRESENT, 13.0).state is ZoneVisitState.INSIDE
+
+
+def test_same_timestamp_observation_is_allowed() -> None:
+    """한 프레임 안의 관측은 같은 observed_at을 공유하므로 동일 시각은 정상이다."""
+    tracker = make_tracker(entry=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 10.0)
+    assert feed(tracker, PresenceSignal.PRESENT, 10.0).state is ZoneVisitState.ENTERING
+
+
+def test_observation_order_is_checked_per_pair() -> None:
+    """상태가 (차량, 구역)별로 독립이므로 순서 검사도 쌍별이다.
+
+    전역으로 검사하면 한 프레임 안에서 쌍들을 갱신하는 순서가 판정을 바꾼다.
+    """
+    tracker = make_tracker(entry=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 10.0, zone=ZONE)
+    assert feed(tracker, PresenceSignal.PRESENT, 5.0, zone=OTHER_ZONE) is not None

@@ -20,6 +20,27 @@ from src.parking.models import (
     IncidentTransition,
     IncidentTransitionType,
 )
+from src.parking.time_guard import ensure_forward_observation
+
+
+def _latest_timestamp(incident: Incident) -> datetime:
+    """이 사건에 기록된 가장 나중 시각.
+
+    `first_observed_at` ≤ `confirmed_at` ≤ `resolved_at`이 사건의 불변식이므로
+    채워진 것 중 가장 늦은 값이 다음 신호가 넘어서야 할 하한이다. 이 하한을
+    깨는 신호를 받아들이면 `resolved_at`이 `confirmed_at`보다 앞서 위반
+    지속시간이 음수인 채로 백엔드에 나간다.
+    """
+
+    return max(
+        timestamp
+        for timestamp in (
+            incident.first_observed_at,
+            incident.confirmed_at,
+            incident.resolved_at,
+        )
+        if timestamp is not None
+    )
 
 
 class IncidentReducer(Protocol):
@@ -43,12 +64,21 @@ class InMemoryIncidentReducer:
         self._incidents: dict[IncidentKey, Incident] = {}
 
     def reduce(self, signal: IncidentSignal) -> IncidentTransition | None:
-        """OPEN/RESOLVE가 새로 생긴 경우에만 전이를 반환한다."""
+        """OPEN/RESOLVE가 새로 생긴 경우에만 전이를 반환한다.
 
-        if signal.observed_at.tzinfo is None:
-            raise ValueError("observed_at은 timezone-aware datetime이어야 합니다.")
+        `signal.observed_at`은 timezone-aware여야 하고 같은 IncidentKey에 이미
+        기록된 가장 나중 시각보다 과거일 수 없다. 위반하면 ValueError다
+        (`time_guard` 참조).
+        """
 
         current = self._incidents.get(signal.key)
+        # 순서 기준은 사건에 이미 기록된 시각에서 유도한다. IncidentKey별로 마지막
+        # 관측 시각을 따로 들고 있으면 사건 저장소와 별개로 자라는 두 번째 무한
+        # 저장소가 생긴다. 대신 CANDIDATE 구간의 반복 관측은 검사 대상이 아니다 —
+        # 실제 피해(음수 지속시간)는 확정·해소 시각에서만 나온다.
+        ensure_forward_observation(
+            signal.observed_at, None if current is None else _latest_timestamp(current)
+        )
 
         if signal.matched:
             return self._on_match(signal, current)

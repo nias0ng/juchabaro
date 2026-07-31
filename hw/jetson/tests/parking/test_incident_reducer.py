@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from src.parking.models import (
     IncidentKey,
     IncidentSignal,
@@ -143,6 +145,45 @@ def test_incident_id_is_deterministic() -> None:
         reducer = InMemoryIncidentReducer()
         ids.append(reducer.reduce(signal(visit_key(), matched=True, confirmable=True)).incident.incident_id)
     assert ids[0] == ids[1]
+
+
+def test_naive_datetime_is_rejected() -> None:
+    reducer = InMemoryIncidentReducer()
+    with pytest.raises(ValueError, match="timezone"):
+        reducer.reduce(
+            IncidentSignal(
+                key=visit_key(),
+                matched=True,
+                confirmable=True,
+                observed_at=datetime(2026, 7, 31, 10, 0, 0),
+            )
+        )
+
+
+def test_resolve_before_open_is_rejected() -> None:
+    """confirmed_at보다 앞선 resolved_at은 위반 지속시간을 음수로 만든다."""
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
+    with pytest.raises(ValueError, match="과거"):
+        reducer.reduce(signal(key, matched=False, confirmable=True, seconds=5))
+
+
+def test_confirm_before_first_observation_is_rejected() -> None:
+    reducer = InMemoryIncidentReducer()
+    key = episode_key()
+    reducer.reduce(signal(key, matched=True, confirmable=False, seconds=600))
+    with pytest.raises(ValueError, match="과거"):
+        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=1))
+
+
+def test_same_timestamp_resolve_is_allowed() -> None:
+    """같은 프레임에서 성립과 해소가 이어지는 경우는 정상이다."""
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True))
+    transition = reducer.reduce(signal(key, matched=False, confirmable=True))
+    assert transition.transition_type is IncidentTransitionType.RESOLVE
 
 
 def test_evidence_is_carried_into_incident_snapshot() -> None:
