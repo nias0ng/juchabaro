@@ -9,6 +9,7 @@ from src.parking.zone_registry import (
     EV_ZONE_TYPES,
     RESTRICTED_ZONE_TYPES,
     ParkingZone,
+    ZoneNotFoundError,
     ZoneRegistry,
     ZoneRegistryError,
     ZoneType,
@@ -140,6 +141,23 @@ def test_rejects_malformed_json(tmp_path: Path) -> None:
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ZoneRegistryError, match="JSON 형식"):
         ZoneRegistry.from_file(path)
+
+
+def test_get_raises_zone_not_found_for_unknown_zone() -> None:
+    """조회 실패는 기동 거부 오류(ZoneRegistryError)와 다른 계층이어야 한다.
+
+    한 타입으로 묶어 두면 프레임 하나의 조회 실패를 설정 오류와 같은 무게로
+    다루게 된다.
+    """
+    registry = ZoneRegistry([])
+    with pytest.raises(ZoneNotFoundError):
+        registry.get(999)
+    assert not issubclass(ZoneNotFoundError, ZoneRegistryError)
+
+
+def test_get_or_none_returns_none_for_unknown_zone() -> None:
+    """매 프레임 도는 판정 경로가 쓰는 조회다."""
+    assert ZoneRegistry([]).get_or_none(999) is None
 
 
 def test_restricted_zone_types_cover_disabled_and_ev() -> None:

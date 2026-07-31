@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from src.parking.models import (
     IncidentKey,
     IncidentSignal,
@@ -137,12 +139,128 @@ def test_reopen_after_resolve_creates_new_incident() -> None:
     assert second.incident.revision == 1
 
 
+def test_repeated_match_after_reopen_produces_no_duplicate() -> None:
+    """재개된 사건도 중복 억제가 유지돼야 한다.
+
+    재개 경로는 CANDIDATE 사건을 새로 만들어 넣는다. 그 사건이 EDGE_CONFIRMED로
+    저장되지 않으면 이후 프레임마다 OPEN이 다시 나간다.
+    """
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True))
+    reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
+    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=20))
+    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=21)) is None
+    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=22)) is None
+
+
 def test_incident_id_is_deterministic() -> None:
     ids = []
     for _ in range(2):
         reducer = InMemoryIncidentReducer()
         ids.append(reducer.reduce(signal(visit_key(), matched=True, confirmable=True)).incident.incident_id)
     assert ids[0] == ids[1]
+
+
+def episode_scoped_key(
+    *, zone_id: int, victim: str | None = None, vehicle: str = "pv-1"
+) -> IncidentKey:
+    return IncidentKey(
+        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
+        physical_vehicle_id=PhysicalVehicleId(vehicle),
+        rule_code="BAD_PARKING",
+        parking_episode_id=ParkingEpisodeId("episode-1"),
+        zone_id=ZoneId(zone_id),
+        victim_physical_vehicle_id=None if victim is None else PhysicalVehicleId(victim),
+    )
+
+
+def test_incident_id_distinguishes_zone_and_victim() -> None:
+    """서로 다른 IncidentKey는 서로 다른 incident_id를 가져야 한다.
+
+    백엔드는 incident_id로 멱등 upsert를 한다. zone_id와
+    victim_physical_vehicle_id를 ID 유도에서 빼면 아래 네 키가 하나의 ID로
+    합쳐져 서로 다른 네 위반이 조용히 한 건이 된다.
+    """
+    keys = [
+        episode_scoped_key(zone_id=1),
+        episode_scoped_key(zone_id=2),
+        episode_scoped_key(zone_id=1, victim="pv-2"),
+        episode_scoped_key(zone_id=1, victim="pv-3"),
+    ]
+    reducer = InMemoryIncidentReducer()
+    ids = {
+        reducer.reduce(signal(key, matched=True, confirmable=True)).incident.incident_id
+        for key in keys
+    }
+    assert len(ids) == len(keys)
+
+
+def test_incident_id_format_is_unchanged_without_zone_and_victim() -> None:
+    """두 필드가 모두 비어 있는 키의 ID는 이전과 글자 그대로 같다."""
+    reducer = InMemoryIncidentReducer()
+    key = IncidentKey(
+        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
+        physical_vehicle_id=CAR,
+        rule_code="BAD_PARKING",
+        parking_episode_id=ParkingEpisodeId("episode-1"),
+    )
+    transition = reducer.reduce(signal(key, matched=True, confirmable=True))
+    assert transition.incident.incident_id == f"BAD_PARKING:episode-1:{T0.isoformat()}"
+
+
+def test_incident_id_does_not_depend_on_physical_vehicle_id() -> None:
+    """스펙 4.3의 physical_vehicle_id 제거가 기존 ID를 바꾸지 않아야 한다.
+
+    ID 유도가 그 필드에 기대면 제거 시점에 모든 사건 ID가 한꺼번에 바뀐다.
+    같은 스코프를 가리키는 두 키는 이미 같은 사건이므로 같은 ID가 맞다.
+    """
+    ids = [
+        InMemoryIncidentReducer()
+        .reduce(signal(episode_scoped_key(zone_id=1, vehicle=vehicle), matched=True, confirmable=True))
+        .incident.incident_id
+        for vehicle in ("pv-1", "pv-9")
+    ]
+    assert ids[0] == ids[1]
+
+
+def test_naive_datetime_is_rejected() -> None:
+    reducer = InMemoryIncidentReducer()
+    with pytest.raises(ValueError, match="timezone"):
+        reducer.reduce(
+            IncidentSignal(
+                key=visit_key(),
+                matched=True,
+                confirmable=True,
+                observed_at=datetime(2026, 7, 31, 10, 0, 0),
+            )
+        )
+
+
+def test_resolve_before_open_is_rejected() -> None:
+    """confirmed_at보다 앞선 resolved_at은 위반 지속시간을 음수로 만든다."""
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
+    with pytest.raises(ValueError, match="과거"):
+        reducer.reduce(signal(key, matched=False, confirmable=True, seconds=5))
+
+
+def test_confirm_before_first_observation_is_rejected() -> None:
+    reducer = InMemoryIncidentReducer()
+    key = episode_key()
+    reducer.reduce(signal(key, matched=True, confirmable=False, seconds=600))
+    with pytest.raises(ValueError, match="과거"):
+        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=1))
+
+
+def test_same_timestamp_resolve_is_allowed() -> None:
+    """같은 프레임에서 성립과 해소가 이어지는 경우는 정상이다."""
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True))
+    transition = reducer.reduce(signal(key, matched=False, confirmable=True))
+    assert transition.transition_type is IncidentTransitionType.RESOLVE
 
 
 def test_evidence_is_carried_into_incident_snapshot() -> None:
