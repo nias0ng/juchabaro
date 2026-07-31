@@ -1,11 +1,14 @@
 import type {
   MoveEventType,
   MoveRequestDetail,
+  MoveRequestListItem,
   MoveRequestStatus,
   MoveRequestSummary,
   MoveRequestType,
 } from '@/features/move-request/api/types';
 import type { RequestOverdueTimelineStep } from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
+import type { RequestListItemDisplay } from '@/features/move-request/components/requests-list/request-list-card';
+import type { RequestListStatus } from '@/features/move-request/components/requests-list/request-status-badge';
 
 const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   BAD_PARKING: '불편 주차',
@@ -13,6 +16,7 @@ const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   DISABLED_ZONE_VIOLATION: '장애인 주차구역 위반',
   EV_OVERSTAY: '전기차 충전구역 장기 점유',
   OUT_OF_ZONE: '구역 외 주차',
+  ETC: '기타',
 };
 
 const REQUEST_TYPE_DISPLAY: Record<
@@ -56,7 +60,7 @@ export function toRequestDetailDisplay(detail: MoveRequestDetail): RequestDetail
     plateNumber: detail.targetVehicle.plateNumber,
     location: detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL,
     photos: detail.event.images
-      .filter((image) => image.imageType === 'PARKING_STATE')
+      .filter((image) => image.imageType === 'PARKING_STATE' || image.imageType === 'REPORT')
       .map((image) => ({ imageId: image.imageId, imageUrl: image.imageUrl })),
   };
 }
@@ -67,7 +71,7 @@ export type RequestWaitingDisplay = {
 };
 
 // 24시간제 "HH:mm" (예정 시간용)
-function formatTime24(iso: string): string {
+export function formatTime24(iso: string): string {
   const date = new Date(iso);
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
@@ -120,7 +124,7 @@ export function formatMinutesLabel(minutes: number): string {
 }
 
 // "18분" / "1시간 5분" 형태로 변환. 음수(데이터 이상)면 표시하지 않는다.
-function formatDurationLabel(startIso: string, endIso: string): string | null {
+export function formatDurationLabel(startIso: string, endIso: string): string | null {
   const minutes = Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000);
   if (minutes < 0) return null;
   return formatMinutesLabel(minutes);
@@ -241,12 +245,26 @@ export type RequestSummaryDisplay = {
   message: string | null;
 };
 
-// "07/31 14:20" 형태. 목록 화면은 여러 날짜가 섞여 있어 월/일을 함께 보여준다.
+// 같은 연/월/일인지만 비교한다(시각은 무시).
+function isSameDate(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// "오늘 14:20" / "어제 14:20" 형태. 그보다 오래됐으면 "07/31 14:20"으로 날짜를 같이 보여준다.
 function formatDateTimeLabel(iso: string): string {
   const date = new Date(iso);
+  const now = new Date();
+  const time = formatTime24(iso);
+
+  if (isSameDate(date, now)) return `오늘 ${time}`;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameDate(date, yesterday)) return `어제 ${time}`;
+
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  return `${month}/${day} ${formatTime24(iso)}`;
+  return `${month}/${day} ${time}`;
 }
 
 // 요청 내역(목록) 화면에서 표시할 문자열로 변환
@@ -258,5 +276,50 @@ export function toRequestSummaryDisplay(summary: MoveRequestSummary): RequestSum
     statusLabel: REQUEST_STATUS_LABEL[summary.requestStatus],
     requestedAtLabel: formatDateTimeLabel(summary.requestedAt),
     message: summary.message,
+  };
+}
+
+// E-04(요청 목록) 카드가 쓰는 3단계 상태로 좁힌다. REMINDER_SENT도 응답 버튼은 그대로 있는 상태라 PENDING과 같이 묶는다.
+const LIST_STATUS: Record<MoveRequestStatus, RequestListStatus> = {
+  SENT: 'PENDING',
+  RESPONDED: 'RESPONDED',
+  REMINDER_SENT: 'PENDING',
+  COMPLETED: 'CLOSED',
+  NEED_ADMIN: 'CLOSED',
+  CANCELLED: 'CLOSED',
+};
+
+// 목록 카드는 개인정보 보호를 위해 번호판 뒷자리를 가려서 보여준다("12가3456" → "12가 ****").
+export function maskPlateNumber(plateNumber: string): string {
+  return plateNumber.replace(/\d+$/, ' ****');
+}
+
+// 요청 목록(E-04) 화면에서 표시할 문자열로 변환
+export function toRequestListItemDisplay(item: MoveRequestListItem): RequestListItemDisplay {
+  const display = toRequestSummaryDisplay(item);
+  const status = LIST_STATUS[item.requestStatus];
+  const situationLabel = item.zoneNumber
+    ? `${display.eventTypeLabel} · ${item.zoneNumber}`
+    : display.eventTypeLabel;
+
+  // COMPLETED만 "N분 만에 이동 완료"로 보여주고, NEED_ADMIN/CANCELLED는 기존 상태 문구를 그대로 쓴다.
+  const durationLabel =
+    item.requestStatus === 'COMPLETED' && item.resolvedAt
+      ? formatDurationLabel(item.requestedAt, item.resolvedAt)
+      : null;
+  const closedSummary =
+    status === 'CLOSED' ? (durationLabel ? `${durationLabel} 만에 이동 완료` : display.statusLabel) : undefined;
+
+  return {
+    requestId: display.requestId,
+    status,
+    timestampLabel: display.requestedAtLabel,
+    plateNumber: maskPlateNumber(display.plateNumber),
+    situationLabel,
+    closedSummary,
+    // RESPONDED일 때만 의미가 있다 — 카드 쪽에서 useCountdown으로 실시간 남은 시간을 계산한다.
+    dueAt: status === 'RESPONDED' ? item.dueAt : undefined,
+    respondedAt: status === 'RESPONDED' ? item.respondedAt : undefined,
+    estimatedMinutes: status === 'RESPONDED' ? item.estimatedMinutes : undefined,
   };
 }

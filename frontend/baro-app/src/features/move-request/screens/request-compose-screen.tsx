@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Screen, ScreenHeader, Stack } from '@/components/ui';
+import { FormErrorBanner, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import { RequestComposePhotoPicker } from '../components/request-compose/request-compose-photo-picker';
@@ -19,6 +19,21 @@ const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.4] as const;
 
 export default function RequestComposeScreen() {
   const form = useRequestComposeForm();
+
+  const handleSubmit = async () => {
+    const result = await form.submit();
+    if (!result) return;
+
+    router.replace({
+      pathname: '/resident/request-sent',
+      params: {
+        requestId: String(result.requestId),
+        plateNumber: form.plateNumber,
+        situationLabel: form.situation,
+        requestedAtLabel: result.requestedAt,
+      },
+    });
+  };
 
   return (
     <Screen
@@ -67,11 +82,17 @@ export default function RequestComposeScreen() {
       </Stack>
 
       <View style={styles.footer}>
+        {form.submitError ? <FormErrorBanner message={form.submitError} /> : null}
+
         <Text style={styles.privacyNotice}>요청자의 개인정보는 차주에게 공개되지 않습니다.</Text>
 
-        {/* TODO(request-compose): POST /move-requests 연동 전까지는 전송 동작이 없다. */}
-        <Pressable accessibilityRole="button" style={styles.submitButton}>
-          <Text style={styles.submitButtonText}>요청 전송</Text>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!form.canSubmit || form.isSubmitting}
+          style={[styles.submitButton, (!form.canSubmit || form.isSubmitting) && styles.submitButtonDisabled]}
+          onPress={handleSubmit}
+        >
+          <Text style={styles.submitButtonText}>{form.isSubmitting ? '전송 중...' : '요청 전송'}</Text>
         </Pressable>
       </View>
 
