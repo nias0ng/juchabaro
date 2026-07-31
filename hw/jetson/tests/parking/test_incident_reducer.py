@@ -139,6 +139,21 @@ def test_reopen_after_resolve_creates_new_incident() -> None:
     assert second.incident.revision == 1
 
 
+def test_repeated_match_after_reopen_produces_no_duplicate() -> None:
+    """재개된 사건도 중복 억제가 유지돼야 한다.
+
+    재개 경로는 CANDIDATE 사건을 새로 만들어 넣는다. 그 사건이 EDGE_CONFIRMED로
+    저장되지 않으면 이후 프레임마다 OPEN이 다시 나간다.
+    """
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    reducer.reduce(signal(key, matched=True, confirmable=True))
+    reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
+    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=20))
+    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=21)) is None
+    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=22)) is None
+
+
 def test_incident_id_is_deterministic() -> None:
     ids = []
     for _ in range(2):
