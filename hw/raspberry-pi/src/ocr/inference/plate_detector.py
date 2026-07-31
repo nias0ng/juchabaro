@@ -397,7 +397,7 @@ class YoloPlateDetector:
                     imgsz=self._imgsz,
                     conf=self._confidence_threshold,
                     max_det=self._max_detections,
-                    half=False,
+                    quantize=32,
                     verbose=False,
                 )
             )
