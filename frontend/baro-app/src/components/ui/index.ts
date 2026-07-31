@@ -15,3 +15,4 @@ export * from './stack';
 export * from './text-field';
 export * from './themed-text';
 export * from './themed-view';
+export * from './toggle-switch';
