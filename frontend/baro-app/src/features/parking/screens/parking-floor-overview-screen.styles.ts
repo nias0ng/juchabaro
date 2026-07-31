@@ -14,6 +14,7 @@ export const styles = StyleSheet.create({
   },
   content: {
     gap: Spacing.base + 2,
+    paddingTop: 20,
     paddingBottom: Spacing.xl,
   },
   mapCard: {
