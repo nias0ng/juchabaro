@@ -1,18 +1,30 @@
 """
 Raspberry Pi 입구 카메라의 번호판 OCR 파이프라인 공개 API.
 
-모델 loader와 세부 영상 처리 구현은 하위 패키지에 두고, 상위 서비스가
-필요로 하는 파이프라인과 핵심 입출력 타입만 이 패키지에서 공개한다.
+운영 caller는 factory로 모델과 기본 component를 한 번 조립한다.
+테스트와 debug viewer는 ``PlateOcrPipeline``에 fake 또는 traced
+component를 직접 주입할 수 있다.
 """
 
-from .pipeline import PipelinePolicy, PlateOcrPipeline
+from .errors import (
+    InvalidBurstError,
+    OcrPipelineError,
+    OcrRuntimeError,
+)
+from .factory import OcrRuntimeConfig, load_plate_ocr_pipeline
+from .pipeline import OcrPipelinePolicy, PlateOcrPipeline
 from .types import CapturedFrame, PlateReadResult, ReadStatus
 
 
 __all__ = [
     "CapturedFrame",
-    "PipelinePolicy",
+    "InvalidBurstError",
+    "OcrPipelinePolicy",
+    "OcrPipelineError",
+    "OcrRuntimeConfig",
+    "OcrRuntimeError",
     "PlateOcrPipeline",
     "PlateReadResult",
     "ReadStatus",
+    "load_plate_ocr_pipeline",
 ]

@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
+
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
 
     // TODO(N+1 최적화): 매핑 시 event/request(nullable ToOne) lazy 접근으로 N+1 발생.
@@ -20,4 +22,6 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     Page<Notification> findByUser(@Param("userId") Long userId,
                                   @Param("type") NotificationType type,
                                   Pageable pageable);
+
+    List<Notification> findByRequest_IdOrderBySentAtAsc(Long requestId);
 }

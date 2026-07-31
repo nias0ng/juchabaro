@@ -15,8 +15,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 
 @Tag(name = "HW-입차", description = "라즈베리파이 입차 판정 API (X-HW-API-Key 인증)")
+@SecurityRequirement(name = "hwApiKey")
 @RestController
 @RequestMapping("/hw/parking")
 @RequiredArgsConstructor

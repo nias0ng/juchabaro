@@ -1,32 +1,54 @@
-// Figma 목업의 네트워크 주석(POST /vehicles · ownerType 등)에서 유추한 임시 연결 해놔가지고 
-// 백엔드 차량 등록 API 명세가 확정되면 실제 필드명에 맞춰 다시 확인해야 함
-
+// POST /api/vehicles, GET /api/vehicles, GET /api/vehicles/{id} 요청/응답은 Swagger로 확인된 실제 명세.
 export type VehicleOwnerType = 'RESIDENT' | 'VISITOR';
 
 export type RegisterVehicleRequest = {
-  ownerType: VehicleOwnerType;
-  plateNumber: string;
-  carModel?: string;
-  visitDate?: string;
+  plateNumber: string; // 공백 없이. 예: "12가3456"
+  vehicleModel?: string;
+  isDisabledVehicle: boolean;
   isElectric: boolean;
-  isDisabled: boolean;
+  ownerType: VehicleOwnerType;
+  visitDate?: string; // YYYY-MM-DD
 };
 
-export type VehicleApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type VehicleStatus = 'ACTIVE' | 'DELETED' | 'PENDING';
 
+// GET /api/vehicles(목록) 응답 기준. POST/상세 응답과 필드가 조금씩 달라서(userId, createdAt 등은 상세에만 있음)
+// 카드 UI는 목록 조회 결과에 상세 조회로 얻은 값을 덧붙여서 채운다.
 export type VehicleResult = {
   vehicleId: number;
-  ownerType: VehicleOwnerType;
   plateNumber: string;
-  carModel: string | null;
-  visitDate: string | null;
+  ownerType: VehicleOwnerType;
+  status: VehicleStatus;
+  vehicleModel: string | null;
   isElectric: boolean;
-  isDisabled: boolean;
-  // TODO(vehicle-api): Figma H-02-1/H-02-2 카드에 표시되는 필드(위치/등록일/방문 시작·종료/승인 상태)는
-  // 백엔드 GET /vehicles 응답에 아직 없어 옵셔널로 추가해 둔다. 명세 확정되면 필수 여부와 필드명을 다시 확인해야 함.
+  isDisabledVehicle: boolean;
+  // GET /api/vehicles/{id}(상세 조회)에서만 채워진다. 목록만 조회한 시점엔 없다.
+  userId?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  // TODO(vehicle-api): 위치(parkingSpotCode), 방문 시작/종료(visitStartAt/visitEndAt)는
+  // 목록/상세/등록 응답 어디에도 없다. 다른 API가 있는지 확인 전까지는 카드에 "-"로 표시한다.
+  visitDate?: string | null;
   parkingSpotCode?: string | null;
-  registeredAt?: string | null;
   visitStartAt?: string | null;
   visitEndAt?: string | null;
-  approvalStatus?: VehicleApprovalStatus;
+};
+
+export type VehicleListResult = {
+  totalCount: number;
+  vehicles: VehicleResult[];
+};
+
+// GET /api/vehicles/{id} 응답.
+export type VehicleDetailResult = {
+  vehicleId: number;
+  userId: number;
+  plateNumber: string;
+  vehicleModel: string | null;
+  isDisabledVehicle: boolean;
+  isElectric: boolean;
+  ownerType: VehicleOwnerType;
+  status: VehicleStatus;
+  createdAt: string;
+  updatedAt: string;
 };

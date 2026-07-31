@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import {
@@ -29,12 +29,16 @@ const HEADER_TITLE: Record<RegisterCarStep, string> = {
 };
 
 export default function RegisterCarScreen() {
+  // 홈 화면 "방문 등록"에서 들어오면 ?carType=visitor로 넘어와서 방문 차량 입력부터 바로 시작한다.
+  const { carType: carTypeParam } = useLocalSearchParams<{ carType?: string }>();
+  const initialCarType = carTypeParam === 'visitor' ? 'visitor' : 'household';
+
   const handleRegistrationSuccess = () => {
     // 등록 완료 후 내 차량 관리 화면으로 돌아간다. 등록 화면은 back stack에 남기지 않는다.
     router.replace('/resident/vehicles');
   };
 
-  const registerCar = useRegisterCarForm(handleRegistrationSuccess);
+  const registerCar = useRegisterCarForm(handleRegistrationSuccess, initialCarType);
   const { step, isRegistering } = registerCar;
 
   const handleBack = () => {
@@ -42,7 +46,9 @@ export default function RegisterCarScreen() {
       registerCar.goToInputStep();
       return;
     }
-    if (step === 'visitor') {
+    // 세대 차량에서 직접 넘어온 경우에만 "뒤로"가 세대 차량으로 돌아간다. 방문 등록으로 바로
+    // 들어온 경우엔 방문 화면이 시작점이니, 뒤로가기는 홈으로 나가는 게 맞다.
+    if (step === 'visitor' && initialCarType === 'household') {
       registerCar.selectCarType('household');
       return;
     }
@@ -56,6 +62,7 @@ export default function RegisterCarScreen() {
         avoidKeyboard
         backgroundColor={Palette.gray50}
         edges={['top', 'right', 'left']}
+        contentContainerStyle={styles.content}
       >
         <ResponsiveContainer>
           <Stack>

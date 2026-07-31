@@ -107,6 +107,31 @@ public enum ErrorCode {
             "해당 알림에 접근할 권한이 없습니다."
     ),
 
+    MOVE_REQUEST_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "이동 요청을 찾을 수 없습니다."
+    ),
+
+    MOVE_REQUEST_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 이동 요청에 접근할 권한이 없습니다."
+    ),
+
+    MOVE_REQUEST_RESPONSE_INVALID(
+            HttpStatus.BAD_REQUEST,
+            "이동 요청 응답 값이 올바르지 않습니다."
+    ),
+
+    MOVE_REQUEST_RESPONSE_ACCESS_DENIED(
+            HttpStatus.FORBIDDEN,
+            "해당 이동 요청에 응답할 권한이 없습니다."
+    ),
+
+    MOVE_REQUEST_RESPONSE_NOT_ALLOWED(
+            HttpStatus.CONFLICT,
+            "현재 상태에서는 응답을 등록할 수 없습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
