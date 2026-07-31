@@ -1,6 +1,6 @@
 """fisheye 캘리브레이션 파일 로딩과 해상도 재스케일링.
 
-ai/tracking/calibration_utils.py에서 이관(T-04). 카메라·baseline 의존성이
+ai/tracking/calibration_utils.py에서 이관(428). 카메라·baseline 의존성이
 전혀 없는 순수 수학 함수라 그대로 옮겼다.
 """
 

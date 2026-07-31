@@ -1,4 +1,4 @@
-"""RemapFrameSource 회귀 테스트 (T-04, ai/training/tests/test_remap_frame_source.py에서 이관·확장).
+"""RemapFrameSource 회귀 테스트 (428, ai/training/tests/test_remap_frame_source.py에서 이관·확장).
 
 핵심 검증 전략: "출력이 입력과 다르다" 같은 약한 단정은 잘못된 변환도 통과시킨다.
 대신 **알려진 기하**를 쓴다 — 직선의 fisheye 투영(즉 휘어진 점열)을 입력으로 넣고,
@@ -249,7 +249,7 @@ def test_preserves_frame_id_and_timestamp(tmp_path):
 
 
 class TestNewCapturedFrameContract:
-    """T-04: RemapFrameSource는 실제 보정을 적용하는 쪽이라 calibration_id를
+    """428: RemapFrameSource는 실제 보정을 적용하는 쪽이라 calibration_id를
     채워야 한다 — 옛 baseline판은 이 필드 자체가 없었다."""
 
     def test_propagates_camera_id_from_inner_source(self, tmp_path):
@@ -277,8 +277,10 @@ class TestNewCapturedFrameContract:
 
     def test_calibration_id_changes_with_calibration_file(self, tmp_path):
         """구역 polygon과 좌표계가 다른데도 같은 calibration_id면 불일치를 놓친다."""
-        cal_a = write_calibration(tmp_path, name="a.json", K=[[260.0, 0.0, 205.0], [0.0, 260.0, 148.0], [0.0, 0.0, 1.0]])
-        cal_b = write_calibration(tmp_path, name="b.json", K=[[999.0, 0.0, 205.0], [0.0, 999.0, 148.0], [0.0, 0.0, 1.0]])
+        K_a = [[260.0, 0.0, 205.0], [0.0, 260.0, 148.0], [0.0, 0.0, 1.0]]
+        K_b = [[999.0, 0.0, 205.0], [0.0, 999.0, 148.0], [0.0, 0.0, 1.0]]
+        cal_a = write_calibration(tmp_path, name="a.json", K=K_a)
+        cal_b = write_calibration(tmp_path, name="b.json", K=K_b)
 
         image = np.full((FRAME_H, FRAME_W, 3), 200, np.uint8)
         source_a = RemapFrameSource(inner=FakeFrameSource(image), calibration_path=str(cal_a), balance=BALANCE)

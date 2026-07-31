@@ -2,7 +2,7 @@
 
 ai/tracking/replay/video_source.py(VideoFileFrameSource)와
 ai/tracking/jetson_vehicle_tracking_baseline.py(RemapFrameSource,
-calibration_fingerprint, normalize_fingerprint)에서 이관(T-04).
+calibration_fingerprint, normalize_fingerprint)에서 이관(428).
 
 옛 CapturedFrame(frame_id, captured_at, image 3개뿐)과 달리 새
 CapturedFrame(camera/models.py)은 camera_id/width/height/calibration_id가
@@ -13,7 +13,7 @@ CapturedFrame(camera/models.py)은 camera_id/width/height/calibration_id가
   calibration_fingerprint()의 해시로 채운다
 
 실카메라 입력(OpenCvWebcamFrameSource)은 이번 티켓 범위 밖이다 — 별도
-확인 후 별도 티켓으로 진행한다(팀 확인 완료, 2026-07-31).
+확인 후 별도 티켓(-427)으로 진행한다(팀 확인 완료).
 """
 
 from __future__ import annotations

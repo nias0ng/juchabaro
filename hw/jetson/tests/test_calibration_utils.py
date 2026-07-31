@@ -1,4 +1,4 @@
-"""calibration_utils.load_calibration/scale_K 회귀 테스트 (T-04, ai/training/tests에서 이관)."""
+"""calibration_utils.load_calibration/scale_K 회귀 테스트 (428, ai/training/tests에서 이관)."""
 
 import json
 

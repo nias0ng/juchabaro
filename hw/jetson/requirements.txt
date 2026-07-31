@@ -2,6 +2,6 @@ fastapi
 uvicorn[standard]
 pydantic-settings
 
-# camera 계층(T-04): 영상 decode, fisheye 보정
+# camera 계층(428): 영상 decode, fisheye 보정
 numpy==2.3.5
 opencv-python==4.10.0.84

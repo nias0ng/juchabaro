@@ -1,4 +1,4 @@
-"""VideoFileFrameSource 계약 테스트 (T-04, ai/training/tests/test_replay_video_source.py에서 이관·확장).
+"""VideoFileFrameSource 계약 테스트 (428, ai/training/tests/test_replay_video_source.py에서 이관·확장).
 
 핵심은 captured_at이 벽시계가 아니라 영상 시간이라는 것과, 새 CapturedFrame 계약
 (camera_id/width/height/calibration_id)이 채워지는지다.
@@ -132,7 +132,7 @@ def test_capture_before_open_raises(tmp_path):
 
 
 class TestNewCapturedFrameContract:
-    """T-04: 새 CapturedFrame 계약(camera_id/width/height/calibration_id)이
+    """428: 새 CapturedFrame 계약(camera_id/width/height/calibration_id)이
     실제로 채워지는지 확인한다 — 옛 baseline판은 이 필드들이 아예 없었다."""
 
     def test_carries_camera_id(self, tmp_path):

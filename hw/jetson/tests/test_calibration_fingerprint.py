@@ -1,4 +1,4 @@
-"""calibration_fingerprint/normalize_fingerprint 회귀 테스트 (T-04, ai/training/tests에서 이관).
+"""calibration_fingerprint/normalize_fingerprint 회귀 테스트 (428, ai/training/tests에서 이관).
 
 지문을 JSON·MySQL DECIMAL을 왕복시키면 dict 통째 비교가 두 군데서 깨진다:
 remap=False일 때의 키 개수 차이, 그리고 0.5 vs 0.500000. 그 두 함정을 고정한다.
