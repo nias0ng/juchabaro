@@ -5,5 +5,6 @@ public enum ParkingEventType {
     DOUBLE_PARKING,
     DISABLED_ZONE_VIOLATION,
     EV_OVERSTAY,
-    OUT_OF_ZONE
+    OUT_OF_ZONE,
+    ETC
 }
