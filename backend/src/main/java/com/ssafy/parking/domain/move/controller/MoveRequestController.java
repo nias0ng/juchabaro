@@ -49,11 +49,11 @@ public class MoveRequestController {
             @RequestParam(required = false) String targetPlateNumber,
             @RequestParam(required = false) ParkingEventType eventType,
             @RequestParam(required = false) String reason,
-            @RequestParam(required = false) Long zoneId,
+            @RequestParam(required = false) String zoneName,
             @RequestPart(value = "images", required = false) List<MultipartFile> images
     ) {
         MoveRequestCreateResponse result =
-                moveRequestService.create(userId, targetPlateNumber, eventType, reason, zoneId, images);
+                moveRequestService.create(userId, targetPlateNumber, eventType, reason, zoneName, images);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(HttpStatus.CREATED, "차량 이동 요청이 전송되었습니다.", result));
     }

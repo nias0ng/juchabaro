@@ -48,6 +48,26 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+## 테스트 실행
+
+### 개발 의존성 설치
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+### 실행
+
+```bash
+python -m pytest
+```
+
+`pyproject.toml`이 `pythonpath`를 잡아주므로 레포 루트에서 실행해도 된다.
+
+```bash
+python -m pytest hw/jetson/tests
+```
+
 ## 환경 변수 설정
 
 ```bash
