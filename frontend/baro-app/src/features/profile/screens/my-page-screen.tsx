@@ -42,7 +42,7 @@ export default function MyPageScreen() {
   const vehicleSubtitle = isVehicleLoading
     ? '차량 정보를 불러오는 중입니다'
     : primaryVehicle
-      ? `대표 차량 · ${primaryVehicle.carModel ?? primaryVehicle.plateNumber}`
+      ? `대표 차량 · ${primaryVehicle.vehicleModel ?? primaryVehicle.plateNumber}`
       : '등록된 차량이 없습니다';
 
   const handleLogout = async () => {

@@ -3,9 +3,8 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 
-import { Screen } from '@/components/ui';
+import { InfoRowCard, Screen } from '@/components/ui';
 import { useMoveRequestDetail } from '@/features/move-request/hooks/use-move-request-detail';
-import { ResponseSummaryCard } from '@/features/notification/components/response-complete/response-summary-card';
 import { RedirectCountdown } from '@/features/notification/components/response-complete/redirect-countdown';
 import { useRedirectCountdown } from '@/features/notification/hooks/use-redirect-countdown';
 import { formatEstimatedMinutesLabel, formatTimeLabel } from '@/features/notification/utils/notification';
@@ -63,11 +62,16 @@ export default function ResponseCompleteScreen() {
           </Text>
 
           <View style={styles.summaryMargin}>
-            <ResponseSummaryCard
-              responseLabel={formatEstimatedMinutesLabel(latestResponse.estimatedMinutes)}
-              vehicleLabel={`${detail.targetVehicle.plateNumber} · ${detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL}`}
-              dueAtLabel={formatTimeLabel(detail.dueAt)}
-              deliveredAtLabel={formatTimeLabel(latestResponse.respondedAt)}
+            <InfoRowCard
+              rows={[
+                { label: '내 응답', value: formatEstimatedMinutesLabel(latestResponse.estimatedMinutes) },
+                {
+                  label: '차량',
+                  value: `${detail.targetVehicle.plateNumber} · ${detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL}`,
+                },
+                { label: '이동 기한', value: formatTimeLabel(detail.dueAt) },
+              ]}
+              statusRow={{ label: '요청자에게 전달 완료', time: formatTimeLabel(latestResponse.respondedAt) }}
             />
           </View>
 
