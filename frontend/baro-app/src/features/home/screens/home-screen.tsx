@@ -25,7 +25,7 @@ const quickActions: QuickAction[] = [
     label: '이동\n요청',
     background: Palette.mint100,
     iconColor: Palette.emerald500,
-    onPress: () => router.push('/resident/requests'),
+    onPress: () => router.push('/resident/request-compose'),
   },
   {
     label: '내\n차량',
@@ -33,7 +33,12 @@ const quickActions: QuickAction[] = [
     iconColor: Palette.violet500,
     onPress: () => router.push('/resident/vehicles'),
   },
-  { label: '방문\n등록', background: Palette.peach100, iconColor: Palette.orange400 },
+  {
+    label: '방문\n등록',
+    background: Palette.peach100,
+    iconColor: Palette.orange400,
+    onPress: () => router.push('/auth/register-car?carType=visitor'),
+  },
   { label: '위반\n이력', background: Palette.sky100, iconColor: Palette.blue500 },
 ];
 

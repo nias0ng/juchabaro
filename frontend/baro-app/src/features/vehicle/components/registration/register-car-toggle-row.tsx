@@ -1,6 +1,6 @@
-import { Switch, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
-import { Palette } from '@/styles';
+import { ToggleSwitch } from '@/components/ui';
 
 import { styles } from './register-car-toggle-row.styles';
 
@@ -18,12 +18,7 @@ export function RegisterCarToggleRow({ label, description, value, onChange }: Re
         <Text style={styles.label}>{label}</Text>
         <Text style={styles.description}>{description}</Text>
       </View>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        trackColor={{ false: Palette.gray200, true: Palette.violet500 }}
-        thumbColor={Palette.white}
-      />
+      <ToggleSwitch value={value} onChange={onChange} />
     </View>
   );
 }

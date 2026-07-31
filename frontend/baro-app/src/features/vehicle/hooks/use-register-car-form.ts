@@ -11,7 +11,13 @@ import type {
   RegisterCarType,
   VisitorCarFormValues,
 } from '../types/register-car';
-import { isHouseholdCarFormValid, isVisitorCarFormValid, toVisitDateString } from '../validation/register-car';
+import {
+  isHouseholdCarFormValid,
+  isVisitorCarFormValid,
+  toApiPlateNumber,
+  toApiVisitDate,
+  toVisitDateString,
+} from '../validation/register-car';
 
 const INITIAL_HOUSEHOLD_VALUES: HouseholdCarFormValues = {
   plateNumber: '',
@@ -30,12 +36,13 @@ const INITIAL_VISITOR_VALUES: VisitorCarFormValues = {
 /**
  * 차량 등록 화면(G-01~G-03)의 입력값과 단계 이동, 등록 완료 처리(G-04)를 함께 관리한다.
  * 화면 이동(성공 시 어디로 갈지)은 onRegistered로 주입받아 화면 쪽에서 결정한다.
+ * initialCarType을 주면 그 성격으로 화면이 처음부터 열린다(예: 홈 화면 "방문 등록"에서 바로 진입).
  */
-export function useRegisterCarForm(onRegistered: () => void) {
+export function useRegisterCarForm(onRegistered: () => void, initialCarType: RegisterCarType = 'household') {
   const { accessToken } = useAuth();
 
-  const [step, setStep] = useState<RegisterCarStep>('household');
-  const [carType, setCarType] = useState<RegisterCarType>('household');
+  const [step, setStep] = useState<RegisterCarStep>(initialCarType);
+  const [carType, setCarType] = useState<RegisterCarType>(initialCarType);
   const [householdValues, setHouseholdValues] = useState(INITIAL_HOUSEHOLD_VALUES);
   const [visitorValues, setVisitorValues] = useState(INITIAL_VISITOR_VALUES);
   const [isRegistering, setIsRegistering] = useState(false);
@@ -111,10 +118,10 @@ export function useRegisterCarForm(onRegistered: () => void) {
         await registerVehicle(
           {
             ownerType: 'RESIDENT',
-            plateNumber: householdValues.plateNumber,
-            carModel: householdValues.carModel,
+            plateNumber: toApiPlateNumber(householdValues.plateNumber),
+            vehicleModel: householdValues.carModel,
             isElectric: householdValues.isElectric,
-            isDisabled: householdValues.isDisabled,
+            isDisabledVehicle: householdValues.isDisabled,
           },
           accessToken ?? undefined,
         );
@@ -122,10 +129,10 @@ export function useRegisterCarForm(onRegistered: () => void) {
         await registerVehicle(
           {
             ownerType: 'VISITOR',
-            plateNumber: visitorValues.plateNumber,
-            visitDate: visitorValues.visitDate,
+            plateNumber: toApiPlateNumber(visitorValues.plateNumber),
+            visitDate: toApiVisitDate(visitorValues.visitDate),
             isElectric: visitorValues.isElectric,
-            isDisabled: visitorValues.isDisabled,
+            isDisabledVehicle: visitorValues.isDisabled,
           },
           accessToken ?? undefined,
         );

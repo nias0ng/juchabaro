@@ -1,10 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
-
-/** 디자인의 알림 배너 색상은 기존 토큰과 일치하지 않는 톤이라 signup 화면들처럼 로컬 상수로 둔다. */
-const CONFIRM_NOTE_BACKGROUND = '#fff8ec';
-const CONFIRM_NOTE_TEXT = '#a35b3d';
+import { FontWeight, Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   heading: {
@@ -65,17 +61,5 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
-  },
-  noticeBanner: {
-    width: '100%',
-    borderRadius: Radius.lg,
-    backgroundColor: CONFIRM_NOTE_BACKGROUND,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  noticeText: {
-    fontSize: 11,
-    lineHeight: 18.7,
-    color: CONFIRM_NOTE_TEXT,
   },
 });

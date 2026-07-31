@@ -4,7 +4,7 @@
     "slug": "baro-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/baro-icon.png",
     "scheme": "baroapp",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -12,12 +12,11 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/images/baro-icon.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.chaewon105steam.baroapp"
     },
     "web": {
       "output": "static",
@@ -33,11 +32,24 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "이동 요청 작성 시 현장 사진을 첨부하기 위해 앨범 접근 권한이 필요합니다.",
+          "cameraPermission": "이동 요청 작성 시 현장 사진을 촬영하기 위해 카메라 접근 권한이 필요합니다."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "89b7d75b-0f82-4629-aaf7-523c122d94fc"
+      }
     }
   }
 }

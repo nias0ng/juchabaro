@@ -68,12 +68,6 @@ export function RegisterCarConfirmView({
         <SummaryRow label="장애인 등록 차량" value={isDisabled ? '해당' : '해당 없음'} />
       </LinearGradient>
 
-      <View style={styles.noticeBanner}>
-        <Text style={styles.noticeText}>
-          내 정보 화면에서 차량 정보를 수정할 수 있습니다.
-        </Text>
-      </View>
-
       <Stack gap={Spacing.sm}>
         <AppButton
           label="등록 완료하기"
