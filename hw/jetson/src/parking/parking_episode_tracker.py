@@ -143,8 +143,10 @@ class InMemoryParkingEpisodeTracker:
 
         if slot.episode.state is ParkingState.STOP_PENDING:
             return self._advance_stop_pending(slot, signal, observed_at)
-        # PARKED/MOVING 전이는 Task 2에서 추가한다. 그때까지 이 두 상태는
-        # 현재 에피소드를 그대로 돌려준다 — Task 2의 테스트가 이를 깨뜨린다.
+        if slot.episode.state is ParkingState.PARKED:
+            return self._advance_parked(slot, signal, observed_at)
+        if slot.episode.state is ParkingState.MOVING:
+            return self._advance_departing(slot, signal, observed_at)
         return slot.episode
 
     def _open_candidate(
@@ -192,6 +194,59 @@ class InMemoryParkingEpisodeTracker:
                 slot.episode, state=ParkingState.PARKED, parked_at=observed_at
             )
             slot.restart(observed_at)
+        return slot.episode
+
+    def _advance_parked(
+        self, slot: _EpisodeSlot, signal: MotionSignal, observed_at: datetime
+    ) -> ParkingEpisode:
+        if signal is MotionSignal.STATIONARY:
+            # PARKED에서는 누적할 전이가 없다. 사슬만 이어 둔다.
+            slot.last_observed_at = observed_at
+            slot.episode = replace(
+                slot.episode, last_signal=signal, last_observed_at=observed_at
+            )
+            return slot.episode
+
+        slot.move_candidate_at = observed_at
+        slot.episode = replace(
+            slot.episode,
+            state=ParkingState.MOVING,
+            last_signal=signal,
+            last_observed_at=observed_at,
+        )
+        slot.restart(observed_at)
+        if self._move_confirm_seconds <= 0.0:
+            slot.episode = replace(
+                slot.episode, state=ParkingState.ENDED, ended_at=observed_at
+            )
+        return slot.episode
+
+    def _advance_departing(
+        self, slot: _EpisodeSlot, signal: MotionSignal, observed_at: datetime
+    ) -> ParkingEpisode:
+        if signal is MotionSignal.STATIONARY:
+            # 이동이 확인되지 않았다. 주차 상태로 되돌린다 — parked_at은 유지된다.
+            slot.move_candidate_at = None
+            slot.episode = replace(
+                slot.episode,
+                state=ParkingState.PARKED,
+                last_signal=signal,
+                last_observed_at=observed_at,
+            )
+            slot.restart(observed_at)
+            return slot.episode
+
+        accumulated = slot.accumulate(observed_at)
+        slot.episode = replace(
+            slot.episode, last_signal=signal, last_observed_at=observed_at
+        )
+        if accumulated >= self._move_confirm_seconds:
+            slot.episode = replace(
+                slot.episode,
+                state=ParkingState.ENDED,
+                # 실제로 움직이기 시작한 시점을 종료 시각으로 쓴다.
+                ended_at=slot.move_candidate_at or observed_at,
+            )
         return slot.episode
 
     @staticmethod

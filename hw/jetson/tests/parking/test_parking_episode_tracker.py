@@ -153,3 +153,93 @@ def test_negative_thresholds_are_rejected() -> None:
         InMemoryParkingEpisodeTracker(parked_after_seconds=-1.0, move_confirm_seconds=3.0)
     with pytest.raises(ValueError, match="음수"):
         InMemoryParkingEpisodeTracker(parked_after_seconds=600.0, move_confirm_seconds=-1.0)
+
+
+def test_moving_after_parked_enters_departure_candidate() -> None:
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    episode = feed(tracker, MotionSignal.MOVING, 2.0)
+    assert episode.state is ParkingState.MOVING
+    assert episode.ended_at is None
+    assert episode.parked_at == at(1.0)
+
+
+def test_single_moving_frame_does_not_end_the_episode() -> None:
+    """motion_estimator에 평활화가 없어 잡음 한 프레임이 MOVING을 낸다.
+
+    즉시 종료하면 장기 주차가 잡음으로 끊기고 사건이 깜빡인다.
+    """
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    episode = feed(tracker, MotionSignal.STATIONARY, 2.5)
+    assert episode.state is ParkingState.PARKED
+    assert episode.ended_at is None
+    # 원래 확정 시각이 보존된다 — 새 에피소드가 아니다.
+    assert episode.parked_at == at(1.0)
+
+
+def test_moving_for_confirm_seconds_ends_the_episode() -> None:
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    episode = feed(tracker, MotionSignal.MOVING, 5.0)
+    assert episode.state is ParkingState.ENDED
+
+
+def test_ended_at_is_when_movement_started() -> None:
+    """확인시간은 판정 지연이지 주차의 일부가 아니다."""
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    episode = feed(tracker, MotionSignal.MOVING, 5.0)
+    assert episode.ended_at == at(2.0)
+
+
+def test_unknown_during_departure_does_not_advance_the_move_timer() -> None:
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.UNKNOWN, 100.0)
+    assert feed(tracker, MotionSignal.MOVING, 100.5).state is ParkingState.MOVING
+    assert feed(tracker, MotionSignal.MOVING, 103.5).state is ParkingState.ENDED
+
+
+def test_unknown_while_parked_does_not_end_the_episode() -> None:
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    episode = feed(tracker, MotionSignal.UNKNOWN, 10000.0)
+    assert episode.state is ParkingState.PARKED
+    assert episode.parked_at == at(1.0)
+
+
+def test_restop_after_end_creates_a_new_episode() -> None:
+    tracker = make_tracker(parked=1.0, move=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    first = feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.MOVING, 3.0)  # ENDED
+    feed(tracker, MotionSignal.STATIONARY, 10.0)
+    second = feed(tracker, MotionSignal.STATIONARY, 11.0)
+    assert second.episode_id != first.episode_id
+    assert second.state is ParkingState.PARKED
+    assert second.parked_at == at(11.0)
+
+
+def test_departure_timer_restarts_after_returning_to_parked() -> None:
+    """되돌아왔다가 다시 움직이면 이동 확인이 처음부터 다시 쌓인다."""
+    tracker = make_tracker(parked=1.0, move=3.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.MOVING, 4.0)   # 누적 2.0, 아직 미달
+    feed(tracker, MotionSignal.STATIONARY, 5.0)  # PARKED 복귀
+    feed(tracker, MotionSignal.MOVING, 6.0)   # 새 후보
+    assert feed(tracker, MotionSignal.MOVING, 8.0).state is ParkingState.MOVING
+    assert feed(tracker, MotionSignal.MOVING, 9.0).state is ParkingState.ENDED
