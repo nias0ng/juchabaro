@@ -691,6 +691,8 @@ class TrackState:
     stationary_since: datetime
     plate_number: str | None = None
     open_violation: ViolationStatus = ViolationStatus.NONE
+    # 매칭된 EntryEvent.gate_tracking_id(383번) — 라즈베리파이 발급 UUID.
+    gate_tracking_id: str | None = None
     # (319 리뷰 재검토 2차, C-1) 중복 발행 판정 키는 status 단독이 아니라
     # (status, zone_id) 쌍이다. status만 보면 같은 위반 종류로 구역만 옮긴 경우
     # (AISLE-1을 막던 차가 AISLE-2로 이동)가 "같은 사건 계속"으로 묻혀 서버가
@@ -784,10 +786,19 @@ class ViolationEvent:
 
 @dataclass(frozen=True)
 class EntryEvent:
-    """게이트 OCR이 인식한 입차 이벤트(§2.2). 실제 필드 형식은 OCR 팀과 확정 필요."""
+    """게이트 OCR이 인식한 입차 이벤트(§2.2).
+
+    `gate_tracking_id`(383번)는 라즈베리파이가 입차 건마다 발급하는 UUID다.
+    ByteTrack이 이 트랙에 부여하는 정수 `track_id`와는 이름이 비슷하지만
+    완전히 다른 값이다 — 게이트 쪽 사건 식별자와 카메라 쪽 추적 식별자를
+    혼동하지 않도록 필드명을 다르게 뒀다. 매칭에는 쓰이지 않고(매칭은
+    `plate_number`/`captured_at`만 사용), 매칭 성공 시 `TrackState`에
+    실려 이후 위반 이벤트를 원래 입차 건과 대조할 수 있게 한다.
+    """
 
     plate_number: str
     captured_at: datetime
+    gate_tracking_id: str | None = None
 
 
 def to_jsonable(value: Any) -> Any:
@@ -1105,7 +1116,9 @@ class ViolationMonitor:
             return
         matched = eligible[0]
         self._pending_entry_events.remove(matched)
-        self._tracks[detection.track_id].plate_number = matched.plate_number
+        state = self._tracks[detection.track_id]
+        state.plate_number = matched.plate_number
+        state.gate_tracking_id = matched.gate_tracking_id
 
     def track_snapshot(self, now: datetime) -> dict[int, TrackSnapshot]:
         """현재 트랙별 정차 상태를 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다.
