@@ -14,13 +14,26 @@ T-09), `ev_overstay`/`bad_parking` 규칙, `assignment_resolver`(T-10)는
 
 이 순서를 어기면(특히 3번을 빠뜨리거나 2번보다 먼저 부르면) 사건이 영원히
 닫히지 않는다 — `test_zone_visit_incident_flow.py`가 그 결함을 고정해 뒀다.
+
+**해소 판정은 스냅샷을 쓰지 않는다(445).** 예전엔 `prune()`이 반환한 강제
+종료 방문을 판정하려고 "마지막으로 본 스냅샷" 캐시(`_last_snapshot`)를
+들고 있었다. 그런데 추적이 끊긴 차량은 같은 프레임의 `ended_vehicle_ids`로
+전달되고, 그 처리가 캐시를 즉시 비웠다 — 그 뒤 `prune()`이 몇 분 뒤(기본
+`stale_after_seconds=300`) 그 방문을 강제 종료로 반환할 때는 캐시가 이미
+비어 있어 판정 자체가 생략되고, 열려 있던 사건이 영원히 RESOLVE되지
+않았다(리뷰 지적). `ZoneVisit` 자체에 `physical_vehicle_id`가 이미 있으므로
+`restricted_zone.resolve_closed()`는 스냅샷이 필요 없고, 이 버그가 구조적으로
+발생하지 않는다.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.parking.geometry import overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
+    IncidentSignal,
     IncidentTransition,
     ParkingPipelineResult,
     PresenceSignal,
@@ -30,7 +43,7 @@ from src.parking.rules import restricted_zone
 from src.parking.rules.models import RuleContext
 from src.parking.zone_registry import ParkingZone, ZoneRegistry
 from src.parking.zone_visit_tracker import ZoneVisitTracker
-from src.tracking.models import MotionSignal, PhysicalVehicleId, PhysicalVehicleSnapshot, TrackingBatch
+from src.tracking.models import MotionSignal, PhysicalVehicleSnapshot, TrackingBatch
 
 
 class ParkingPipeline:
@@ -48,17 +61,9 @@ class ParkingPipeline:
         self._zone_visit_tracker = zone_visit_tracker
         self._incident_reducer = incident_reducer
         self._min_overlap_ratio = min_overlap_ratio
-        # 추적이 끊긴 차량은 prune()이 반환하는 방문에만 등장하고 그 프레임의
-        # TrackingBatch.vehicles에는 없다 — 규칙 평가에 필요한 RuleContext.vehicle을
-        # 채우려면 그 차량을 마지막으로 본 스냅샷을 들고 있어야 한다
-        # (test_zone_visit_incident_flow.py가 실제 조립기의 요구사항으로 명시).
-        self._last_snapshot: dict[PhysicalVehicleId, PhysicalVehicleSnapshot] = {}
 
     def process(self, batch: TrackingBatch) -> ParkingPipelineResult:
         """한 프레임의 `TrackingBatch`를 처리해 방문 갱신과 사건 전이를 반환한다."""
-
-        for vehicle in batch.vehicles:
-            self._last_snapshot[vehicle.physical_vehicle_id] = vehicle
 
         zone_visit_updates: list[ZoneVisit] = []
         for vehicle in batch.vehicles:
@@ -75,20 +80,12 @@ class ParkingPipeline:
         incident_transitions: list[IncidentTransition] = []
         for vehicle in batch.vehicles:
             visits = self._zone_visit_tracker.active_visits(vehicle.physical_vehicle_id)
-            incident_transitions += self._judge(vehicle, visits)
+            incident_transitions += self._judge_open(vehicle, visits)
+            incident_transitions += self._judge_resolved(visits, observed_at=vehicle.observed_at)
 
-        for visit in self._zone_visit_tracker.prune(batch.observed_at):
-            zone_visit_updates.append(visit)
-            snapshot = self._last_snapshot.pop(visit.physical_vehicle_id, None)
-            if snapshot is not None:
-                incident_transitions += self._judge(snapshot, (visit,))
-
-        for ended_id in batch.ended_vehicle_ids:
-            # 구역을 한 번도 밟지 않은 채 사라진 차량은 prune()이 절대 돌려주지
-            # 않는다(방문 자체가 없었으므로) — 그대로 두면 이 캐시가 차량이
-            # 지나갈 때마다 무한히 커진다. tracking 계층이 이미 "끝났다"고
-            # 확정한 신호이므로 여기서 직접 정리한다.
-            self._last_snapshot.pop(ended_id, None)
+        pruned = self._zone_visit_tracker.prune(batch.observed_at)
+        zone_visit_updates.extend(pruned)
+        incident_transitions += self._judge_resolved(pruned, observed_at=batch.observed_at)
 
         return ParkingPipelineResult(
             zone_visit_updates=tuple(zone_visit_updates),
@@ -103,7 +100,7 @@ class ParkingPipeline:
         ratio = overlap_ratio(zone.polygon, vehicle.bbox)
         return PresenceSignal.PRESENT if ratio >= self._min_overlap_ratio else PresenceSignal.ABSENT
 
-    def _judge(
+    def _judge_open(
         self, vehicle: PhysicalVehicleSnapshot, visits: tuple[ZoneVisit, ...]
     ) -> list[IncidentTransition]:
         if not visits:
@@ -117,8 +114,19 @@ class ParkingPipeline:
             zones=self._zones,
             observed_at=vehicle.observed_at,
         )
+        return self._reduce(restricted_zone.evaluate_open(context))
+
+    def _judge_resolved(
+        self, visits: tuple[ZoneVisit, ...], *, observed_at: datetime
+    ) -> list[IncidentTransition]:
+        if not visits:
+            return []
+        signals = restricted_zone.resolve_closed(visits=visits, zones=self._zones, observed_at=observed_at)
+        return self._reduce(signals)
+
+    def _reduce(self, signals: tuple[IncidentSignal, ...]) -> list[IncidentTransition]:
         transitions: list[IncidentTransition] = []
-        for signal in restricted_zone.evaluate(context):
+        for signal in signals:
             transition = self._incident_reducer.reduce(signal)
             if transition is not None:
                 transitions.append(transition)
