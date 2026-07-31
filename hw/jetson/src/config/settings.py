@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
 
+    # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
+    # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다 —
+    # motion_estimator에 평활화가 없어 이 값이 잡음으로 인한 주차 종료를 막는
+    # 유일한 방어선이다.
+    parking_confirm_seconds: float
+    parking_move_confirm_seconds: float
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
