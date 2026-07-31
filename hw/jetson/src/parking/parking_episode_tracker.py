@@ -1,9 +1,18 @@
 """10분 연속 정지 정책을 담당하는 주차 에피소드 상태축의 구현 계약.
 
 STATIONARY 관측만 정지 시간에 누적하고 기본 600초에 도달하면 PARKED가 된다.
-MOVING은 정지 후보를 초기화하거나 확정된 에피소드를 종료한다. UNKNOWN은
-정지 시간에 포함하지 않고 기존 상태도 즉시 종료하지 않는다. 종료 뒤 다시
-정지한 차량에는 새로운 parking_episode_id를 발급한다.
+누적은 **관측된 시간**의 합이며 벽시계 경과가 아니다 — 관측 공백(UNKNOWN)을
+확정 시간에 넣으면 카메라 장애가 주차 확정을 앞당긴다.
+
+MOVING은 정지 후보(STOP_PENDING)를 즉시 초기화하지만, 확정된 에피소드는
+`move_confirm_seconds`만큼 이동이 관측돼야 종료한다(T-09에서 정정). 즉시
+종료하지 않는 이유는 motion_estimator(436)에 평활화가 없어 bbox가
+movement_epsilon만 흔들려도 MOVING이 나오기 때문이다 — 즉시 종료하면 장기
+주차가 잡음 한 프레임으로 끊기고, 열린 사건이 해소된 뒤 600초를 새로 쌓아
+다시 열린다.
+
+UNKNOWN은 정지 시간에 포함하지 않고 기존 상태도 즉시 종료하지 않는다. 종료 뒤
+다시 정지한 차량에는 새로운 parking_episode_id를 발급한다.
 """
 
 from __future__ import annotations
@@ -32,7 +41,12 @@ class ParkingEpisodeTracker(Protocol):
         signal: MotionSignal,
         observed_at: datetime,
     ) -> ParkingEpisode | None:
-        """현재 또는 방금 종료된 에피소드를 반환하고 없으면 None을 반환한다."""
+        """현재 또는 방금 종료된 에피소드를 반환하고 없으면 None을 반환한다.
+
+        종료(ENDED)는 규칙이 `matched=False`를 내는 근거이므로 반드시 판정에
+        도달해야 한다. 관측이 계속되는 차량은 이 반환값으로, 추적이 끊긴
+        차량은 `prune()`의 반환값으로 전달된다.
+        """
 
         ...
 
@@ -190,6 +204,9 @@ class InMemoryParkingEpisodeTracker:
             last_observed_at=observed_at,
         )
         if accumulated >= self._parked_after_seconds:
+            # "정지 시작 + 600초"가 아니라 이 확정 관측 시각을 쓴다. 관측
+            # 공백이 있으면 "시작 + 600초"는 실제로 관측된 적 없는 벽시계
+            # 값이 되기 때문이다.
             slot.episode = replace(
                 slot.episode, state=ParkingState.PARKED, parked_at=observed_at
             )
@@ -248,6 +265,53 @@ class InMemoryParkingEpisodeTracker:
                 ended_at=slot.move_candidate_at or observed_at,
             )
         return slot.episode
+
+    def active_episode(self, physical_vehicle_id: PhysicalVehicleId) -> ParkingEpisode | None:
+        """이 차량의 현재 에피소드를 반환한다. 순수 읽기이며 상태를 바꾸지 않는다.
+
+        `ENDED` 에피소드도 포함한다 — 규칙이 `matched=False`를 내야
+        `IncidentReducer`가 `RESOLVE`를 만들 수 있고, 그러려면 종료를 봐야 한다.
+        판정이 끝나면 `prune()`이 그 슬롯을 지운다.
+        """
+
+        slot = self._slots.get(physical_vehicle_id)
+        return None if slot is None else slot.episode
+
+    def prune(self, now: datetime) -> tuple[ParkingEpisode, ...]:
+        """판정이 끝난 뒤 프레임마다 한 번 호출한다. 강제 종료한 에피소드를 반환한다.
+
+        두 가지를 한다.
+
+        1. 이미 `ENDED`인 슬롯을 지운다. 판정은 그 프레임에 `active_episode()`로
+           이미 받아 갔다.
+        2. `stale_after_seconds` 동안 `update()`가 오지 않은 열린 슬롯을 강제
+           종료하고 **반환한다.** 반환값을 버리면 그 차량의 열린 사건이 영원히
+           닫히지 않는다 — 조립자는 이번 프레임에 관측된 차량만 순회하므로
+           사라진 차량의 종료는 이 반환값으로만 판정에 도달한다.
+
+        멱등하지 않다. 한 프레임에 두 번 부르면 첫 호출이 강제 종료한 슬롯을
+        두 번째 호출의 1단계가 지워, 판정이 그것을 보기 전에 사라진다.
+        """
+
+        for vehicle_id, slot in list(self._slots.items()):
+            if slot.is_closed():
+                del self._slots[vehicle_id]
+
+        if self._stale_after_seconds <= 0.0:
+            return ()
+
+        forced: list[ParkingEpisode] = []
+        for vehicle_id, slot in list(self._slots.items()):
+            if (now - slot.last_updated_at).total_seconds() < self._stale_after_seconds:
+                continue
+            ended = replace(
+                slot.episode,
+                state=ParkingState.ENDED,
+                ended_at=slot.move_candidate_at or slot.episode.last_observed_at,
+            )
+            forced.append(ended)
+            del self._slots[vehicle_id]
+        return tuple(forced)
 
     @staticmethod
     def _make_episode_id(

@@ -243,3 +243,85 @@ def test_departure_timer_restarts_after_returning_to_parked() -> None:
     feed(tracker, MotionSignal.MOVING, 6.0)   # 새 후보
     assert feed(tracker, MotionSignal.MOVING, 8.0).state is ParkingState.MOVING
     assert feed(tracker, MotionSignal.MOVING, 9.0).state is ParkingState.ENDED
+
+
+def test_active_episode_returns_none_when_no_episode() -> None:
+    tracker = make_tracker()
+    assert tracker.active_episode(CAR) is None
+
+
+def test_active_episode_returns_the_current_episode() -> None:
+    tracker = make_tracker(parked=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    episode = tracker.active_episode(CAR)
+    assert episode is not None
+    assert episode.state is ParkingState.PARKED
+
+
+def test_active_episode_is_a_pure_read() -> None:
+    tracker = make_tracker(parked=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    assert tracker.active_episode(CAR) == tracker.active_episode(CAR)
+
+
+def test_ended_episode_is_visible_until_pruned() -> None:
+    """규칙이 matched=False를 내려면 ENDED를 봐야 한다."""
+    tracker = make_tracker(parked=1.0, move=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.MOVING, 3.0)
+    assert tracker.active_episode(CAR).state is ParkingState.ENDED
+    tracker.prune(at(4.0))
+    assert tracker.active_episode(CAR) is None
+
+
+def test_prune_deletes_ended_slots() -> None:
+    tracker = make_tracker(parked=1.0, move=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.MOVING, 3.0)
+    assert tracker.prune(at(4.0)) == ()
+    assert tracker.active_episode(CAR) is None
+
+
+def test_prune_force_ends_a_lost_track_and_returns_it() -> None:
+    """추적이 끊긴 차량의 사건이 영원히 열린 채 남으면 안 된다.
+
+    조립자는 이번 프레임에 관측된 차량만 순회하므로, 사라진 차량의 종료는
+    prune()의 반환값으로만 판정에 도달할 수 있다.
+    """
+    tracker = InMemoryParkingEpisodeTracker(
+        parked_after_seconds=1.0, move_confirm_seconds=1.0, stale_after_seconds=30.0
+    )
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    assert tracker.prune(at(20.0)) == ()          # 아직 방치 아님
+    forced = tracker.prune(at(40.0))
+    assert len(forced) == 1
+    assert forced[0].state is ParkingState.ENDED
+    assert forced[0].ended_at == at(1.0)          # 마지막으로 관측된 시각
+    assert tracker.active_episode(CAR) is None    # 같은 호출에서 슬롯도 지운다
+
+
+def test_prune_returns_nothing_when_stale_after_is_zero() -> None:
+    tracker = InMemoryParkingEpisodeTracker(
+        parked_after_seconds=1.0, move_confirm_seconds=1.0, stale_after_seconds=0.0
+    )
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    assert tracker.prune(at(9999.0)) == ()
+
+
+def test_prune_does_not_touch_a_recently_observed_vehicle() -> None:
+    tracker = InMemoryParkingEpisodeTracker(
+        parked_after_seconds=1.0, move_confirm_seconds=1.0, stale_after_seconds=30.0
+    )
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.STATIONARY, 35.0)
+    assert tracker.prune(at(40.0)) == ()
+    assert tracker.active_episode(CAR).state is ParkingState.PARKED
