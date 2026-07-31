@@ -325,3 +325,19 @@ def test_prune_does_not_touch_a_recently_observed_vehicle() -> None:
     feed(tracker, MotionSignal.STATIONARY, 35.0)
     assert tracker.prune(at(40.0)) == ()
     assert tracker.active_episode(CAR).state is ParkingState.PARKED
+
+
+def test_closed_slot_self_cleans_on_next_update_without_prune() -> None:
+    """prune()을 빠뜨려도 다음 관측이 스스로 슬롯을 정리한다(백스톱).
+
+    ZoneVisitTracker의 동일한 백스톱과 대칭이다 — 놓친 prune() 호출의
+    파급 범위가 두 트래커에서 같아야 한다.
+    """
+    tracker = make_tracker(parked=1.0, move=1.0)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)
+    feed(tracker, MotionSignal.MOVING, 2.0)
+    feed(tracker, MotionSignal.MOVING, 3.0)  # ENDED
+    assert tracker.active_episode(CAR).state is ParkingState.ENDED
+    feed(tracker, MotionSignal.MOVING, 4.0)  # prune() 없이 한 번 더 관측
+    assert tracker.active_episode(CAR) is None

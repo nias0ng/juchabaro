@@ -31,7 +31,7 @@ from src.tracking.models import (
 
 
 class ParkingEpisodeTracker(Protocol):
-    """이동 신호를 STOP_PENDING/PARKED/ENDED 에피소드로 변환한다."""
+    """이동 신호를 STOP_PENDING/PARKED/MOVING/ENDED 에피소드로 변환한다."""
 
     def update(
         self,
@@ -145,6 +145,12 @@ class InMemoryParkingEpisodeTracker:
             slot.last_updated_at = observed_at
 
         if slot is None or slot.is_closed():
+            if slot is not None:
+                # 종료 슬롯이다. 종료는 닫힌 프레임의 판정이 이미 봤으므로 여기서
+                # 지운다 — prune()을 빠뜨려도 다음 관측이 스스로 정리하는
+                # 백스톱이다(ZoneVisitTracker와 동일). 이 시점부터 슬롯이 없는
+                # 것과 완전히 같게 동작한다.
+                del self._slots[physical_vehicle_id]
             if signal is MotionSignal.STATIONARY:
                 return self._open_candidate(physical_vehicle_id, parking_session_id, observed_at)
             return None
