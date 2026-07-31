@@ -21,6 +21,8 @@
 - Backend API 호출
 - Backend의 이동 여부 확인 요청 수신
 
+아래 명령은 모두 `hw/jetson` 디렉터리에서 실행한다.
+
 ## 가상환경 생성
 
 ```bash
@@ -45,7 +47,7 @@ source .venv/bin/activate
 
 ```bash
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## 테스트 실행
@@ -76,20 +78,40 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
-## 실행
+## PC 개발 환경에서 실행
+
+PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.
 
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## 상태 확인
+## Jetson에서 실행
 
-```text
-GET http://localhost:8000/health
+현재 절차는 Jetson에서 FastAPI 기본 서버를 수동으로 실행하고 동작을 확인하기 위한 것이다.
+
+실제 Jetson에서는 다음 명령으로 모든 네트워크 인터페이스에서 요청을 받는다.
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Swagger
+Jetson에서는 개발용 자동 재시작 기능인 `--reload`를 사용하지 않는다.
+
+`0.0.0.0`은 브라우저에서 접속하는 주소가 아니라 서버가 모든 네트워크 인터페이스의 요청을 받도록 하는 바인딩 주소다.
+
+## 상태 및 API 문서 확인
+
+Jetson 내부에서는 다음 주소로 확인한다.
 
 ```text
+http://localhost:8000/health
 http://localhost:8000/docs
+```
+
+같은 네트워크의 다른 PC에서는 `localhost`가 아닌 Jetson의 실제 IP 주소를 사용한다.
+
+```text
+http://<JETSON_IP>:8000/health
+http://<JETSON_IP>:8000/docs
 ```

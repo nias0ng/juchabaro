@@ -13,6 +13,7 @@ from src.parking.models import (
     ParkingPipelineResult,
 )
 from src.parking.rules.models import RuleContext
+from src.parking.zone_registry import ZoneRegistry
 from src.sensors.models import SensorObservation
 from src.tracking.models import (
     BoundingBox,
@@ -126,7 +127,7 @@ class TestRuleContext:
             active_zone_visits=(),
             parking_episode=None,
             parking_assignment=None,
-            zones=(),
+            zones=ZoneRegistry([]),
             observed_at=NOW,
         )
         assert context.vehicle_context is None
