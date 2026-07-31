@@ -147,6 +147,68 @@ def test_incident_id_is_deterministic() -> None:
     assert ids[0] == ids[1]
 
 
+def episode_scoped_key(
+    *, zone_id: int, victim: str | None = None, vehicle: str = "pv-1"
+) -> IncidentKey:
+    return IncidentKey(
+        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
+        physical_vehicle_id=PhysicalVehicleId(vehicle),
+        rule_code="BAD_PARKING",
+        parking_episode_id=ParkingEpisodeId("episode-1"),
+        zone_id=ZoneId(zone_id),
+        victim_physical_vehicle_id=None if victim is None else PhysicalVehicleId(victim),
+    )
+
+
+def test_incident_id_distinguishes_zone_and_victim() -> None:
+    """서로 다른 IncidentKey는 서로 다른 incident_id를 가져야 한다.
+
+    백엔드는 incident_id로 멱등 upsert를 한다. zone_id와
+    victim_physical_vehicle_id를 ID 유도에서 빼면 아래 네 키가 하나의 ID로
+    합쳐져 서로 다른 네 위반이 조용히 한 건이 된다.
+    """
+    keys = [
+        episode_scoped_key(zone_id=1),
+        episode_scoped_key(zone_id=2),
+        episode_scoped_key(zone_id=1, victim="pv-2"),
+        episode_scoped_key(zone_id=1, victim="pv-3"),
+    ]
+    reducer = InMemoryIncidentReducer()
+    ids = {
+        reducer.reduce(signal(key, matched=True, confirmable=True)).incident.incident_id
+        for key in keys
+    }
+    assert len(ids) == len(keys)
+
+
+def test_incident_id_format_is_unchanged_without_zone_and_victim() -> None:
+    """두 필드가 모두 비어 있는 키의 ID는 이전과 글자 그대로 같다."""
+    reducer = InMemoryIncidentReducer()
+    key = IncidentKey(
+        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
+        physical_vehicle_id=CAR,
+        rule_code="BAD_PARKING",
+        parking_episode_id=ParkingEpisodeId("episode-1"),
+    )
+    transition = reducer.reduce(signal(key, matched=True, confirmable=True))
+    assert transition.incident.incident_id == f"BAD_PARKING:episode-1:{T0.isoformat()}"
+
+
+def test_incident_id_does_not_depend_on_physical_vehicle_id() -> None:
+    """스펙 4.3의 physical_vehicle_id 제거가 기존 ID를 바꾸지 않아야 한다.
+
+    ID 유도가 그 필드에 기대면 제거 시점에 모든 사건 ID가 한꺼번에 바뀐다.
+    같은 스코프를 가리키는 두 키는 이미 같은 사건이므로 같은 ID가 맞다.
+    """
+    ids = [
+        InMemoryIncidentReducer()
+        .reduce(signal(episode_scoped_key(zone_id=1, vehicle=vehicle), matched=True, confirmable=True))
+        .incident.incident_id
+        for vehicle in ("pv-1", "pv-9")
+    ]
+    assert ids[0] == ids[1]
+
+
 def test_naive_datetime_is_rejected() -> None:
     reducer = InMemoryIncidentReducer()
     with pytest.raises(ValueError, match="timezone"):
