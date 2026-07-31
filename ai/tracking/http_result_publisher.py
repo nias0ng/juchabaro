@@ -27,8 +27,8 @@
   event_type과 1:1로 안 떨어진다(317번 MR 리뷰에서 팀 확인 필요로 남겨둔 항목).
   아래 `DEFAULT_STATUS_TO_EVENT_TYPE`은 그때까지 쓰는 최선의 추정 매핑이며,
   생성자의 `status_to_event_type`으로 언제든 교체할 수 있다. (EV_OVERSTAY는
-  이 브랜치가 갈라진 시점엔 develop에 없어 매핑에서 빠져있다 — 319번 병합 후
-  추가 필요, 위 test로 누락이 잡힌다.)
+  319번 병합으로 추가함 — 백엔드 `ParkingEventType.EV_OVERSTAY`와 이름이
+  정확히 일치한다.)
 """
 
 from __future__ import annotations
@@ -43,12 +43,11 @@ LOGGER = logging.getLogger("http_result_publisher")
 
 PARKING_EVENTS_PATH = "/api/hw/parking-events"
 
-# 임시 매핑(팀 확인 필요) — OUT_OF_ZONE만 ERD event_type과 이름이 정확히 같다.
+# 임시 매핑(팀 확인 필요) — OUT_OF_ZONE/EV_OVERSTAY만 ERD event_type과 이름이 정확히 같다.
 #
 # 주의: 이 딕셔너리는 이 파일이 독립적으로 관리하며 jetson_vehicle_tracking_baseline.py의
-# ViolationStatus enum과 자동으로 동기화되지 않는다 — 그쪽에 새 상태가 추가되면(예:
-# EV_OVERSTAY, 319번, 이 브랜치가 갈라진 시점엔 아직 develop에 없었음) 여기도 수동으로
-# 추가해야 한다. test_http_result_publisher.py의
+# ViolationStatus enum과 자동으로 동기화되지 않는다 — 그쪽에 새 상태가 추가되면 여기도
+# 수동으로 추가해야 한다. test_http_result_publisher.py의
 # test_default_mapping_covers_every_violation_status_except_none_and_observing가
 # 그 누락을 테스트 실패로 잡아준다.
 DEFAULT_STATUS_TO_EVENT_TYPE: dict[str, str] = {
@@ -57,6 +56,7 @@ DEFAULT_STATUS_TO_EVENT_TYPE: dict[str, str] = {
     "OUT_OF_ZONE": "OUT_OF_ZONE",
     "LINE_CROSS": "BAD_PARKING",
     "AISLE_BLOCK": "BAD_PARKING",
+    "EV_OVERSTAY": "EV_OVERSTAY",
 }
 
 

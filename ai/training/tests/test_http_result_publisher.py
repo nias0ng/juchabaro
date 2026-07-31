@@ -20,6 +20,7 @@ def _make_event(**overrides) -> ViolationEvent:
         zone_type=ZoneType.GENERAL,
         overlap_ratio=0.375,
         dwell_seconds=650.0,
+        occupancy_seconds=650.0,
         detected_at=datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
