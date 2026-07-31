@@ -9,13 +9,16 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     padding: Spacing.md + 2,
     gap: Spacing.sm + 2,
-    borderWidth: 1,
-    borderColor: Palette.lavender100,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.06,
     shadowRadius: 13,
     elevation: 3,
+  },
+  // 응답 완료 카드만 테두리를 추가로 보여준다.
+  cardResponded: {
+    borderWidth: 1,
+    borderColor: Palette.lavender100,
   },
   topRow: {
     flexDirection: 'row',
@@ -26,10 +29,8 @@ export const styles = StyleSheet.create({
     fontSize: 11.5,
     color: Palette.gray400,
   },
-  plateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.base,
+  plateBlock: {
+    gap: Spacing.xxs,
   },
   plate: {
     fontSize: 19,
@@ -38,7 +39,7 @@ export const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   situation: {
-    fontSize: 12,
+    fontSize: 12.5,
     color: Palette.gray500,
   },
   countdownBox: {
@@ -61,7 +62,8 @@ export const styles = StyleSheet.create({
     color: Palette.violet500,
   },
   closedSummary: {
-    fontSize: 12,
-    color: Palette.gray400,
+    fontSize: 13,
+    fontWeight: FontWeight.bold,
+    color: Palette.blue600,
   },
 });

@@ -126,3 +126,12 @@ export type MoveRequestListResult = {
   totalElements: number;
   totalPages: number;
 };
+
+// 목록 API(MoveRequestSummary)엔 없는 구역/응답시간/완료시각을 상세 조회로 채운 목록 항목.
+// 상세 조회가 실패한 항목은 이 필드들이 전부 null로 남는다(카드 쪽에서 없는 값으로 처리).
+export type MoveRequestListItem = MoveRequestSummary & {
+  zoneNumber: string | null;
+  estimatedMinutes: number | null;
+  respondedAt: string | null;
+  resolvedAt: string | null;
+};
