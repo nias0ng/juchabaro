@@ -2,7 +2,7 @@
 models 및 하위 폴더를 생성하고 번호판 탐지·인식 모델을 내려받는다.
 
 plate_detector : YOLOv8n-pose(파인튜닝)
-plate_recognizer : paddleOCR(korean_PP-OCRv5_mobile_rec)
+plate_recognizer : PaddleOCR ONNX(korean_PP-OCRv5_mobile_rec)
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import hashlib
 import os
 import shutil
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 from urllib.error import URLError
@@ -33,16 +32,22 @@ DETECTOR_SHA256 = (
     "3fffe0902787acc693cfcf9a5696d8affb4306c9541b33c0a296056ed73ba1b1"
 )
 
-PADDLE_MODEL_NAME = "korean_PP-OCRv5_mobile_rec"
-PADDLE_URL = (
-    "https://paddle-model-ecology.bj.bcebos.com/paddlex/"
-    "official_inference_model/paddle3.0.0/"
-    f"{PADDLE_MODEL_NAME}_infer.tar"
+RECOGNIZER_MODEL_NAME = "korean_PP-OCRv5_mobile_rec"
+RECOGNIZER_REVISION = "5c6f574b8e2230adf4287b33e736d71b9fabd28e"
+RECOGNIZER_BASE_URL = (
+    "https://huggingface.co/PaddlePaddle/"
+    f"{RECOGNIZER_MODEL_NAME}_onnx/resolve/{RECOGNIZER_REVISION}"
 )
-PADDLE_SHA256 = (
-    "a6261f800ad335aa6ef77b6f7c4dcedfd5e11b95f4d70982d41ee31c2ace5e66"
+RECOGNIZER_FILES = (
+    (
+        "inference.onnx",
+        "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08",
+    ),
+    (
+        "inference.yml",
+        "f757fa1c40e99edcf27e9cce879b93eb2a51fa46f5ef39095689b8c37dd75998",
+    ),
 )
-PADDLE_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
 
 
 # [예외]
@@ -103,53 +108,27 @@ def _install_detector(models_dir: Path, *, force: bool) -> Path:
     return destination
 
 
-# [paddleOCR 모델 설치]
-def _paddle_is_ready(model_dir: Path) -> bool:
+# [PaddleOCR ONNX 모델 설치]
+def _recognizer_is_ready(model_dir: Path) -> bool:
     return all(
         (model_dir / filename).is_file()
-        and (model_dir / filename).stat().st_size > 0
-        for filename in PADDLE_FILES
+        and _sha256(model_dir / filename) == expected_sha256
+        for filename, expected_sha256 in RECOGNIZER_FILES
     )
 
-def _extract_paddle(archive_path: Path, destination: Path) -> None:
-    """검증된 아카이브에서 로더가 요구하는 파일만 꺼낸다."""
-
-    with tarfile.open(archive_path) as archive:
-        members = {
-            Path(member.name).name: member
-            for member in archive.getmembers()
-            if member.isfile() and Path(member.name).name in PADDLE_FILES
-        }
-        missing = set(PADDLE_FILES) - members.keys()
-        if missing:
-            raise ModelDownloadError(
-                "PaddleOCR 필수 파일이 없습니다: " + ", ".join(sorted(missing))
-            )
-
-        for filename in PADDLE_FILES:
-            source = archive.extractfile(members[filename])
-            if source is None:
-                raise ModelDownloadError(f"PaddleOCR 파일을 읽을 수 없습니다: {filename}")
-            with source, (destination / filename).open("wb") as output:
-                shutil.copyfileobj(source, output, BUFFER_SIZE)
-
-def _install_paddle(models_dir: Path, *, force: bool) -> Path:
+def _install_recognizer(models_dir: Path, *, force: bool) -> Path:
     model_dir = models_dir / "plate_recognizer"
     model_dir.mkdir(parents=True, exist_ok=True)
-    if not force and _paddle_is_ready(model_dir):
-        print(f"[skip] PaddleOCR 모델: {model_dir}")
+    if not force and _recognizer_is_ready(model_dir):
+        print(f"[skip] PaddleOCR ONNX 모델: {model_dir}")
         return model_dir
 
-    print(f"[download] PaddleOCR 모델 ({PADDLE_MODEL_NAME}): {PADDLE_URL}")
-    with tempfile.TemporaryDirectory(dir=model_dir, prefix=".install-") as temp_dir:
-        staging_dir = Path(temp_dir)
-        archive_path = staging_dir / "model.tar"
-        _download(PADDLE_URL, archive_path, PADDLE_SHA256)
-        _extract_paddle(archive_path, staging_dir)
-        for filename in PADDLE_FILES:
-            os.replace(staging_dir / filename, model_dir / filename)
+    print(f"[download] PaddleOCR ONNX 모델 ({RECOGNIZER_MODEL_NAME})")
+    for filename, expected_sha256 in RECOGNIZER_FILES:
+        url = f"{RECOGNIZER_BASE_URL}/{filename}"
+        _download(url, model_dir / filename, expected_sha256)
 
-    print(f"[ok] PaddleOCR 모델: {model_dir}")
+    print(f"[ok] PaddleOCR ONNX 모델: {model_dir}")
     return model_dir
 
 
@@ -159,14 +138,14 @@ def download_models(models_dir: Path, *, force: bool = False) -> tuple[Path, Pat
 
     models_dir = models_dir.expanduser().resolve()
     detector_path = _install_detector(models_dir, force=force)
-    recognizer_dir = _install_paddle(models_dir, force=force)
+    recognizer_dir = _install_recognizer(models_dir, force=force)
     return detector_path, recognizer_dir
 
 
 # [CLI]
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="번호판 탐지 모델과 PaddleOCR 한국어 인식 모델을 내려받습니다."
+        description="번호판 탐지 모델과 PaddleOCR ONNX 인식 모델을 내려받습니다."
     )
     parser.add_argument(
         "--models-dir",
@@ -189,7 +168,7 @@ def main() -> int:
             args.models_dir,
             force=args.force,
         )
-    except (ModelDownloadError, OSError, tarfile.TarError) as exc:
+    except (ModelDownloadError, OSError) as exc:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
 

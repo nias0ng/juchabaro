@@ -65,10 +65,12 @@ class LoaderTextRecognitionModel:
         model_name: str,
         model_dir: str,
         device: str,
+        engine: str,
     ) -> None:
         self.model_name = model_name
         self.model_dir = model_dir
         self.device = device
+        self.engine = engine
         self.calls: list[tuple[int, int]] = []
         self.instances.append(self)
 
@@ -128,8 +130,7 @@ class PaddlePlateReaderBatchTests(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             model_dir = Path(temporary_directory)
             for filename in (
-                "inference.json",
-                "inference.pdiparams",
+                "inference.onnx",
                 "inference.yml",
             ):
                 (model_dir / filename).write_bytes(b"fake model")
@@ -161,6 +162,7 @@ class PaddlePlateReaderBatchTests(unittest.TestCase):
                         str(model_dir.resolve()),
                     )
                     self.assertEqual(model.device, "cpu")
+                    self.assertEqual(model.engine, "onnxruntime")
                     self.assertEqual(model.calls, expected_calls)
 
     def test_malformed_result_fields_are_rejected(self) -> None:
