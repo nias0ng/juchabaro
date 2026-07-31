@@ -68,10 +68,15 @@ class IncidentTransitionType(str, Enum):
 class AssignmentState(str, Enum):
     """대표 주차면 배정 결과(데이터흐름.md §3 "대표 주차면 배정"). 최고·차순위
     겹침 비율 차이가 마진 이내면 한 구역의 주인으로 억지로 고정하지 않고
-    `AMBIGUOUS`로 둔다 — 마진 계산 자체는 T-10의 몫이며 여기서는 상태만 정의한다."""
+    `AMBIGUOUS`로 둔다. 어느 구역에도 겹치지 않으면 `UNASSIGNED`다 — 이 값을
+    백엔드 이벤트 타입 `OUT_OF_ZONE`(구역 밖 + 10분 주차 확정까지 된 위반)과
+    같은 이름으로 두지 않는 이유는, 이건 순간순간의 공간적 사실이고 그건 그
+    사실에 주차 확정까지 더해진 위반 이벤트라 서로 다른 개념이기 때문이다.
+    마진 계산 자체는 T-10의 몫이며 여기서는 상태만 정의한다."""
 
     ASSIGNED = "ASSIGNED"
     AMBIGUOUS = "AMBIGUOUS"
+    UNASSIGNED = "UNASSIGNED"
 
 
 @dataclass(frozen=True)
