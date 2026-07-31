@@ -26,6 +26,8 @@ RUN groupadd --system spring \
 
 COPY --from=builder --chown=spring:spring /workspace/app.jar app.jar
 
+RUN mkdir -p /app/uploads && chown -R spring:spring /app/uploads
+
 USER spring:spring
 
 EXPOSE 8080

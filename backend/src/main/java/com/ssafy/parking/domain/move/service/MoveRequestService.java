@@ -53,7 +53,7 @@ public class MoveRequestService {
     @Transactional
     public MoveRequestCreateResponse create(
             Long userId, String targetPlateNumber, ParkingEventType eventType,
-            String reason, Long zoneId, List<MultipartFile> images
+            String reason, String zoneName, List<MultipartFile> images
     ) {
         // 400
         if (eventType == null || reason == null || reason.isBlank()
@@ -73,8 +73,8 @@ public class MoveRequestService {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_ALREADY_EXISTS);
         }
 
-        ParkingZone zone = (zoneId != null)
-                ? parkingZoneRepository.findById(zoneId).orElse(null) : null;
+        ParkingZone zone = (zoneName != null && !zoneName.isBlank())
+                ? parkingZoneRepository.findByZoneNumber(zoneName).orElse(null) : null;
 
         LocalDateTime now = LocalDateTime.now();
 
