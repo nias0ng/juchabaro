@@ -3,6 +3,8 @@ import { Image } from 'react-native';
 import { ApiError } from '@/services/api-error';
 
 import type {
+  MoveRequestCreateParams,
+  MoveRequestCreateResult,
   MoveRequestDetail,
   MoveRequestListResult,
   MoveRequestScope,
@@ -291,6 +293,28 @@ export async function postMoveRequestResponseMock(
   mockRespondedAtMs = requestStatus === 'RESPONDED' ? respondedAt.getTime() : null;
 
   return result;
+}
+
+export async function postMoveRequestMock(params: MoveRequestCreateParams): Promise<MoveRequestCreateResult> {
+  await delay(MOCK_RESPONSE_DELAY_MS);
+
+  const requestedAt = new Date();
+  const requestId = Date.now();
+
+  return {
+    eventId: requestId,
+    requestId,
+    targetVehicleId: 10,
+    requestType: 'MANUAL',
+    requestStatus: 'SENT',
+    reminderCount: 0,
+    images: params.images.map((imageUrl, index) => ({
+      imageId: index + 1,
+      imageType: 'REPORT',
+      imageUrl,
+    })),
+    requestedAt: requestedAt.toISOString(),
+  };
 }
 
 const mockMoveRequestSummaries: MoveRequestSummary[] = [

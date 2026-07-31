@@ -25,9 +25,9 @@ export const styles = StyleSheet.create({
     color: Palette.orange600,
   },
   badgeClosed: {
-    backgroundColor: '#e9f7f2',
+    backgroundColor: Palette.sky100,
   },
   textClosed: {
-    color: Palette.teal600,
+    color: Palette.blue600,
   },
 });
