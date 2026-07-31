@@ -57,6 +57,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
+from uuid import uuid4
 
 from src.parking.models import ParkingEpisode, ParkingEpisodeId, ParkingState
 from src.parking.time_guard import ensure_forward_observation
@@ -222,7 +223,7 @@ class InMemoryParkingEpisodeTracker:
         observed_at: datetime,
     ) -> ParkingEpisode:
         episode = ParkingEpisode(
-            episode_id=self._make_episode_id(physical_vehicle_id, observed_at),
+            episode_id=self._new_episode_id(),
             physical_vehicle_id=physical_vehicle_id,
             parking_session_id=parking_session_id,
             state=ParkingState.STOP_PENDING,
@@ -251,8 +252,8 @@ class InMemoryParkingEpisodeTracker:
             # MOVING 경로는 None을 반환해 아무것도 보고하지 않는다. 이 후보가
             # 이미 규칙에 matched=True인 CANDIDATE 사건을 열게 했다면, 그
             # 사건은 여기서 해소를 못 받고 영영 열린 채 남는다 —
-            # episode_id가 결정론적이라 같은 키가 다시 나타나 밀어내지도
-            # 않는다. 백엔드로 나가는 데이터는 틀리지 않지만 리소스 누수다.
+            # 새 정지 후보는 새 episode_id를 받으므로 이 후보의 사건 키는
+            # 다시 평가될 길이 없다. 백엔드로 나가는 데이터는 틀리지 않지만 리소스 누수다.
             del self._slots[slot.episode.physical_vehicle_id]
             return None
 
@@ -401,10 +402,7 @@ class InMemoryParkingEpisodeTracker:
         return tuple(forced)
 
     @staticmethod
-    def _make_episode_id(
-        physical_vehicle_id: PhysicalVehicleId, stationary_start: datetime
-    ) -> ParkingEpisodeId:
-        """결정론적 에피소드 ID. uuid4를 쓰면 같은 입력의 두 실행이 달라져
-        리플레이 검증이 불가능해진다."""
+    def _new_episode_id() -> ParkingEpisodeId:
+        """새로 시작한 정지·주차 행위의 불투명한 수명주기 ID를 발급한다."""
 
-        return ParkingEpisodeId(f"{physical_vehicle_id}:{stationary_start.isoformat()}")
+        return ParkingEpisodeId(uuid4())

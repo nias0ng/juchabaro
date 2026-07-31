@@ -1,6 +1,7 @@
 """주차 에피소드 상태 머신 테스트. 카메라·모델 없이 도는 순수 상태 머신이다."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -9,8 +10,8 @@ from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.tracking.models import MotionSignal, ParkingSessionId, PhysicalVehicleId
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
-CAR = PhysicalVehicleId("pv-1")
-OTHER_CAR = PhysicalVehicleId("pv-2")
+CAR = PhysicalVehicleId(UUID(int=1))
+OTHER_CAR = PhysicalVehicleId(UUID(int=2))
 SESSION = ParkingSessionId(77)
 
 
@@ -121,13 +122,13 @@ def test_two_vehicles_are_independent() -> None:
     assert feed(tracker, MotionSignal.STATIONARY, 600.0, vehicle=OTHER_CAR).state is ParkingState.STOP_PENDING
 
 
-def test_episode_id_is_deterministic() -> None:
-    ids = []
-    for _ in range(2):
-        tracker = make_tracker(parked=1.0)
-        feed(tracker, MotionSignal.STATIONARY, 0)
-        ids.append(feed(tracker, MotionSignal.STATIONARY, 1.0).episode_id)
-    assert ids[0] == ids[1]
+def test_episode_id_is_uuid_and_stable_during_one_episode() -> None:
+    tracker = make_tracker(parked=1.0)
+    pending = feed(tracker, MotionSignal.STATIONARY, 0)
+    parked = feed(tracker, MotionSignal.STATIONARY, 1.0)
+
+    assert isinstance(pending.episode_id, UUID)
+    assert parked.episode_id == pending.episode_id
 
 
 def test_naive_datetime_is_rejected() -> None:
