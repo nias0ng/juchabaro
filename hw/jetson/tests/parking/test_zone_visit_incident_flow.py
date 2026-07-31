@@ -10,8 +10,14 @@
 데이터흐름.md에서 application 계층은 조립만 하고 판정하지 않기 때문이다.
 
 1. 관측된 (차량, 구역) 쌍마다 `tracker.update()`
-2. `tracker.active_visits()` → 규칙 → `IncidentReducer.reduce()`
-3. `tracker.prune(now)`
+2. **이번 프레임에 관측된 차량만** 돌며 `tracker.active_visits()` → 규칙 →
+   `IncidentReducer.reduce()`
+3. `tracker.prune(now)` → **반환된 강제 종료 방문도** 규칙 → `reduce()`
+
+2번이 관측된 차량만 도는 것이 핵심이다. 추적이 끊긴 차량에는 `active_visits()`를
+부를 이유도 방법도 없다 — 누구를 물어봐야 하는지 모른다. 그 차량의 종료는 3번의
+반환값으로만 나온다. 모든 프레임에서 `active_visits(CAR)`를 고정 호출하는 헬퍼는
+그 결함을 통과시킨다(실제로 통과시켰다). 여기서는 그렇게 하지 않는다.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -40,6 +46,7 @@ from src.tracking.models import (
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
 CAR = PhysicalVehicleId("pv-1")
+OTHER_CAR = PhysicalVehicleId("pv-2")
 ZONE = ZoneId(1)
 SQUARE = NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3)))
 DISABLED_ZONE = ParkingZone(
@@ -69,27 +76,49 @@ class Frames:
         self.reducer = InMemoryIncidentReducer()
         self.zones = ZoneRegistry([DISABLED_ZONE])
 
-    def run(
+    def frame(
         self,
-        signal: PresenceSignal | None,
+        observations: dict[PhysicalVehicleId, PresenceSignal],
         seconds: float,
         *,
-        context: VehicleContext = UNAUTHORIZED,
+        contexts: dict[PhysicalVehicleId, VehicleContext] | None = None,
     ) -> tuple[IncidentTransition, ...]:
         """프레임 하나를 돌리고 백엔드로 나갈 전이를 반환한다.
 
-        `signal`이 `None`이면 이 프레임에 그 차량 관측이 아예 없었다는 뜻이다 —
-        추적이 끊긴 상황을 재현한다.
+        `observations`에는 **이번 프레임에 관측된 차량만** 들어간다. 빠진 차량은
+        추적이 끊긴 것이며, 판정 루프도 그 차량을 돌지 않는다.
         """
 
         now = at(seconds)
-        if signal is not None:
+        contexts = contexts or {}
+
+        for vehicle, signal in observations.items():
             self.tracker.update(
-                physical_vehicle_id=CAR, zone_id=ZONE, signal=signal, observed_at=now
+                physical_vehicle_id=vehicle, zone_id=ZONE, signal=signal, observed_at=now
             )
+
+        transitions: list[IncidentTransition] = []
+        # 관측된 차량만 돈다. 조립기가 아는 차량이 그것뿐이기 때문이다.
+        for vehicle in observations:
+            transitions += self._judge(
+                vehicle, self.tracker.active_visits(vehicle), now, contexts
+            )
+        # 강제 종료된 방문은 이 반환값으로만 나온다. 버리면 그 사건은 닫히지 않는다.
+        for visit in self.tracker.prune(now):
+            transitions += self._judge(
+                visit.physical_vehicle_id, (visit,), now, contexts
+            )
+        return tuple(transitions)
+
+    def _judge(self, vehicle, visits, now, contexts) -> list[IncidentTransition]:
+        if not visits:
+            return []
+        context = contexts.get(vehicle, UNAUTHORIZED)
         rule_context = RuleContext(
+            # 추적이 끊긴 차량에는 이번 프레임 스냅샷이 없다. 실제 조립기는
+            # 차량별 마지막 스냅샷을 들고 있어야 한다.
             vehicle=PhysicalVehicleSnapshot(
-                physical_vehicle_id=CAR,
+                physical_vehicle_id=vehicle,
                 track_segment_id=TrackSegmentId(1),
                 bbox=BoundingBox(0.15, 0.15, 0.25, 0.25),
                 confidence=0.9,
@@ -99,21 +128,32 @@ class Frames:
                 context=context,
             ),
             vehicle_context=context,
-            active_zone_visits=self.tracker.active_visits(CAR),
+            active_zone_visits=tuple(visits),
             parking_episode=None,
             parking_assignment=None,
             zones=self.zones,
             observed_at=now,
         )
-        transitions = tuple(
+        return [
             transition
             for transition in (
                 self.reducer.reduce(signal_out) for signal_out in evaluate(rule_context)
             )
             if transition is not None
+        ]
+
+    def run(
+        self,
+        signal: PresenceSignal | None,
+        seconds: float,
+        *,
+        context: VehicleContext = UNAUTHORIZED,
+    ) -> tuple[IncidentTransition, ...]:
+        """차량 한 대짜리 프레임. `signal`이 `None`이면 그 프레임에 관측이 없었다."""
+
+        return self.frame(
+            {} if signal is None else {CAR: signal}, seconds, contexts={CAR: context}
         )
-        self.tracker.prune(now)
-        return transitions
 
     def states(self) -> list[IncidentState]:
         return [incident.state for incident in self.reducer.snapshot()]
@@ -186,8 +226,9 @@ def test_qualified_vehicle_never_opens_an_incident() -> None:
 def test_lost_track_is_resolved_by_prune() -> None:
     """관측이 아예 끊긴 차량의 사건도 닫혀야 한다.
 
-    조립기가 그 차량에 대한 update()를 멈추면 트래커는 스스로 이탈을 알 수 없다.
-    prune()의 강제 종료가 없으면 사건이 영원히 EDGE_CONFIRMED로 남는다.
+    조립기가 그 차량에 대한 update()를 멈추면 트래커는 스스로 이탈을 알 수 없고,
+    판정 루프는 관측된 차량만 도니 그 차량을 조회하지도 않는다. prune()이 강제
+    종료한 방문을 **반환**하고 조립기가 그 반환값을 판정에 넘겨야만 닫힌다.
     """
     frames = Frames(stale=30.0)
     frames.run(PresenceSignal.PRESENT, 0)
@@ -197,10 +238,45 @@ def test_lost_track_is_resolved_by_prune() -> None:
     assert frames.run(None, 20) == ()
     assert frames.states() == [IncidentState.EDGE_CONFIRMED]
 
-    # 한도를 넘긴 prune()이 방문을 강제 종료하고, 그 다음 프레임 판정이 닫는다.
-    assert frames.run(None, 40) == ()
-    assert types(frames.run(None, 41)) == [IncidentTransitionType.RESOLVE]
+    # 한도를 넘긴 prune()이 방문을 강제 종료해 반환하고, 같은 프레임에서 닫힌다.
+    assert types(frames.run(None, 40)) == [IncidentTransitionType.RESOLVE]
     assert frames.states() == [IncidentState.RESOLVED]
+    # 재차 확인: 남은 슬롯도, 미해소 사건도 없다.
+    assert frames.run(None, 41) == ()
+    assert frames.tracker.active_visits(CAR) == ()
+
+
+def test_lost_track_resolves_while_judging_only_observed_vehicles() -> None:
+    """현실적인 조립기 루프의 모양이다. 관측된 차량만 판정하는데도 RESOLVE가 나야 한다.
+
+    pv-1은 계속 추적되고 pv-2는 t=1 이후 추적이 끊긴다. 판정 루프는 pv-2를 한
+    번도 돌지 않는다 — 조립기는 pv-2가 아직 구역 안에 방문을 열어 두고 있다는
+    사실조차 모른다. 그럼에도 pv-2의 사건은 닫혀야 한다.
+    """
+    frames = Frames(stale=30.0)
+    both = {CAR: PresenceSignal.PRESENT, OTHER_CAR: PresenceSignal.PRESENT}
+    frames.frame(both, 0)
+    opened = frames.frame(both, 1)
+    assert types(opened) == [IncidentTransitionType.OPEN, IncidentTransitionType.OPEN]
+
+    # 여기서부터 pv-2는 관측되지 않는다. 판정 루프에도 들어오지 않는다.
+    # pv-2의 마지막 갱신은 t=1이므로 t=31에 유휴 한도 30초를 넘긴다.
+    for second in range(2, 31):
+        assert frames.frame({CAR: PresenceSignal.PRESENT}, float(second)) == ()
+
+    resolved = frames.frame({CAR: PresenceSignal.PRESENT}, 31)
+    assert types(resolved) == [IncidentTransitionType.RESOLVE]
+    assert resolved[0].incident.key.physical_vehicle_id == OTHER_CAR
+
+    by_vehicle = {
+        incident.key.physical_vehicle_id: incident.state
+        for incident in frames.reducer.snapshot()
+    }
+    # 살아 있는 차량의 위반은 그대로 열려 있고, 사라진 차량의 위반만 닫혔다.
+    assert by_vehicle == {
+        CAR: IncidentState.EDGE_CONFIRMED,
+        OTHER_CAR: IncidentState.RESOLVED,
+    }
 
 
 def test_unknown_qualification_stays_a_candidate_and_is_dropped_on_exit() -> None:

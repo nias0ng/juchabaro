@@ -276,34 +276,52 @@ def test_absent_after_close_removes_the_slot_without_prune() -> None:
     assert tracker.active_visits(CAR) == ()
 
 
-def test_prune_force_closes_a_visit_whose_updates_stopped() -> None:
-    """추적이 끊겨 update()가 아예 끊긴 차량의 사건도 닫혀야 한다.
+def test_prune_returns_the_visit_it_force_closed() -> None:
+    """추적이 끊겨 update()가 멈춘 차량의 종료는 prune()의 반환값으로만 나온다.
 
-    트래커에는 프레임 경계가 없어 차량이 돌아오지 않는다는 사실을 스스로 알 수
-    없다. 강제 종료하지 않으면 슬롯과 사건이 함께 영원히 남는다.
+    조립기의 판정 루프는 이번 프레임에 관측된 차량만 돈다. 추적이 끊긴 차량에는
+    active_visits()를 아예 부르지 않으므로, 강제 종료를 그쪽으로만 내보내면
+    아무도 조회하지 않아 사건이 영원히 EDGE_CONFIRMED로 남는다.
     """
     tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
     feed(tracker, PresenceSignal.PRESENT, 1.0)
-    tracker.prune(at(20.0))
+    assert tracker.prune(at(20.0)) == ()  # 아직 유휴 한도 안이다
     assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
 
-    tracker.prune(at(40.0))
-    closed = tracker.active_visits(CAR)
-    # 조용히 사라지지 않는다 — 판정이 RESOLVE를 만들 수 있도록 한 번 실려 나간다.
-    assert [v.state for v in closed] == [ZoneVisitState.OUTSIDE]
+    force_closed = tracker.prune(at(40.0))
+    assert [v.state for v in force_closed] == [ZoneVisitState.OUTSIDE]
+    assert force_closed[0].physical_vehicle_id == CAR
     # 관측이 끊긴 시점까지만 점유로 인정한다.
-    assert closed[0].exited_at == at(1.0)
+    assert force_closed[0].exited_at == at(1.0)
 
-    tracker.prune(at(41.0))
+
+def test_force_closed_visit_leaves_no_slot_behind() -> None:
+    """반환과 동시에 슬롯을 지운다 — 같은 종료가 두 통로로 두 번 나가면 안 된다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    assert len(tracker.prune(at(40.0))) == 1
     assert tracker.active_visits(CAR) == ()
+    assert tracker.prune(at(41.0)) == ()
+
+
+def test_prune_does_not_return_visits_closed_by_observation() -> None:
+    """관측으로 닫힌 방문은 active_visits()로 나간다. 두 통로는 겹치지 않는다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)
+    feed(tracker, PresenceSignal.ABSENT, 3.0)
+    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.OUTSIDE]
+    assert tracker.prune(at(3.0)) == ()
 
 
 def test_prune_discards_a_stale_entering_candidate() -> None:
     """진입이 확정된 적 없는 후보는 방문이 성립하지 않았으므로 종료로 보고하지 않는다."""
     tracker = make_tracker(entry=3.0, exit_=1.0, stale=30.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
-    tracker.prune(at(40.0))
+    assert tracker.prune(at(40.0)) == ()
     assert tracker.active_visits(CAR) == ()
     # 슬롯이 남지 않았으므로 다시 들어오면 후보 시각이 새로 잡힌다.
     assert feed(tracker, PresenceSignal.PRESENT, 50.0).entered_candidate_at == at(50.0)
@@ -325,7 +343,7 @@ def test_unknown_keeps_a_slot_alive_against_pruning() -> None:
     feed(tracker, PresenceSignal.PRESENT, 0)
     feed(tracker, PresenceSignal.PRESENT, 1.0)
     feed(tracker, PresenceSignal.UNKNOWN, 25.0)
-    tracker.prune(at(40.0))
+    assert tracker.prune(at(40.0)) == ()
     assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
 
 
@@ -340,7 +358,7 @@ def test_zero_stale_after_seconds_disables_force_close() -> None:
     tracker = make_tracker(entry=1.0, exit_=1.0, stale=0.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
     feed(tracker, PresenceSignal.PRESENT, 1.0)
-    tracker.prune(at(9999.0))
+    assert tracker.prune(at(9999.0)) == ()
     assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
 
 

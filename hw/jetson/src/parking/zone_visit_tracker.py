@@ -8,12 +8,15 @@ ABSENT의 진입·이탈 확인시간은 구현체가 누적하고, UNKNOWN은 �
 **프레임 호출 순서(조립기 계약).** 트래커에는 프레임 경계가 없다. 조립기가
 프레임마다 아래 순서를 지켜야 방문 종료가 규칙에 정확히 한 번 보인다.
 
-1. 이번 프레임에 관측된 (차량, 구역) 쌍마다 `update()`
-2. 차량마다 `active_visits()` → 규칙 평가 → `IncidentReducer`
-3. 프레임 끝에 `prune(now)` 한 번
+1. 이번 프레임에 관측된 (차량, 구역) 쌍마다 `update()` (한 쌍에 한 번만)
+2. 이번 프레임에 관측된 차량마다 `active_visits()` → 규칙 평가 → `IncidentReducer`
+3. 프레임 끝에 `prune(now)` 한 번. **반환된 방문도 규칙 평가 → `IncidentReducer`에
+   넘긴다** — 추적이 끊긴 차량의 종료는 이 반환값으로만 나온다.
 
 3번을 빠뜨리면 종료 슬롯이 남아 같은 종료가 여러 프레임에 걸쳐 규칙에 보이고
-(사건 상태는 축약기가 막아 주지만) 슬롯이 무한히 쌓인다.
+(사건 상태는 축약기가 막아 주지만) 슬롯이 무한히 쌓인다. 3번의 **반환값**을
+버리면 추적이 끊긴 차량의 사건이 영원히 EDGE_CONFIRMED로 남는다 — 2번은 이번
+프레임에 관측된 차량만 도는데, 그 차량은 거기 없기 때문이다.
 """
 
 from __future__ import annotations
@@ -53,8 +56,8 @@ class ZoneVisitTracker(Protocol):
 
         ...
 
-    def prune(self, now: datetime) -> None:
-        """프레임 판정이 끝난 뒤 종료 슬롯을 정리한다. 조립기가 매 프레임 부른다."""
+    def prune(self, now: datetime) -> tuple[ZoneVisit, ...]:
+        """종료 슬롯을 정리하고 강제 종료한 방문을 반환한다. 반환값도 판정 대상이다."""
 
         ...
 
@@ -162,7 +165,10 @@ class InMemoryZoneVisitTracker:
         프레임 끝의 `prune()`이 지우므로 종료는 규칙에 정확히 한 번 보인다.
 
         조립기가 `prune()`을 빠뜨려도 이 쌍에 ABSENT나 UNKNOWN이 한 번 더 오면
-        여기서 종료 슬롯을 지운다. 그때부터 반환값은 None이다.
+        여기서 종료 슬롯을 지운다. 그때부터 반환값은 None이다. 뒤집어 말하면 **한
+        프레임에 한 쌍을 두 번 갱신하면 안 된다** — 방문이 닫힌 프레임에 같은
+        쌍으로 ABSENT를 한 번 더 주면 그 자기 정리가 종료 슬롯을 지워
+        `active_visits()`가 종료를 못 보고, 사건이 닫히지 않는다.
 
         `observed_at`은 timezone-aware여야 하고 같은 (차량, 구역) 쌍의 직전
         관측보다 과거일 수 없다. 위반하면 ValueError다(`time_guard` 참조).
@@ -222,6 +228,10 @@ class InMemoryZoneVisitTracker:
 
         읽기 전용이다. 같은 프레임에서 몇 번을 불러도 같은 답을 준다 — "종료를
         정확히 한 번" 보장은 이 메서드가 아니라 프레임 끝의 `prune()`이 만든다.
+
+        여기로 나오는 것은 **관측으로 닫힌** 방문뿐이다. 유휴로 강제 종료된 방문은
+        `prune()`의 반환값으로 나간다. 추적이 끊긴 차량에는 조립기가 이 메서드를
+        아예 부르지 않으므로 그쪽 통로가 따로 필요하다.
         """
 
         return tuple(
@@ -230,24 +240,36 @@ class InMemoryZoneVisitTracker:
             if vehicle_id == physical_vehicle_id and slot.visit.state in _JUDGED_STATES
         )
 
-    def prune(self, now: datetime) -> None:
-        """프레임 판정이 끝난 뒤 슬롯을 정리한다. **조립기가 매 프레임 한 번 부른다.**
+    def prune(self, now: datetime) -> tuple[ZoneVisit, ...]:
+        """프레임 판정이 끝난 뒤 슬롯을 정리하고, **강제 종료한 방문을 반환한다.**
+
+        조립기가 매 프레임 한 번 부르고, **반환값을 반드시 규칙에 넘겨야 한다.**
+        반환된 방문은 이 통로로만 나온다 — 버리면 그 사건은 영원히 닫히지 않는다.
 
         두 가지를 한다.
 
         1. 닫힌 슬롯을 지운다. 방금 끝난 프레임의 `active_visits()`가 종료를
-           판정에 전달했으므로 역할이 끝났다. 종료가 규칙에 정확히 한 번 보이게
-           만드는 장치가 바로 이 호출이다.
+           판정에 전달했으므로 역할이 끝났다. 관측으로 닫힌 방문이 규칙에 정확히
+           한 번 보이게 만드는 장치가 바로 이 호출이다.
         2. `stale_after_seconds` 동안 `update()`가 한 번도 오지 않은 열린 슬롯을
-           강제 종료한다. 트래커에는 프레임 경계가 없어 차량이 영영 돌아오지
-           않는다는 사실을 스스로 알 수 없다 — 조립기가 그 쌍에 대한 `update()`를
-           아예 멈추면(추적 소실 등) 슬롯이 무한히 남고, 그 차량의 열린 사건도
-           영원히 닫히지 않는다.
+           강제 종료하고, 슬롯을 지운 뒤 그 방문을 반환한다.
 
-        강제 종료된 방문은 조용히 사라지지 않고 다음 프레임의 `active_visits()`에
-        한 번 실려 RESOLVE를 만든 뒤 그 다음 `prune()`에서 지워진다. 순서가
-        중요하다 — 1번을 2번보다 먼저 해야 방금 강제 종료한 슬롯이 같은 호출에서
-        판정 없이 지워지지 않는다.
+        **왜 반환하는가.** 트래커에는 프레임 경계가 없어 차량이 영영 돌아오지
+        않는다는 사실을 스스로 알 수 없다. 조립기가 그 쌍에 대한 `update()`를 아예
+        멈추면(추적 소실 등) 슬롯도 사건도 영원히 남는다. 그런데 실제 조립기의
+        판정 루프는 **이번 프레임에 관측된 차량만** 돈다 — 추적이 끊긴 차량에는
+        `active_visits()`를 부르지 않는다. 강제 종료를 `active_visits()`로만
+        내보내면 그 차량의 종료는 아무도 조회하지 않아 영원히 판정되지 않는다.
+        그래서 조립기가 "누구를 물어봐야 하는지" 몰라도 되도록 여기서 밀어낸다.
+
+        따라서 종료가 나가는 통로는 둘이고 서로 겹치지 않는다. 관측으로 닫힌
+        방문은 `active_visits()`로, 유휴로 강제 종료된 방문은 이 반환값으로 나간다.
+        어느 쪽도 두 번 나오지 않는다 — 강제 종료된 슬롯은 같은 호출에서 지운다.
+
+        **매 호출의 반환값을 판정에 넘겨야 한다.** 한 프레임에서 두 번 부르면 두
+        번째 호출은 빈 튜플을 돌려주므로, 첫 호출의 반환값을 버린 순간 그 종료는
+        복구할 길이 없다. 판정보다 먼저 부르는 것도 같은 이유로 안 된다 — 1번이
+        이번 프레임에 관측으로 닫힌 방문을 판정 전에 지워 버린다.
 
         정상 경로는 조립기가 사라진 차량에 ABSENT를 계속 먹여 이탈 확인시간으로
         닫는 것이다. 강제 종료는 그 경로가 끊겼을 때만 걸리는 안전망이다.
@@ -259,21 +281,27 @@ class InMemoryZoneVisitTracker:
             del self._slots[key]
 
         if self._stale_after_seconds <= 0.0:
-            return
+            return ()
+        force_closed: list[ZoneVisit] = []
         for key, slot in list(self._slots.items()):
             if (now - slot.last_updated_at).total_seconds() < self._stale_after_seconds:
                 continue
-            self._force_close(key, slot)
+            visit = self._force_close(key, slot)
+            if visit is not None:
+                force_closed.append(visit)
+        return tuple(force_closed)
 
     def _force_close(
         self, key: tuple[PhysicalVehicleId, ZoneId], slot: _VisitSlot
-    ) -> None:
+    ) -> ZoneVisit | None:
+        """슬롯을 지우고 닫힌 방문을 반환한다. 보고할 방문이 없으면 None이다."""
+
+        del self._slots[key]
         if slot.visit.state is ZoneVisitState.ENTERING:
             # 진입이 확정된 적 없는 후보다. 방문이 성립하지 않았으므로 종료로
             # 보고하지 않는다 — ABSENT로 후보를 버릴 때와 같은 처리다.
-            del self._slots[key]
-            return
-        slot.visit = replace(
+            return None
+        return replace(
             slot.visit,
             state=ZoneVisitState.OUTSIDE,
             # 관측이 끊긴 시점까지만 점유로 인정한다. 관측하지 못한 구간을 점유에
