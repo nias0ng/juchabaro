@@ -17,6 +17,7 @@ def _make_event(**overrides) -> ViolationEvent:
     defaults = dict(
         track_id=7,
         plate_number="12가3456",
+        session_id=1001,
         status=ViolationStatus.DOUBLE_PARK,
         # zone_id/zone_number/plate_number는 판정 결과에는 남지만 명세의
         # parking-events 요청 스키마에는 없어 payload로 나가지 않는다.
@@ -195,11 +196,25 @@ def test_publish_skips_when_session_id_cannot_be_resolved():
     mock_urlopen.assert_not_called()
 
 
-def test_publish_skips_when_no_session_id_resolver_is_configured():
+def test_publish_reads_session_id_from_the_event_by_default():
+    """431번으로 ViolationEvent가 session_id를 싣게 됐으니, resolver를 주입하지 않아도
+    입차에서 확정된 세션이 그대로 나가야 한다."""
+    publisher = HttpResultPublisher(base_url="http://backend.local", api_key="k", image_supplier=_images)
+
+    with patch("http_result_publisher.urllib_request.urlopen", return_value=_mock_response()) as mock_urlopen:
+        publisher.publish(_make_event(session_id=4242))
+
+    payload = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert payload["sessionId"] == 4242
+
+
+def test_publish_skips_when_event_has_no_session_id():
+    """입차 매칭 실패·DENY·REVIEW면 세션이 없다 — 필수 필드가 빠진 요청을 보내
+    400을 받는 대신 건너뛴다."""
     publisher = HttpResultPublisher(base_url="http://backend.local", api_key="k", image_supplier=_images)
 
     with patch("http_result_publisher.urllib_request.urlopen") as mock_urlopen:
-        publisher.publish(_make_event())
+        publisher.publish(_make_event(session_id=None))
 
     mock_urlopen.assert_not_called()
 

@@ -1903,6 +1903,59 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(monitor._tracks[1].plate_number, "1234")
 
+    def test_violation_event_carries_session_id_from_matched_entry_event(self) -> None:
+        """입차에서 받은 sessionId가 위반 사건까지 닿아야 한다(431번).
+
+        백엔드 API 명세는 POST /api/hw/parking-events에 sessionId를 필수로
+        요구하므로, 이 연결이 끊기면 사건을 한 건도 보낼 수 없다.
+        """
+        entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
+        disabled_zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.5, 0.5), (0.9, 0.5), (0.9, 0.9), (0.5, 0.9)])
+        monitor = ViolationMonitor(
+            ZoneRegistry([entry_zone, disabled_zone]),
+            min_overlap_ratio=0.40,
+            min_dwell_seconds=1.0,
+            entry_match_window_seconds=10.0,
+        )
+        base_time = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+
+        monitor.add_entry_event(
+            EntryEvent(plate_number="1234", captured_at=base_time, session_id=55, vehicle_id=10)
+        )
+        # 입차 구역에서 매칭된 뒤 장애인 구역으로 이동해 정차한다.
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1, bbox=BoundingBox(0.05, 0.05, 0.25, 0.25), confidence=0.9, frame_id=1,
+                    captured_at=base_time + timedelta(seconds=3),
+                )
+            ]
+        )
+        parked_bbox = BoundingBox(0.6, 0.6, 0.8, 0.8)
+        monitor.update(
+            [VehicleBox(track_id=1, bbox=parked_bbox, confidence=0.9, frame_id=2, captured_at=base_time + timedelta(seconds=5))]
+        )
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=parked_bbox, confidence=0.9, frame_id=3, captured_at=base_time + timedelta(seconds=20))]
+        )
+
+        self.assertEqual([event.status for event in events], [ViolationStatus.RESTRICTED_ZONE])
+        self.assertEqual(events[0].session_id, 55)
+
+    def test_violation_event_session_id_is_none_when_entry_never_matched(self) -> None:
+        """매칭된 입차 이벤트가 없으면 세션을 알 수 없다 — 그래도 판정 자체는 나간다."""
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=1.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=start + timedelta(seconds=5))]
+        )
+
+        self.assertEqual([event.status for event in events], [ViolationStatus.RESTRICTED_ZONE])
+        self.assertIsNone(events[0].session_id)
+
     def test_entry_event_not_matched_outside_entry_zone(self) -> None:
         entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         registry = ZoneRegistry([entry_zone])

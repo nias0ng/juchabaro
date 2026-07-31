@@ -11,10 +11,12 @@ from jetson_vehicle_tracking_baseline import ViolationEvent, ViolationStatus, Zo
 from replay.jsonl_publisher import JsonlResultPublisher
 
 
-def make_event(track_id=1):
+def make_event(track_id=1, session_id=None):
     return ViolationEvent(
         track_id=track_id,
         plate_number=None,
+        # 리플레이에는 입차 이벤트를 공급하는 경로가 없어 기본값이 미확정(None)이다.
+        session_id=session_id,
         status=ViolationStatus.RESTRICTED_ZONE,
         zone_id=3,
         zone_number="DIS-01",
@@ -47,6 +49,18 @@ def test_event_fields_round_trip(tmp_path):
     assert record["zone_number"] == "DIS-01"
     assert record["zone_type"] == "DISABLED"
     assert record["detected_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_records_session_id_so_unidentified_events_can_be_counted(tmp_path):
+    """계약 문서 §9 — 파일럿에서 신원 미확정 사건이 몇 건인지 세어 스키마 완화(§3)의
+    시급성을 판단한다. session_id가 JSONL에 남지 않으면 그 집계가 불가능하다."""
+    path = tmp_path / "events.jsonl"
+    with JsonlResultPublisher(path=path) as publisher:
+        publisher.publish(make_event())
+        publisher.publish(make_event(session_id=55))
+
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [record["session_id"] for record in records] == [None, 55]
 
 
 def test_same_event_serializes_byte_identically(tmp_path):

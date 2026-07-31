@@ -693,6 +693,13 @@ class TrackState:
     open_violation: ViolationStatus = ViolationStatus.NONE
     # 매칭된 EntryEvent.gate_tracking_id(383번) — 라즈베리파이 발급 UUID.
     gate_tracking_id: str | None = None
+    # 매칭된 EntryEvent에서 실려온 백엔드 입차 판정 결과(431번). session_id는
+    # 위반 사건 전송의 필수 키이고, 나머지 셋은 전용구역 무자격 점유 판정용
+    # 자격 정보다. 입차가 DENY/REVIEW였거나 아직 매칭이 안 된 트랙은 전부 None이다.
+    session_id: int | None = None
+    vehicle_id: int | None = None
+    is_disabled_vehicle: bool | None = None
+    is_electric: bool | None = None
     # (319 리뷰 재검토 2차, C-1) 중복 발행 판정 키는 status 단독이 아니라
     # (status, zone_id) 쌍이다. status만 보면 같은 위반 종류로 구역만 옮긴 경우
     # (AISLE-1을 막던 차가 AISLE-2로 이동)가 "같은 사건 계속"으로 묻혀 서버가
@@ -770,10 +777,18 @@ class ViolationEvent:
     판정됐는지 서버가 알 수 있도록 둘 다 실어보낸다. 스팟형 홈 구역을 점유한
     적이 없는 차량(통행로만 걸친 AISLE_BLOCK, 구역 외 OUT_OF_ZONE 등)은
     `occupancy_seconds`가 0.0이다.
+
+    `session_id`(431번)는 백엔드가 이 사건의 대상을 식별하는 키다 — API 명세의
+    `POST /api/hw/parking-events`가 필수로 요구한다. 입차 흐름에서 매칭된
+    `EntryEvent`를 통해 들어오므로, 매칭에 실패했거나 입차가 거부(`DENY`)/확인
+    대기(`REVIEW`)였던 트랙은 `None`이다. `None`인 사건은 전송할 수 없고
+    (필수 필드 누락) `HttpResultPublisher`가 건너뛴다 — 그래도 판정 자체는
+    수행하고 로컬 JSONL에는 남는다.
     """
 
     track_id: int
     plate_number: str | None
+    session_id: int | None
     status: ViolationStatus
     zone_id: int | None
     zone_number: str | None
@@ -794,11 +809,25 @@ class EntryEvent:
     혼동하지 않도록 필드명을 다르게 뒀다. 매칭에는 쓰이지 않고(매칭은
     `plate_number`/`captured_at`만 사용), 매칭 성공 시 `TrackState`에
     실려 이후 위반 이벤트를 원래 입차 건과 대조할 수 있게 한다.
+
+    `session_id` 이하 네 필드는 백엔드 입차 판정 응답에서 온 값이다(431번).
+    `session_id`는 백엔드가 위반 사건·주차 완료·출차를 식별하는 유일한 키이고
+    (API 명세에서 셋 다 필수), `vehicle_id`/`is_disabled_vehicle`/`is_electric`은
+    전용구역 무자격 점유 판정에 필요한 자격 정보다 — `GET /api/hw/vehicles/check`가
+    폐기돼(사용X) 입차 응답이 이 정보의 유일한 출처다.
+
+    입차가 거부(`DENY`)되거나 확인 대기(`REVIEW`)면 세션이 만들어지지 않으므로
+    네 값 모두 `None`이다. 그래도 이벤트 자체는 만든다 — 미등록 차량도 카메라에
+    잡히고 위반 판정 대상이다.
     """
 
     plate_number: str
     captured_at: datetime
     gate_tracking_id: str | None = None
+    session_id: int | None = None
+    vehicle_id: int | None = None
+    is_disabled_vehicle: bool | None = None
+    is_electric: bool | None = None
 
 
 def to_jsonable(value: Any) -> Any:
@@ -1119,6 +1148,10 @@ class ViolationMonitor:
         state = self._tracks[detection.track_id]
         state.plate_number = matched.plate_number
         state.gate_tracking_id = matched.gate_tracking_id
+        state.session_id = matched.session_id
+        state.vehicle_id = matched.vehicle_id
+        state.is_disabled_vehicle = matched.is_disabled_vehicle
+        state.is_electric = matched.is_electric
 
     def track_snapshot(self, now: datetime) -> dict[int, TrackSnapshot]:
         """현재 트랙별 정차 상태를 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다.
@@ -1363,6 +1396,7 @@ class ViolationMonitor:
                     ViolationEvent(
                         track_id=detection.track_id,
                         plate_number=state.plate_number,
+                        session_id=state.session_id,
                         status=status,
                         zone_id=event_zone_id,
                         zone_number=zone.zone_number if zone else None,

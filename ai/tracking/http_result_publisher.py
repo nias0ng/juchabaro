@@ -25,16 +25,14 @@
 
 ## 미해결 항목 (`docs/superpowers/specs/주차관련 백엔드 계약.md` §11에 정리)
 
-- **`sessionId`가 도착하지만 판정까지 전달되지 않는다.** 명세에서
-  `POST /api/hw/parking/entry`는 RPi가 호출하고 그 응답으로만 `sessionId`가 나온다.
-  전달 경로는 383번(`entry_event_intake.py`)이 이미 만들어 뒀다 — RPi가
-  `POST /internal/entry-events`로 그 응답을 그대로 넘겨주고
-  `IncomingEntryEvent.session_id`로 파싱된다. **그런데 `to_entry_event()`가 그 값을
-  버린다** — `EntryEvent`는 `plate_number`/`captured_at`/`gate_tracking_id`만 싣고,
-  `TrackState`·`ViolationEvent`에도 `session_id` 자리가 없다. 즉 남은 일은 백엔드
-  협의가 아니라 **젯슨 내부 배관**(`EntryEvent` → `TrackState` → `ViolationEvent`로
-  `session_id`를 흘려보내기)이다. 그때까지 이 클래스는 `session_id_resolver`를
-  주입받고, 해결에 실패하면 전송을 건너뛰고 경고만 남긴다(감지 루프를 죽이지 않는다).
+- **`sessionId`는 배관이 끝났다(431번).** 명세에서 `POST /api/hw/parking/entry`는
+  RPi가 호출하고 그 응답으로만 `sessionId`가 나온다. RPi가 그 응답을
+  `POST /internal/entry-events`로 젯슨에 넘겨주고(383번), 번호판 매칭에 성공하면
+  `EntryEvent` → `TrackState` → `ViolationEvent.session_id`로 실려 온다.
+  `default_session_id_resolver`가 그 값을 그대로 쓴다. **다만 매칭에 실패했거나
+  입차가 `DENY`/`REVIEW`였으면 여전히 `None`이고**, 그 사건은 전송을 건너뛴다 —
+  명세가 `sessionId`를 필수로 못박아 미확정 사건을 받을 방법이 없기 때문이다
+  (계약 문서 §3의 NULL 허용 요청이 명세에 반영되지 않았다).
 - **`images`를 만들 방법이 없다.** 명세는 `imageUrl`(저장 경로)을 필수로 요구하지만
   명세 어디에도 이미지 업로드 엔드포인트가 없다. 업로드 경로가 정해질 때까지
   `image_supplier`를 주입받고, 비어 있으면 역시 건너뛴다. **데모 차단 항목이다.**
@@ -111,6 +109,17 @@ DEFAULT_STATUS_TO_REASON: dict[str, str] = {
 }
 
 
+def default_session_id_resolver(event: Any) -> int | None:
+    """`ViolationEvent.session_id`를 그대로 쓴다(431번).
+
+    입차 흐름(RPi → 백엔드 → 젯슨 `/internal/entry-events`)에서 매칭된 세션이
+    `EntryEvent` → `TrackState` → `ViolationEvent`로 실려 오므로, 보통은 이
+    기본 구현으로 충분하다. 매칭 실패·`DENY`·`REVIEW`면 `None`이다.
+    """
+
+    return event.session_id
+
+
 class HttpPublishError(RuntimeError):
     """백엔드로의 위반 이벤트 전송이 실패한 경우."""
 
@@ -118,18 +127,20 @@ class HttpPublishError(RuntimeError):
 class HttpResultPublisher:
     """`ViolationEvent`를 백엔드 `POST /api/hw/parking-events`로 전송한다.
 
-    명세 필수 필드 중 젯슨이 아직 만들 수 없는 두 가지(`sessionId`, `images`)는
-    주입받는다. 어느 쪽이든 확보되지 않으면 **전송을 건너뛰고 경고만 남긴다** —
-    감지 루프를 죽이지 않는 것이 우선이고, 어차피 필수 필드가 빠진 요청은 백엔드가
-    400으로 거부하기 때문이다. 건너뛴 사건은 JSONL 발행기가 로컬에 남긴다
-    (계약 문서 §9).
+    명세 필수 필드 중 확보되지 않을 수 있는 두 가지(`sessionId`, `images`)는
+    주입 지점을 열어 둔다. 어느 쪽이든 확보되지 않으면 **전송을 건너뛰고 경고만
+    남긴다** — 감지 루프를 죽이지 않는 것이 우선이고, 어차피 필수 필드가 빠진
+    요청은 백엔드가 400으로 거부하기 때문이다. 건너뛴 사건은 JSONL 발행기가
+    로컬에 남긴다(계약 문서 §9).
 
     Args:
         session_id_resolver: `ViolationEvent`를 받아 주차 세션 ID를 돌려주는 함수.
-            확정할 수 없으면 `None`을 돌려준다. 미지정이면 항상 건너뛴다.
+            확정할 수 없으면 `None`을 돌려준다. 미지정이면
+            `default_session_id_resolver`(이벤트의 `session_id`를 그대로 읽음)를 쓴다.
         image_supplier: `ViolationEvent`를 받아 명세 `images` 항목 목록을 돌려주는
             함수. 각 항목은 `imageUrl`/`imageType`/`capturedAt` 키를 갖는다.
-            미지정이거나 빈 목록이면 건너뛴다.
+            **미지정이면 항상 건너뛴다** — 이미지 업로드 엔드포인트가 명세에 없어
+            젯슨이 `imageUrl`을 만들 수단이 아직 없다(계약 문서 §11.2).
     """
 
     def __init__(
@@ -145,7 +156,9 @@ class HttpResultPublisher:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._session_id_resolver = session_id_resolver
+        self._session_id_resolver = (
+            default_session_id_resolver if session_id_resolver is None else session_id_resolver
+        )
         self._image_supplier = image_supplier
         # (주의) `status_to_event_type or DEFAULT...`로 쓰면 호출자가 명시적으로 빈
         # dict({})를 넘겨도 falsy라서 조용히 기본값으로 대체돼버린다 — None 체크로 구분한다.
@@ -164,12 +177,12 @@ class HttpResultPublisher:
         if event_type is None:
             raise HttpPublishError(f"status_to_event_type에 매핑이 없는 ViolationStatus입니다: {event.status}")
 
-        session_id = self._session_id_resolver(event) if self._session_id_resolver is not None else None
+        session_id = self._session_id_resolver(event)
         if session_id is None:
             LOGGER.warning(
-                "주차 세션 ID를 확정할 수 없어 track_id=%s의 %s 사건을 전송하지 않습니다"
-                "(명세상 sessionId는 필수인데 RPi 입차 응답에서 젯슨으로 넘어오는 경로가 아직 "
-                "정의되지 않았습니다 — 계약 문서 §11.1).",
+                "주차 세션이 미확정이라 track_id=%s의 %s 사건을 전송하지 않습니다"
+                "(명세상 sessionId는 필수입니다. 입차 번호판 매칭에 실패했거나 입차가 "
+                "DENY/REVIEW였습니다 — 계약 문서 §11.1).",
                 event.track_id,
                 event.status.value,
             )
