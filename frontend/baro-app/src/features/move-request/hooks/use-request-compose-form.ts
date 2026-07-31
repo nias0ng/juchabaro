@@ -37,11 +37,11 @@ async function pickImage(source: 'camera' | 'library'): Promise<string | null> {
  * 제출 핸들러는 없고, 화면(request-compose-screen)이 값만 읽어서 그려주는 데 쓴다.
  */
 export function useRequestComposeForm() {
-  const [plateNumber, setPlateNumber] = useState('12가 3456');
-  const [zoneLabel, setZoneLabel] = useState<string | null>('지하 1층 · B-14 구역');
+  const [plateNumber, setPlateNumber] = useState('');
+  const [zoneLabel, setZoneLabel] = useState<string | null>(null);
   const [isZonePickerOpen, setIsZonePickerOpen] = useState(false);
   const [situation, setSituation] = useState<RequestSituation>('이중 주차');
-  const [reason, setReason] = useState('출차 통로를 막고 있어 차량 이동을 요청합니다.');
+  const [reason, setReason] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
 
   const openZonePicker = () => setIsZonePickerOpen(true);

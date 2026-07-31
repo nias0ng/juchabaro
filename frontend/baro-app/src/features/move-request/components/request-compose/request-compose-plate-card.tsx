@@ -5,7 +5,7 @@ import { formatPlateNumberInput, isPlateNumberValid } from '@/features/vehicle/v
 
 import { styles } from './request-compose-plate-card.styles';
 
-const PLATE_NUMBER_PLACEHOLDER = '12가 3456';
+const PLATE_NUMBER_PLACEHOLDER = 'ex. 12가 3456';
 
 type RequestComposePlateCardProps = {
   plateNumber: string;
