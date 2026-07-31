@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
 
+    # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
+    # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
+    entry_match_window_seconds: float = 10.0
+
     # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
     # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다 —
     # motion_estimator에 평활화가 없어 이 값이 잡음으로 인한 주차 종료를 막는

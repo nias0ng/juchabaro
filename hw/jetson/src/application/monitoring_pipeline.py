@@ -4,6 +4,10 @@
 bbox 거리 계산이나 위반 조건 판단은 하지 않는다(데이터흐름.md §6
 "application은 조립 담당이지 판정 담당이 아니다").
 
+`TrackingPipeline`이 이미 `ContextMatcher`(T-16)로 `context`를 채워서
+돌려준다(데이터흐름.md §2 — "입차 세션과 물리 차량 연결"은 tracking 자신의
+책임) — 여기서는 그 배치를 그대로 parking에 넘긴다.
+
 카메라 장애(source_available=False 처리)는 아직 다루지 않는다 — 실카메라
 입력(웹캠 티켓)과 함께 결정할 사안이라 지금은 `FrameSourceError`를 그대로
 전파한다. `EndOfVideo`(영상 리플레이 정상 종료)만 `run()`에서 조용히 멈추는
