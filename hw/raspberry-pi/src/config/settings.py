@@ -1,9 +1,15 @@
 import os
+from pathlib import Path
 from typing import Final
 
+from dotenv import load_dotenv
+
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(ENV_PATH)
+
 # [환경 변수]
-BACKEND_BASE_URL: Final[str] = os.environ["BACKEND_BASE_URL"]
-BACKEND_HW_API_KEY: Final[str] = os.environ["BACKEND_HW_API_KEY"]
+BACKEND_BASE_URL: Final[str] = os.getenv("BACKEND_BASE_URL", "")
+BACKEND_HW_API_KEY: Final[str] = os.getenv("BACKEND_HW_API_KEY", "")
 
 # [GPIO 설정]
 
