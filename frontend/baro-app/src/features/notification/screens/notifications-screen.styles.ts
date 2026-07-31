@@ -6,19 +6,15 @@ export const styles = StyleSheet.create({
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: Spacing.xs,
+    paddingTop: Spacing.lg,
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
   },
-  markAllText: {
-    fontSize: 12.5,
-    color: Palette.violet500,
-  },
   statusContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: Spacing.xxl,
