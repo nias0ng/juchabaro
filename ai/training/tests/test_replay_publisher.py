@@ -21,6 +21,7 @@ def make_event(track_id=1):
         zone_type=ZoneType.DISABLED,
         overlap_ratio=0.5123456789,
         dwell_seconds=42.5,
+        occupancy_seconds=42.5,
         detected_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
