@@ -85,3 +85,26 @@ def test_append_raises_outbox_error_when_path_is_a_directory(tmp_path):
 
     with pytest.raises(OutboxError):
         outbox.append(make_open_transition())
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        OSError(28, "No space left on device"),  # ENOSPC — 디스크 용량 부족
+        PermissionError(13, "Permission denied"),  # PermissionError는 OSError의 하위 클래스
+    ],
+)
+def test_append_wraps_specific_os_errors_as_outbox_error(tmp_path, monkeypatch, raised):
+    """디스크 용량 부족·권한 거부처럼 실제 배포 환경에서 나올 법한 구체적인
+    OSError 종류로도 OutboxError 래핑이 성립하는지 확인한다. 원인 예외도
+    체이닝돼야 호출부가 실제 원인을 로그로 남길 수 있다."""
+    outbox = JsonlOutbox(tmp_path / "outbox.jsonl")
+
+    def _raise(*args, **kwargs):
+        raise raised
+
+    monkeypatch.setattr("pathlib.Path.open", _raise)
+
+    with pytest.raises(OutboxError) as excinfo:
+        outbox.append(make_open_transition())
+    assert excinfo.value.__cause__ is raised

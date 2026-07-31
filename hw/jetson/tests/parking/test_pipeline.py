@@ -173,3 +173,31 @@ def test_ended_vehicle_that_never_visited_a_zone_is_dropped_from_snapshot_cache(
     pipeline.process(batch(at=T0 + timedelta(seconds=1), ended=(CAR,)))
 
     assert CAR not in pipeline._last_snapshot
+
+
+def test_snapshot_cache_stays_bounded_across_many_short_lived_vehicles():
+    """장기 실행 시나리오 흉내 — 수백 대가 구역 밖을 지나가다 하나씩
+    종료되는 동안 `_last_snapshot`이 누적되지 않고 매번 빠짐없이
+    회수되는지 확인한다(코치님 리뷰 제안 반영)."""
+    pipeline = make_pipeline()
+    vehicle_count = 500
+
+    for i in range(vehicle_count):
+        vehicle_id = PhysicalVehicleId(f"passerby-{i}")
+        at = T0 + timedelta(seconds=i)
+        pv_snapshot = PhysicalVehicleSnapshot(
+            physical_vehicle_id=vehicle_id,
+            track_segment_id=TrackSegmentId(1),
+            bbox=OUTSIDE_BBOX,
+            confidence=0.9,
+            motion_signal=MotionSignal.STATIONARY,
+            observed_at=at,
+            camera_id="cam-1",
+            context=None,
+        )
+        pipeline.process(batch(pv_snapshot, at=at))
+        # 각 차량은 다음 프레임에 곧바로 종료 보고된다 — 실제로는 프레임
+        # 여러 개에 걸쳐 있겠지만, 캐시 회수 자체를 검증하는 데는 충분하다.
+        pipeline.process(batch(at=at + timedelta(milliseconds=1), ended=(vehicle_id,)))
+
+    assert len(pipeline._last_snapshot) == 0
