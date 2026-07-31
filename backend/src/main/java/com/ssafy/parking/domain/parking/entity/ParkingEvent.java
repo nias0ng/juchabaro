@@ -85,4 +85,8 @@ public class ParkingEvent extends BaseEntity {
         this.detectedAt = detectedAt;
         this.resolvedAt = resolvedAt;
     }
+
+    public void changeStatus(ParkingEventStatus eventStatus) {
+        this.eventStatus = eventStatus;
+    }
 }

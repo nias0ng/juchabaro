@@ -1,3 +1,12 @@
+app:
+  upload:
+    dir: ${UPLOAD_DIR:./uploads}
+    public-base-url: ${UPLOAD_PUBLIC_URL:http://localhost:8080/images}
+  hw:
+    api-key: ${HW_API_KEY:local-dev-hw-key-change-me}
+  plate:
+    review-distance: 1
+
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
@@ -29,6 +38,11 @@ spring:
       hibernate:
         jdbc:
           time_zone: Asia/Seoul
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 30MB
 
 management:
   endpoints:

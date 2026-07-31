@@ -7,7 +7,7 @@ PaddleOCR recognition-only 모델로 전처리된 번호판 문자열을 읽는�
 주요 기능:
     - 서비스 시작 시 주입된 PaddleOCR 모델 재사용
     - 여러 번호판 이미지의 batch recognition 실행
-    - PaddleOCR ``Result.json``에서 원문과 confidence 추출
+    - PaddleOCR recognition 결과에서 원문과 confidence 추출
 
 담당하지 않는 기능:
     - 번호판 이미지 전처리
@@ -17,25 +17,28 @@ PaddleOCR recognition-only 모델로 전처리된 번호판 문자열을 읽는�
 
 from __future__ import annotations
 
-import json
 import math
+from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
-from threading import Lock
 from typing import Any, Sequence
 
 import numpy as np
 
+from ..errors import OcrComponentError
+from ..image_validation import is_nonempty_bgr_uint8_image
 from ..types import BgrImage, PreparedPlate, RawOcrResult
 
 
-# 한 차량의 최대 6개 crop을 기본적으로 한 backend batch에서 처리한다.
+# PaddleOCR predict에 전달할 기본 recognition batch 크기다. Burst의
+# frame_count와는 별도이며 입력 crop 시퀀스 전체를 predict에 전달한다.
 DEFAULT_RECOGNITION_BATCH_SIZE = 6
 
 
 # [예외]
 
 
-class PaddleResultError(RuntimeError):
+class PaddleResultError(OcrComponentError, RuntimeError):
     """PaddleOCR 입력 또는 결과가 recognition adapter 계약을 위반한 경우."""
 
 
@@ -50,13 +53,7 @@ def _validate_bgr_image(image: BgrImage, *, frame_index: int) -> None:
             f"frame {frame_index}: OCR 입력은 numpy.ndarray여야 합니다."
         )
 
-    if (
-        image.dtype != np.uint8
-        or image.ndim != 3
-        or image.shape[2] != 3
-        or image.shape[0] == 0
-        or image.shape[1] == 0
-    ):
+    if not is_nonempty_bgr_uint8_image(image):
         raise PaddleResultError(
             f"frame {frame_index}: OCR 입력은 비어 있지 않은 "
             "BGR uint8 HxWx3 배열이어야 합니다: "
@@ -66,68 +63,50 @@ def _validate_bgr_image(image: BgrImage, *, frame_index: int) -> None:
 
 def _parse_paddle_result(result: Any) -> tuple[str, float]:
     """
-    PaddleOCR ``Result.json``에서 인식 문자열과 confidence를 추출한다.
+    PaddleOCR recognition 결과에서 문자열과 confidence를 추출한다.
 
     입력:
-        ``json`` 속성이 callable, JSON 문자열 또는 dict인 Paddle 결과.
+        PaddleOCR 3.7 ``TextRecResult``처럼 ``rec_text``와
+        ``rec_score``를 가진 mapping.
 
     출력:
         정규화하지 않은 문자열과 0.0~1.0 범위 confidence.
-        비어 있는 결과의 누락된 confidence는 0.0으로 변환한다.
 
     실패:
-        JSON 구조가 잘못되었거나 confidence가 숫자가 아니고,
+        결과 구조가 잘못되었거나 confidence가 숫자가 아니고,
         유한하지 않거나 범위를 벗어나면 PaddleResultError가 발생한다.
     """
 
-    data = getattr(result, "json", None)
-    if callable(data):
-        try:
-            data = data()
-        except Exception as exc:
-            raise PaddleResultError(
-                "PaddleOCR Result.json 호출에 실패했습니다."
-            ) from exc
-
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise PaddleResultError(
-                "PaddleOCR Result.json이 올바른 JSON 문자열이 아닙니다."
-            ) from exc
-
-    if not isinstance(data, dict):
+    if not isinstance(result, Mapping):
         raise PaddleResultError(
-            "PaddleOCR Result.json은 dict 또는 JSON 문자열이어야 합니다."
+            "PaddleOCR recognition 결과는 mapping이어야 합니다."
         )
 
-    payload = data.get("res", data)
-    if not isinstance(payload, dict):
+    if "rec_text" not in result:
         raise PaddleResultError(
-            "PaddleOCR Result.json의 res는 dict여야 합니다."
+            "PaddleOCR recognition 결과에 rec_text가 없습니다."
         )
 
-    raw_text_value = payload.get("rec_text", "")
-    raw_text = "" if raw_text_value is None else str(raw_text_value)
-
-    score_value = payload.get("rec_score")
-    if score_value is None or (
-        isinstance(score_value, str)
-        and not score_value.strip()
-    ):
-        # 빈 인식 결과는 일부 Paddle 버전에서 score를 생략한다.
-        # 후처리에서 안전하게 제외할 수 있도록 0.0으로 통일한다.
-        return raw_text, 0.0
-
-    try:
-        score = float(score_value)
-    except (TypeError, ValueError) as exc:
+    raw_text_value = result["rec_text"]
+    if not isinstance(raw_text_value, str):
         raise PaddleResultError(
-            "PaddleOCR rec_score를 실수로 변환할 수 없습니다: "
+            "PaddleOCR rec_text는 문자열이어야 합니다."
+        )
+    raw_text = raw_text_value
+
+    if "rec_score" not in result:
+        raise PaddleResultError(
+            "PaddleOCR recognition 결과에 rec_score가 없습니다."
+        )
+
+    score_value = result["rec_score"]
+    if isinstance(score_value, bool) or not isinstance(score_value, Real):
+        raise PaddleResultError(
+            "PaddleOCR rec_score는 숫자여야 합니다: "
             f"{score_value!r}"
-        ) from exc
+        )
 
+    score = float(score_value)
     if not math.isfinite(score) or not 0.0 <= score <= 1.0:
         raise PaddleResultError(
             "PaddleOCR rec_score는 유한한 0.0~1.0 값이어야 합니다: "
@@ -145,19 +124,20 @@ class PaddlePlateReader:
     이미 로드된 PaddleOCR recognition 모델로 번호판 batch를 읽는다.
 
     이 객체는 서비스 시작 시 한 번 생성한 뒤 차량 이벤트마다 재사용한다.
-    모델 호출과 generator 소비를 하나의 lock 안에서 수행해 동시 추론으로
-    모델 상태가 충돌하지 않게 한다.
+    모델이 반환한 generator는 호출 안에서 즉시 list로 소비한다.
 
     입력:
         ``recognize()``는 전처리가 끝난 PreparedPlate 시퀀스를 받는다.
+        이미지 buffer를 deep copy하거나 변경하지 않고 모델에 전달하므로
+        호출이 끝날 때까지 caller도 해당 buffer를 변경하면 안 된다.
 
     출력:
         입력 순서와 frame_index를 보존한 RawOcrResult tuple.
 
     실패:
         중복 frame_index, 잘못된 BGR 이미지, 결과 개수 불일치 또는
-        비정상 Result.json이면 PaddleResultError를 발생시킨다.
-        실제 모델 실행 오류는 원래 예외를 그대로 전달한다.
+        비정상 recognition 결과면 PaddleResultError를 발생시킨다.
+        실제 모델 실행 오류도 원인을 보존한 PaddleResultError로 변환한다.
     """
 
     def __init__(
@@ -179,7 +159,6 @@ class PaddlePlateReader:
 
         self._model = model
         self._batch_size = batch_size
-        self._lock = Lock()
 
     def warm_up(self) -> None:
         """
@@ -215,7 +194,8 @@ class PaddlePlateReader:
 
         입력:
             frame_index가 중복되지 않고 BGR uint8 이미지를 가진
-            PreparedPlate 시퀀스.
+            PreparedPlate 시퀀스. 이미지 배열은 read-only 입력으로
+            취급하며 batch 구성 시 deep copy하지 않는다.
 
         출력:
             입력과 동일한 순서로 정렬된 RawOcrResult tuple.
@@ -277,15 +257,23 @@ class PaddlePlateReader:
         self,
         images: list[BgrImage],
     ) -> list[Any]:
-        """PaddleOCR 호출과 lazy 결과 소비를 같은 lock 안에서 수행한다."""
+        """주입된 모델 호출 결과를 같은 호출 안에서 즉시 소비한다.
 
-        with self._lock:
+        ``images``의 배열은 caller가 소유한 read-only 참조이며 adapter가
+        별도 복사하지 않는다.
+        """
+
+        try:
             return list(
                 self._model.predict(
                     input=images,
                     batch_size=self._batch_size,
                 )
             )
+        except Exception as exc:
+            raise PaddleResultError(
+                "PaddleOCR 모델 실행에 실패했습니다."
+            ) from exc
 
 
 # [모델 로더]
@@ -309,8 +297,8 @@ def load_paddle_plate_reader(
     """
     로컬 PaddleOCR inference model을 로드해 재사용 가능한 reader를 만든다.
 
-    이 함수는 ``main.py``의 서비스 시작 단계에서 한 번만 호출해야 한다.
-    차량 감지 반복문에서는 반환된 객체의 ``recognize()``만 재사용한다.
+    운영에서는 ``load_plate_ocr_pipeline()``이 서비스 시작 단계에서
+    이 loader를 한 번 호출한다. 차량 이벤트마다 모델을 다시 읽지 않는다.
 
     입력:
         model_dir는 Paddle inference 파일 세 개가 있는 디렉터리다.
@@ -321,8 +309,9 @@ def load_paddle_plate_reader(
 
     실패:
         모델 디렉터리나 필수 파일이 없거나 비어 있으면 파일 관련
-        예외가 발생한다. PaddleOCR import·모델 로드·선택적 warm-up
-        실패도 호출자에게 그대로 전달한다.
+        예외가 발생한다. PaddleOCR import·모델 로드 실패는 그대로
+        전달한다. 선택적 warm-up의 모델 호출 실패는 원인을 보존한
+        PaddleResultError로 전달한다.
     """
 
     if not isinstance(model_name, str) or not model_name.strip():

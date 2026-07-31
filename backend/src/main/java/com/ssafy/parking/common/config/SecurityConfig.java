@@ -1,5 +1,6 @@
 package com.ssafy.parking.common.config;
 
+import com.ssafy.parking.common.security.HwApiKeyFilter;
 import com.ssafy.parking.common.security.JwtAuthenticationEntryPoint;
 import com.ssafy.parking.common.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,7 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
+    private final HwApiKeyFilter hwApiKeyFilter;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -40,10 +42,13 @@ public class SecurityConfig {
                                 "/actuator/**",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
-                                "/v3/api-docs/**"
+                                "/v3/api-docs/**",
+                                "/images/**",
+                                "/hw/**"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
+                .addFilterBefore(hwApiKeyFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }

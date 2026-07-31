@@ -1,1 +1,1 @@
-export { default } from '@/features/resident/screens/requests-screen';
+export { default } from '@/features/move-request/screens/requests-screen';

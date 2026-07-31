@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { getMyProfile, login as loginRequest } from '@/features/auth/api/auth-api';
-import type { UserRole } from '@/features/auth/api/types';
+import type { UserRole, UserStatus } from '@/features/auth/api/types';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
 
 /* 
@@ -20,6 +20,8 @@ type AuthUser = {
   role: UserRole;
   buildingNumber: string | null;
   unitNumber: string | null;
+  status: UserStatus;
+  phoneNumber: string;
 };
 
 // AuthContextValue의 타입 정의 : 로그인 상태, 사용자 정보, 로그인/로그아웃 함수
@@ -62,6 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: profile.role,
           buildingNumber: profile.buildingNumber,
           unitNumber: profile.unitNumber,
+          status: profile.status,
+          phoneNumber: profile.phoneNumber,
         });
         setStatus('authenticated');
       } catch {
@@ -91,6 +95,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: profile.role,
       buildingNumber: profile.buildingNumber,
       unitNumber: profile.unitNumber,
+      status: profile.status,
+      phoneNumber: profile.phoneNumber,
     });
     setStatus('authenticated');
   }, []);

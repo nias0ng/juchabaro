@@ -283,6 +283,10 @@ def zone_coverage_ratio(zone: ParkingZone, bbox: BoundingBox) -> float:
 class ParkingZone:
     """설치 시 1회 캘리브레이션으로 등록되는 주차구역 정의 (§5.0).
 
+    zone_id는 백엔드가 발급하는 기계 식별자이고, zone_number는 사람이 읽는
+    구역 번호다(구역 계약 스펙 결정 4). 서버로 나가는 페이로드는 zone_id를,
+    로그·오버레이는 zone_number를 쓴다.
+
     `allowed_minutes`(ERD `parking_zones.allowed_minutes`)는 전기차 충전구역
     (EV_FAST/EV_SLOW)의 장기 점유(EV_OVERSTAY) 판단 기준이다. 다른 구역
     타입에는 의미가 없어 기본값 None(백엔드 미설정 시 무제한 허용, 안전
@@ -323,7 +327,8 @@ class ParkingZone:
     설정해야 한다(운영값 60~120분).
     """
 
-    zone_id: str
+    zone_id: int
+    zone_number: str
     zone_type: ZoneType
     polygon: NormalizedPolygon
     allowed_minutes: float | None = None
@@ -333,7 +338,7 @@ class ZoneRegistry:
     """구역 정의 목록을 보관한다. 스키마는 백엔드 `/internal/zones`와 동일하게 맞춘다."""
 
     def __init__(self, zones: Sequence[ParkingZone]) -> None:
-        self._zones: dict[str, ParkingZone] = {zone.zone_id: zone for zone in zones}
+        self._zones: dict[int, ParkingZone] = {zone.zone_id: zone for zone in zones}
 
     @classmethod
     def from_file(cls, path: Path) -> "ZoneRegistry":
@@ -348,19 +353,37 @@ class ZoneRegistry:
         zones = [cls._parse_zone(item) for item in payload.get("zones", [])]
         if not zones:
             raise BaselineError(f"구역 정의가 비어 있습니다: {path}")
+        # zoneId가 이제 사람이 직접 매기는 정수라, 폴리곤을 고치다가 구역 블록을
+        # 복사-붙여넣기하면 zoneId나 zoneNumber가 중복될 수 있다. ZoneRegistry.__init__은
+        # zone_id로 dict를 만들어 나중 항목이 앞 항목을 조용히 덮어쓰므로, 여기서 막지
+        # 않으면 판정의 유일한 입력인 zones 파일에서 구역 하나가 에러 없이 사라진다.
+        seen_ids: set[int] = set()
+        seen_numbers: set[str] = set()
+        for zone in zones:
+            if zone.zone_id in seen_ids:
+                raise BaselineError(f"구역 정의에 zoneId가 중복되었습니다: {zone.zone_id} ({path})")
+            if zone.zone_number in seen_numbers:
+                raise BaselineError(f"구역 정의에 zoneNumber가 중복되었습니다: {zone.zone_number} ({path})")
+            seen_ids.add(zone.zone_id)
+            seen_numbers.add(zone.zone_number)
         return cls(zones)
 
     @staticmethod
     def _parse_zone(item: Mapping[str, Any]) -> ParkingZone:
+        # 예약된 wire 키: allowedMinutes(카멜케이스)는 전기차 구역의 초과주차 허용
+        # 시간(분) 필드로 백엔드 계약과 zones_pilot.json이 이미 이 이름을 쓴다
+        # (319번 병합 시 camelCase로 맞춤 — snake_case로 읽으면 zones_pilot.json에서
+        # 항상 None이 나와 EV 구역의 초과주차 위반이 조용히 무시된다).
         try:
-            zone_id = str(item["zone_id"])
-            zone_type = ZoneType(item["zone_type"])
+            zone_id = int(item["zoneId"])
+            zone_number = str(item["zoneNumber"])
+            zone_type = ZoneType(item["zoneType"])
             points = tuple((float(x), float(y)) for x, y in item["polygon"])
-            allowed_minutes_raw = item.get("allowed_minutes")
+            allowed_minutes_raw = item.get("allowedMinutes")
             if isinstance(allowed_minutes_raw, bool):
                 # (319 리뷰 재검토, I-3) bool은 int의 하위 타입이라 float(True) -> 1.0으로
                 # 조용히 통과한다. 아래 유한 양수 검사도 못 막는다.
-                raise BaselineError(f"allowed_minutes에 bool을 쓸 수 없습니다: {item!r}")
+                raise BaselineError(f"allowedMinutes에 bool을 쓸 수 없습니다: {item!r}")
             allowed_minutes = None if allowed_minutes_raw is None else float(allowed_minutes_raw)
         except (KeyError, ValueError, TypeError) as exc:
             raise BaselineError(f"구역 정의 항목이 올바르지 않습니다: {item!r} ({exc})") from exc
@@ -370,9 +393,13 @@ class ZoneRegistry:
         # * 60.0` 비교가 항상 False가 돼, 크래시 없이 EV_OVERSTAY가 영구적으로
         # 발동하지 않는 조용한 실패가 된다(재현 확인됨) — math.isfinite로 명시적으로 막는다.
         if allowed_minutes is not None and not (math.isfinite(allowed_minutes) and allowed_minutes > 0):
-            raise BaselineError(f"allowed_minutes는 유한한 양수여야 합니다: {item!r}")
+            raise BaselineError(f"allowedMinutes는 유한한 양수여야 합니다: {item!r}")
         return ParkingZone(
-            zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(points), allowed_minutes=allowed_minutes
+            zone_id=zone_id,
+            zone_number=zone_number,
+            zone_type=zone_type,
+            polygon=NormalizedPolygon(points),
+            allowed_minutes=allowed_minutes,
         )
 
     def all(self) -> tuple[ParkingZone, ...]:
@@ -380,7 +407,7 @@ class ZoneRegistry:
 
         return tuple(self._zones.values())
 
-    def get(self, zone_id: str) -> ParkingZone:
+    def get(self, zone_id: int) -> ParkingZone:
         """구역 ID로 구역 정의를 조회한다."""
 
         return self._zones[zone_id]
@@ -696,6 +723,19 @@ class TrackState:
 
 
 @dataclass(frozen=True)
+class TrackSnapshot:
+    """오버레이·디버깅용 트랙 상태 스냅샷 (읽기 전용).
+
+    plate_number를 담지 않는다 — 리플레이 검증에는 게이트 OCR 입차 이벤트를
+    공급하는 경로가 없어 항상 None이다.
+    """
+
+    track_id: int
+    dwell_seconds: float
+    open_violation: ViolationStatus
+
+
+@dataclass(frozen=True)
 class ModelInfo:
     """결과 재현을 위해 기록하는 트래킹 라이브러리와 모델 정보."""
 
@@ -717,7 +757,8 @@ class ViolationEvent:
     차량 자신이 있는 구역을 가리키고 overlap_ratio도 이 차량 자신의 몸체
     면적 기준(차체 기준)이라 의미가 다르다.
     OUT_OF_ZONE(리뷰 반영)은 애초에 매핑되는 구역이 없으므로 zone_id/
-    zone_type은 항상 None이고 overlap_ratio도 항상 0.0으로 발행된다.
+    zone_type은 항상 None이고 overlap_ratio도 항상 0.0으로 발행된다. zone_number도
+    마찬가지로 None이 된다.
 
     `dwell_seconds`와 `occupancy_seconds`는 서로 다른 시계다(319 리뷰 재검토,
     C-1) — 전자는 "연속 무이동 시간"(미세 이동/재정차로 리셋됨), 후자는 "홈
@@ -731,7 +772,8 @@ class ViolationEvent:
     track_id: int
     plate_number: str | None
     status: ViolationStatus
-    zone_id: str | None
+    zone_id: int | None
+    zone_number: str | None
     zone_type: ZoneType | None
     overlap_ratio: float
     dwell_seconds: float
@@ -1064,6 +1106,26 @@ class ViolationMonitor:
         self._pending_entry_events.remove(matched)
         self._tracks[detection.track_id].plate_number = matched.plate_number
 
+    def track_snapshot(self, now: datetime) -> dict[int, TrackSnapshot]:
+        """현재 트랙별 정차 상태를 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다.
+
+        update()는 중복 억제 때문에 "새로 발생한" 이벤트만 반환하므로, 매 프레임
+        "이 차가 몇 초 정차했고 지금 어떤 상태인가"를 그리려면 누적 상태가 필요하다.
+        오버레이가 이를 재계산하면 화면에 보이는 값과 실제 판정이 갈라질 수 있어,
+        검증 도구가 검증 대상과 다른 답을 내게 된다.
+
+        dwell 계산식은 update()가 dwell_by_track을 채울 때 쓰는 것과 같아야 한다.
+        """
+
+        return {
+            track_id: TrackSnapshot(
+                track_id=track_id,
+                dwell_seconds=(now - state.stationary_since).total_seconds(),
+                open_violation=state.open_violation,
+            )
+            for track_id, state in self._tracks.items()
+        }
+
     def update(self, detections: Sequence[VehicleBox]) -> list[ViolationEvent]:
         """한 프레임의 트랙 목록을 반영하고, 새로 발생한 위반 이벤트만 반환한다.
 
@@ -1197,7 +1259,7 @@ class ViolationMonitor:
         # 각 스팟 구역의 "진짜 주인" — 그 구역을 홈으로 삼고 최소 정차 시간을
         # 채운 트랙 중, 몸 겹침 비율이 가장 높은 트랙. 같은 구역을 두 트랙이
         # 공유(경계선 타이 등)하면 비율이 더 높은 쪽만 주인으로 인정한다.
-        best_claimant_by_zone_id: dict[str, tuple[int, float]] = {}
+        best_claimant_by_zone_id: dict[int, tuple[int, float]] = {}
         for track_id, home in home_zone_by_track.items():
             if home is None or dwell_by_track[track_id] < self._min_dwell_seconds:
                 continue
@@ -1213,7 +1275,7 @@ class ViolationMonitor:
         # 판정을 보류하고 침범 후보에서 제외한다. 트래킹 노이즈로 정착이
         # 계속 안 되면 이 보류가 여러 프레임에 걸쳐(이론상 무기한) 이어질 수
         # 있다는 트레이드오프가 있다 — 모듈 docstring의 한계 목록 참고.
-        pending_home_zone_ids = {
+        pending_home_zone_ids: set[int] = {
             home.zone.zone_id
             for home in home_zone_by_track.values()
             if home is not None and home.zone.zone_id not in best_claimant_by_zone_id
@@ -1289,6 +1351,7 @@ class ViolationMonitor:
                         plate_number=state.plate_number,
                         status=status,
                         zone_id=event_zone_id,
+                        zone_number=zone.zone_number if zone else None,
                         zone_type=zone.zone_type if zone else None,
                         overlap_ratio=ratio,
                         dwell_seconds=dwell_seconds,
@@ -1398,7 +1461,28 @@ def calibration_fingerprint(calibration_path: Path | None, balance: float) -> di
         digest = hashlib.sha256(calibration_path.read_bytes()).hexdigest()[:16]
     except OSError as exc:
         raise BaselineError(f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}") from exc
-    return {"remap": True, "calibration_sha256": digest, "balance": round(float(balance), 6)}
+    return {"remap": True, "calibrationSha256": digest, "balance": round(float(balance), 6)}
+
+
+def normalize_fingerprint(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """서버·캐시·사이드카에서 온 지문을 비교 가능한 정규형으로 바꾼다.
+
+    dict를 통째로 비교하면 두 군데서 깨진다(구역 계약 스펙 §7.2). remap=False일 때
+    이 파일은 {"remap": False} 한 키만 만들지만 서버는 나머지를 null로 채워 보내고,
+    balance는 MySQL DECIMAL(8,6)을 거치며 0.5가 0.500000으로 돌아온다. 둘 다
+    정상 상황인데 불일치로 판정되면 기동이 거부된다.
+    """
+
+    if not bool(raw.get("remap", False)):
+        return {"remap": False}
+    try:
+        return {
+            "remap": True,
+            "calibrationSha256": str(raw["calibrationSha256"]).lower(),
+            "balance": round(float(raw["balance"]), 6),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BaselineError(f"calibration 지문 형식이 올바르지 않습니다: {raw!r} ({exc})") from exc
 
 
 def _import_calibration_utils() -> Any:
@@ -1620,7 +1704,7 @@ class StdoutResultPublisher:
         """plain 모드는 한 줄 요약, 기본은 JSON으로 출력한다."""
 
         if self._plain:
-            zone = event.zone_id or "-"
+            zone = event.zone_number or "-"
             plate = event.plate_number or "UNKNOWN"
             print(f"{event.status.value} track={event.track_id} zone={zone} plate={plate}", flush=True)
             return
@@ -1811,7 +1895,7 @@ def verify_zone_calibration(args: argparse.Namespace) -> None:
             args.zones_file,
         )
         return
-    if recorded != expected:
+    if normalize_fingerprint(recorded) != normalize_fingerprint(expected):
         raise BaselineError(
             f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones={recorded}, 현재={expected}. "
             f"같은 --calibration/--remap-balance로 --capture-frame을 다시 실행해 폴리곤을 재작성하세요."
@@ -1869,16 +1953,30 @@ class _FakeImage:
 class BaselineLogicTests(unittest.TestCase):
     """카메라·모델 없이 실행하는 순수 판정 로직 회귀 테스트."""
 
-    @staticmethod
+    _ZONE_IDS: dict[str, int] = {}
+
+    @classmethod
     def make_zone(
-        zone_id: str,
+        cls,
+        zone_number: str,
         zone_type: ZoneType,
         points: Sequence[tuple[float, float]],
         *,
         allowed_minutes: float | None = None,
     ) -> ParkingZone:
+        """테스트용 구역 하나. zone_id는 zone_number당 하나로 안정적으로 발급한다.
+
+        같은 zone_number면 항상 같은 zone_id가 나와야 한다 — 테스트가 여러
+        레지스트리를 만들어도 구역 동일성이 유지되어야 하기 때문이다.
+        """
+
+        zone_id = cls._ZONE_IDS.setdefault(zone_number, len(cls._ZONE_IDS) + 1)
         return ParkingZone(
-            zone_id=zone_id, zone_type=zone_type, polygon=NormalizedPolygon(tuple(points)), allowed_minutes=allowed_minutes
+            zone_id=zone_id,
+            zone_number=zone_number,
+            zone_type=zone_type,
+            polygon=NormalizedPolygon(tuple(points)),
+            allowed_minutes=allowed_minutes,
         )
 
     def test_polygon_area_of_square(self) -> None:
@@ -1925,7 +2023,7 @@ class BaselineLogicTests(unittest.TestCase):
         status, zone_hit, _ratio = classify_violation(overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.RESTRICTED_ZONE)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "DIS-01")
+        self.assertEqual(zone_hit.zone_number, "DIS-01")
 
     def test_observing_before_min_dwell(self) -> None:
         zone = self.make_zone("EV-01", ZoneType.EV_FAST, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
@@ -1948,7 +2046,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "EV-01")
+        self.assertEqual(zone_hit.zone_number, "EV-01")
 
     def test_ev_overstay_not_flagged_before_allowed_minutes_exceeded(self) -> None:
         """allowed_minutes를 아직 안 넘겼으면(최소 정차 시간은 넘겼어도) 여전히
@@ -2044,7 +2142,7 @@ class BaselineLogicTests(unittest.TestCase):
             overlaps, dwell_seconds=7300.0, min_dwell_seconds=600.0
         )
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
-        self.assertEqual(hit_zone.zone_id, "EV-02")
+        self.assertEqual(hit_zone.zone_number, "EV-02")
 
     def test_zone_registry_from_file_accepts_all_zone_types(self) -> None:
         """zones 파일이 담을 수 있는 zone_type 6종을 고정하고, 백엔드 현행 구현이
@@ -2062,8 +2160,17 @@ class BaselineLogicTests(unittest.TestCase):
             path = Path(tmp_dir) / "zones.json"
             path.write_text(
                 json.dumps(
-                    {"zones": [{"zone_id": f"Z-{index}", "zone_type": value, "polygon": square}
-                               for index, value in enumerate(expected)]}
+                    {
+                        "zones": [
+                            {
+                                "zoneId": index + 1,
+                                "zoneNumber": f"Z-{index}",
+                                "zoneType": value,
+                                "polygon": square,
+                            }
+                            for index, value in enumerate(expected)
+                        ]
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -2071,7 +2178,13 @@ class BaselineLogicTests(unittest.TestCase):
             self.assertEqual(len(registry.all()), len(expected))
 
             path.write_text(
-                json.dumps({"zones": [{"zone_id": "EV-01", "zone_type": "EV_CHARGING", "polygon": square}]}),
+                json.dumps(
+                    {
+                        "zones": [
+                            {"zoneId": 1, "zoneNumber": "EV-01", "zoneType": "EV_CHARGING", "polygon": square}
+                        ]
+                    }
+                ),
                 encoding="utf-8",
             )
             with self.assertRaises(BaselineError):
@@ -2162,7 +2275,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.LINE_CROSS)
         assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-02")
+        self.assertEqual(zone.zone_number, "GEN-02")
         self.assertAlmostEqual(ratio, 0.5)
 
     def test_monitor_line_cross_when_intruded_spot_is_empty(self) -> None:
@@ -2187,7 +2300,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(len(events_at_min_dwell), 1)
         self.assertEqual(events_at_min_dwell[0].status, ViolationStatus.LINE_CROSS)
-        self.assertIn(events_at_min_dwell[0].zone_id, ("GEN-01", "GEN-02"))  # 홈이 아닌 쪽이 침범 구역으로 보고됨
+        self.assertIn(events_at_min_dwell[0].zone_number, ("GEN-01", "GEN-02"))  # 홈이 아닌 쪽이 침범 구역으로 보고됨
         self.assertEqual(events_after, [])
 
     def test_aisle_block_takes_priority_over_restricted_zone(self) -> None:
@@ -2198,7 +2311,7 @@ class BaselineLogicTests(unittest.TestCase):
         status, zone_hit, _ratio = classify_violation(overlaps, dwell_seconds=700.0, min_dwell_seconds=600.0)
         self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "AISLE-01")
+        self.assertEqual(zone_hit.zone_number, "AISLE-01")
 
     def test_home_zone_overlap_picks_spot_type_ignoring_aisle(self) -> None:
         aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
@@ -2207,7 +2320,7 @@ class BaselineLogicTests(unittest.TestCase):
         overlaps = classify_zone_overlaps(bbox, [aisle, spot], min_overlap_ratio=0.40)
         home = _home_zone_overlap(overlaps)
         assert home is not None
-        self.assertEqual(home.zone.zone_id, "GEN-01")
+        self.assertEqual(home.zone.zone_number, "GEN-01")
 
     def test_home_zone_overlap_none_when_only_aisle(self) -> None:
         aisle = self.make_zone("AISLE-01", ZoneType.AISLE, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
@@ -2238,7 +2351,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
         assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-01")  # 이제 피해 차량이 점유한 구역이 실제로 실린다
+        self.assertEqual(zone.zone_number, "GEN-01")  # 이제 피해 차량이 점유한 구역이 실제로 실린다
         self.assertAlmostEqual(ratio, 0.9)
 
         # 구역 겹침이 전혀 없어도 다른 차량의 홈 구역을 침범했으면 이중주차로 판정한다.
@@ -2247,7 +2360,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
         assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-01")
+        self.assertEqual(zone.zone_number, "GEN-01")
         self.assertAlmostEqual(ratio, 0.9)
 
         # 최소 정차 시간 미달이면 겹침이 있어도 아직 OBSERVING이다.
@@ -2256,7 +2369,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.OBSERVING)
         assert zone is not None
-        self.assertEqual(zone.zone_id, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
+        self.assertEqual(zone.zone_number, "GEN-01")  # OBSERVING 중에도 어떤 구역이 위험한지 확인 가능
 
     def test_aisle_block_takes_priority_over_ev_overstay(self) -> None:
         """통행 방해가 EV 충전구역 시간 초과보다 우선한다(319 최종 리뷰, 사람 판단).
@@ -2284,7 +2397,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.AISLE_BLOCK)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "AISLE-01")
+        self.assertEqual(zone_hit.zone_number, "AISLE-01")
 
         # 시간 초과가 성립하든 안 하든 통행로가 걸려 있으면 AISLE_BLOCK이다.
         status, _zone_hit, _ratio = classify_violation(
@@ -2299,7 +2412,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "EV-01")
+        self.assertEqual(zone_hit.zone_number, "EV-01")
 
     def test_double_park_takes_priority_over_ev_overstay(self) -> None:
         """이중주차가 EV 충전구역 시간 초과보다 우선한다(319 최종 리뷰, 사람 판단).
@@ -2325,7 +2438,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.DOUBLE_PARK)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "GEN-01")
+        self.assertEqual(zone_hit.zone_number, "GEN-01")
 
         # 시간 초과가 성립하든 안 하든 남의 스팟을 침범 중이면 DOUBLE_PARK이다.
         status, _zone_hit, _ratio = classify_violation(
@@ -2343,7 +2456,7 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(status, ViolationStatus.EV_OVERSTAY)
         assert zone_hit is not None
-        self.assertEqual(zone_hit.zone_id, "EV-01")
+        self.assertEqual(zone_hit.zone_number, "EV-01")
 
     def test_monitor_aisle_block_reported_after_ev_overstay_opened(self) -> None:
         """319 최종 리뷰 회귀: EV_OVERSTAY가 이미 열린 뒤에 새로 시작된 통행 방해도
@@ -2387,16 +2500,16 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(frame(0, inside_ev), [])  # 최소 정차 시간 미달
         restricted_events = frame(10, inside_ev)
         self.assertEqual([event.status for event in restricted_events], [ViolationStatus.RESTRICTED_ZONE])
-        self.assertEqual(restricted_events[0].zone_id, "EV-01")
+        self.assertEqual(restricted_events[0].zone_number, "EV-01")
 
         overstay_events = frame(61, inside_ev)  # allowed_minutes 1.0 = 60초 초과
         self.assertEqual([event.status for event in overstay_events], [ViolationStatus.EV_OVERSTAY])
-        self.assertEqual(overstay_events[0].zone_id, "EV-01")
+        self.assertEqual(overstay_events[0].zone_number, "EV-01")
 
         # 여기서부터가 회귀 대상: 시간 초과가 계속 성립하는 채로 통행로를 막기 시작한다.
         aisle_events = frame(70, over_aisle)
         self.assertEqual([event.status for event in aisle_events], [ViolationStatus.AISLE_BLOCK])
-        self.assertEqual(aisle_events[0].zone_id, "AISLE-1")
+        self.assertEqual(aisle_events[0].zone_number, "AISLE-1")
         # 점유 시계는 리셋되지 않았다(홈 구역이 EV-01로 유지) — 즉 EV_OVERSTAY가
         # 여전히 성립하는데도 AISLE_BLOCK이 이겼다는 뜻이다.
         self.assertGreaterEqual(aisle_events[0].occupancy_seconds, 60.0)
@@ -2406,7 +2519,7 @@ class BaselineLogicTests(unittest.TestCase):
         # 통행로에서 빠지면 가려져 있던 EV_OVERSTAY가 다시 보고된다.
         back_events = frame(300, inside_ev)
         self.assertEqual([event.status for event in back_events], [ViolationStatus.EV_OVERSTAY])
-        self.assertEqual(back_events[0].zone_id, "EV-01")
+        self.assertEqual(back_events[0].zone_number, "EV-01")
 
     def test_monitor_double_park_flags_whoever_intrudes_regardless_of_arrival_order(self) -> None:
         """리뷰에서 발견된 회귀: 먼저 온 차가 실제로 옆 칸(나중에 온 차의 자리)을
@@ -2446,7 +2559,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].track_id, 1)  # 먼저 왔지만 실제로 침범한 쪽(track 1)이 잡힌다
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
-        self.assertEqual(events[0].zone_id, "GEN-B")  # 침범당한 구역이 실제로 실린다
+        self.assertEqual(events[0].zone_number, "GEN-B")  # 침범당한 구역이 실제로 실린다
 
     def test_monitor_no_line_cross_to_double_park_flap_while_victim_settles(self) -> None:
         """리뷰에서 발견된 회귀: 침입자가 피해자보다 먼저 정착 완료(min_dwell 도달)
@@ -2485,7 +2598,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events_after_victim_settles), 1)  # DOUBLE_PARK 딱 한 번만 발행(LINE_CROSS 거치지 않음)
         self.assertEqual(events_after_victim_settles[0].track_id, 1)
         self.assertEqual(events_after_victim_settles[0].status, ViolationStatus.DOUBLE_PARK)
-        self.assertEqual(events_after_victim_settles[0].zone_id, "GEN-B")
+        self.assertEqual(events_after_victim_settles[0].zone_number, "GEN-B")
 
     def test_monitor_double_park_catches_large_vehicle_intruding_small_spot(self) -> None:
         """리뷰에서 발견된 회귀: 가해 차량이 피해 차량보다 훨씬 크면(트럭이 오토바이
@@ -2514,7 +2627,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].track_id, 2)
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
-        self.assertEqual(events[0].zone_id, "GEN-MOTO")
+        self.assertEqual(events[0].zone_number, "GEN-MOTO")
 
     def test_monitor_double_park_not_flagged_when_victim_has_no_home_zone(self) -> None:
         """피해 후보가 어떤 스팟 구역과도 40% 이상 안 겹치는 애매한 위치에 있으면
@@ -2607,7 +2720,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].track_id, 1)
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
-        self.assertEqual(events[0].zone_id, "GEN-B")
+        self.assertEqual(events[0].zone_number, "GEN-B")
 
     def test_monitor_double_park_only_lower_occupancy_side_blamed_when_sharing_one_spot(self) -> None:
         """한 스팟을 두 차가 나눠 점유하는 상황(진짜 겹주차)에서는, 그 스팟을 거의
@@ -2634,7 +2747,7 @@ class BaselineLogicTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].track_id, 2)  # 점유율이 더 낮은 쪽만 침범자
         self.assertEqual(events[0].status, ViolationStatus.DOUBLE_PARK)
-        self.assertEqual(events[0].zone_id, "GEN-A")
+        self.assertEqual(events[0].zone_number, "GEN-A")
 
     def test_entry_exit_zone_ignored_for_parking_violation(self) -> None:
         entry = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
@@ -2769,8 +2882,8 @@ class BaselineLogicTests(unittest.TestCase):
                 [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds, captured_at=base_time + timedelta(seconds=seconds))]
             )
 
-        self.assertEqual([(e.status, e.zone_id) for e in events_at[2]], [(ViolationStatus.RESTRICTED_ZONE, "DIS-01")])
-        self.assertEqual([(e.status, e.zone_id) for e in events_at[65]], [(ViolationStatus.EV_OVERSTAY, "EV-01")])
+        self.assertEqual([(e.status, e.zone_number) for e in events_at[2]], [(ViolationStatus.RESTRICTED_ZONE, "DIS-01")])
+        self.assertEqual([(e.status, e.zone_number) for e in events_at[65]], [(ViolationStatus.EV_OVERSTAY, "EV-01")])
 
     def test_ev_overstay_clock_survives_sub_threshold_jitter(self) -> None:
         """같은 구역 안에서 미세 이동이 일어나도 EV 점유 시계가 리셋되지 않는다
@@ -2853,7 +2966,7 @@ class BaselineLogicTests(unittest.TestCase):
                 [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=seconds,
                             captured_at=base_time + timedelta(seconds=seconds))]
             ):
-                seen.append((event.status, event.zone_id))
+                seen.append((event.status, event.zone_number))
 
         self.assertEqual(
             seen,
@@ -3135,7 +3248,7 @@ class BaselineLogicTests(unittest.TestCase):
                 )
             for event in monitor.update(dets):
                 if event.track_id != 99:
-                    seen.append((event.track_id, event.status, event.zone_id, event.dwell_seconds))
+                    seen.append((event.track_id, event.status, event.zone_number, event.dwell_seconds))
 
         step(0, 1, at_1)
         step(10, 1, at_1)  # dwell=10s -> RESTRICTED_ZONE(DIS-01) 발행, 플래그는 여기서 clear된다
@@ -3148,7 +3261,7 @@ class BaselineLogicTests(unittest.TestCase):
         reunified = monitor._tracks[2]
         self.assertTrue(reunified.moved_since_last_decision)  # 보존됐다
         self.assertEqual(reunified.stationary_since, base_time + timedelta(seconds=11))
-        self.assertEqual(reunified.open_violation_zone_id, "DIS-01")
+        self.assertEqual(reunified.open_violation_zone_id, zone_1.zone_id)
 
         step(22, 2, at_2)  # dwell=11s -> DIS-02에서 새 사건으로 발행돼야 한다
 
@@ -3630,6 +3743,48 @@ class BaselineLogicTests(unittest.TestCase):
         monitor.attach_plate(5, "1234")
         self.assertEqual(monitor._tracks[5].plate_number, "1234")
 
+    def test_track_snapshot_matches_dwell_used_by_update(self) -> None:
+        zone = self.make_zone("GEN-01", ZoneType.GENERAL, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=10.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=4)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)])
+
+        snapshot = monitor.track_snapshot(later)
+
+        self.assertEqual(set(snapshot), {1})
+        self.assertAlmostEqual(snapshot[1].dwell_seconds, 4.0)
+
+    def test_track_snapshot_reports_open_violation(self) -> None:
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=1.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=5)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)])
+
+        self.assertEqual(monitor.track_snapshot(later)[1].open_violation, ViolationStatus.RESTRICTED_ZONE)
+
+    def test_track_snapshot_does_not_affect_judgment(self) -> None:
+        """오버레이가 판정을 바꾸면 검증 도구가 검증 대상을 오염시킨다."""
+        zone = self.make_zone("DIS-01", ZoneType.DISABLED, [(0.0, 0.0), (0.4, 0.0), (0.4, 0.4), (0.0, 0.4)])
+        monitor = ViolationMonitor(ZoneRegistry([zone]), min_dwell_seconds=1.0)
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bbox = BoundingBox(0.1, 0.1, 0.3, 0.3)
+        monitor.update([VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=1, captured_at=start)])
+        later = start + timedelta(seconds=5)
+
+        for _ in range(3):
+            monitor.track_snapshot(later)
+        events = monitor.update(
+            [VehicleBox(track_id=1, bbox=bbox, confidence=0.9, frame_id=2, captured_at=later)]
+        )
+
+        self.assertEqual([event.status for event in events], [ViolationStatus.RESTRICTED_ZONE])
+
     def test_entry_event_matches_new_track_in_entry_zone(self) -> None:
         entry_zone = self.make_zone("ENTRY-01", ZoneType.ENTRY_EXIT, [(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])
         registry = ZoneRegistry([entry_zone])
@@ -3804,7 +3959,33 @@ class BaselineLogicTests(unittest.TestCase):
         )
         self.assertEqual(len(monitor._pending_entry_events), 0)
 
-    def test_zone_registry_from_file_parses_valid_json(self) -> None:
+    def test_zone_registry_from_file_parses_wire_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zoneId": 12,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "allowedMinutes": None,
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = ZoneRegistry.from_file(path)
+        zone = registry.get(12)
+        self.assertEqual(zone.zone_type, ZoneType.GENERAL)
+        self.assertEqual(zone.zone_number, "GEN-01")
+        self.assertIsInstance(zone.zone_id, int)
+
+    def test_zone_registry_from_file_rejects_legacy_snake_case(self) -> None:
+        """구 포맷을 조용히 무시하면 빈 레지스트리로 돌아 판정이 전부 없어진다."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "zones.json"
             path.write_text(
@@ -3821,8 +4002,8 @@ class BaselineLogicTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            registry = ZoneRegistry.from_file(path)
-        self.assertEqual(registry.get("GEN-01").zone_type, ZoneType.GENERAL)
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
 
     def test_zone_registry_from_file_rejects_empty_zones(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3839,10 +4020,11 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zoneId": 1,
+                                "zoneNumber": "EV-01",
+                                "zoneType": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
-                                "allowed_minutes": 120,
+                                "allowedMinutes": 120,
                             }
                         ]
                     }
@@ -3850,10 +4032,10 @@ class BaselineLogicTests(unittest.TestCase):
                 encoding="utf-8",
             )
             registry = ZoneRegistry.from_file(path)
-        self.assertEqual(registry.get("EV-01").allowed_minutes, 120.0)
+        self.assertEqual(registry.get(1).allowed_minutes, 120.0)
 
     def test_zone_registry_from_file_defaults_allowed_minutes_to_none(self) -> None:
-        """기존 zones 파일(allowed_minutes 필드 없음)과의 호환성 확인."""
+        """기존 zones 파일(allowedMinutes 필드 없음)과의 호환성 확인."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "zones.json"
             path.write_text(
@@ -3861,8 +4043,9 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "GEN-01",
-                                "zone_type": "GENERAL",
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
                             }
                         ]
@@ -3871,7 +4054,7 @@ class BaselineLogicTests(unittest.TestCase):
                 encoding="utf-8",
             )
             registry = ZoneRegistry.from_file(path)
-        self.assertIsNone(registry.get("GEN-01").allowed_minutes)
+        self.assertIsNone(registry.get(1).allowed_minutes)
 
     def test_zone_registry_from_file_rejects_non_positive_allowed_minutes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3881,10 +4064,11 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zoneId": 1,
+                                "zoneNumber": "EV-01",
+                                "zoneType": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
-                                "allowed_minutes": 0,
+                                "allowedMinutes": 0,
                             }
                         ]
                     }
@@ -3905,10 +4089,11 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zoneId": 1,
+                                "zoneNumber": "EV-01",
+                                "zoneType": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
-                                "allowed_minutes": float("nan"),
+                                "allowedMinutes": float("nan"),
                             }
                         ]
                     }
@@ -3919,7 +4104,7 @@ class BaselineLogicTests(unittest.TestCase):
                 ZoneRegistry.from_file(path)
 
     def test_zone_registry_from_file_rejects_bool_allowed_minutes(self) -> None:
-        """allowed_minutes에 bool이 오면 거부한다(319 리뷰 I-3).
+        """allowedMinutes에 bool이 오면 거부한다(319 리뷰 I-3).
 
         float(True)는 1.0이라 유한한 양수 검사를 통과한다 — 그러면 명백한
         설정 오기가 "1분 허용"이라는 엉뚱한 정책으로 조용히 적용된다.
@@ -3931,10 +4116,11 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zoneId": 1,
+                                "zoneNumber": "EV-01",
+                                "zoneType": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
-                                "allowed_minutes": True,
+                                "allowedMinutes": True,
                             }
                         ]
                     }
@@ -3945,7 +4131,7 @@ class BaselineLogicTests(unittest.TestCase):
                 ZoneRegistry.from_file(path)
 
     def test_zone_registry_from_file_rejects_infinite_allowed_minutes(self) -> None:
-        """allowed_minutes = Infinity도 NaN과 같은 이유로 거부한다(319 리뷰 I-3).
+        """allowedMinutes = Infinity도 NaN과 같은 이유로 거부한다(319 리뷰 I-3).
 
         json.loads가 비표준 Infinity 리터럴을 float('inf')로 파싱하는데,
         dwell >= inf는 항상 False라 EV_OVERSTAY가 조용히 영구 비활성화된다.
@@ -3957,11 +4143,68 @@ class BaselineLogicTests(unittest.TestCase):
                     {
                         "zones": [
                             {
-                                "zone_id": "EV-01",
-                                "zone_type": "EV_FAST",
+                                "zoneId": 1,
+                                "zoneNumber": "EV-01",
+                                "zoneType": "EV_FAST",
                                 "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
-                                "allowed_minutes": float("inf"),
+                                "allowedMinutes": float("inf"),
                             }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_duplicate_zone_id(self) -> None:
+        """zoneId 중복을 조용히 덮어쓰면 구역 하나가 판정에서 통째로 사라진다."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            },
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-02",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BaselineError):
+                ZoneRegistry.from_file(path)
+
+    def test_zone_registry_from_file_rejects_duplicate_zone_number(self) -> None:
+        """zoneNumber 중복은 zoneId가 달라도 오버레이·로그 라벨이 모호해진다."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "zones.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "zones": [
+                            {
+                                "zoneId": 1,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]],
+                            },
+                            {
+                                "zoneId": 2,
+                                "zoneNumber": "GEN-01",
+                                "zoneType": "GENERAL",
+                                "polygon": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]],
+                            },
                         ]
                     }
                 ),

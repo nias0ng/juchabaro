@@ -47,14 +47,26 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return body.result;
 }
 
-export function postJson<T>(path: string, data: unknown): Promise<T> {
-  return request<T>(path, { method: 'POST', body: JSON.stringify(data) });
+export function postJson<T>(path: string, data: unknown, accessToken?: string): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    body: JSON.stringify(data),
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  });
 }
 
 // accessToken이 필요한 조회용 GET. Authorization 헤더가 필요한 API(예: 내 정보 조회)에서 쓴다.
 export function getJson<T>(path: string, accessToken: string): Promise<T> {
   return request<T>(path, {
     method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+// accessToken이 필요한 삭제용 DELETE.
+export function deleteJson<T>(path: string, accessToken: string): Promise<T> {
+  return request<T>(path, {
+    method: 'DELETE',
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }
