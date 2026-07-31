@@ -105,6 +105,10 @@ class IncomingEntryEvent:
             plate_number=self.recognized_plate_number,
             captured_at=self.entry_time,
             gate_tracking_id=self.tracking_id,
+            session_id=self.session_id,
+            vehicle_id=self.vehicle_id,
+            is_disabled_vehicle=self.is_disabled_vehicle,
+            is_electric=self.is_electric,
         )
 
 

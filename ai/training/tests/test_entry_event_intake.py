@@ -85,12 +85,46 @@ class TestIncomingEntryEventFromPayload:
         assert event.plate_number == "12가3456"
         assert event.gate_tracking_id == "d290f1ee-6c54-4b01-90e6-d701748f0851"
 
+    def test_to_entry_event_carries_session_id(self):
+        """명세는 parking-events/parked/exit 셋 다 sessionId를 필수로 요구한다 —
+        여기서 버리면 젯슨은 사건을 한 건도 보낼 수 없다."""
+        incoming = IncomingEntryEvent.from_payload(SAMPLE_PAYLOAD)
+        event = incoming.to_entry_event()
+        assert event.session_id == 55
+
+    def test_to_entry_event_carries_vehicle_eligibility(self):
+        """장애인·전기차 구역 무자격 점유 판정에 필요한 값이다. vehicles/check가
+        폐기돼(사용X) 입차 응답이 이 정보의 유일한 출처다."""
+        incoming = IncomingEntryEvent.from_payload(SAMPLE_PAYLOAD)
+        event = incoming.to_entry_event()
+        assert event.vehicle_id == 10
+        assert event.is_disabled_vehicle is False
+        assert event.is_electric is True
+
     def test_to_entry_event_converts_deny_too(self):
         """DENY(미등록)여도 EntryEvent로 변환된다 — 미등록 차량도 위반 판정 대상이다."""
         payload = {**SAMPLE_PAYLOAD, "accessDecision": "DENY", "registered": False, "vehicleId": None}
         incoming = IncomingEntryEvent.from_payload(payload)
         event = incoming.to_entry_event()
         assert event.plate_number == "12가3456"
+
+    def test_to_entry_event_leaves_session_and_eligibility_none_for_deny(self):
+        """DENY/REVIEW는 세션이 만들어지지 않아 sessionId가 null이다(명세 판정별 필드 규칙)."""
+        payload = {
+            **SAMPLE_PAYLOAD,
+            "accessDecision": "DENY",
+            "registered": False,
+            "vehicleId": None,
+            "isDisabledVehicle": None,
+            "isElectric": None,
+            "sessionId": None,
+        }
+        incoming = IncomingEntryEvent.from_payload(payload)
+        event = incoming.to_entry_event()
+        assert event.session_id is None
+        assert event.vehicle_id is None
+        assert event.is_disabled_vehicle is None
+        assert event.is_electric is None
 
 
 class TestEntryEventIntakeHandle:
@@ -116,6 +150,33 @@ class TestEntryEventIntakeHandle:
         )
         assert monitor._tracks[1].plate_number == "12가3456"
         assert monitor._tracks[1].gate_tracking_id == "d290f1ee-6c54-4b01-90e6-d701748f0851"
+
+    def test_handle_carries_session_and_eligibility_onto_matched_track(self):
+        """매칭에 성공하면 세션 ID와 자격 정보가 트랙에 실려야 한다 — 이게 없으면
+        위반 사건에 sessionId를 채울 수 없다(431번)."""
+        monitor = _make_monitor()
+        intake = EntryEventIntake(monitor)
+        base_time = datetime(2026, 7, 31, 12, 34, 56, tzinfo=timezone.utc)
+        payload = {**SAMPLE_PAYLOAD, "entryTime": base_time.isoformat()}
+
+        intake.handle(payload, idempotency_key="key-1")
+        monitor.update(
+            [
+                VehicleBox(
+                    track_id=1,
+                    bbox=BoundingBox(0.05, 0.05, 0.25, 0.25),
+                    confidence=0.9,
+                    frame_id=1,
+                    captured_at=base_time + timedelta(seconds=2),
+                )
+            ]
+        )
+
+        state = monitor._tracks[1]
+        assert state.session_id == 55
+        assert state.vehicle_id == 10
+        assert state.is_disabled_vehicle is False
+        assert state.is_electric is True
 
     def test_handle_ignores_duplicate_idempotency_key(self):
         """같은 멱등키로 재전송하면 두 번째 호출은 무시한다(네트워크 재시도 대비)."""
