@@ -115,7 +115,9 @@ def test_disabled_vehicle_in_disabled_zone_is_not_matched() -> None:
     signals = evaluate(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], DISABLED
     ))
-    assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").matched is False
+    matching = [s for s in signals if s.key.rule_code == "DISABLED_ZONE_UNAUTHORIZED"]
+    assert len(matching) == 1, "자격 있는 차량도 matched=False 신호를 내야 IncidentReducer가 RESOLVE를 만들 수 있다"
+    assert matching[0].matched is False
 
 
 def test_unknown_qualification_is_not_confirmable() -> None:
@@ -148,7 +150,9 @@ def test_electric_vehicle_in_ev_zone_is_not_matched() -> None:
     signals = evaluate(make_context(
         [make_zone(2, ZoneType.EV_SLOW)], [make_visit(2)], ELECTRIC
     ))
-    assert find(signals, "EV_ZONE_UNAUTHORIZED").matched is False
+    matching = [s for s in signals if s.key.rule_code == "EV_ZONE_UNAUTHORIZED"]
+    assert len(matching) == 1, "자격 있는 차량도 matched=False 신호를 내야 IncidentReducer가 RESOLVE를 만들 수 있다"
+    assert matching[0].matched is False
 
 
 def test_general_zone_produces_no_signal() -> None:
