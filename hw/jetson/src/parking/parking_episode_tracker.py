@@ -13,6 +13,43 @@ movement_epsilon만 흔들려도 MOVING이 나오기 때문이다 — 즉시 종
 
 UNKNOWN은 정지 시간에 포함하지 않고 기존 상태도 즉시 종료하지 않는다. 종료 뒤
 다시 정지한 차량에는 새로운 parking_episode_id를 발급한다.
+
+**소실된 차량에 ZoneVisitTracker의 레시피를 그대로 옮기면 안 된다.**
+ZoneVisitTracker는 사라진 차량에 ABSENT를 계속 먹이면 이탈 확인시간으로
+방문이 닫힌다 — force-close는 안전망일 뿐이다. 이 트래커는 정반대다.
+`MotionSignal`에는 ABSENT가 없고(소유 파일이라 추가할 수 없다), UNKNOWN은
+정지 시간을 누적하지도 기존 상태를 종료하지도 않으므로, 소실된 차량에 어떤
+신호를 계속 먹여도(UNKNOWN이든 다른 무엇이든) `update()`는 절대 에피소드를
+닫지 않는다. 게다가 `update()`는 신호 종류와 무관하게 `last_updated_at`을
+갱신한다 — UNKNOWN도 예외가 아니다. 그래서 "살아있게 유지"하려는 루프는
+`prune()`의 방치 판정(`stale_after_seconds`)마저 영원히 미룬다. **여기서는
+`prune()`이 소실된 차량을 닫는 유일한 통로이며 안전망이 아니다.** UNKNOWN은
+카메라 장애(`source_available=False`)에만 써야 한다 — "이 차량이 이번
+프레임에 없었다"는 의미로 UNKNOWN을 먹이면 사건이 영원히 열린 채 남는다.
+
+**규칙이 상태별로 무엇을 내야 하는가** (T-12 `bad_parking` 구현자를 위한 계약):
+
+| 에피소드 상태 | 규칙이 낼 신호 | 이유 |
+|---|---|---|
+| `STOP_PENDING` | `matched=True, confirmable=False` | 후보. 아직 주차가 아니다 |
+| `PARKED` | `matched=True, confirmable=True` | 확정 |
+| `MOVING` | `matched=True, confirmable=True` | 이동이 아직 미확인이다. 여기서 해소하면 되돌아올 때 사건이 다시 열려 깜빡인다 |
+| `ENDED` | `matched=False` | 해소. 이 신호가 있어야 `IncidentReducer`가 `RESOLVE`를 만든다 |
+
+`active_episode()`는 `ZoneVisitTracker.active_visits()`와 달리 네 상태를 전혀
+걸러내지 않는다 — 규칙 구현자가 이 표를 보고 직접 판단해야 한다.
+
+**조립자가 지켜야 하는 두 가지가 더 있다.**
+
+- **`ended_vehicle_ids`에 대해 아무것도 할 수 없다.** `MotionEstimator.forget()`에
+  대응하는 `forget()`/`discard()`가 이 트래커에는 없다. 추적이 확실히 끊긴 뒤
+  `RESOLVE`까지 최대 `stale_after_seconds`(기본 900초)가 걸릴 수 있다는 뜻이다.
+  이 지연을 줄이려고 MOVING 프레임을 조작해서는 안 된다.
+- **차량별 스냅샷 캐시는 두 트래커 중 더 긴 `stale_after_seconds`만큼 살아
+  있어야 한다** — 오늘 기준 900초이지 ZoneVisitTracker의 300초가 아니다. 두
+  트래커는 같은 소실 차량을 서로 다른 프레임에서 강제 종료한다(실측 600초
+  차이). 구역 쪽 일정으로 캐시를 비우면 주차 쪽 종료가 스냅샷을 못 찾고,
+  `RuleContext.vehicle`은 필수 필드라 판정 자체가 막힌다.
 """
 
 from __future__ import annotations
@@ -135,7 +172,16 @@ class InMemoryParkingEpisodeTracker:
         signal: MotionSignal,
         observed_at: datetime,
     ) -> ParkingEpisode | None:
-        """현재 또는 방금 종료된 에피소드를 반환한다. 없으면 None을 반환한다."""
+        """현재 또는 방금 종료된 에피소드를 반환한다. 없으면 None을 반환한다.
+
+        **physical_vehicle_id당 한 프레임에 최대 한 번만 불러야 한다.** 종료
+        (`ENDED`) 슬롯은 다음 호출에서 자기 정리로 지워진다(아래 참고). 같은
+        프레임에 같은 차량으로 두 번 부르면, 첫 호출이 반환한 종료를 판정이
+        읽기 전에 두 번째 호출의 자기 정리가 그 슬롯을 지워 버려 종료가
+        복구 불가능하게 사라진다. 두 카메라가 같은 실물 차량을 봤다면
+        호출 전에 하나의 `MotionSignal`로 병합해야 한다 — 이 경합이 실제로
+        발생하는 지점이다.
+        """
 
         slot = self._slots.get(physical_vehicle_id)
         ensure_forward_observation(
@@ -199,6 +245,14 @@ class InMemoryParkingEpisodeTracker:
         if signal is MotionSignal.MOVING:
             # 확정 전에 움직였다. 후보를 버린다 — 에피소드가 성립하지 않았으므로
             # 종료로 보고하지 않는다.
+            #
+            # 비대칭 주의(의도적으로 미해결, T-12 규칙 설계 소관): prune()의
+            # 강제 종료는 미확정 STOP_PENDING 후보도 ENDED로 보고하지만, 여기
+            # MOVING 경로는 None을 반환해 아무것도 보고하지 않는다. 이 후보가
+            # 이미 규칙에 matched=True인 CANDIDATE 사건을 열게 했다면, 그
+            # 사건은 여기서 해소를 못 받고 영영 열린 채 남는다 —
+            # episode_id가 결정론적이라 같은 키가 다시 나타나 밀어내지도
+            # 않는다. 백엔드로 나가는 데이터는 틀리지 않지만 리소스 누수다.
             del self._slots[slot.episode.physical_vehicle_id]
             return None
 
@@ -278,6 +332,12 @@ class InMemoryParkingEpisodeTracker:
         `ENDED` 에피소드도 포함한다 — 규칙이 `matched=False`를 내야
         `IncidentReducer`가 `RESOLVE`를 만들 수 있고, 그러려면 종료를 봐야 한다.
         판정이 끝나면 `prune()`이 그 슬롯을 지운다.
+
+        네 상태를 전혀 걸러내지 않는다 — `ZoneVisitTracker.active_visits()`가
+        `INSIDE`/`OUTSIDE`만 남기고 `ENTERING`/`EXITING`을 거르는 것과 다르다.
+        `STOP_PENDING`과 `MOVING`도 그대로 나가므로, 규칙 구현자는 모듈
+        docstring의 상태별 신호 표를 보고 각 상태에서 무엇을 낼지 직접
+        판단해야 한다.
         """
 
         slot = self._slots.get(physical_vehicle_id)
@@ -295,9 +355,22 @@ class InMemoryParkingEpisodeTracker:
            닫히지 않는다 — 조립자는 이번 프레임에 관측된 차량만 순회하므로
            사라진 차량의 종료는 이 반환값으로만 판정에 도달한다.
 
-        멱등하지 않다. 한 프레임에 두 번 부르면 첫 호출이 강제 종료한 슬롯을
-        두 번째 호출의 1단계가 지워, 판정이 그것을 보기 전에 사라진다.
+        **이 트래커에서는 `prune()`이 소실된 차량을 닫는 유일한 통로다 —
+        안전망이 아니다.** `ZoneVisitTracker`처럼 사라진 차량에 신호를 계속
+        먹여 정상 경로로 닫는 방법이 없다. UNKNOWN은 정지 시간을 누적하지도
+        상태를 종료하지도 않고, `update()`는 신호 종류와 무관하게
+        `last_updated_at`을 갱신하므로, 무엇을 계속 먹이든 이 슬롯은 절대
+        스스로 방치 판정에 걸리지 않는다. `update()`가 멈추는 것, 즉 이
+        메서드만이 소실된 차량의 종료를 만든다.
+
+        멱등하지 않다. 한 프레임에 두 번 부르면 첫 호출이 이미 강제 종료한
+        슬롯을 반환하며 지웠으므로 두 번째 호출은 빈 튜플을 돌려준다 —
+        **첫 호출의 반환값을 버리면 그 종료는 복구할 길이 없다.** 판정보다
+        먼저 부르는 것도 같은 이유로 안 된다 — 1단계가 이번 프레임에 관측으로
+        닫힌 슬롯을 판정 전에 지워 버린다.
         """
+
+        ensure_forward_observation(now)
 
         for vehicle_id, slot in list(self._slots.items()):
             if slot.is_closed():
@@ -310,6 +383,14 @@ class InMemoryParkingEpisodeTracker:
         for vehicle_id, slot in list(self._slots.items()):
             if (now - slot.last_updated_at).total_seconds() < self._stale_after_seconds:
                 continue
+            # 미확정 STOP_PENDING 후보도 강제 종료해 ENDED로 보고한다 —
+            # parked_at은 None으로 남는다(주차가 확정된 적 없다). 이미
+            # matched=True를 낸 후보이므로 추적이 끊기면 반드시 해소해야
+            # 하기 때문이다. ZoneVisitTracker가 미확정 ENTERING 후보를
+            # 종료로 보고하지 않고 억제하는 것과 다른 선택이다 — 의도적인
+            # 차이이며, 나중에 "형제와 똑같이 맞추자"는 리팩터는 아래
+            # test_prune_force_closes_an_unconfirmed_candidate_as_ended가
+            # 잡아낸다.
             ended = replace(
                 slot.episode,
                 state=ParkingState.ENDED,

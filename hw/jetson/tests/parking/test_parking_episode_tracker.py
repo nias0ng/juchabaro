@@ -341,3 +341,49 @@ def test_closed_slot_self_cleans_on_next_update_without_prune() -> None:
     assert tracker.active_episode(CAR).state is ParkingState.ENDED
     feed(tracker, MotionSignal.MOVING, 4.0)  # prune() 없이 한 번 더 관측
     assert tracker.active_episode(CAR) is None
+
+
+def test_unknown_refreshes_the_staleness_clock_forever() -> None:
+    """UNKNOWN은 이 트래커에서 소실 차량 처리 신호가 아니다.
+
+    ZoneVisitTracker의 ABSENT 레시피를 그대로 옮기면 안 된다 — UNKNOWN을 계속
+    먹이면 last_updated_at이 매번 갱신돼 prune()의 방치 판정이 영원히 걸리지
+    않는다. 여기서는 prune()이 소실된 차량을 닫는 유일한 통로다.
+    """
+    tracker = InMemoryParkingEpisodeTracker(
+        parked_after_seconds=1.0, move_confirm_seconds=1.0, stale_after_seconds=30.0
+    )
+    feed(tracker, MotionSignal.STATIONARY, 0)
+    feed(tracker, MotionSignal.STATIONARY, 1.0)  # PARKED
+    t = 1.0
+    for _ in range(20):
+        t += 20.0  # 스테일 기준(30초)보다 짧은 간격으로 계속 관측한다.
+        feed(tracker, MotionSignal.UNKNOWN, t)
+        assert tracker.prune(at(t)) == ()
+    # 400초 넘게 지났지만 UNKNOWN이 매번 시계를 되감아 한 번도 방치 판정에
+    # 걸리지 않았다 — 사건이 영원히 열린 채 남는다.
+    assert tracker.active_episode(CAR).state is ParkingState.PARKED
+
+
+def test_prune_naive_datetime_is_rejected_even_when_empty() -> None:
+    """빈 트래커에서도 naive datetime은 조용히 통과해서는 안 된다."""
+    tracker = make_tracker()
+    with pytest.raises(ValueError, match="timezone"):
+        tracker.prune(datetime(2026, 7, 31, 10, 0, 0))
+
+
+def test_prune_force_closes_an_unconfirmed_candidate_as_ended() -> None:
+    """미확정 STOP_PENDING 후보도 강제 종료되어 ENDED로 보고된다.
+
+    이미 matched=True를 낸 후보이므로 추적이 끊기면 해소해야 한다.
+    ZoneVisitTracker가 미확정 ENTERING 후보를 억제하는 것과 다른 선택이다.
+    """
+    tracker = InMemoryParkingEpisodeTracker(
+        parked_after_seconds=600.0, move_confirm_seconds=3.0, stale_after_seconds=30.0
+    )
+    feed(tracker, MotionSignal.STATIONARY, 0)  # STOP_PENDING 후보, 확정 전
+    forced = tracker.prune(at(40.0))
+    assert len(forced) == 1
+    assert forced[0].state is ParkingState.ENDED
+    assert forced[0].parked_at is None
+    assert forced[0].stationary_observed_seconds == 0.0
