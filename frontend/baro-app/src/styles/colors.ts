@@ -45,6 +45,11 @@ export const Palette = {
   // 주차 도면 - 장애인/전기차 구역
   teal100: '#dff3ef',
   teal600: '#1e8d80',
+
+  // 주차 도면 전체 보기(J-01) - 칸/구분선 배경
+  lilac50: '#eeecf8',
+  lilac100: '#e7e5f3',
+  lilac200: '#c9c2f0',
 } as const;
 
 /**

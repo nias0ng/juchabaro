@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
     entry_match_window_seconds: float = 10.0
 
+    # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
+    # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다 —
+    # motion_estimator에 평활화가 없어 이 값이 잡음으로 인한 주차 종료를 막는
+    # 유일한 방어선이다.
+    parking_confirm_seconds: float
+    parking_move_confirm_seconds: float
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

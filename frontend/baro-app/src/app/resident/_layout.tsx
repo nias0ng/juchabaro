@@ -108,6 +108,10 @@ export default function ResidentLayout() {
       <Tabs.Screen name="notification-settings" options={{ href: null }} />
       {/* 요청 내역도 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
       <Tabs.Screen name="request-history" options={{ href: null }} />
+      {/* J-01 주차 도면 전체 보기는 URL로 직접 접근하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="parking-map" options={{ href: null }} />
+      {/* J-02 위반 이력 전체는 URL로 직접 접근하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="violation-history" options={{ href: null }} />
     </Tabs>
   );
 }

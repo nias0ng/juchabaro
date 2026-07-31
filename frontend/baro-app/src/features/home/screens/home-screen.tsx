@@ -39,7 +39,12 @@ const quickActions: QuickAction[] = [
     iconColor: Palette.orange400,
     onPress: () => router.push('/auth/register-car?carType=visitor'),
   },
-  { label: '위반\n이력', background: Palette.sky100, iconColor: Palette.blue500 },
+  {
+    label: '위반\n이력',
+    background: Palette.sky100,
+    iconColor: Palette.blue500,
+    onPress: () => router.push('/resident/violation-history'),
+  },
 ];
 
 export default function HomeScreen() {
@@ -98,6 +103,7 @@ export default function HomeScreen() {
             status={parkingStatus}
             isLoading={isSummaryLoading}
             hasError={Boolean(summaryError)}
+            onPress={() => router.push('/resident/parking-map')}
           />
 
         </ResponsiveContainer>
