@@ -1,5 +1,9 @@
+import os
 from typing import Final
 
+# [환경 변수]
+BACKEND_BASE_URL: Final[str] = os.environ["BACKEND_BASE_URL"]
+BACKEND_HW_API_KEY: Final[str] = os.environ["BACKEND_HW_API_KEY"]
 
 # [GPIO 설정]
 
