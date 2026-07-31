@@ -9,47 +9,18 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     padding: Spacing.md + 2,
     gap: Spacing.sm + 2,
+    borderWidth: 1,
+    borderColor: Palette.lavender100,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.06,
     shadowRadius: 13,
     elevation: 3,
   },
-  cardResponded: {
-    borderWidth: 1,
-    borderColor: Palette.lavender100,
-  },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  badge: {
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.sm + 3,
-    paddingVertical: Spacing.xxs + 3,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: FontWeight.bold,
-  },
-  badgeResponded: {
-    backgroundColor: '#ede9fd',
-  },
-  badgeTextResponded: {
-    color: '#5c4fe0',
-  },
-  badgePending: {
-    backgroundColor: '#fff0eb',
-  },
-  badgeTextPending: {
-    color: Palette.orange600,
-  },
-  badgeClosed: {
-    backgroundColor: '#e9f7f2',
-  },
-  badgeTextClosed: {
-    color: Palette.teal600,
   },
   timestamp: {
     fontSize: 11.5,

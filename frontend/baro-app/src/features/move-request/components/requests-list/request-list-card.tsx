@@ -1,8 +1,9 @@
 import { Pressable, Text, View } from 'react-native';
 
+import { RequestStatusBadge, type RequestListStatus } from './request-status-badge';
 import { styles } from './request-list-card.styles';
 
-export type RequestListStatus = 'RESPONDED' | 'PENDING' | 'CLOSED';
+export type { RequestListStatus };
 
 export type RequestListItemDisplay = {
   requestId: number;
@@ -15,18 +16,6 @@ export type RequestListItemDisplay = {
   closedSummary?: string;
 };
 
-const STATUS_LABEL: Record<RequestListStatus, string> = {
-  RESPONDED: '응답 완료',
-  PENDING: '응답 대기',
-  CLOSED: '종료',
-};
-
-const STATUS_BADGE_STYLE: Record<RequestListStatus, { badge: object; text: object }> = {
-  RESPONDED: { badge: styles.badgeResponded, text: styles.badgeTextResponded },
-  PENDING: { badge: styles.badgePending, text: styles.badgeTextPending },
-  CLOSED: { badge: styles.badgeClosed, text: styles.badgeTextClosed },
-};
-
 type RequestListCardProps = {
   item: RequestListItemDisplay;
   /** 없으면 눌러도 아무 데도 이동하지 않는다(보낸 요청은 아직 상세 화면이 없음). */
@@ -34,19 +23,15 @@ type RequestListCardProps = {
 };
 
 export function RequestListCard({ item, onPress }: RequestListCardProps) {
-  const badgeStyle = STATUS_BADGE_STYLE[item.status];
-
   return (
     <Pressable
       accessibilityRole="button"
       disabled={!onPress}
-      style={[styles.card, item.status === 'RESPONDED' && styles.cardResponded]}
+      style={styles.card}
       onPress={onPress}
     >
       <View style={styles.topRow}>
-        <View style={[styles.badge, badgeStyle.badge]}>
-          <Text style={[styles.badgeText, badgeStyle.text]}>{STATUS_LABEL[item.status]}</Text>
-        </View>
+        <RequestStatusBadge status={item.status} />
         <Text style={styles.timestamp}>{item.timestampLabel}</Text>
       </View>
 
