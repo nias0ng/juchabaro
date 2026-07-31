@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { Pressable, Text, TextInput, View, type TextInputProps } from 'react-native';
+import {
+  Pressable,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type TextInputProps,
+  type ViewStyle,
+} from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
 import { Palette } from '@/styles';
@@ -24,6 +32,8 @@ type TextFieldProps = {
   editable?: boolean;
   /** 지정하면 필드 전체가 눌렀을 때 이 콜백을 호출하는 버튼처럼 동작한다(예: date picker 열기). */
   onPress?: () => void;
+  /** 입력 상자(field) 자체에 추가 스타일을 얹는다. 예: 항상 강조 테두리를 보여주는 편집 상태 표시. */
+  style?: StyleProp<ViewStyle>;
 };
 
 export function TextField({
@@ -42,6 +52,7 @@ export function TextField({
   maxLength,
   editable = true,
   onPress,
+  style,
 }: TextFieldProps) {
   const theme = useTheme();
   const showErrorBorder = Boolean(error) || invalid;
@@ -51,6 +62,7 @@ export function TextField({
       style={[
         styles.field,
         showErrorBorder && [styles.fieldError, { borderColor: theme.dangerBorder }],
+        style,
       ]}
     >
       <TextInput

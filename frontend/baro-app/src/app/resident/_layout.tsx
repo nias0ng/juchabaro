@@ -11,7 +11,7 @@ const RESIDENT_NAV_ITEMS: NavItem[] = [
   { key: 'index', label: '홈', icon: 'home' },
   { key: 'requests', label: '요청', icon: 'request' },
   { key: 'notifications', label: '알림', icon: 'bell' },
-  { key: 'my-page', label: '내정보', icon: 'user' },
+  { key: 'my-page', label: '내 정보', icon: 'user' },
 ];
 
 function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
@@ -67,6 +67,7 @@ export default function ResidentLayout() {
   return (
     <Tabs
       tabBar={(props) => <ResidentBottomTabBar {...props} />}
+      backBehavior="history"
       screenOptions={{
         headerShown: false,
       }}
@@ -101,6 +102,12 @@ export default function ResidentLayout() {
       <Tabs.Screen name="request-detail" options={{ href: null }} />
       {/* F-02 응답 완료는 E-11에서 응답 후 도달하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
       <Tabs.Screen name="response-complete" options={{ href: null }} />
+      {/* I-02/I-03 내 정보 수정은 내 정보 카드를 눌러서 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="profile-edit" options={{ href: null }} />
+      {/* I-04 알림 설정은 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="notification-settings" options={{ href: null }} />
+      {/* 요청 내역도 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
+      <Tabs.Screen name="request-history" options={{ href: null }} />
     </Tabs>
   );
 }

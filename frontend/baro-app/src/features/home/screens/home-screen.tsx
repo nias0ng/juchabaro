@@ -25,7 +25,7 @@ const quickActions: QuickAction[] = [
     label: '이동\n요청',
     background: Palette.mint100,
     iconColor: Palette.emerald500,
-    onPress: () => router.push('/resident/requests'),
+    onPress: () => router.push('/resident/request-compose'),
   },
   {
     label: '내\n차량',

@@ -53,7 +53,11 @@ _INHERITED_DEFAULTS = (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    baseline_defaults = build_baseline_parser().parse_args(["--self-test"])
+    # 베이스라인의 판정 파라미터 기본값만 빌려온다. `modes`가 required 배타
+    # 그룹이라 모드 플래그를 하나 줘야 파싱이 통과하는데, 여기서는 파싱만 하고
+    # 실행하지 않으므로 어느 것이든 무방하다(409에서 `--self-test`가 사라져
+    # `--run`으로 바꿨다).
+    baseline_defaults = build_baseline_parser().parse_args(["--run"])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--zones-file", type=Path, required=True)

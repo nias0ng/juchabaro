@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { NotificationCard } from '@/features/notification/components/list/notification-card';
 import { NotificationTabs } from '@/features/notification/components/list/notification-tabs';
 import type { NotificationSummary } from '@/features/notification/api/types';
@@ -11,8 +11,7 @@ import { Spacing } from '@/styles';
 import { styles } from './notifications-screen.styles';
 
 export default function NotificationsScreen() {
-  const { notifications, isLoading, error, tab, setTab, isUnread, markAsRead, markAllAsRead } =
-    useNotifications();
+  const { notifications, isLoading, error, tab, setTab, isUnread, markAsRead } = useNotifications();
 
   const handlePressNotification = (notification: NotificationSummary) => {
     markAsRead(notification.notificationId);
@@ -35,16 +34,11 @@ export default function NotificationsScreen() {
         : undefined;
 
   return (
-    <Screen scroll edges={['top', 'right', 'left']}>
+    <GradientScreenBackground>
       <ResponsiveContainer>
-        <Stack gap={Spacing.md}>
-          <View style={styles.headerRow}>
-            <Text style={styles.headerTitle}>알림</Text>
-            <Pressable accessibilityRole="button" onPress={markAllAsRead}>
-              <Text style={styles.markAllText}>모두 읽음</Text>
-            </Pressable>
-          </View>
+        <ScreenHeader title="알림" showBackButton={false} />
 
+        <Stack gap={Spacing.md} fill>
           <NotificationTabs active={tab} onChange={setTab} />
 
           {statusMessage ? (
@@ -65,6 +59,6 @@ export default function NotificationsScreen() {
           )}
         </Stack>
       </ResponsiveContainer>
-    </Screen>
+    </GradientScreenBackground>
   );
 }

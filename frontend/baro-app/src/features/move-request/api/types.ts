@@ -77,3 +77,30 @@ export type MoveResponseResult = {
   dueAt: string | null;
   respondedAt: string;
 };
+
+export type MoveRequestScope = 'RECEIVED' | 'SENT' | 'ALL';
+
+// GET /api/move-requests 응답의 result.moveRequests 항목.
+export type MoveRequestSummary = {
+  requestId: number;
+  eventId: number;
+  requesterUserId: number | null;
+  targetVehicleId: number;
+  targetPlateNumber: string;
+  requestType: MoveRequestType;
+  requestStatus: MoveRequestStatus;
+  eventType: MoveEventType;
+  message: string | null;
+  requestedAt: string;
+  dueAt: string | null;
+  reminderCount: number;
+};
+
+// GET /api/move-requests 응답의 result.
+export type MoveRequestListResult = {
+  moveRequests: MoveRequestSummary[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+};
