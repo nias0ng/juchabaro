@@ -10,5 +10,5 @@ export function getNotifications(accessToken: string): Promise<NotificationListR
     return getNotificationsMock();
   }
 
-  return getJson<NotificationListResult>('/notifications?size=50', accessToken);
+  return getJson<NotificationListResult>('/api/notifications?size=50', accessToken);
 }
