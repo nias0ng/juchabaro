@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# pythonpath 옵션이 pytest 7.0에서 도입됐다 — pyproject.toml 설정이 이 하한에 의존한다.
+pytest>=7.0

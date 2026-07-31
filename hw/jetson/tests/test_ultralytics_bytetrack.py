@@ -7,6 +7,7 @@ ai/training/tests/test_tracking_baseline.py의 test_tracker_rejects_zero_sized_f
 
 from datetime import datetime, timezone
 
+import numpy as np
 import pytest
 from src.camera.models import CapturedFrame
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
@@ -66,3 +67,36 @@ def test_close_before_open_does_not_raise():
     tracker = UltralyticsVehicleTracker(model_path="unused.pt", tracker_config="bytetrack.yaml", confidence=0.5)
 
     tracker.close()  # 예외 없이 조용히 통과해야 한다
+
+
+class _RaisingModel:
+    """실제 YOLO 모델 대신 추론 중 예외를 흉내 내는 더미."""
+
+    def track(self, **kwargs):
+        raise RuntimeError("추론 백엔드 오류(예: CUDA 메모리 부족)")
+
+
+def test_wraps_inference_exception_as_tracking_error():
+    """YOLO/ByteTrack 추론(self._model.track) 중 예외가 나면 원인을 담아
+    TrackingError로 감싸야 한다 — 상위 계층(pipeline)이 카메라·OpenCV 예외와
+    구분 없이 한 종류로 처리할 수 있어야 하기 때문이다."""
+    tracker = UltralyticsVehicleTracker(model_path="unused.pt", tracker_config="bytetrack.yaml", confidence=0.5)
+    tracker._model = _RaisingModel()
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    with pytest.raises(TrackingError) as excinfo:
+        tracker.track(_make_frame(image))
+
+    assert excinfo.value.__cause__ is not None  # 원인 예외가 체이닝돼 있어야 디버깅 가능
+
+
+def test_close_releases_model_reference_after_being_set():
+    """close() 뒤에는 모델 참조가 실제로 해제돼야 한다 — 참조가 남아있으면
+    close() 이후에도 track()이 '초기화 안 됨' 대신 조용히 계속 동작할 위험이 있다."""
+    tracker = UltralyticsVehicleTracker(model_path="unused.pt", tracker_config="bytetrack.yaml", confidence=0.5)
+    tracker._model = _RaisingModel()
+
+    tracker.close()
+
+    with pytest.raises(TrackingError):
+        tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
