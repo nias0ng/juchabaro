@@ -211,6 +211,23 @@ def test_closed_visit_with_unknown_qualification_still_unmatched() -> None:
     assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").matched is False
 
 
+def test_open_and_resolve_signals_share_the_same_incident_key() -> None:
+    """OPEN(INSIDE)과 RESOLVE(OUTSIDE) 신호가 같은 IncidentKey를 만들어야
+    IncidentReducer가 같은 사건으로 묶는다 — _evaluate_open/_evaluate_resolve로
+    나뉜 뒤에도 이 계약이 깨지지 않는지 직접 비교해 고정한다(AI 리뷰 제안)."""
+
+    open_signal = find(
+        evaluate(make_context([make_zone(1, ZoneType.DISABLED)], [make_visit(1, ZoneVisitState.INSIDE)], NON_DISABLED)),
+        "DISABLED_ZONE_UNAUTHORIZED",
+    )
+    resolve_signal = find(
+        evaluate(make_context([make_zone(1, ZoneType.DISABLED)], [make_visit(1, ZoneVisitState.OUTSIDE)], NON_DISABLED)),
+        "DISABLED_ZONE_UNAUTHORIZED",
+    )
+
+    assert open_signal.key == resolve_signal.key
+
+
 def test_two_restricted_zones_produce_two_signals() -> None:
     signals = evaluate(make_context(
         [make_zone(1, ZoneType.DISABLED), make_zone(2, ZoneType.EV_FAST)],
