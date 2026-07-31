@@ -65,6 +65,15 @@ class IncidentTransitionType(str, Enum):
     RESOLVE = "RESOLVE"
 
 
+class AssignmentState(str, Enum):
+    """대표 주차면 배정 결과(데이터흐름.md §3 "대표 주차면 배정"). 최고·차순위
+    겹침 비율 차이가 마진 이내면 한 구역의 주인으로 억지로 고정하지 않고
+    `AMBIGUOUS`로 둔다 — 마진 계산 자체는 T-10의 몫이며 여기서는 상태만 정의한다."""
+
+    ASSIGNED = "ASSIGNED"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
 @dataclass(frozen=True)
 class ZoneVisit:
     """한 물리 차량이 한 구역을 연속해서 방문한 구간."""
@@ -136,3 +145,30 @@ class IncidentTransition:
 
     transition_type: IncidentTransitionType
     incident: Incident
+
+
+@dataclass(frozen=True)
+class ParkingAssignment:
+    """물리 차량 하나에 대해 `assignment_resolver`가 정한 대표 주차면.
+
+    실제 배정 로직(겹침 비율 비교, `AMBIGUOUS` 마진 계산)은 T-10의 몫이다 —
+    여기서는 규칙 평가기(`RuleContext`)가 참조할 수 있도록 결과 형태만 고정한다.
+    """
+
+    physical_vehicle_id: PhysicalVehicleId
+    state: AssignmentState
+    zone_id: ZoneId | None = None
+
+
+@dataclass(frozen=True)
+class ParkingPipelineResult:
+    """`parking` 계층이 한 번의 처리에서 `application`으로 반환하는 결과 묶음.
+
+    application이 외부(Backend·actuators)로 전달해야 하는 값은 주로
+    `parking_episode_updates`의 `PARKED`/`ENDED` 전이와
+    `incident_transitions`의 `OPEN`/`RESOLVE`다(데이터흐름.md §3).
+    """
+
+    zone_visit_updates: tuple[ZoneVisit, ...]
+    parking_episode_updates: tuple[ParkingEpisode, ...]
+    incident_transitions: tuple[IncidentTransition, ...]

@@ -2,6 +2,9 @@ import { StyleSheet } from 'react-native';
 
 import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
+// columns와 column이 같은 높이를 공유해야 ScrollView가 이 높이만큼만 잘려서 스크롤이 가능해진다.
+const COLUMN_HEIGHT = 220;
+
 export const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
@@ -28,11 +31,14 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.sm,
-    height: 220,
+    height: COLUMN_HEIGHT,
   },
   column: {
     flex: 1,
     maxWidth: 80,
+    // alignItems: 'center'인 부모 안에서는 stretch가 적용되지 않아 높이를 직접 지정해야
+    // ScrollView가 이 크기로 잘리고(스크롤 가능), 내용이 위아래 문구와 겹치지 않는다.
+    height: COLUMN_HEIGHT,
   },
   colon: {
     fontSize: 18,

@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { NotificationCard } from '@/features/notification/components/list/notification-card';
 import { NotificationTabs } from '@/features/notification/components/list/notification-tabs';
 import type { NotificationSummary } from '@/features/notification/api/types';
@@ -34,13 +34,11 @@ export default function NotificationsScreen() {
         : undefined;
 
   return (
-    <Screen scroll edges={['top', 'right', 'left']}>
+    <GradientScreenBackground>
       <ResponsiveContainer>
-        <Stack gap={Spacing.md} fill>
-          <View style={styles.headerRow}>
-            <Text style={styles.headerTitle}>알림</Text>
-          </View>
+        <ScreenHeader title="알림" showBackButton={false} />
 
+        <Stack gap={Spacing.md} fill>
           <NotificationTabs active={tab} onChange={setTab} />
 
           {statusMessage ? (
@@ -61,6 +59,6 @@ export default function NotificationsScreen() {
           )}
         </Stack>
       </ResponsiveContainer>
-    </Screen>
+    </GradientScreenBackground>
   );
 }

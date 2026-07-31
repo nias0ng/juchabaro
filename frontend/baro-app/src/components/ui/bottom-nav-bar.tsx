@@ -20,7 +20,7 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { key: 'home', label: '홈', icon: 'home' },
   { key: 'request', label: '요청', icon: 'request' },
   { key: 'bell', label: '알림', icon: 'bell' },
-  { key: 'user', label: '내정보', icon: 'user' },
+  { key: 'user', label: '내 정보', icon: 'user' },
 ];
 
 // Figma 실측값(비활성 아이콘/라벨 색상, 상단 구분선 색상) — 현재 테마 토큰과 정확히 일치하지 않는다.

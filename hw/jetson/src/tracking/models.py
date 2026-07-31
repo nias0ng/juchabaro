@@ -66,4 +66,23 @@ class PhysicalVehicleSnapshot:
     confidence: float
     motion_signal: MotionSignal
     observed_at: datetime
+    camera_id: str
     context: VehicleContext | None = None
+
+
+@dataclass(frozen=True)
+class TrackingBatch:
+    """한 프레임에서 추적 계층이 반환하는 물리 차량 스냅샷 묶음.
+
+    `ended_vehicle_ids`는 이번 프레임에서 소실·종료가 확정된 차량이다(§2
+    `tracking`의 "차량 소실·종료 신호 제공" 책임). `source_available=False`는
+    카메라 장애로 이번 프레임에 관측 자체가 없었다는 뜻이며, `vehicles`가
+    빈 것과 구분해야 한다 — 빈 것은 "차량이 없다"이고, `False`는 "알 수 없다"다.
+    """
+
+    camera_id: str
+    frame_id: int
+    observed_at: datetime
+    vehicles: tuple[PhysicalVehicleSnapshot, ...]
+    ended_vehicle_ids: tuple[PhysicalVehicleId, ...]
+    source_available: bool
