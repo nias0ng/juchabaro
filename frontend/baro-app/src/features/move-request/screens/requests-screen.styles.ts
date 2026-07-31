@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Spacing } from '@/styles';
+import { Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   content: {
@@ -8,15 +8,7 @@ export const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    gap: Spacing.md,
-    paddingTop: Spacing.lg,
     paddingBottom: Spacing.lg,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: FontWeight.bold,
-    color: Palette.gray975,
-    letterSpacing: -0.4,
   },
   emptyContainer: {
     flex: 1,

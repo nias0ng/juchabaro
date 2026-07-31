@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text } from 'react-native';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { ProfileIcon } from '@/features/profile/components/profile-icon';
 import { ProfileMenuRow } from '@/features/profile/components/profile-menu-row';
 import { ProfileStatsRow } from '@/features/profile/components/profile-stats-row';
@@ -14,30 +14,18 @@ import { Spacing } from '@/styles';
 
 import { LOGOUT_COLOR, styles } from './my-page-screen.styles';
 
-const ROLE_LABEL: Record<string, string> = {
-  RESIDENT: '입주민',
-  ADMIN: '관리자',
-};
-
 // PENDING/REJECTED은 이번 스코프의 로그인 흐름상 도달하지 않지만, 상태가 늘어나도 배지가 깨지지 않게 매핑해 둔다.
 const STATUS_LABEL: Partial<Record<string, string>> = {
   ACTIVE: '승인 완료',
   PENDING: '승인 대기',
 };
 
-// 피그마 I-01 배경 그라데이션. 상단 40%에서 색이 다 바뀌고 그 아래는 옅은 색으로 고정된다.
-const BACKGROUND_GRADIENT = ['#eae7fb', '#f7f6fb', '#f7f6fb'] as const;
-const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.4, 1] as const;
-
 export default function MyPageScreen() {
   const { user, logout } = useAuth();
   const { isLoading: isVehicleLoading, vehicleCount, primaryVehicle } = useVehicleSummary();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  const roleLabel = user ? (ROLE_LABEL[user.role] ?? user.role) : '';
-  const meta = user?.buildingNumber && user?.unitNumber
-    ? `${user.buildingNumber}동 ${user.unitNumber}호 · ${roleLabel}`
-    : roleLabel;
+  const meta = user?.buildingNumber && user?.unitNumber ? `${user.buildingNumber}동 ${user.unitNumber}호` : '';
 
   const vehicleSubtitle = isVehicleLoading
     ? '차량 정보를 불러오는 중입니다'
@@ -53,16 +41,11 @@ export default function MyPageScreen() {
   };
 
   return (
-    <Screen
-      scroll
-      edges={['top', 'right', 'left']}
-      backgroundGradient={BACKGROUND_GRADIENT}
-      backgroundGradientLocations={BACKGROUND_GRADIENT_LOCATIONS}
-    >
+    <GradientScreenBackground>
       <ResponsiveContainer>
-        <Stack gap={Spacing.base + 2}>
-          <Text style={styles.title}>내 정보</Text>
+        <ScreenHeader title="내 정보" showBackButton={false} />
 
+        <Stack gap={Spacing.base + 2}>
           <ProfileSummaryCard
             name={user?.nickname ?? ''}
             meta={meta}
@@ -105,6 +88,6 @@ export default function MyPageScreen() {
           </Pressable>
         </Stack>
       </ResponsiveContainer>
-    </Screen>
+    </GradientScreenBackground>
   );
 }

@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { ResponsiveContainer, Screen, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import { RequestListCard, type RequestListItemDisplay } from '../components/requests-list/request-list-card';
@@ -55,34 +55,36 @@ export default function RequestsScreen() {
   };
 
   return (
-    <Screen scroll edges={['top', 'right', 'left']} contentContainerStyle={styles.content}>
+    <GradientScreenBackground contentContainerStyle={styles.content}>
       <ResponsiveContainer style={styles.container}>
-        <Text style={styles.title}>요청</Text>
+        <ScreenHeader title="요청" showBackButton={false} />
 
-        <RequestsTabSelector
-          value={scope}
-          onChange={setScope}
-          sentCount={MOCK_SENT_REQUESTS.length}
-          receivedCount={MOCK_RECEIVED_REQUESTS.length}
-        />
+        <Stack gap={Spacing.md}>
+          <RequestsTabSelector
+            value={scope}
+            onChange={setScope}
+            sentCount={MOCK_SENT_REQUESTS.length}
+            receivedCount={MOCK_RECEIVED_REQUESTS.length}
+          />
 
-        {items.length > 0 ? (
-          <Stack gap={Spacing.base}>
-            {items.map((item) => (
-              <RequestListCard
-                key={item.requestId}
-                item={item}
-                // 보낸 요청은 아직 상세 화면이 없어서 눌러도 이동하지 않는다. 받은 요청만 request-detail로 연결한다.
-                onPress={scope === 'RECEIVED' ? () => handlePressItem(item.requestId) : undefined}
-              />
-            ))}
-          </Stack>
-        ) : (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>표시할 요청이 없습니다</Text>
-          </View>
-        )}
+          {items.length > 0 ? (
+            <Stack gap={Spacing.base}>
+              {items.map((item) => (
+                <RequestListCard
+                  key={item.requestId}
+                  item={item}
+                  // 보낸 요청은 아직 상세 화면이 없어서 눌러도 이동하지 않는다. 받은 요청만 request-detail로 연결한다.
+                  onPress={scope === 'RECEIVED' ? () => handlePressItem(item.requestId) : undefined}
+                />
+              ))}
+            </Stack>
+          ) : (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>표시할 요청이 없습니다</Text>
+            </View>
+          )}
+        </Stack>
       </ResponsiveContainer>
-    </Screen>
+    </GradientScreenBackground>
   );
 }

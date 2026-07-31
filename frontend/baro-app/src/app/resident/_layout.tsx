@@ -11,7 +11,7 @@ const RESIDENT_NAV_ITEMS: NavItem[] = [
   { key: 'index', label: '홈', icon: 'home' },
   { key: 'requests', label: '요청', icon: 'request' },
   { key: 'notifications', label: '알림', icon: 'bell' },
-  { key: 'my-page', label: '내정보', icon: 'user' },
+  { key: 'my-page', label: '내 정보', icon: 'user' },
 ];
 
 function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {

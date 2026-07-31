@@ -6,12 +6,6 @@ import { FontWeight, Palette, Spacing } from '@/styles';
 export const LOGOUT_COLOR = '#ba1a1a';
 
 export const styles = StyleSheet.create({
-  title: {
-    fontSize: 24,
-    fontWeight: FontWeight.bold,
-    color: Palette.gray975,
-    paddingTop: Spacing.xs,
-  },
   logoutButton: {
     alignItems: 'center',
     justifyContent: 'center',
