@@ -263,6 +263,93 @@ def test_same_timestamp_resolve_is_allowed() -> None:
     assert transition.transition_type is IncidentTransitionType.RESOLVE
 
 
+class TestResolveScope:
+    """`resolve_scope` — zone_visit_id만으로 해소한다(446 후속 리뷰).
+
+    핵심 계약: rule_code를 몰라도(구역이 이미 삭제돼 있어도) 이미 열린
+    사건을 찾아 닫을 수 있어야 한다.
+    """
+
+    def test_closes_the_incident_scoped_to_the_zone_visit_id(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = visit_key()
+        opened = reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
+
+        assert len(transitions) == 1
+        assert transitions[0].transition_type is IncidentTransitionType.RESOLVE
+        assert transitions[0].incident.incident_id == opened.incident.incident_id
+        assert transitions[0].incident.resolved_at == at(10)
+
+    def test_does_not_need_rule_code_to_resolve(self) -> None:
+        """rule_code를 몰라도(구역이 삭제돼 재구성 못 해도) zone_visit_id만
+        있으면 해소된다 — 이 테스트의 핵심 목적이다."""
+        reducer = InMemoryIncidentReducer()
+        key = visit_key(rule_code="EV_ZONE_UNAUTHORIZED")
+        reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        # rule_code를 전혀 언급하지 않고 zone_visit_id만으로 호출한다.
+        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
+
+        assert len(transitions) == 1
+        assert transitions[0].incident.key.rule_code == "EV_ZONE_UNAUTHORIZED"
+
+    def test_is_a_noop_when_no_incident_matches_the_scope(self) -> None:
+        """자격이 있어 애초에 사건이 안 생긴 방문이 닫혀도 아무 일도 안 난다."""
+        reducer = InMemoryIncidentReducer()
+        transitions = reducer.resolve_scope(zone_visit_id=ZoneVisitId("visit-never-opened"), observed_at=T0)
+        assert transitions == ()
+
+    def test_drops_unconfirmed_candidate_silently(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = visit_key()
+        reducer.reduce(signal(key, matched=True, confirmable=False))
+
+        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(5))
+
+        assert transitions == ()
+        assert reducer.snapshot() == ()
+
+    def test_is_idempotent(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = visit_key()
+        reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        first = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
+        second = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(11))
+
+        assert len(first) == 1
+        assert second == ()
+
+    def test_rejects_backward_observation(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = visit_key()
+        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
+
+        with pytest.raises(ValueError, match="과거"):
+            reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(5))
+
+    def test_only_resolves_incidents_in_the_matching_scope(self) -> None:
+        """다른 zone_visit_id로 열린 사건은 건드리지 않는다."""
+        reducer = InMemoryIncidentReducer()
+        this_visit = visit_key()
+        other_visit = IncidentKey(
+            physical_vehicle_id=CAR,
+            rule_code="DISABLED_ZONE_UNAUTHORIZED",
+            zone_visit_id=ZoneVisitId("visit-2"),
+            zone_id=ZoneId(13),
+        )
+        reducer.reduce(signal(this_visit, matched=True, confirmable=True))
+        reducer.reduce(signal(other_visit, matched=True, confirmable=True))
+
+        reducer.resolve_scope(zone_visit_id=this_visit.zone_visit_id, observed_at=at(10))
+
+        states = {incident.key.zone_visit_id: incident.state for incident in reducer.snapshot()}
+        assert states[this_visit.zone_visit_id] is IncidentState.RESOLVED
+        assert states[other_visit.zone_visit_id] is IncidentState.EDGE_CONFIRMED
+
+
 def test_evidence_is_carried_into_incident_snapshot() -> None:
     reducer = InMemoryIncidentReducer()
     sig = IncidentSignal(

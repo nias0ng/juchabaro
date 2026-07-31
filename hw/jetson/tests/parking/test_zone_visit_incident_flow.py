@@ -30,9 +30,10 @@ from src.parking.models import (
     IncidentTransitionType,
     PresenceSignal,
     ZoneId,
+    ZoneVisitState,
 )
 from src.parking.rules.models import RuleContext
-from src.parking.rules.restricted_zone import evaluate_open, resolve_closed
+from src.parking.rules.restricted_zone import evaluate_open
 from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.tracking.models import (
@@ -104,8 +105,8 @@ class Frames:
             transitions += self._judge_open(vehicle, visits, now, contexts)
             transitions += self._judge_resolved(visits, now)
         # 강제 종료된 방문은 이 반환값으로만 나온다. 버리면 그 사건은 닫히지 않는다.
-        # resolve_closed는 스냅샷이 필요 없으므로(445), 추적이 끊긴 차량이라도
-        # 그대로 판정할 수 있다.
+        # resolve_scope는 규칙도 스냅샷도 필요 없으므로(446 후속 리뷰),
+        # 추적이 끊긴 차량이라도 zone_visit_id만으로 그대로 해소할 수 있다.
         transitions += self._judge_resolved(self.tracker.prune(now), now)
         return tuple(transitions)
 
@@ -140,16 +141,14 @@ class Frames:
         ]
 
     def _judge_resolved(self, visits, now) -> list[IncidentTransition]:
-        if not visits:
-            return []
-        return [
-            transition
-            for transition in (
-                self.reducer.reduce(signal_out)
-                for signal_out in resolve_closed(visits=tuple(visits), zones=self.zones, observed_at=now)
+        transitions: list[IncidentTransition] = []
+        for visit in visits:
+            if visit.state is not ZoneVisitState.OUTSIDE:
+                continue
+            transitions.extend(
+                self.reducer.resolve_scope(zone_visit_id=visit.visit_id, observed_at=now)
             )
-            if transition is not None
-        ]
+        return transitions
 
     def run(
         self,

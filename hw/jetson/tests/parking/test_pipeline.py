@@ -143,9 +143,9 @@ def test_vehicle_in_general_zone_produces_no_restricted_zone_incident():
 def test_lost_track_is_resolved_via_prune_without_needing_a_snapshot():
     """추적이 끊긴 차량(다음 배치에 없음)도 유휴 한도를 넘기면 사건이 닫혀야 한다.
 
-    `resolve_closed`는 스냅샷 없이 `ZoneVisit` 자체로 판정하므로(445), 이
-    프레임의 TrackingBatch에 그 차량이 전혀 없어도(캐싱된 스냅샷이 없어도)
-    RESOLVE가 나가야 한다.
+    `resolve_scope`는 스냅샷도 규칙도 없이 `zone_visit_id`만으로 해소하므로
+    (446 후속 리뷰), 이 프레임의 TrackingBatch에 그 차량이 전혀 없어도
+    (캐싱된 스냅샷이 없어도) RESOLVE가 나가야 한다.
     """
     pipeline = make_pipeline(stale=5.0)
     pipeline.process(batch(snapshot(at=T0), at=T0))
@@ -164,7 +164,7 @@ def test_ended_vehicle_ids_reported_before_prune_does_not_drop_the_resolve():
     tracking 계층은 그 즉시(같은 프레임) ended_vehicle_ids로 종료를 보고한다
     — 몇 분 뒤 prune()이 강제 종료를 반환할 때까지 기다리지 않는다.
 
-    445 이전에는 이 조합에서 버그가 났다: ended_vehicle_ids 처리가 스냅샷
+    446 이전에는 이 조합에서 버그가 났다: ended_vehicle_ids 처리가 스냅샷
     캐시를 그 프레임에서 바로 비웠고, 그 뒤 prune()이 방문을 강제 종료로
     반환해도 캐시가 비어 있어 판정이 생략돼 사건이 영원히 안 닫혔다(리뷰
     지적). 기존 `test_lost_track_is_resolved_via_prune_without_needing_a_snapshot`는
@@ -188,8 +188,8 @@ def test_ended_vehicle_ids_reported_before_prune_does_not_drop_the_resolve():
 def test_multiple_simultaneous_visits_all_resolve_after_track_loss():
     """차량 한 대가 두 전용구역(장애인+EV)에 동시에 INSIDE인 채로 추적이
     끊기면, prune()이 두 방문을 모두 강제 종료로 반환하고 둘 다 빠짐없이
-    RESOLVE돼야 한다(446 AI 리뷰 제안) — resolve_closed가 여러 방문을 한
-    번에 받아 처리하는 경로를 pipeline 레벨에서 확인한다."""
+    RESOLVE돼야 한다(446 AI 리뷰 제안) — 여러 방문을 순회하며 각각
+    resolve_scope로 해소하는 경로를 pipeline 레벨에서 확인한다."""
     pipeline = make_pipeline(zones=(DISABLED_ZONE, EV_ZONE), stale=5.0)
     pipeline.process(batch(snapshot(at=T0), at=T0))
     r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
@@ -211,6 +211,27 @@ def test_multiple_simultaneous_visits_all_resolve_after_track_loss():
     }
 
 
+def test_resolves_even_if_the_zone_definition_is_deleted_before_resolution():
+    """신영 님 리뷰 시나리오: 방문이 닫히는 시점에 그 구역이 `ZoneRegistry`에서
+    이미 사라졌어도(서버 구역 동기화 등) RESOLVE는 나가야 한다 — 해소는
+    `zone_visit_id`만으로 처리되고 규칙(구역 재조회)을 거치지 않으므로,
+    구역이 없어져도 rule_code를 재구성할 필요 자체가 없다."""
+    pipeline = make_pipeline(stale=5.0)
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
+    assert [t.transition_type for t in r1.incident_transitions] == [IncidentTransitionType.OPEN]
+
+    # 서버 구역 동기화로 이 구역이 사라졌다고 가정한다(화이트박스 교체).
+    pipeline._zones = ZoneRegistry([])
+
+    # 차량이 INSIDE인 채로 추적이 끊기고, 유휴 한도를 넘겨 prune()이 강제 종료한다.
+    pipeline.process(batch(at=T0 + timedelta(seconds=2), ended=(CAR,)))
+    r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
+
+    assert [t.transition_type for t in r3.incident_transitions] == [IncidentTransitionType.RESOLVE]
+    assert r3.incident_transitions[0].incident.incident_id == r1.incident_transitions[0].incident.incident_id
+
+
 def test_incident_reducer_state_matches_expected_lifecycle():
     pipeline = make_pipeline()
     reducer = pipeline._incident_reducer  # 스냅샷 조회용 — 화이트박스 확인
@@ -225,7 +246,7 @@ def test_incident_reducer_state_matches_expected_lifecycle():
 def test_ended_vehicle_that_never_visited_a_zone_produces_no_transitions():
     """구역을 한 번도 안 밟은 채 사라진 차량은 아무 사건도 만들지 않는다.
 
-    445 전에는 이 시나리오가 `_last_snapshot`이라는 캐시가 무한히 커지지
+    446 전에는 이 시나리오가 `_last_snapshot`이라는 캐시가 무한히 커지지
     않는지를 검증하는 테스트였다 — 그 캐시 자체가 버그의 원인이라 삭제했으므로
     (해소 판정이 이제 스냅샷을 아예 안 쓴다), 지금은 그냥 아무 전이도 없다는
     것만 확인한다."""

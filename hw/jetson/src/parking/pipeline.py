@@ -15,15 +15,17 @@ T-09), `ev_overstay`/`bad_parking` 규칙, `assignment_resolver`(T-10)는
 이 순서를 어기면(특히 3번을 빠뜨리거나 2번보다 먼저 부르면) 사건이 영원히
 닫히지 않는다 — `test_zone_visit_incident_flow.py`가 그 결함을 고정해 뒀다.
 
-**해소 판정은 스냅샷을 쓰지 않는다(445).** 예전엔 `prune()`이 반환한 강제
-종료 방문을 판정하려고 "마지막으로 본 스냅샷" 캐시(`_last_snapshot`)를
-들고 있었다. 그런데 추적이 끊긴 차량은 같은 프레임의 `ended_vehicle_ids`로
-전달되고, 그 처리가 캐시를 즉시 비웠다 — 그 뒤 `prune()`이 몇 분 뒤(기본
-`stale_after_seconds=300`) 그 방문을 강제 종료로 반환할 때는 캐시가 이미
-비어 있어 판정 자체가 생략되고, 열려 있던 사건이 영원히 RESOLVE되지
-않았다(리뷰 지적). `ZoneVisit` 자체에 `physical_vehicle_id`가 이미 있으므로
-`restricted_zone.resolve_closed()`는 스냅샷이 필요 없고, 이 버그가 구조적으로
-발생하지 않는다.
+**해소는 규칙을 거치지 않고 `zone_visit_id`로 직접 처리한다(446 후속
+리뷰).** 예전엔 두 가지 문제가 있었다. (1) `prune()`이 반환한 강제 종료
+방문을 판정하려고 "마지막으로 본 스냅샷" 캐시(`_last_snapshot`)를 들고
+있었는데, 추적이 끊긴 차량은 같은 프레임의 `ended_vehicle_ids`가 캐시를
+즉시 비워버려서 몇 분 뒤 `prune()`이 그 방문을 반환할 때는 이미 캐시가
+비어 판정이 생략됐다. (2) 방문이 닫힐 때도 `restricted_zone` 규칙을 거쳐
+`rule_code`를 재계산해야 `IncidentKey`를 만들 수 있었는데, 그 구역이 이미
+삭제돼 있으면(서버 구역 동기화 등) 재계산이 안 돼 해소가 조용히 생략됐다.
+두 문제 다 "방문이 닫혔다"는 사실 자체가 해소 사유일 뿐 규칙 재판정과는
+무관하다는 게 핵심이라, 이제 `IncidentReducer.resolve_scope(zone_visit_id)`가
+스냅샷도 구역 조회도 없이 직접 해소한다(`parking/incident_reducer.py` 참고).
 """
 
 from __future__ import annotations
@@ -33,11 +35,11 @@ from datetime import datetime
 from src.parking.geometry import overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
-    IncidentSignal,
     IncidentTransition,
     ParkingPipelineResult,
     PresenceSignal,
     ZoneVisit,
+    ZoneVisitState,
 )
 from src.parking.rules import restricted_zone
 from src.parking.rules.models import RuleContext
@@ -81,11 +83,11 @@ class ParkingPipeline:
         for vehicle in batch.vehicles:
             visits = self._zone_visit_tracker.active_visits(vehicle.physical_vehicle_id)
             incident_transitions += self._judge_open(vehicle, visits)
-            incident_transitions += self._judge_resolved(visits, observed_at=vehicle.observed_at)
+            incident_transitions += self._resolve_closed_visits(visits, observed_at=vehicle.observed_at)
 
         pruned = self._zone_visit_tracker.prune(batch.observed_at)
         zone_visit_updates.extend(pruned)
-        incident_transitions += self._judge_resolved(pruned, observed_at=batch.observed_at)
+        incident_transitions += self._resolve_closed_visits(pruned, observed_at=batch.observed_at)
 
         return ParkingPipelineResult(
             zone_visit_updates=tuple(zone_visit_updates),
@@ -114,20 +116,27 @@ class ParkingPipeline:
             zones=self._zones,
             observed_at=vehicle.observed_at,
         )
-        return self._reduce(restricted_zone.evaluate_open(context))
-
-    def _judge_resolved(
-        self, visits: tuple[ZoneVisit, ...], *, observed_at: datetime
-    ) -> list[IncidentTransition]:
-        if not visits:
-            return []
-        signals = restricted_zone.resolve_closed(visits=visits, zones=self._zones, observed_at=observed_at)
-        return self._reduce(signals)
-
-    def _reduce(self, signals: tuple[IncidentSignal, ...]) -> list[IncidentTransition]:
         transitions: list[IncidentTransition] = []
-        for signal in signals:
+        for signal in restricted_zone.evaluate_open(context):
             transition = self._incident_reducer.reduce(signal)
             if transition is not None:
                 transitions.append(transition)
+        return transitions
+
+    def _resolve_closed_visits(
+        self, visits: tuple[ZoneVisit, ...], *, observed_at: datetime
+    ) -> list[IncidentTransition]:
+        """방금 닫힌 방문마다 그 zone_visit_id로 열린 사건을 전부 해소한다.
+
+        규칙을 거치지 않는다 — `restricted_zone`을 다시 부르지 않으므로
+        구역 정의가 이미 삭제돼 있어도 해소된다.
+        """
+
+        transitions: list[IncidentTransition] = []
+        for visit in visits:
+            if visit.state is not ZoneVisitState.OUTSIDE:
+                continue
+            transitions.extend(
+                self._incident_reducer.resolve_scope(zone_visit_id=visit.visit_id, observed_at=observed_at)
+            )
         return transitions
