@@ -1,4 +1,4 @@
-"""차량 탐지·추적 구현체가 따라야 할 교체 가능한 인터페이스(T-05).
+"""차량 탐지·추적 구현체가 따라야 할 교체 가능한 인터페이스(436).
 
 `TrackingError`는 이 계층(탐지·재식별·이동 판정) 전체가 공유하는 예외다 —
 camera 계층의 FrameSourceError와 같은 역할이다.
@@ -47,7 +47,7 @@ class Detector(Protocol):
 class EntityResolver(Protocol):
     """일시적인 track_segment_id를 Jetson 내부 physical_vehicle_id로 묶는 계약.
 
-    T-05는 재식별 없는 통과 구현(`entity_resolver.PassthroughEntityResolver`)만
+    436는 재식별 없는 통과 구현(`entity_resolver.PassthroughEntityResolver`)만
     제공한다. 실제 재결합 알고리즘은 T-13에서 이 계약을 만족하는 구현체로
     교체한다 — pipeline.py는 이 인터페이스에만 의존하므로 교체 비용이 낮다.
     """

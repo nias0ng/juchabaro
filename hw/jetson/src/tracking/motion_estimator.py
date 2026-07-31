@@ -1,4 +1,4 @@
-"""차량 관측으로부터 MOVING/STATIONARY 신호를 계산하는 모듈(T-05).
+"""차량 관측으로부터 MOVING/STATIONARY 신호를 계산하는 모듈(436).
 
 600초 주차 확정은 이 모듈의 책임이 아니다(parking 계층의
 ParkingEpisodeTracker, T-09) — 여기서는 프레임 간 이동 여부만 판정한다.

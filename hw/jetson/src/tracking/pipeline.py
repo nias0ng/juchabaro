@@ -1,4 +1,4 @@
-"""프레임 관측을 PhysicalVehicleSnapshot 목록으로 변환하는 추적 파이프라인(T-05).
+"""프레임 관측을 PhysicalVehicleSnapshot 목록으로 변환하는 추적 파이프라인(436).
 
 Detector, EntityResolver, MotionEstimator를 조립해 TrackingBatch를 만든다.
 ContextMatcher는 이번 티켓 범위 밖이다(383 미해결분, T-16) — 그래서

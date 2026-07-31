@@ -1,4 +1,4 @@
-"""MotionEstimator 회귀 테스트 (T-05).
+"""MotionEstimator 회귀 테스트 (436).
 
 핵심 검증: 앵커는 movement_epsilon을 실제로 넘겼을 때만 갱신된다 — 매
 프레임 갱신하면 미세한 흔들림이 누적돼도 계속 STATIONARY로 남는다.

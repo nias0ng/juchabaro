@@ -1,7 +1,7 @@
 """Ultralytics YOLO와 ByteTrack 결과를 추적 계층 모델로 변환하는 어댑터.
 
 ai/tracking/jetson_vehicle_tracking_baseline.py의 UltralyticsVehicleTracker
-에서 이관(T-05). 출력을 옛 VehicleBox가 아니라 새 TrackObservation으로 바꿨다.
+에서 이관(436). 출력을 옛 VehicleBox가 아니라 새 TrackObservation으로 바꿨다.
 """
 
 from __future__ import annotations

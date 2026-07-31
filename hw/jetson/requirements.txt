@@ -6,5 +6,5 @@ pydantic-settings
 numpy==2.3.5
 opencv-python==4.10.0.84
 
-# tracking 계층(T-05): YOLO + ByteTrack (hw/raspberry-pi와 버전 통일)
+# tracking 계층(436): YOLO + ByteTrack (hw/raspberry-pi와 버전 통일)
 ultralytics==8.4.108

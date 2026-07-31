@@ -1,4 +1,4 @@
-"""TrackingPipeline 통합 회귀 테스트 (T-05).
+"""TrackingPipeline 통합 회귀 테스트 (436).
 
 실제 YOLO/ByteTrack 없이, Detector 계약만 만족하는 FakeDetector로 조립
 로직(entity resolve → motion estimate → snapshot/batch 구성)을 검증한다.
@@ -78,7 +78,7 @@ def test_frame_with_no_detections_returns_empty_batch():
 
 
 def test_new_vehicle_snapshot_has_context_none_and_moving_signal():
-    """T-05는 ContextMatcher(T-16)를 다루지 않으므로 context는 항상 None이어야 한다."""
+    """436는 ContextMatcher(T-16)를 다루지 않으므로 context는 항상 None이어야 한다."""
     detector = FakeDetector()
     detector.observations_by_frame_id[1] = [
         TrackObservation(track_segment_id=1, bbox=BoundingBox(0.1, 0.1, 0.2, 0.2), confidence=0.9, observed_at=BASE_TIME)

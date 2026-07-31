@@ -1,4 +1,4 @@
-"""UltralyticsVehicleTracker 가드절 회귀 테스트 (T-05).
+"""UltralyticsVehicleTracker 가드절 회귀 테스트 (436).
 
 ai/training/tests/test_tracking_baseline.py의 test_tracker_rejects_zero_sized_frame과
 같은 전략 — 실제 YOLO 모델·ultralytics 패키지 없이도 검증 가능한 가드절만

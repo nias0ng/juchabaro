@@ -1,4 +1,4 @@
-"""PassthroughEntityResolver 회귀 테스트 (T-05)."""
+"""PassthroughEntityResolver 회귀 테스트 (436)."""
 
 from src.tracking.entity_resolver import PassthroughEntityResolver
 
