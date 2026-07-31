@@ -39,6 +39,15 @@ GENERAL_ZONE = ParkingZone(
     zone_type=ZoneType.GENERAL,
     polygon=NormalizedPolygon(((0.5, 0.5), (0.9, 0.5), (0.9, 0.9), (0.5, 0.9))),
 )
+EV_ZONE = ParkingZone(
+    zone_id=3,
+    zone_number="EV-01",
+    zone_type=ZoneType.EV_FAST,
+    # DISABLED_ZONE과 같은 자리에 겹쳐 둔다 — 한 차량이 두 전용구역에
+    # 동시에 INSIDE인 상황을 만들기 위해서다(446 AI 리뷰 제안 시나리오).
+    polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+    allowed_minutes=60.0,
+)
 UNAUTHORIZED = VehicleContext(
     parking_session_id=1, vehicle_id=1, is_electric=False, is_disabled_vehicle=False
 )
@@ -174,6 +183,32 @@ def test_ended_vehicle_ids_reported_before_prune_does_not_drop_the_resolve():
     r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
     assert [t.transition_type for t in r3.incident_transitions] == [IncidentTransitionType.RESOLVE]
     assert r3.incident_transitions[0].incident.incident_id == r1.incident_transitions[0].incident.incident_id
+
+
+def test_multiple_simultaneous_visits_all_resolve_after_track_loss():
+    """차량 한 대가 두 전용구역(장애인+EV)에 동시에 INSIDE인 채로 추적이
+    끊기면, prune()이 두 방문을 모두 강제 종료로 반환하고 둘 다 빠짐없이
+    RESOLVE돼야 한다(446 AI 리뷰 제안) — resolve_closed가 여러 방문을 한
+    번에 받아 처리하는 경로를 pipeline 레벨에서 확인한다."""
+    pipeline = make_pipeline(zones=(DISABLED_ZONE, EV_ZONE), stale=5.0)
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
+    assert len(r1.incident_transitions) == 2
+    assert all(t.transition_type is IncidentTransitionType.OPEN for t in r1.incident_transitions)
+    assert {t.incident.key.rule_code for t in r1.incident_transitions} == {
+        "DISABLED_ZONE_UNAUTHORIZED", "EV_ZONE_UNAUTHORIZED"
+    }
+
+    # 차량이 두 구역에 동시에 INSIDE인 채로 이번 프레임에 추적이 끊긴다.
+    pipeline.process(batch(at=T0 + timedelta(seconds=2), ended=(CAR,)))
+
+    # 유휴 한도를 넘긴 뒤에야 prune()이 두 방문을 모두 강제 종료로 반환한다.
+    r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
+    assert len(r3.incident_transitions) == 2
+    assert all(t.transition_type is IncidentTransitionType.RESOLVE for t in r3.incident_transitions)
+    assert {t.incident.key.rule_code for t in r3.incident_transitions} == {
+        "DISABLED_ZONE_UNAUTHORIZED", "EV_ZONE_UNAUTHORIZED"
+    }
 
 
 def test_incident_reducer_state_matches_expected_lifecycle():
