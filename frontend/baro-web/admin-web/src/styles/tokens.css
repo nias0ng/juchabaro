@@ -1,0 +1,85 @@
+/**
+ * 디자인 토큰 CSS 변수.
+ * 값은 colors.ts / spacing.ts / typography.ts / layout.ts와 동일하게 유지한다.
+ */
+:root {
+  /* Color */
+  --color-text: #000000;
+  --color-text-secondary: #60646c;
+  --color-placeholder: #b6bac7;
+  --color-background: #ffffff;
+  --color-background-element: #f0f0f3;
+  --color-background-selected: #e1e1e8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8f8fa;
+  --color-border: #e1e1e8;
+  --color-primary: #5144d3;
+  --color-primary-soft: #e3dfff;
+  --color-on-primary: #ffffff;
+  --color-danger: #d4553a;
+  --color-danger-border: #ff8f6b;
+  --color-danger-surface: #fff2ef;
+  --color-disabled-surface: #e3dfff;
+  --color-disabled-text: #b6bac7;
+
+  /* Spacing (4px 기반) */
+  --spacing-none: 0;
+  --spacing-xxs: 2px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-base: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-xxl: 48px;
+  --spacing-xxxl: 64px;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-xxl: 32px;
+  --radius-full: 999px;
+  --radius-input: 20px;
+
+  /* Typography */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-base: 16px;
+  --font-size-lg: 20px;
+  --font-size-xl: 24px;
+  --font-size-xxl: 32px;
+  --font-size-display: 48px;
+
+  /* Layout */
+  --control-height-sm: 40px;
+  --control-height-md: 48px;
+  --control-height-lg: 56px;
+  --content-width-wide: 1120px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-text: #ffffff;
+    --color-text-secondary: #b0b4ba;
+    --color-placeholder: #6b6f78;
+    --color-background: #000000;
+    --color-background-element: #212225;
+    --color-background-selected: #2e3135;
+    --color-surface: #212225;
+    --color-surface-muted: #1f2024;
+    --color-border: #3a3d43;
+    --color-primary: #c3bcff;
+    --color-primary-soft: #302d55;
+    --color-on-primary: #1b1b23;
+    --color-danger: #ff6369;
+    --color-danger-border: #a83f31;
+    --color-danger-surface: #3a1f1a;
+    --color-disabled-surface: #302d55;
+    --color-disabled-text: #6b6f78;
+  }
+}
