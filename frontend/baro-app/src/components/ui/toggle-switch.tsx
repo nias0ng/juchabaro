@@ -8,6 +8,7 @@ type ToggleSwitchProps = {
   disabled?: boolean;
 };
 
+/** 알림 설정(I-04)/차량 등록(G-01,G-02)이 함께 쓰는 공통 온오프 스위치. */
 export function ToggleSwitch({ value, onChange, disabled = false }: ToggleSwitchProps) {
   return (
     <Pressable

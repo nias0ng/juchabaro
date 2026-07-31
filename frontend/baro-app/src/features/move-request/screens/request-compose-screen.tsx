@@ -58,7 +58,11 @@ export default function RequestComposeScreen() {
 
         <Stack gap={Spacing.sm + 1}>
           <RequestComposeSectionLabel label="요청 사유" />
-          <RequestComposeReasonField value={form.reason} onChangeText={form.setReason} />
+          <RequestComposeReasonField
+            value={form.reason}
+            onChangeText={form.setReason}
+            placeholder="ex. 출차 통로를 막고 있어 차량 이동을 요청합니다."
+          />
         </Stack>
       </Stack>
 

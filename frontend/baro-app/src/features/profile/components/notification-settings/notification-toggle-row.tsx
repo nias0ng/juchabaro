@@ -1,6 +1,7 @@
 import { Text, View } from 'react-native';
 
-import { ToggleSwitch } from './toggle-switch';
+import { ToggleSwitch } from '@/components/ui';
+
 import { styles } from './notification-toggle-row.styles';
 
 type NotificationToggleRowProps = {
