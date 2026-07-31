@@ -1,19 +1,25 @@
-"""녹화된 영상 파일을 읽어 보정까지 끝낸 CapturedFrame을 공급한다.
+"""녹화된 영상 파일·실제 웹캠을 읽어 보정까지 끝낸 CapturedFrame을 공급한다.
 
 ai/tracking/replay/video_source.py(VideoFileFrameSource)와
-ai/tracking/jetson_vehicle_tracking_baseline.py(RemapFrameSource,
-calibration_fingerprint, normalize_fingerprint)에서 이관(428).
+ai/tracking/jetson_vehicle_tracking_baseline.py(OpenCvWebcamFrameSource,
+RemapFrameSource, calibration_fingerprint, normalize_fingerprint)에서
+이관(428, 427).
 
 옛 CapturedFrame(frame_id, captured_at, image 3개뿐)과 달리 새
 CapturedFrame(camera/models.py)은 camera_id/width/height/calibration_id가
 필수라, 단순 복붙이 아니라 이 값들을 채우는 코드를 추가했다:
 - VideoFileFrameSource: camera_id는 생성자 인자로 받고, width/height는
   프레임에서 계산하며, 보정을 하지 않으므로 calibration_id=None
+- OpenCvWebcamFrameSource: 마찬가지로 camera_id를 받고, width/height는
+  요청한 해상도가 아니라 실제로 캡처된 프레임에서 계산한다(카메라가 요청
+  해상도를 그대로 못 맞출 수 있어서) — 보정은 안 하므로 calibration_id=None
 - RemapFrameSource: 실제 보정을 적용하는 쪽이라 calibration_id를
   calibration_fingerprint()의 해시로 채운다
 
-실카메라 입력(OpenCvWebcamFrameSource)은 이번 티켓 범위 밖이다 — 별도
-확인 후 별도 티켓(-427)으로 진행한다(팀 확인 완료).
+`OpenCvWebcamFrameSource.captured_at`은 영상 시간이 아니라 벽시계
+(`datetime.now`)다 — 실시간 장치라 재현 가능한 "영상 시간" 개념이 없다.
+결정론적 검증은 `VideoFileFrameSource`(리플레이)의 몫이고, 이 클래스는
+데모/파일럿의 실입력 전용이다.
 """
 
 from __future__ import annotations
@@ -208,6 +214,84 @@ class VideoFileFrameSource:
 
     def close(self) -> None:
         """영상 핸들을 해제한다."""
+
+        capture, self._capture = self._capture, None
+        if capture is not None:
+            capture.release()
+
+
+@dataclass
+class OpenCvWebcamFrameSource:
+    """일반 웹캠(데모 단계의 천장 카메라)에서 RGB 프레임을 공급한다(427).
+
+    `width`/`height`는 카메라에 요청하는 해상도일 뿐이다 — 장치가 그 값을
+    그대로 못 맞출 수 있어서, `CapturedFrame.width`/`height`는 실제로 캡처된
+    프레임에서 계산한다. 0이면 요청 자체를 생략하고 장치 기본값을 쓴다.
+
+    `captured_at`은 벽시계 시각이다 — 실시간 장치라 `VideoFileFrameSource`처럼
+    "영상 시간"을 재현할 방법이 없다. 결정론적 검증이 필요하면 리플레이
+    (`VideoFileFrameSource`)를 쓴다.
+    """
+
+    camera_id: str
+    camera_index: int
+    width: int = 0
+    height: int = 0
+    _capture: Any | None = field(default=None, init=False, repr=False)
+    _next_frame_id: int = field(default=1, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # 음수 인덱스를 cv2.VideoCapture에 그대로 넘기면 백엔드마다 다르게(엉뚱한
+        # 장치를 열거나 조용히 실패) 반응한다 — baseline CLI도 같은 이유로 막았다.
+        if self.camera_index < 0:
+            raise ValueError(f"camera_index는 음수일 수 없습니다: {self.camera_index}")
+        # 0은 "요청 생략"(장치 기본 해상도 사용)이라는 의미가 있어 허용하지만,
+        # 음수는 truthy라 0과 같은 취급을 못 받고 그대로 capture.set()에 넘어가
+        # cv2가 정의하지 않은 값을 받게 된다.
+        if self.width < 0 or self.height < 0:
+            raise ValueError(f"width/height는 음수일 수 없습니다: width={self.width}, height={self.height}")
+
+    def open(self) -> None:
+        """웹캠 장치를 연다. 이미 열려 있으면 아무 일도 하지 않는다."""
+
+        if self._capture is not None:
+            return
+        cv2 = _import_cv2()
+        capture = cv2.VideoCapture(self.camera_index)
+        if self.width:
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        if self.height:
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if not capture.isOpened():
+            capture.release()
+            raise FrameSourceError(f"웹캠 장치를 열 수 없습니다: index={self.camera_index}")
+        self._capture = capture
+
+    def capture(self) -> CapturedFrame:
+        """다음 프레임을 RGB로 반환한다."""
+
+        if self._capture is None:
+            raise FrameSourceError("웹캠이 초기화되지 않았습니다. open()을 먼저 호출하세요.")
+        cv2 = _import_cv2()
+        ok, frame_bgr = self._capture.read()
+        if not ok or frame_bgr is None:
+            raise FrameSourceError(f"웹캠 프레임 캡처에 실패했습니다: index={self.camera_index}")
+        image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        height, width = image.shape[:2]
+        frame = CapturedFrame(
+            camera_id=self.camera_id,
+            frame_id=self._next_frame_id,
+            captured_at=datetime.now(timezone.utc),
+            image=image,
+            width=width,
+            height=height,
+            calibration_id=None,
+        )
+        self._next_frame_id += 1
+        return frame
+
+    def close(self) -> None:
+        """웹캠 장치를 해제한다. 열린 적이 없으면 아무 일도 하지 않는다."""
 
         capture, self._capture = self._capture, None
         if capture is not None:
