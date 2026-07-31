@@ -1,10 +1,10 @@
 """api 계층이 입차 이벤트를 접수할 때 거치는 조립 지점(383 미해결분, T-16).
 
 api는 `tracking.ContextMatcher`를 직접 부르지 않는다 — 데이터흐름.md §7이
-api의 책임을 "application 호출"로 명시하기 때문이다. 이 클래스는 그 사이를
-잇는 얇은 창구다. `EntryContextEnricher`(같은 파일들 참고)와 달리
-`ZoneRegistry`가 필요 없다 — 대기열에 적재하기만 하고 구역 겹침 판단은
-하지 않으므로, `main.py`가 아직 구역을 로딩하지 않는 지금도 구성할 수 있다.
+api의 책임을 "application 호출"로 명시하기 때문이다("communication →
+application → tracking.context_matcher", 같은 문서 §2). 이 클래스는 그
+사이를 잇는 얇은 창구일 뿐, 매칭 로직(구역 겹침 판단 포함)은 여전히
+`ContextMatcher`(tracking) 안에 있다.
 """
 
 from __future__ import annotations

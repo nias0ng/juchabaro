@@ -16,11 +16,20 @@ from fastapi.testclient import TestClient
 
 from src.api.entry_events_router import router
 from src.application.entry_event_intake import EntryEventIntake
+from src.parking.geometry import NormalizedPolygon
+from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.tracking.context_matcher import ContextMatcher
-from src.tracking.models import PhysicalVehicleId
+from src.tracking.models import BoundingBox, PhysicalVehicleId
 
 TEST_INTERNAL_API_KEY = "test-internal-key"
 VALID_HEADERS = {"Idempotency-Key": "req-1", "X-Internal-API-Key": TEST_INTERNAL_API_KEY}
+ENTRY_ZONE = ParkingZone(
+    zone_id=9,
+    zone_number="E-01",
+    zone_type=ZoneType.ENTRY_EXIT,
+    polygon=NormalizedPolygon(((0.4, 0.4), (0.5, 0.4), (0.5, 0.5), (0.4, 0.5))),
+)
+ENTRY_BBOX = BoundingBox(0.41, 0.41, 0.49, 0.49)
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +43,7 @@ def _internal_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def make_client() -> tuple[TestClient, ContextMatcher]:
     app = FastAPI()
     app.include_router(router)
-    matcher = ContextMatcher()
+    matcher = ContextMatcher(zones=ZoneRegistry([ENTRY_ZONE]))
     app.state.entry_event_intake = EntryEventIntake(matcher)
     return TestClient(app), matcher
 
@@ -68,7 +77,7 @@ class TestReceiveEntryEvent:
         # 대기열에 실제로 쌓였는지: ENTRY_EXIT 매칭을 흉내 내 확인한다.
         context = matcher.match(
             physical_vehicle_id=PhysicalVehicleId("veh-1"),
-            in_entry_zone=True,
+            bbox=ENTRY_BBOX,
             now=datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc),
         )
         assert context is not None

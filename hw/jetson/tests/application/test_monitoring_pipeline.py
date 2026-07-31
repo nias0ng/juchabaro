@@ -1,14 +1,14 @@
 """MonitoringPipeline 관통 통합 테스트 (440, T-16).
 
-camera(가짜 프레임) → tracking(가짜 탐지기) → context 보강 → parking(진짜
-ZoneVisitTracker/restricted_zone/IncidentReducer) → outbox(진짜 JSONL 파일)까지
-전부 실제 조립으로 이어 붙여, 관통 1단계가 실제로 끝에서 끝까지 도는지 검증한다.
+camera(가짜 프레임) → tracking(가짜 탐지기, 필요하면 진짜 ContextMatcher 포함)
+→ parking(진짜 ZoneVisitTracker/restricted_zone/IncidentReducer) →
+outbox(진짜 JSONL 파일)까지 전부 실제 조립으로 이어 붙여, 관통 1단계가
+실제로 끝에서 끝까지 도는지 검증한다.
 """
 
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.application.context_enrichment import EntryContextEnricher
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.frame_source import EndOfVideo
 from src.camera.models import CapturedFrame
@@ -107,13 +107,6 @@ def _obs(bbox: BoundingBox, at: datetime) -> TrackObservation:
     return TrackObservation(track_segment_id=TrackSegmentId(1), bbox=bbox, confidence=0.9, observed_at=at)
 
 
-def _no_op_enricher() -> EntryContextEnricher:
-    """ENTRY_EXIT 구역이 없는 레지스트리로 만들어, enrich()가 배치를 그대로
-    통과시키게 한다 — context 매칭 자체를 검증하지 않는 테스트에서 쓴다."""
-
-    return EntryContextEnricher(zones=ZoneRegistry([DISABLED_ZONE]), matcher=ContextMatcher())
-
-
 def build_pipeline(detector: ScriptedDetector, frame_source: FakeFrameSource, outbox_path):
     tracking_pipeline = TrackingPipeline(camera_id="cam-1", detector=detector)
     parking_pipeline = ParkingPipeline(
@@ -126,22 +119,20 @@ def build_pipeline(detector: ScriptedDetector, frame_source: FakeFrameSource, ou
     return MonitoringPipeline(
         frame_source=frame_source,
         tracking_pipeline=tracking_pipeline,
-        context_enricher=_no_op_enricher(),
         parking_pipeline=parking_pipeline,
         outbox=outbox,
     )
 
 
 def test_vehicle_entering_and_leaving_restricted_zone_without_entry_context_stays_unconfirmed(tmp_path):
-    """camera → 진짜 TrackingPipeline → context 보강(ENTRY_EXIT 구역 없음) →
-    parking → outbox 전체 관통.
+    """camera → 진짜 TrackingPipeline(ContextMatcher 없음) → parking → outbox
+    전체 관통.
 
-    이 레지스트리엔 ENTRY_EXIT 구역이 없어 `EntryContextEnricher`가 아무것도
-    채우지 못하고, `PhysicalVehicleSnapshot.context`는 여전히 None이다.
-    restricted_zone은 그걸 "정보 없음"으로 보고 confirmable=False로 둔다
-    ("정보 없음"을 "무자격"으로 간주하면 안 되므로, 데이터흐름.md §4). 그래서
+    `TrackingPipeline`에 `context_matcher`를 안 줬으니 `context`는 항상
+    `None`이다. restricted_zone은 그걸 "정보 없음"으로 보고 confirmable=False로
+    둔다("정보 없음"을 "무자격"으로 간주하면 안 되므로, 데이터흐름.md §4). 그래서
     이 관통 경로는 **절대 outbox까지 도달하지 않는다** — 자격 정보를 못 얻는
-    차량(예: 게이트 OCR 실패, ENTRY_EXIT 미설정 등)이 항상 있을 수 있으므로
+    차량(예: 게이트 OCR 실패, ContextMatcher 미배선 등)이 항상 있을 수 있으므로
     이건 버그가 아니라 의도된 안전장치다. 방문 자체(ENTERING→INSIDE→EXITING→
     OUTSIDE)는 정상적으로 추적됨을 함께 확인해 wiring 자체는 살아있음을 보장한다.
     """
@@ -173,7 +164,7 @@ class _StubTrackingPipeline:
 
     vehicle_context를 실제로 채워서, MonitoringPipeline이 parking의 확정
     전이를 outbox까지 제대로 전달하는지(위 테스트가 검증 못 하는 부분)를
-    context_matcher(T-16) 없이도 검증한다.
+    ContextMatcher 없이도 검증한다.
     """
 
     def __init__(self, batches_by_frame_id) -> None:
@@ -192,9 +183,9 @@ class _StubTrackingPipeline:
 
 
 def test_monitoring_pipeline_forwards_confirmed_transitions_to_outbox(tmp_path):
-    """tracking 계층이 자격 정보를 실어 보낸다고 가정했을 때(T-16 이후 실제
-    모습), MonitoringPipeline이 확정된 전이를 실제로 outbox까지 전달하는지
-    확인한다 — 조립 로직 자체의 책임(판정이 아니라 전달)을 검증한다."""
+    """tracking 계층이 자격 정보를 실어 보낸다고 가정했을 때, MonitoringPipeline이
+    확정된 전이를 실제로 outbox까지 전달하는지 확인한다 — 조립 로직 자체의
+    책임(판정이 아니라 전달)을 검증한다."""
     unauthorized = VehicleContext(
         parking_session_id=1, vehicle_id=1, is_electric=False, is_disabled_vehicle=False
     )
@@ -232,7 +223,6 @@ def test_monitoring_pipeline_forwards_confirmed_transitions_to_outbox(tmp_path):
     pipeline = MonitoringPipeline(
         frame_source=frame_source,
         tracking_pipeline=_StubTrackingPipeline(batches),
-        context_enricher=_no_op_enricher(),
         parking_pipeline=parking_pipeline,
         outbox=JsonlOutbox(outbox_path),
     )
@@ -248,15 +238,15 @@ def test_monitoring_pipeline_forwards_confirmed_transitions_to_outbox(tmp_path):
 
 
 def test_vehicle_matched_via_real_context_matcher_reaches_outbox_end_to_end(tmp_path):
-    """camera → 진짜 TrackingPipeline → 진짜 EntryContextEnricher/ContextMatcher →
-    parking → outbox까지, 어떤 계층도 스텁 없이 전부 실제 조립으로 검증한다.
+    """camera → 진짜 TrackingPipeline(진짜 ContextMatcher 내장) → parking →
+    outbox까지, 어떤 계층도 스텁 없이 전부 실제 조립으로 검증한다.
 
-    T-16 전에는 context가 항상 None이라 이 경로가 절대 outbox에 닿지
-    않았다(위 테스트). 이 테스트가 T-16이 실제로 그 간극을 메웠다는 증거다:
-    라즈베리파이가 보낼 법한 `EntryContext`를 `ContextMatcher`에 미리
-    적재해 두고(라우터가 하는 일을 흉내), 차량이 ENTRY_EXIT 구역을 지나며
-    자격 정보를 실제로 매칭받은 뒤 전용구역에 무자격 진입해 위반이 열리고
-    닫히는 전체 흐름을 확인한다.
+    ContextMatcher가 없으면 이 경로가 절대 outbox에 닿지 않는다(위 테스트).
+    이 테스트가 T-16이 실제로 그 간극을 메웠다는 증거다: 라즈베리파이가
+    보낼 법한 `EntryContext`를 `ContextMatcher`에 미리 적재해 두고(라우터가
+    하는 일을 흉내), 차량이 ENTRY_EXIT 구역을 지나며 자격 정보를 실제로
+    매칭받은 뒤 전용구역에 무자격 진입해 위반이 열리고 닫히는 전체 흐름을
+    확인한다.
     """
     observations = {
         1: [_obs(ENTRY_BBOX, T0)],
@@ -267,9 +257,8 @@ def test_vehicle_matched_via_real_context_matcher_reaches_outbox_end_to_end(tmp_
     }
     detector = ScriptedDetector(observations)
     frame_source = FakeFrameSource(frame_count=5)
-    tracking_pipeline = TrackingPipeline(camera_id="cam-1", detector=detector)
 
-    matcher = ContextMatcher()
+    matcher = ContextMatcher(zones=ZoneRegistry([DISABLED_ZONE, ENTRY_ZONE]))
     matcher.add_entry_context(
         EntryContext(
             tracking_id="gate-uuid-1",
@@ -286,7 +275,7 @@ def test_vehicle_matched_via_real_context_matcher_reaches_outbox_end_to_end(tmp_
         ),
         idempotency_key="rpi-request-1",
     )
-    context_enricher = EntryContextEnricher(zones=ZoneRegistry([DISABLED_ZONE, ENTRY_ZONE]), matcher=matcher)
+    tracking_pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
 
     parking_pipeline = ParkingPipeline(
         zones=ZoneRegistry([DISABLED_ZONE, ENTRY_ZONE]),
@@ -298,7 +287,6 @@ def test_vehicle_matched_via_real_context_matcher_reaches_outbox_end_to_end(tmp_
     pipeline = MonitoringPipeline(
         frame_source=frame_source,
         tracking_pipeline=tracking_pipeline,
-        context_enricher=context_enricher,
         parking_pipeline=parking_pipeline,
         outbox=JsonlOutbox(outbox_path),
     )

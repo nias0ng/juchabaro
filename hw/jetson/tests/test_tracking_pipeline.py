@@ -7,11 +7,22 @@
 from datetime import datetime, timedelta, timezone
 
 from src.camera.models import CapturedFrame
-from src.tracking.models import BoundingBox, MotionSignal, TrackObservation
+from src.communication.models import EntryContext
+from src.parking.geometry import NormalizedPolygon
+from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
+from src.tracking.context_matcher import ContextMatcher
+from src.tracking.models import BoundingBox, MotionSignal, PhysicalVehicleId, TrackObservation, VehicleContext
 from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import ModelInfo
 
 BASE_TIME = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+ENTRY_ZONE = ParkingZone(
+    zone_id=9,
+    zone_number="E-01",
+    zone_type=ZoneType.ENTRY_EXIT,
+    polygon=NormalizedPolygon(((0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3))),
+)
+ENTRY_BBOX = BoundingBox(0.05, 0.05, 0.15, 0.15)
 
 
 class FakeDetector:
@@ -78,7 +89,7 @@ def test_frame_with_no_detections_returns_empty_batch():
 
 
 def test_new_vehicle_snapshot_has_context_none_and_moving_signal():
-    """436는 ContextMatcher(T-16)를 다루지 않으므로 context는 항상 None이어야 한다."""
+    """context_matcher를 안 주면(기존 호출부 호환) context는 항상 None이어야 한다."""
     detector = FakeDetector()
     detector.observations_by_frame_id[1] = [
         TrackObservation(track_segment_id=1, bbox=BoundingBox(0.1, 0.1, 0.2, 0.2), confidence=0.9, observed_at=BASE_TIME)
@@ -161,3 +172,109 @@ def test_multiple_vehicles_in_same_frame_get_independent_snapshots():
 
     ids = {snapshot.physical_vehicle_id for snapshot in batch.vehicles}
     assert ids == {"track-1", "track-2"}
+
+
+class _SpyContextMatcher:
+    """호출 인자를 기록하기만 하는 가짜 ContextMatcher.
+
+    데이터흐름.md §2가 명시한 내부 흐름(`EntityResolver → ContextMatcher →
+    MotionEstimator`)대로 `TrackingPipeline.process()`가 실제로
+    `match()`/`forget()`/`prune_expired()`를 호출하는지 검증한다.
+    """
+
+    def __init__(self, context: VehicleContext | None = None) -> None:
+        self.context = context
+        self.match_calls: list[dict] = []
+        self.forget_calls: list[PhysicalVehicleId] = []
+        self.prune_expired_calls: list[datetime] = []
+
+    def match(self, *, physical_vehicle_id, bbox, now):
+        self.match_calls.append({"physical_vehicle_id": physical_vehicle_id, "bbox": bbox, "now": now})
+        return self.context
+
+    def forget(self, physical_vehicle_id) -> None:
+        self.forget_calls.append(physical_vehicle_id)
+
+    def prune_expired(self, now) -> None:
+        self.prune_expired_calls.append(now)
+
+
+def test_context_matcher_is_consulted_for_each_observed_vehicle():
+    detector = FakeDetector()
+    bbox = BoundingBox(0.1, 0.1, 0.2, 0.2)
+    detector.observations_by_frame_id[1] = [
+        TrackObservation(track_segment_id=1, bbox=bbox, confidence=0.9, observed_at=BASE_TIME)
+    ]
+    matcher = _SpyContextMatcher()
+    pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
+
+    pipeline.process(_make_frame(frame_id=1))
+
+    assert matcher.match_calls == [{"physical_vehicle_id": "track-1", "bbox": bbox, "now": BASE_TIME}]
+
+
+def test_context_matcher_result_is_carried_onto_snapshot():
+    detector = FakeDetector()
+    detector.observations_by_frame_id[1] = [
+        TrackObservation(track_segment_id=1, bbox=BoundingBox(0.1, 0.1, 0.2, 0.2), confidence=0.9, observed_at=BASE_TIME)
+    ]
+    context = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=False)
+    matcher = _SpyContextMatcher(context=context)
+    pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
+
+    batch = pipeline.process(_make_frame(frame_id=1))
+
+    assert batch.vehicles[0].context is context
+
+
+def test_context_matcher_forget_called_for_ended_vehicles():
+    detector = FakeDetector()
+    detector.observations_by_frame_id[1] = [
+        TrackObservation(track_segment_id=1, bbox=BoundingBox(0.1, 0.1, 0.2, 0.2), confidence=0.9, observed_at=BASE_TIME)
+    ]
+    detector.observations_by_frame_id[2] = []  # 트랙 1이 이번 프레임엔 없음(종료)
+    matcher = _SpyContextMatcher()
+    pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
+
+    pipeline.process(_make_frame(frame_id=1))
+    pipeline.process(_make_frame(frame_id=2, captured_at=BASE_TIME + timedelta(seconds=1)))
+
+    assert matcher.forget_calls == ["track-1"]
+
+
+def test_context_matcher_prune_expired_called_once_per_frame_not_per_vehicle():
+    detector = FakeDetector()
+    detector.observations_by_frame_id[1] = [
+        TrackObservation(track_segment_id=1, bbox=BoundingBox(0.1, 0.1, 0.2, 0.2), confidence=0.9, observed_at=BASE_TIME),
+        TrackObservation(track_segment_id=2, bbox=BoundingBox(0.5, 0.5, 0.6, 0.6), confidence=0.8, observed_at=BASE_TIME),
+    ]
+    matcher = _SpyContextMatcher()
+    pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
+
+    pipeline.process(_make_frame(frame_id=1))
+
+    assert matcher.prune_expired_calls == [BASE_TIME]
+
+
+def test_real_context_matcher_populates_context_end_to_end():
+    """스파이가 아니라 진짜 ContextMatcher로, ENTRY_EXIT 구역 겹침 매칭이
+    TrackingPipeline 안에서 실제로 동작하는지 확인한다."""
+    detector = FakeDetector()
+    detector.observations_by_frame_id[1] = [
+        TrackObservation(track_segment_id=1, bbox=ENTRY_BBOX, confidence=0.9, observed_at=BASE_TIME)
+    ]
+    matcher = ContextMatcher(zones=ZoneRegistry([ENTRY_ZONE]))
+    matcher.add_entry_context(
+        EntryContext(
+            tracking_id="gate-uuid-1", recognized_plate_number="12가3456", entry_time=BASE_TIME,
+            access_decision="ALLOW", registered=True, vehicle_id=10, is_disabled_vehicle=False,
+            is_electric=True, vehicle_status="ACTIVE", session_id=55, duplicate_request=False,
+        ),
+        idempotency_key="rpi-request-1",
+    )
+    pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
+
+    batch = pipeline.process(_make_frame(frame_id=1))
+
+    assert batch.vehicles[0].context is not None
+    assert batch.vehicles[0].context.vehicle_id == 10
