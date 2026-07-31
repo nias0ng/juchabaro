@@ -9,6 +9,9 @@
 
 자격이 확인돼 위반이 아닌 경우에는 `matched=False`를 반환한다. 이 신호가
 없으면 `IncidentReducer`가 이미 열린 사건을 RESOLVE로 닫을 수 없다.
+
+구역 정의에 없는 zone_id를 가리키는 방문은 신호 없이 건너뛴다. 예외를 그대로
+올리면 방문 하나 때문에 그 프레임의 모든 규칙·모든 차량 판정이 죽는다.
 """
 
 from __future__ import annotations
@@ -33,7 +36,13 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
     for visit in context.active_zone_visits:
         if visit.state is not ZoneVisitState.INSIDE:
             continue
-        zone = context.zones.get(visit.zone_id)
+        zone = context.zones.get_or_none(visit.zone_id)
+        if zone is None:
+            # 구역 정의에 없는 방문이다. 여기서 예외가 밖으로 나가면 이 프레임의
+            # 모든 규칙·모든 차량 판정이 함께 죽는다 — 위반 하나를 놓치는 것보다
+            # 프레임 전체를 잃는 쪽이 훨씬 비싸다. 서버 구역 동기화가 들어오면
+            # 방문 도중 삭제된 구역이 상시 발생한다.
+            continue
         signal = _evaluate_zone(context, visit, zone)
         if signal is not None:
             signals.append(signal)

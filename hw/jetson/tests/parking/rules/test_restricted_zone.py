@@ -184,6 +184,20 @@ def test_two_restricted_zones_produce_two_signals() -> None:
     }
 
 
+def test_unknown_zone_is_skipped_without_killing_the_frame() -> None:
+    """등록되지 않은 구역을 가리키는 방문 하나가 프레임 전체 판정을 죽이면 안 된다.
+
+    서버 구역 동기화가 들어오면 방문 도중 삭제된 구역이 상시 발생한다.
+    """
+    signals = evaluate(make_context(
+        [make_zone(1, ZoneType.DISABLED)],
+        [make_visit(1), make_visit(99)],
+        NON_DISABLED,
+    ))
+    # 살아 있는 구역의 판정은 그대로 나온다.
+    assert [s.key.zone_id for s in signals] == [ZoneId(1)]
+
+
 def test_evidence_includes_qualification_flags() -> None:
     signals = evaluate(make_context(
         [make_zone(2, ZoneType.EV_FAST)], [make_visit(2)], NON_DISABLED

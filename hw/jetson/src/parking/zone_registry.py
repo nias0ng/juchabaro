@@ -26,6 +26,18 @@ class ZoneRegistryError(RuntimeError):
     """구역 정의를 읽거나 검증하는 데 실패했다. 기동을 거부해야 하는 오류다."""
 
 
+class ZoneNotFoundError(LookupError):
+    """등록되지 않은 zone_id를 조회했다. 실행 중에 일어나는 조회 실패다.
+
+    `ZoneRegistryError`와 일부러 계층을 나눴다. 그쪽은 "설정이 틀렸으니 뜨지
+    마라"이고 이쪽은 "이 한 번의 조회가 빗나갔다"이다. 한 타입으로 묶어 두면
+    프레임 하나의 조회 실패를 기동 거부와 같은 무게로 다루게 되고, 실제로
+    규칙 안에서 이 예외가 새어 나가 그 프레임의 모든 차량·모든 규칙 판정이
+    함께 죽었다. 서버 구역 동기화(핫 리로드)가 들어오면 방문 도중 삭제된
+    구역이 상시 발생하므로 구분이 더 중요해진다.
+    """
+
+
 class ZoneType(str, Enum):
     """주차구역 종류. 설치 시 관리자가 폴리곤과 함께 1회 등록한다."""
 
@@ -139,9 +151,22 @@ class ZoneRegistry:
         return tuple(self._zones.values())
 
     def get(self, zone_id: ZoneId) -> ParkingZone:
-        """구역 ID로 구역 정의를 조회한다."""
+        """구역 ID로 구역 정의를 조회한다. 없으면 `ZoneNotFoundError`를 던진다.
 
-        try:
-            return self._zones[zone_id]
-        except KeyError as exc:
-            raise ZoneRegistryError(f"등록되지 않은 zoneId입니다: {zone_id}") from exc
+        구역이 반드시 있어야 하는 자리(설정·캘리브레이션 검증)에서 쓴다. 매
+        프레임 도는 판정 경로에서는 `get_or_none()`을 쓴다.
+        """
+
+        zone = self._zones.get(zone_id)
+        if zone is None:
+            raise ZoneNotFoundError(f"등록되지 않은 zoneId입니다: {zone_id}")
+        return zone
+
+    def get_or_none(self, zone_id: ZoneId) -> ParkingZone | None:
+        """구역 ID로 구역 정의를 조회하고, 없으면 `None`을 반환한다.
+
+        판정 경로 전용이다. 존재하지 않는 구역을 가리키는 방문 하나 때문에
+        예외가 규칙 밖으로 나가면 그 프레임의 판정 전체가 죽는다.
+        """
+
+        return self._zones.get(zone_id)
