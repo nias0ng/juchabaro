@@ -38,13 +38,15 @@ def make_zone(zone_id: int, zone_type: ZoneType) -> ParkingZone:
 
 
 def make_visit(zone_id: int, state: ZoneVisitState = ZoneVisitState.INSIDE) -> ZoneVisit:
+    closed = state is ZoneVisitState.OUTSIDE
     return ZoneVisit(
         visit_id=f"visit-{zone_id}",
         physical_vehicle_id=CAR,
         zone_id=ZoneId(zone_id),
         state=state,
         entered_candidate_at=T0,
-        entered_at=T0 if state is ZoneVisitState.INSIDE else None,
+        entered_at=T0 if state is ZoneVisitState.INSIDE or closed else None,
+        exited_at=T0 if closed else None,
     )
 
 
@@ -170,6 +172,43 @@ def test_entering_visit_produces_no_signal() -> None:
         NON_DISABLED,
     ))
     assert signals == ()
+
+
+def test_exiting_visit_produces_no_signal() -> None:
+    """이탈 확인 중에 사건을 닫으면 잠깐 가려진 차량이 위반을 지운다."""
+    signals = evaluate(make_context(
+        [make_zone(1, ZoneType.DISABLED)],
+        [make_visit(1, ZoneVisitState.EXITING)],
+        NON_DISABLED,
+    ))
+    assert signals == ()
+
+
+def test_closed_visit_produces_unmatched_signal() -> None:
+    """방문이 닫히면 무자격 차량이어도 matched=False다 — 이것이 RESOLVE의 유일한 입력이다.
+
+    이 신호가 없으면 사건이 영원히 EDGE_CONFIRMED로 남고, 재진입은 새
+    zone_visit_id로 두 번째 OPEN을 만들어 미해소 사건이 계속 쌓인다.
+    """
+    signals = evaluate(make_context(
+        [make_zone(1, ZoneType.DISABLED)],
+        [make_visit(1, ZoneVisitState.OUTSIDE)],
+        NON_DISABLED,
+    ))
+    signal = find(signals, "DISABLED_ZONE_UNAUTHORIZED")
+    assert signal.matched is False
+    assert signal.key.zone_visit_id == "visit-1"
+    assert signal.evidence["zoneVisitExitedAt"] == T0.isoformat()
+
+
+def test_closed_visit_with_unknown_qualification_still_unmatched() -> None:
+    """자격을 끝내 못 알아낸 채 방문이 끝나도 사건은 닫혀야 한다."""
+    signals = evaluate(make_context(
+        [make_zone(1, ZoneType.DISABLED)],
+        [make_visit(1, ZoneVisitState.OUTSIDE)],
+        UNKNOWN_CONTEXT,
+    ))
+    assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").matched is False
 
 
 def test_two_restricted_zones_produce_two_signals() -> None:

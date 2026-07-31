@@ -15,8 +15,14 @@ ZONE = ZoneId(12)
 OTHER_ZONE = ZoneId(13)
 
 
-def make_tracker(entry: float = 3.0, exit_: float = 3.0) -> InMemoryZoneVisitTracker:
-    return InMemoryZoneVisitTracker(entry_confirm_seconds=entry, exit_confirm_seconds=exit_)
+def make_tracker(
+    entry: float = 3.0, exit_: float = 3.0, stale: float = 300.0
+) -> InMemoryZoneVisitTracker:
+    return InMemoryZoneVisitTracker(
+        entry_confirm_seconds=entry,
+        exit_confirm_seconds=exit_,
+        stale_after_seconds=stale,
+    )
 
 
 def at(seconds: float) -> datetime:
@@ -204,13 +210,145 @@ def test_visit_id_is_deterministic() -> None:
     assert ids[0] == ids[1]
 
 
-def test_active_visits_returns_only_inside_visits() -> None:
+def test_active_visits_excludes_entering_visits() -> None:
     tracker = make_tracker(entry=1.0)
     feed(tracker, PresenceSignal.PRESENT, 0, zone=ZONE)
     feed(tracker, PresenceSignal.PRESENT, 1.0, zone=ZONE)
     feed(tracker, PresenceSignal.PRESENT, 1.0, zone=OTHER_ZONE)  # ENTERING
     active = tracker.active_visits(CAR)
     assert [visit.zone_id for visit in active] == [ZONE]
+
+
+def test_active_visits_excludes_exiting_visits() -> None:
+    """이탈 확인 중에 사건을 닫으면 잠깐 가려진 차량이 위반을 지운다."""
+    tracker = make_tracker(entry=1.0, exit_=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)  # EXITING
+    assert tracker.active_visits(CAR) == ()
+
+
+def test_active_visits_includes_the_visit_closed_this_frame() -> None:
+    """규칙이 matched=False를 만들려면 닫힌 방문을 봐야 한다.
+
+    이 방문이 빠지면 이미 열린 사건이 영원히 EDGE_CONFIRMED로 남는다.
+    """
+    tracker = make_tracker(entry=1.0, exit_=1.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)
+    feed(tracker, PresenceSignal.ABSENT, 3.0)  # 종료
+    active = tracker.active_visits(CAR)
+    assert [visit.state for visit in active] == [ZoneVisitState.OUTSIDE]
+    assert active[0].exited_at == at(2.0)
+
+
+def test_active_visits_is_a_pure_read() -> None:
+    """같은 프레임에서 몇 번을 불러도 답이 같아야 한다 — 소비하는 읽기가 아니다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)
+    feed(tracker, PresenceSignal.ABSENT, 3.0)
+    assert tracker.active_visits(CAR) == tracker.active_visits(CAR)
+
+
+def test_prune_removes_the_closed_visit_so_it_is_judged_once() -> None:
+    """종료가 규칙에 정확히 한 번 보이게 만드는 장치가 prune()이다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)
+    feed(tracker, PresenceSignal.ABSENT, 3.0)
+    assert len(tracker.active_visits(CAR)) == 1
+    tracker.prune(at(3.0))
+    assert tracker.active_visits(CAR) == ()
+
+
+def test_absent_after_close_removes_the_slot_without_prune() -> None:
+    """조립기가 prune()을 빠뜨려도 다음 ABSENT가 종료 슬롯을 지운다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2.0)
+    feed(tracker, PresenceSignal.ABSENT, 3.0)
+    assert feed(tracker, PresenceSignal.ABSENT, 4.0) is None
+    assert tracker.active_visits(CAR) == ()
+
+
+def test_prune_force_closes_a_visit_whose_updates_stopped() -> None:
+    """추적이 끊겨 update()가 아예 끊긴 차량의 사건도 닫혀야 한다.
+
+    트래커에는 프레임 경계가 없어 차량이 돌아오지 않는다는 사실을 스스로 알 수
+    없다. 강제 종료하지 않으면 슬롯과 사건이 함께 영원히 남는다.
+    """
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    tracker.prune(at(20.0))
+    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+
+    tracker.prune(at(40.0))
+    closed = tracker.active_visits(CAR)
+    # 조용히 사라지지 않는다 — 판정이 RESOLVE를 만들 수 있도록 한 번 실려 나간다.
+    assert [v.state for v in closed] == [ZoneVisitState.OUTSIDE]
+    # 관측이 끊긴 시점까지만 점유로 인정한다.
+    assert closed[0].exited_at == at(1.0)
+
+    tracker.prune(at(41.0))
+    assert tracker.active_visits(CAR) == ()
+
+
+def test_prune_discards_a_stale_entering_candidate() -> None:
+    """진입이 확정된 적 없는 후보는 방문이 성립하지 않았으므로 종료로 보고하지 않는다."""
+    tracker = make_tracker(entry=3.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    tracker.prune(at(40.0))
+    assert tracker.active_visits(CAR) == ()
+    # 슬롯이 남지 않았으므로 다시 들어오면 후보 시각이 새로 잡힌다.
+    assert feed(tracker, PresenceSignal.PRESENT, 50.0).entered_candidate_at == at(50.0)
+
+
+def test_prune_keeps_a_visit_that_is_still_being_observed() -> None:
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    for second in range(2, 100):
+        feed(tracker, PresenceSignal.PRESENT, float(second))
+        tracker.prune(at(float(second)))
+    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+
+
+def test_unknown_keeps_a_slot_alive_against_pruning() -> None:
+    """UNKNOWN은 '관측이 끊겼다'가 아니라 '이번 프레임엔 모르겠다'이다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    feed(tracker, PresenceSignal.UNKNOWN, 25.0)
+    tracker.prune(at(40.0))
+    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+
+
+def test_prune_rejects_naive_datetime() -> None:
+    tracker = make_tracker()
+    with pytest.raises(ValueError, match="timezone"):
+        tracker.prune(datetime(2026, 7, 31, 10, 0, 0))
+
+
+def test_zero_stale_after_seconds_disables_force_close() -> None:
+    """0은 '즉시 강제 종료'가 아니라 '안전망 끔'이다. 매 프레임 방문이 닫히면 안 된다."""
+    tracker = make_tracker(entry=1.0, exit_=1.0, stale=0.0)
+    feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    tracker.prune(at(9999.0))
+    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+
+
+def test_negative_stale_after_seconds_is_rejected() -> None:
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        InMemoryZoneVisitTracker(
+            entry_confirm_seconds=1.0, exit_confirm_seconds=1.0, stale_after_seconds=-1.0
+        )
 
 
 def test_naive_datetime_is_rejected() -> None:
