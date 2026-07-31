@@ -3,11 +3,12 @@ import { StyleSheet } from 'react-native';
 import { Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
+  container: {
+    gap: Spacing.xs,
+  },
   row: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     columnGap: Spacing.md - 4,
-    rowGap: Spacing.xs,
   },
   item: {
     flexDirection: 'row',
