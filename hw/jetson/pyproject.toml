@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# hw/jetson을 sys.path에 넣어 `from src.parking...` 임포트가 실행 위치와 무관하게
+# 해석되게 한다. 이 줄이 없으면 hw/jetson 밖에서 pytest를 부를 때 임포트가 깨진다.
+pythonpath = ["."]
+testpaths = ["tests"]
+# rootdir을 명시적으로 고정한다 — 상위에 다른 설정 파일이 생겨도 흔들리지 않는다.
+addopts = "-ra"
