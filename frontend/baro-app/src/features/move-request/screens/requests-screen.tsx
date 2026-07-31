@@ -3,48 +3,20 @@ import { useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
-import type { MoveRequestStatus, MoveRequestSummary } from '@/features/move-request/api/types';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
-import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
+import { toRequestListItemDisplay } from '@/features/move-request/utils/move-request';
 import { Spacing } from '@/styles';
 
-import {
-  RequestListCard,
-  type RequestListItemDisplay,
-  type RequestListStatus,
-} from '../components/requests-list/request-list-card';
+import { RequestListCard } from '../components/requests-list/request-list-card';
 import { RequestsTabSelector, type RequestsScope } from '../components/requests-list/requests-tab-selector';
 import { styles } from './requests-screen.styles';
-
-const LIST_STATUS: Record<MoveRequestStatus, RequestListStatus> = {
-  SENT: 'PENDING',
-  RESPONDED: 'RESPONDED',
-  REMINDER_SENT: 'PENDING',
-  COMPLETED: 'CLOSED',
-  NEED_ADMIN: 'CLOSED',
-  CANCELLED: 'CLOSED',
-};
-
-function toRequestListItem(summary: MoveRequestSummary): RequestListItemDisplay {
-  const display = toRequestSummaryDisplay(summary);
-  const status = LIST_STATUS[summary.requestStatus];
-
-  return {
-    requestId: display.requestId,
-    status,
-    timestampLabel: display.requestedAtLabel,
-    plateNumber: display.plateNumber,
-    situationLabel: display.eventTypeLabel,
-    closedSummary: status === 'CLOSED' ? display.statusLabel : undefined,
-  };
-}
 
 export default function RequestsScreen() {
   const [scope, setScope] = useState<RequestsScope>('SENT');
   const sentQuery = useMoveRequests('SENT');
   const receivedQuery = useMoveRequests('RECEIVED');
   const currentQuery = scope === 'SENT' ? sentQuery : receivedQuery;
-  const items = currentQuery.moveRequests.map(toRequestListItem);
+  const items = currentQuery.moveRequests.map(toRequestListItemDisplay);
 
   const statusMessage = currentQuery.isLoading
     ? '이동 요청을 불러오는 중입니다'

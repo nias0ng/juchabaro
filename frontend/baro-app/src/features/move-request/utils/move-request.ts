@@ -6,6 +6,8 @@ import type {
   MoveRequestType,
 } from '@/features/move-request/api/types';
 import type { RequestOverdueTimelineStep } from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
+import type { RequestListItemDisplay } from '@/features/move-request/components/requests-list/request-list-card';
+import type { RequestListStatus } from '@/features/move-request/components/requests-list/request-status-badge';
 
 const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   BAD_PARKING: '불편 주차',
@@ -13,6 +15,7 @@ const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   DISABLED_ZONE_VIOLATION: '장애인 주차구역 위반',
   EV_OVERSTAY: '전기차 충전구역 장기 점유',
   OUT_OF_ZONE: '구역 외 주차',
+  ETC: '기타',
 };
 
 const REQUEST_TYPE_DISPLAY: Record<
@@ -56,7 +59,7 @@ export function toRequestDetailDisplay(detail: MoveRequestDetail): RequestDetail
     plateNumber: detail.targetVehicle.plateNumber,
     location: detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL,
     photos: detail.event.images
-      .filter((image) => image.imageType === 'PARKING_STATE')
+      .filter((image) => image.imageType === 'PARKING_STATE' || image.imageType === 'REPORT')
       .map((image) => ({ imageId: image.imageId, imageUrl: image.imageUrl })),
   };
 }
@@ -67,7 +70,7 @@ export type RequestWaitingDisplay = {
 };
 
 // 24시간제 "HH:mm" (예정 시간용)
-function formatTime24(iso: string): string {
+export function formatTime24(iso: string): string {
   const date = new Date(iso);
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
@@ -258,5 +261,30 @@ export function toRequestSummaryDisplay(summary: MoveRequestSummary): RequestSum
     statusLabel: REQUEST_STATUS_LABEL[summary.requestStatus],
     requestedAtLabel: formatDateTimeLabel(summary.requestedAt),
     message: summary.message,
+  };
+}
+
+// E-04(요청 목록) 카드가 쓰는 3단계 상태로 좁힌다. REMINDER_SENT도 응답 버튼은 그대로 있는 상태라 PENDING과 같이 묶는다.
+const LIST_STATUS: Record<MoveRequestStatus, RequestListStatus> = {
+  SENT: 'PENDING',
+  RESPONDED: 'RESPONDED',
+  REMINDER_SENT: 'PENDING',
+  COMPLETED: 'CLOSED',
+  NEED_ADMIN: 'CLOSED',
+  CANCELLED: 'CLOSED',
+};
+
+// 요청 목록(E-04) 화면에서 표시할 문자열로 변환
+export function toRequestListItemDisplay(summary: MoveRequestSummary): RequestListItemDisplay {
+  const display = toRequestSummaryDisplay(summary);
+  const status = LIST_STATUS[summary.requestStatus];
+
+  return {
+    requestId: display.requestId,
+    status,
+    timestampLabel: display.requestedAtLabel,
+    plateNumber: display.plateNumber,
+    situationLabel: display.eventTypeLabel,
+    closedSummary: status === 'CLOSED' ? display.statusLabel : undefined,
   };
 }

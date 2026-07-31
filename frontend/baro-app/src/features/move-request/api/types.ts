@@ -11,9 +11,10 @@ export type MoveEventType =
   | 'DOUBLE_PARKING'
   | 'DISABLED_ZONE_VIOLATION'
   | 'EV_OVERSTAY'
-  | 'OUT_OF_ZONE';
+  | 'OUT_OF_ZONE'
+  | 'ETC';
 export type MoveResponseType = 'WILL_MOVE' | 'CANNOT_MOVE_NOW';
-export type MoveImageType = 'PLATE' | 'PARKING_STATE';
+export type MoveImageType = 'PLATE' | 'PARKING_STATE' | 'REPORT';
 export type MoveHistoryNotificationType =
   | 'MOVE_REQUEST'
   | 'REMINDER'
@@ -76,6 +77,27 @@ export type MoveResponseResult = {
   requestStatus: MoveRequestStatus;
   dueAt: string | null;
   respondedAt: string;
+};
+
+// POST /api/move-requests 요청 파라미터.
+export type MoveRequestCreateParams = {
+  targetPlateNumber: string;
+  eventType: MoveEventType;
+  reason: string;
+  zoneName?: string;
+  images: string[]; // 로컬 이미지 uri 목록
+};
+
+// POST /api/move-requests 응답의 result.
+export type MoveRequestCreateResult = {
+  eventId: number;
+  requestId: number;
+  targetVehicleId: number;
+  requestType: MoveRequestType;
+  requestStatus: MoveRequestStatus;
+  reminderCount: number;
+  images: MoveRequestImage[];
+  requestedAt: string;
 };
 
 export type MoveRequestScope = 'RECEIVED' | 'SENT' | 'ALL';
