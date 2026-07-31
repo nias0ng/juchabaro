@@ -1,23 +1,29 @@
 """라즈베리파이가 보내는 입차 결과를 받는 내부 라우트(383 미해결분, T-16).
 
-`hw/raspberry-pi/src/communication/schemas.py`의 `JetsonEntryRequest`가 이
-경로로 보내는 payload를 파싱해 `ContextMatcher`의 매칭 대기열에 넣는다.
-백엔드 호출(ALLOW/DENY 판정)은 라즈베리파이가 이미 끝낸 뒤이므로, 여기서는
-그 결과를 받아 적재하기만 한다(383의 `entry_event_intake.py` 설계 그대로).
+`hw/raspberry-pi/src/communication/jetson_client.py`(`JetsonClient.ENTRY_PATH`)가
+이 경로로 `X-Internal-API-Key`·`Idempotency-Key` 헤더와 함께 payload를
+보낸다. `X-Internal-API-Key`는 데이터흐름.md §7이 명시한 api 계층의 책임
+("인증 헤더 확인")이라 여기서 검증한다 — 라즈베리파이 클라이언트는 이미 이
+헤더를 보내도록 구현돼 있다(`test_clients.py`가 고정).
 
 `Idempotency-Key` 헤더로 재전송 중복을 막는다 — 라즈베리파이는 네트워크
 재시도 시 같은 키로 같은 이벤트를 다시 보낼 수 있다.
+
+api는 `tracking.ContextMatcher`를 직접 부르지 않는다(§7 "api 책임:
+application 호출") — `application.entry_event_intake.EntryEventIntake`를
+거친다.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.application.entry_event_intake import EntryEventIntake
 from src.communication.models import EntryContext
-from src.tracking.context_matcher import ContextMatcher
+from src.config.settings import get_settings
 
 router = APIRouter(prefix="/internal", tags=["Internal"])
 
@@ -62,17 +68,22 @@ class EntryEventPayload(BaseModel):
         )
 
 
-def get_context_matcher(request: Request) -> ContextMatcher:
-    """`main.py`가 기동 시 `app.state.context_matcher`에 심어 둔 싱글턴을 반환한다."""
+def get_entry_event_intake(request: Request) -> EntryEventIntake:
+    """`main.py`가 기동 시 `app.state.entry_event_intake`에 심어 둔 싱글턴을 반환한다."""
 
-    return request.app.state.context_matcher
+    return request.app.state.entry_event_intake
 
 
-@router.post("/entry-events", status_code=202)
+def verify_internal_api_key(x_internal_api_key: str = Header(alias="X-Internal-API-Key")) -> None:
+    if x_internal_api_key != get_settings().internal_api_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Internal-API-Key가 올바르지 않습니다.")
+
+
+@router.post("/entry-events", status_code=202, dependencies=[Depends(verify_internal_api_key)])
 def receive_entry_event(
     payload: EntryEventPayload,
     idempotency_key: str = Header(alias="Idempotency-Key"),
-    matcher: ContextMatcher = Depends(get_context_matcher),
+    intake: EntryEventIntake = Depends(get_entry_event_intake),
 ) -> dict[str, bool]:
-    accepted = matcher.add_entry_context(payload.to_entry_context(), idempotency_key=idempotency_key)
+    accepted = intake.receive(payload.to_entry_context(), idempotency_key=idempotency_key)
     return {"accepted": accepted}
