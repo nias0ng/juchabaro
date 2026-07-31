@@ -103,6 +103,7 @@ export default function HomeScreen() {
             status={parkingStatus}
             isLoading={isSummaryLoading}
             hasError={Boolean(summaryError)}
+            onPress={() => router.push('/resident/parking-map')}
           />
 
         </ResponsiveContainer>
