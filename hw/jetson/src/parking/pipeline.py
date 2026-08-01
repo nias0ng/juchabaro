@@ -1,9 +1,9 @@
 """차량 스냅샷을 구역 방문·주차 에피소드·사건 전이로 변환하는 파이프라인.
 
-관통 1단계(440)만 다룬다 — `restricted_zone` 규칙 하나, `ZoneVisit` 상태축
-하나만으로 프레임이 사건까지 도달하는 경로다. `ParkingEpisode`(600초 확정,
-T-09), `ev_overstay`/`bad_parking` 규칙, `assignment_resolver`(T-10)는
-범위 밖이다.
+관통 1단계(440)에서 `restricted_zone` 규칙과 `ZoneVisit` 상태축 하나만으로
+시작했고, `ev_overstay`(450)를 병렬로 붙였다. 둘 다 `ZoneVisit`만 입력으로
+받는 규칙이라 조립 방식이 같다. `ParkingEpisode`(600초 확정, T-09) 기반
+규칙(`bad_parking`)과 `assignment_resolver`(T-10)는 아직 범위 밖이다.
 
 프레임 호출 순서는 `zone_visit_tracker.py`가 명시한 조립기 계약을 그대로
 따른다:
@@ -41,7 +41,7 @@ from src.parking.models import (
     ZoneVisit,
     ZoneVisitState,
 )
-from src.parking.rules import restricted_zone
+from src.parking.rules import ev_overstay, restricted_zone
 from src.parking.rules.models import RuleContext
 from src.parking.zone_registry import ParkingZone, ZoneRegistry
 from src.parking.zone_visit_tracker import ZoneVisitTracker
@@ -49,7 +49,7 @@ from src.tracking.models import MotionSignal, PhysicalVehicleSnapshot, TrackingB
 
 
 class ParkingPipeline:
-    """`ZoneVisitTracker` + `restricted_zone` 규칙 + `IncidentReducer`를 조립한다."""
+    """`ZoneVisitTracker` + `restricted_zone`/`ev_overstay` 규칙 + `IncidentReducer`를 조립한다."""
 
     def __init__(
         self,
@@ -117,10 +117,11 @@ class ParkingPipeline:
             observed_at=vehicle.observed_at,
         )
         transitions: list[IncidentTransition] = []
-        for signal in restricted_zone.evaluate_open(context):
-            transition = self._incident_reducer.reduce(signal)
-            if transition is not None:
-                transitions.append(transition)
+        for evaluate in (restricted_zone.evaluate_open, ev_overstay.evaluate_open):
+            for signal in evaluate(context):
+                transition = self._incident_reducer.reduce(signal)
+                if transition is not None:
+                    transitions.append(transition)
         return transitions
 
     def _resolve_closed_visits(
