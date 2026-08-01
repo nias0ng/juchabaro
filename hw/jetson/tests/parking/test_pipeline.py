@@ -39,6 +39,15 @@ GENERAL_ZONE = ParkingZone(
     zone_type=ZoneType.GENERAL,
     polygon=NormalizedPolygon(((0.5, 0.5), (0.9, 0.5), (0.9, 0.9), (0.5, 0.9))),
 )
+EV_ZONE = ParkingZone(
+    zone_id=3,
+    zone_number="EV-01",
+    zone_type=ZoneType.EV_FAST,
+    # DISABLED_ZONE과 같은 자리에 겹쳐 둔다 — 한 차량이 두 전용구역에
+    # 동시에 INSIDE인 상황을 만들기 위해서다(446 AI 리뷰 제안 시나리오).
+    polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+    allowed_minutes=60.0,
+)
 UNAUTHORIZED = VehicleContext(
     parking_session_id=1, vehicle_id=1, is_electric=False, is_disabled_vehicle=False
 )
@@ -131,11 +140,12 @@ def test_vehicle_in_general_zone_produces_no_restricted_zone_incident():
     assert len(r1.zone_visit_updates) == 1  # 방문 자체는 여전히 추적된다
 
 
-def test_lost_track_is_resolved_via_prune_using_last_known_snapshot():
+def test_lost_track_is_resolved_via_prune_without_needing_a_snapshot():
     """추적이 끊긴 차량(다음 배치에 없음)도 유휴 한도를 넘기면 사건이 닫혀야 한다.
 
-    이 프레임의 TrackingBatch에는 그 차량이 없으므로, 마지막으로 캐싱해 둔
-    스냅샷으로 RuleContext.vehicle을 채울 수 있는지가 핵심이다.
+    `resolve_scope`는 스냅샷도 규칙도 없이 `zone_visit_id`만으로 해소하므로
+    (446 후속 리뷰), 이 프레임의 TrackingBatch에 그 차량이 전혀 없어도
+    (캐싱된 스냅샷이 없어도) RESOLVE가 나가야 한다.
     """
     pipeline = make_pipeline(stale=5.0)
     pipeline.process(batch(snapshot(at=T0), at=T0))
@@ -149,6 +159,79 @@ def test_lost_track_is_resolved_via_prune_using_last_known_snapshot():
     assert [t.transition_type for t in r2.incident_transitions] == [IncidentTransitionType.RESOLVE]
 
 
+def test_ended_vehicle_ids_reported_before_prune_does_not_drop_the_resolve():
+    """실제 조립기가 하는 순서 그대로: 차량이 INSIDE인 채로 추적이 끊기면
+    tracking 계층은 그 즉시(같은 프레임) ended_vehicle_ids로 종료를 보고한다
+    — 몇 분 뒤 prune()이 강제 종료를 반환할 때까지 기다리지 않는다.
+
+    446 이전에는 이 조합에서 버그가 났다: ended_vehicle_ids 처리가 스냅샷
+    캐시를 그 프레임에서 바로 비웠고, 그 뒤 prune()이 방문을 강제 종료로
+    반환해도 캐시가 비어 있어 판정이 생략돼 사건이 영원히 안 닫혔다(리뷰
+    지적). 기존 `test_lost_track_is_resolved_via_prune_without_needing_a_snapshot`는
+    ended_vehicle_ids를 비워둔 채로만 테스트해서 이 조합을 검증하지 못했다.
+    """
+    pipeline = make_pipeline(stale=5.0)
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
+    assert [t.transition_type for t in r1.incident_transitions] == [IncidentTransitionType.OPEN]
+
+    # 차량이 INSIDE인 채로 이번 프레임에 tracking이 종료를 보고한다.
+    r2 = pipeline.process(batch(at=T0 + timedelta(seconds=2), ended=(CAR,)))
+    assert r2.incident_transitions == ()  # 아직 stale 시간이 안 지남
+
+    # 유휴 한도(stale)를 넘긴 뒤에야 prune()이 강제 종료를 반환한다.
+    r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
+    assert [t.transition_type for t in r3.incident_transitions] == [IncidentTransitionType.RESOLVE]
+    assert r3.incident_transitions[0].incident.incident_id == r1.incident_transitions[0].incident.incident_id
+
+
+def test_multiple_simultaneous_visits_all_resolve_after_track_loss():
+    """차량 한 대가 두 전용구역(장애인+EV)에 동시에 INSIDE인 채로 추적이
+    끊기면, prune()이 두 방문을 모두 강제 종료로 반환하고 둘 다 빠짐없이
+    RESOLVE돼야 한다(446 AI 리뷰 제안) — 여러 방문을 순회하며 각각
+    resolve_scope로 해소하는 경로를 pipeline 레벨에서 확인한다."""
+    pipeline = make_pipeline(zones=(DISABLED_ZONE, EV_ZONE), stale=5.0)
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
+    assert len(r1.incident_transitions) == 2
+    assert all(t.transition_type is IncidentTransitionType.OPEN for t in r1.incident_transitions)
+    assert {t.incident.key.rule_code for t in r1.incident_transitions} == {
+        "DISABLED_ZONE_UNAUTHORIZED", "EV_ZONE_UNAUTHORIZED"
+    }
+
+    # 차량이 두 구역에 동시에 INSIDE인 채로 이번 프레임에 추적이 끊긴다.
+    pipeline.process(batch(at=T0 + timedelta(seconds=2), ended=(CAR,)))
+
+    # 유휴 한도를 넘긴 뒤에야 prune()이 두 방문을 모두 강제 종료로 반환한다.
+    r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
+    assert len(r3.incident_transitions) == 2
+    assert all(t.transition_type is IncidentTransitionType.RESOLVE for t in r3.incident_transitions)
+    assert {t.incident.key.rule_code for t in r3.incident_transitions} == {
+        "DISABLED_ZONE_UNAUTHORIZED", "EV_ZONE_UNAUTHORIZED"
+    }
+
+
+def test_resolves_even_if_the_zone_definition_is_deleted_before_resolution():
+    """신영 님 리뷰 시나리오: 방문이 닫히는 시점에 그 구역이 `ZoneRegistry`에서
+    이미 사라졌어도(서버 구역 동기화 등) RESOLVE는 나가야 한다 — 해소는
+    `zone_visit_id`만으로 처리되고 규칙(구역 재조회)을 거치지 않으므로,
+    구역이 없어져도 rule_code를 재구성할 필요 자체가 없다."""
+    pipeline = make_pipeline(stale=5.0)
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    r1 = pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1)), at=T0 + timedelta(seconds=1)))
+    assert [t.transition_type for t in r1.incident_transitions] == [IncidentTransitionType.OPEN]
+
+    # 서버 구역 동기화로 이 구역이 사라졌다고 가정한다(화이트박스 교체).
+    pipeline._zones = ZoneRegistry([])
+
+    # 차량이 INSIDE인 채로 추적이 끊기고, 유휴 한도를 넘겨 prune()이 강제 종료한다.
+    pipeline.process(batch(at=T0 + timedelta(seconds=2), ended=(CAR,)))
+    r3 = pipeline.process(batch(at=T0 + timedelta(seconds=10)))
+
+    assert [t.transition_type for t in r3.incident_transitions] == [IncidentTransitionType.RESOLVE]
+    assert r3.incident_transitions[0].incident.incident_id == r1.incident_transitions[0].incident.incident_id
+
+
 def test_incident_reducer_state_matches_expected_lifecycle():
     pipeline = make_pipeline()
     reducer = pipeline._incident_reducer  # 스냅샷 조회용 — 화이트박스 확인
@@ -160,44 +243,17 @@ def test_incident_reducer_state_matches_expected_lifecycle():
     assert states == [IncidentState.EDGE_CONFIRMED]
 
 
-def test_ended_vehicle_that_never_visited_a_zone_is_dropped_from_snapshot_cache():
-    """구역을 한 번도 안 밟은 채 사라진 차량은 prune()이 절대 돌려주지 않는다
-    (방문 자체가 생긴 적이 없어서) — ended_vehicle_ids로 직접 정리하지 않으면
-    이 캐시가 지나가기만 하는 차량마다 무한히 커진다."""
+def test_ended_vehicle_that_never_visited_a_zone_produces_no_transitions():
+    """구역을 한 번도 안 밟은 채 사라진 차량은 아무 사건도 만들지 않는다.
+
+    446 전에는 이 시나리오가 `_last_snapshot`이라는 캐시가 무한히 커지지
+    않는지를 검증하는 테스트였다 — 그 캐시 자체가 버그의 원인이라 삭제했으므로
+    (해소 판정이 이제 스냅샷을 아예 안 쓴다), 지금은 그냥 아무 전이도 없다는
+    것만 확인한다."""
     pipeline = make_pipeline()
     passerby = snapshot(bbox=OUTSIDE_BBOX, at=T0)  # 구역 밖만 지나감, 방문 없음
 
     pipeline.process(batch(passerby, at=T0))
-    assert CAR in pipeline._last_snapshot
+    r1 = pipeline.process(batch(at=T0 + timedelta(seconds=1), ended=(CAR,)))
 
-    pipeline.process(batch(at=T0 + timedelta(seconds=1), ended=(CAR,)))
-
-    assert CAR not in pipeline._last_snapshot
-
-
-def test_snapshot_cache_stays_bounded_across_many_short_lived_vehicles():
-    """장기 실행 시나리오 흉내 — 수백 대가 구역 밖을 지나가다 하나씩
-    종료되는 동안 `_last_snapshot`이 누적되지 않고 매번 빠짐없이
-    회수되는지 확인한다(코치님 리뷰 제안 반영)."""
-    pipeline = make_pipeline()
-    vehicle_count = 500
-
-    for i in range(vehicle_count):
-        vehicle_id = PhysicalVehicleId(f"passerby-{i}")
-        at = T0 + timedelta(seconds=i)
-        pv_snapshot = PhysicalVehicleSnapshot(
-            physical_vehicle_id=vehicle_id,
-            track_segment_id=TrackSegmentId(1),
-            bbox=OUTSIDE_BBOX,
-            confidence=0.9,
-            motion_signal=MotionSignal.STATIONARY,
-            observed_at=at,
-            camera_id="cam-1",
-            context=None,
-        )
-        pipeline.process(batch(pv_snapshot, at=at))
-        # 각 차량은 다음 프레임에 곧바로 종료 보고된다 — 실제로는 프레임
-        # 여러 개에 걸쳐 있겠지만, 캐시 회수 자체를 검증하는 데는 충분하다.
-        pipeline.process(batch(at=at + timedelta(milliseconds=1), ended=(vehicle_id,)))
-
-    assert len(pipeline._last_snapshot) == 0
+    assert r1.incident_transitions == ()

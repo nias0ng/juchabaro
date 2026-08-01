@@ -4,6 +4,10 @@
 - 10분 주차 완료를 기다리지 않는다 (ZoneVisit이 INSIDE면 판정)
 - 자격 정보가 None이면 confirmable=false (정보 없음을 무자격으로 보지 않는다)
 - 자격이 있으면 matched=false를 반환해 RESOLVE 경로를 열어 둔다
+
+성립(`evaluate_open`)만 이 모듈이 담당한다. 해소는
+`IncidentReducer.resolve_scope()`가 규칙을 거치지 않고 직접 처리한다(446
+후속 리뷰 — `test_incident_reducer.py` 참고).
 """
 
 from datetime import datetime, timezone
@@ -11,7 +15,7 @@ from datetime import datetime, timezone
 from src.parking.geometry import NormalizedPolygon
 from src.parking.models import ZoneId, ZoneVisit, ZoneVisitState
 from src.parking.rules.models import RuleContext
-from src.parking.rules.restricted_zone import evaluate
+from src.parking.rules.restricted_zone import evaluate_open
 from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.tracking.models import (
     BoundingBox,
@@ -38,15 +42,13 @@ def make_zone(zone_id: int, zone_type: ZoneType) -> ParkingZone:
 
 
 def make_visit(zone_id: int, state: ZoneVisitState = ZoneVisitState.INSIDE) -> ZoneVisit:
-    closed = state is ZoneVisitState.OUTSIDE
     return ZoneVisit(
         visit_id=f"visit-{zone_id}",
         physical_vehicle_id=CAR,
         zone_id=ZoneId(zone_id),
         state=state,
         entered_candidate_at=T0,
-        entered_at=T0 if state is ZoneVisitState.INSIDE or closed else None,
-        exited_at=T0 if closed else None,
+        entered_at=T0 if state is ZoneVisitState.INSIDE else None,
     )
 
 
@@ -95,7 +97,7 @@ def find(signals, rule_code):
 
 
 def test_non_disabled_vehicle_in_disabled_zone_is_confirmable() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], NON_DISABLED
     ))
     signal = find(signals, "DISABLED_ZONE_UNAUTHORIZED")
@@ -107,14 +109,14 @@ def test_non_disabled_vehicle_in_disabled_zone_is_confirmable() -> None:
 
 def test_does_not_wait_for_parking_confirmation() -> None:
     """parking_episode가 None이어도 확정된다 — 10분을 기다리지 않는다."""
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], NON_DISABLED
     ))
     assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").confirmable is True
 
 
 def test_disabled_vehicle_in_disabled_zone_is_not_matched() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], DISABLED
     ))
     matching = [s for s in signals if s.key.rule_code == "DISABLED_ZONE_UNAUTHORIZED"]
@@ -124,7 +126,7 @@ def test_disabled_vehicle_in_disabled_zone_is_not_matched() -> None:
 
 def test_unknown_qualification_is_not_confirmable() -> None:
     """정보를 못 얻은 것을 무자격으로 간주하면 안 된다."""
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], UNKNOWN_CONTEXT
     ))
     signal = find(signals, "DISABLED_ZONE_UNAUTHORIZED")
@@ -133,14 +135,14 @@ def test_unknown_qualification_is_not_confirmable() -> None:
 
 
 def test_missing_vehicle_context_is_not_confirmable() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)], [make_visit(1)], None
     ))
     assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").confirmable is False
 
 
 def test_non_electric_vehicle_in_ev_zone_is_confirmable() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(2, ZoneType.EV_FAST)], [make_visit(2)], NON_DISABLED
     ))
     signal = find(signals, "EV_ZONE_UNAUTHORIZED")
@@ -149,7 +151,7 @@ def test_non_electric_vehicle_in_ev_zone_is_confirmable() -> None:
 
 
 def test_electric_vehicle_in_ev_zone_is_not_matched() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(2, ZoneType.EV_SLOW)], [make_visit(2)], ELECTRIC
     ))
     matching = [s for s in signals if s.key.rule_code == "EV_ZONE_UNAUTHORIZED"]
@@ -158,7 +160,7 @@ def test_electric_vehicle_in_ev_zone_is_not_matched() -> None:
 
 
 def test_general_zone_produces_no_signal() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(3, ZoneType.GENERAL)], [make_visit(3)], NON_DISABLED
     ))
     assert signals == ()
@@ -166,7 +168,7 @@ def test_general_zone_produces_no_signal() -> None:
 
 def test_entering_visit_produces_no_signal() -> None:
     """진입 확인이 끝나지 않은 방문은 판정 대상이 아니다."""
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)],
         [make_visit(1, ZoneVisitState.ENTERING)],
         NON_DISABLED,
@@ -175,8 +177,8 @@ def test_entering_visit_produces_no_signal() -> None:
 
 
 def test_exiting_visit_produces_no_signal() -> None:
-    """이탈 확인 중에 사건을 닫으면 잠깐 가려진 차량이 위반을 지운다."""
-    signals = evaluate(make_context(
+    """이탈 확인 중인 방문은 아직 해소 대상이 아니다."""
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)],
         [make_visit(1, ZoneVisitState.EXITING)],
         NON_DISABLED,
@@ -184,52 +186,19 @@ def test_exiting_visit_produces_no_signal() -> None:
     assert signals == ()
 
 
-def test_closed_visit_produces_unmatched_signal() -> None:
-    """방문이 닫히면 무자격 차량이어도 matched=False다 — 이것이 RESOLVE의 유일한 입력이다.
-
-    이 신호가 없으면 사건이 영원히 EDGE_CONFIRMED로 남고, 재진입은 새
-    zone_visit_id로 두 번째 OPEN을 만들어 미해소 사건이 계속 쌓인다.
-    """
-    signals = evaluate(make_context(
+def test_outside_visit_produces_no_signal() -> None:
+    """닫힌 방문은 이 모듈의 판정 대상이 아니다 — 해소는
+    IncidentReducer.resolve_scope()의 몫이다(446 후속 리뷰)."""
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)],
         [make_visit(1, ZoneVisitState.OUTSIDE)],
         NON_DISABLED,
     ))
-    signal = find(signals, "DISABLED_ZONE_UNAUTHORIZED")
-    assert signal.matched is False
-    assert signal.key.zone_visit_id == "visit-1"
-    assert signal.evidence["zoneVisitExitedAt"] == T0.isoformat()
-
-
-def test_closed_visit_with_unknown_qualification_still_unmatched() -> None:
-    """자격을 끝내 못 알아낸 채 방문이 끝나도 사건은 닫혀야 한다."""
-    signals = evaluate(make_context(
-        [make_zone(1, ZoneType.DISABLED)],
-        [make_visit(1, ZoneVisitState.OUTSIDE)],
-        UNKNOWN_CONTEXT,
-    ))
-    assert find(signals, "DISABLED_ZONE_UNAUTHORIZED").matched is False
-
-
-def test_open_and_resolve_signals_share_the_same_incident_key() -> None:
-    """OPEN(INSIDE)과 RESOLVE(OUTSIDE) 신호가 같은 IncidentKey를 만들어야
-    IncidentReducer가 같은 사건으로 묶는다 — _evaluate_open/_evaluate_resolve로
-    나뉜 뒤에도 이 계약이 깨지지 않는지 직접 비교해 고정한다(AI 리뷰 제안)."""
-
-    open_signal = find(
-        evaluate(make_context([make_zone(1, ZoneType.DISABLED)], [make_visit(1, ZoneVisitState.INSIDE)], NON_DISABLED)),
-        "DISABLED_ZONE_UNAUTHORIZED",
-    )
-    resolve_signal = find(
-        evaluate(make_context([make_zone(1, ZoneType.DISABLED)], [make_visit(1, ZoneVisitState.OUTSIDE)], NON_DISABLED)),
-        "DISABLED_ZONE_UNAUTHORIZED",
-    )
-
-    assert open_signal.key == resolve_signal.key
+    assert signals == ()
 
 
 def test_two_restricted_zones_produce_two_signals() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED), make_zone(2, ZoneType.EV_FAST)],
         [make_visit(1), make_visit(2)],
         NON_DISABLED,
@@ -245,7 +214,7 @@ def test_unknown_zone_is_skipped_without_killing_the_frame() -> None:
 
     서버 구역 동기화가 들어오면 방문 도중 삭제된 구역이 상시 발생한다.
     """
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(1, ZoneType.DISABLED)],
         [make_visit(1), make_visit(99)],
         NON_DISABLED,
@@ -255,7 +224,7 @@ def test_unknown_zone_is_skipped_without_killing_the_frame() -> None:
 
 
 def test_evidence_includes_qualification_flags() -> None:
-    signals = evaluate(make_context(
+    signals = evaluate_open(make_context(
         [make_zone(2, ZoneType.EV_FAST)], [make_visit(2)], NON_DISABLED
     ))
     evidence = find(signals, "EV_ZONE_UNAUTHORIZED").evidence
