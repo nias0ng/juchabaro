@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Mapping, NewType
+from uuid import UUID
 
 from src.tracking.models import (
     MotionSignal,
@@ -19,9 +20,9 @@ from src.tracking.models import (
 
 
 ZoneId = NewType("ZoneId", int)
-ZoneVisitId = NewType("ZoneVisitId", str)
-ParkingEpisodeId = NewType("ParkingEpisodeId", str)
-IncidentId = NewType("IncidentId", str)
+ZoneVisitId = NewType("ZoneVisitId", UUID)
+ParkingEpisodeId = NewType("ParkingEpisodeId", UUID)
+IncidentId = NewType("IncidentId", UUID)
 
 
 class PresenceSignal(str, Enum):

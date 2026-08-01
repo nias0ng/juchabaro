@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from src.camera.models import CapturedFrame
 from src.communication.models import EntryContext
@@ -100,7 +101,7 @@ def test_new_vehicle_snapshot_has_context_none_and_moving_signal():
 
     assert len(batch.vehicles) == 1
     snapshot = batch.vehicles[0]
-    assert snapshot.physical_vehicle_id == "track-1"
+    assert isinstance(snapshot.physical_vehicle_id, UUID)
     assert snapshot.camera_id == "cam-1"
     assert snapshot.context is None
     assert snapshot.motion_signal == MotionSignal.MOVING
@@ -131,11 +132,12 @@ def test_vehicle_missing_from_next_frame_is_reported_as_ended():
     detector.observations_by_frame_id[2] = []  # 트랙 1이 이번 프레임엔 없음
     pipeline = TrackingPipeline(camera_id="cam-1", detector=detector)
 
-    pipeline.process(_make_frame(frame_id=1))
+    first_batch = pipeline.process(_make_frame(frame_id=1))
+    physical_vehicle_id = first_batch.vehicles[0].physical_vehicle_id
     second_batch = pipeline.process(_make_frame(frame_id=2, captured_at=BASE_TIME + timedelta(seconds=1)))
 
     assert second_batch.vehicles == ()
-    assert second_batch.ended_vehicle_ids == ("track-1",)
+    assert second_batch.ended_vehicle_ids == (physical_vehicle_id,)
 
 
 def test_reappearing_after_forget_is_treated_as_new_moving_vehicle():
@@ -153,11 +155,12 @@ def test_reappearing_after_forget_is_treated_as_new_moving_vehicle():
     ]
     pipeline = TrackingPipeline(camera_id="cam-1", detector=detector)
 
-    pipeline.process(_make_frame(frame_id=1))
+    first_batch = pipeline.process(_make_frame(frame_id=1))
     pipeline.process(_make_frame(frame_id=2, captured_at=BASE_TIME + timedelta(seconds=1)))
     third_batch = pipeline.process(_make_frame(frame_id=3, captured_at=BASE_TIME + timedelta(seconds=2)))
 
     assert third_batch.vehicles[0].motion_signal == MotionSignal.MOVING
+    assert third_batch.vehicles[0].physical_vehicle_id != first_batch.vehicles[0].physical_vehicle_id
 
 
 def test_multiple_vehicles_in_same_frame_get_independent_snapshots():
@@ -171,7 +174,8 @@ def test_multiple_vehicles_in_same_frame_get_independent_snapshots():
     batch = pipeline.process(_make_frame(frame_id=1))
 
     ids = {snapshot.physical_vehicle_id for snapshot in batch.vehicles}
-    assert ids == {"track-1", "track-2"}
+    assert len(ids) == 2
+    assert all(isinstance(physical_vehicle_id, UUID) for physical_vehicle_id in ids)
 
 
 class _SpyContextMatcher:
@@ -210,7 +214,10 @@ def test_context_matcher_is_consulted_for_each_observed_vehicle():
 
     pipeline.process(_make_frame(frame_id=1))
 
-    assert matcher.match_calls == [{"physical_vehicle_id": "track-1", "bbox": bbox, "now": BASE_TIME}]
+    assert len(matcher.match_calls) == 1
+    assert isinstance(matcher.match_calls[0]["physical_vehicle_id"], UUID)
+    assert matcher.match_calls[0]["bbox"] == bbox
+    assert matcher.match_calls[0]["now"] == BASE_TIME
 
 
 def test_context_matcher_result_is_carried_onto_snapshot():
@@ -236,10 +243,11 @@ def test_context_matcher_forget_called_for_ended_vehicles():
     matcher = _SpyContextMatcher()
     pipeline = TrackingPipeline(camera_id="cam-1", detector=detector, context_matcher=matcher)
 
-    pipeline.process(_make_frame(frame_id=1))
+    first_batch = pipeline.process(_make_frame(frame_id=1))
+    physical_vehicle_id = first_batch.vehicles[0].physical_vehicle_id
     pipeline.process(_make_frame(frame_id=2, captured_at=BASE_TIME + timedelta(seconds=1)))
 
-    assert matcher.forget_calls == ["track-1"]
+    assert matcher.forget_calls == [physical_vehicle_id]
 
 
 def test_context_matcher_prune_expired_called_once_per_frame_not_per_vehicle():

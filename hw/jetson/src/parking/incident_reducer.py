@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol
+from uuid import uuid4
 
 from src.parking.models import (
     Incident,
@@ -95,7 +96,7 @@ class InMemoryIncidentReducer:
             # revision이 계속 자라 백엔드가 두 사건을 구분할 수 없다.
             first_observed_at = signal.observed_at
             incident = Incident(
-                incident_id=self._make_incident_id(signal.key, first_observed_at),
+                incident_id=self._new_incident_id(),
                 key=signal.key,
                 state=IncidentState.CANDIDATE,
                 revision=0,
@@ -155,32 +156,7 @@ class InMemoryIncidentReducer:
         )
 
     @staticmethod
-    def _make_incident_id(key: IncidentKey, first_observed_at: datetime) -> IncidentId:
-        """결정론적 사건 ID. 스펙 §8 와이어 예시는 UUID를 적었지만 결정론
-        요구와 충돌한다 — 백엔드는 멱등 upsert만 하므로 형식은 자유다.
+    def _new_incident_id() -> IncidentId:
+        """새로 시작한 사건의 불투명한 수명주기 ID를 발급한다."""
 
-        **서로 다른 IncidentKey는 서로 다른 ID를 가져야 한다.** 백엔드가
-        incident_id로 멱등 upsert를 하므로 두 키가 한 ID로 합쳐지면 서로 다른 두
-        위반이 조용히 한 건이 된다. 그래서 스코프(에피소드/방문)뿐 아니라 키를
-        가르는 나머지 필드(`zone_id`, `victim_physical_vehicle_id`)도 전부 넣는다.
-        에피소드 스코프인 bad_parking(구역별)과 피해차량별 double_parking이
-        들어오면 이 두 필드가 유일한 구분자가 된다.
-
-        `physical_vehicle_id`는 일부러 넣지 않는다. 스펙 4.3이 IncidentKey에서 그
-        필드를 없앨 예정이라 ID 유도가 거기 기대면 제거 시점에 모든 ID가 바뀐다.
-        제거 뒤 키의 유일성은 스코프 쪽이 책임진다 — 모든 규칙은 방문 또는
-        에피소드 스코프를 반드시 채워야 한다.
-
-        선택 필드는 값이 있을 때만 `|` 뒤에 덧붙인다. 둘 다 비어 있는 키의 ID는
-        이전과 글자 그대로 같아 불필요한 ID 변경이 생기지 않는다. `|`를 쓰는
-        이유는 앞부분이 ISO 시각이라 `:`로 이어 붙이면 경계가 모호해지기
-        때문이다.
-        """
-
-        scope = key.parking_episode_id or key.zone_visit_id or "no-scope"
-        parts = [f"{key.rule_code}:{scope}:{first_observed_at.isoformat()}"]
-        if key.zone_id is not None:
-            parts.append(f"zone={key.zone_id}")
-        if key.victim_physical_vehicle_id is not None:
-            parts.append(f"victim={key.victim_physical_vehicle_id}")
-        return IncidentId("|".join(parts))
+        return IncidentId(uuid4())

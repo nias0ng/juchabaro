@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
+from uuid import uuid4
 
 from src.parking.models import (
     PresenceSignal,
@@ -317,7 +318,7 @@ class InMemoryZoneVisitTracker:
         observed_at: datetime,
     ) -> ZoneVisit:
         visit = ZoneVisit(
-            visit_id=self._make_visit_id(physical_vehicle_id, zone_id, observed_at),
+            visit_id=self._new_visit_id(),
             physical_vehicle_id=physical_vehicle_id,
             zone_id=zone_id,
             state=ZoneVisitState.ENTERING,
@@ -391,10 +392,7 @@ class InMemoryZoneVisitTracker:
         return slot.visit
 
     @staticmethod
-    def _make_visit_id(
-        physical_vehicle_id: PhysicalVehicleId, zone_id: ZoneId, entered_candidate_at: datetime
-    ) -> ZoneVisitId:
-        """결정론적 방문 ID. uuid4를 쓰면 같은 입력의 두 실행이 달라져 리플레이
-        검증이 불가능해진다."""
+    def _new_visit_id() -> ZoneVisitId:
+        """새로 시작한 구역 방문의 불투명한 수명주기 ID를 발급한다."""
 
-        return ZoneVisitId(f"{physical_vehicle_id}:{zone_id}:{entered_candidate_at.isoformat()}")
+        return ZoneVisitId(uuid4())
