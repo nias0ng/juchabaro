@@ -30,9 +30,10 @@ from src.parking.models import (
     IncidentTransitionType,
     PresenceSignal,
     ZoneId,
+    ZoneVisitState,
 )
 from src.parking.rules.models import RuleContext
-from src.parking.rules.restricted_zone import evaluate
+from src.parking.rules.restricted_zone import evaluate_open
 from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.tracking.models import (
@@ -100,23 +101,20 @@ class Frames:
         transitions: list[IncidentTransition] = []
         # 관측된 차량만 돈다. 조립기가 아는 차량이 그것뿐이기 때문이다.
         for vehicle in observations:
-            transitions += self._judge(
-                vehicle, self.tracker.active_visits(vehicle), now, contexts
-            )
+            visits = self.tracker.active_visits(vehicle)
+            transitions += self._judge_open(vehicle, visits, now, contexts)
+            transitions += self._judge_resolved(visits, now)
         # 강제 종료된 방문은 이 반환값으로만 나온다. 버리면 그 사건은 닫히지 않는다.
-        for visit in self.tracker.prune(now):
-            transitions += self._judge(
-                visit.physical_vehicle_id, (visit,), now, contexts
-            )
+        # resolve_scope는 규칙도 스냅샷도 필요 없으므로(446 후속 리뷰),
+        # 추적이 끊긴 차량이라도 zone_visit_id만으로 그대로 해소할 수 있다.
+        transitions += self._judge_resolved(self.tracker.prune(now), now)
         return tuple(transitions)
 
-    def _judge(self, vehicle, visits, now, contexts) -> list[IncidentTransition]:
+    def _judge_open(self, vehicle, visits, now, contexts) -> list[IncidentTransition]:
         if not visits:
             return []
         context = contexts.get(vehicle, UNAUTHORIZED)
         rule_context = RuleContext(
-            # 추적이 끊긴 차량에는 이번 프레임 스냅샷이 없다. 실제 조립기는
-            # 차량별 마지막 스냅샷을 들고 있어야 한다.
             vehicle=PhysicalVehicleSnapshot(
                 physical_vehicle_id=vehicle,
                 track_segment_id=TrackSegmentId(1),
@@ -137,10 +135,20 @@ class Frames:
         return [
             transition
             for transition in (
-                self.reducer.reduce(signal_out) for signal_out in evaluate(rule_context)
+                self.reducer.reduce(signal_out) for signal_out in evaluate_open(rule_context)
             )
             if transition is not None
         ]
+
+    def _judge_resolved(self, visits, now) -> list[IncidentTransition]:
+        transitions: list[IncidentTransition] = []
+        for visit in visits:
+            if visit.state is not ZoneVisitState.OUTSIDE:
+                continue
+            transitions.extend(
+                self.reducer.resolve_scope(zone_visit_id=visit.visit_id, observed_at=now)
+            )
+        return transitions
 
     def run(
         self,
