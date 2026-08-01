@@ -1,6 +1,7 @@
 """구역 방문 상태 머신 테스트. 카메라·모델 없이 도는 순수 상태 머신이다."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -9,8 +10,8 @@ from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.tracking.models import PhysicalVehicleId
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
-CAR = PhysicalVehicleId("pv-1")
-OTHER_CAR = PhysicalVehicleId("pv-2")
+CAR = PhysicalVehicleId(UUID(int=1))
+OTHER_CAR = PhysicalVehicleId(UUID(int=2))
 ZONE = ZoneId(12)
 OTHER_ZONE = ZoneId(13)
 
@@ -200,14 +201,13 @@ def test_revisit_after_close_gets_new_visit_id() -> None:
     assert second.visit_id != first.visit_id
 
 
-def test_visit_id_is_deterministic() -> None:
-    """같은 입력을 두 번 돌리면 같은 visit_id가 나와야 리플레이 검증이 가능하다."""
-    ids = []
-    for _ in range(2):
-        tracker = make_tracker(entry=1.0)
-        feed(tracker, PresenceSignal.PRESENT, 0)
-        ids.append(feed(tracker, PresenceSignal.PRESENT, 1.0).visit_id)
-    assert ids[0] == ids[1]
+def test_visit_id_is_uuid_and_stable_during_one_visit() -> None:
+    tracker = make_tracker(entry=1.0)
+    entering = feed(tracker, PresenceSignal.PRESENT, 0)
+    inside = feed(tracker, PresenceSignal.PRESENT, 1.0)
+
+    assert isinstance(entering.visit_id, UUID)
+    assert inside.visit_id == entering.visit_id
 
 
 def test_active_visits_excludes_entering_visits() -> None:

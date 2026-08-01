@@ -1,6 +1,7 @@
 """사건 축약 테스트. 중복 억제와 RESOLVE 생성이 핵심이다."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -17,7 +18,9 @@ from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.tracking.models import PhysicalVehicleId
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
-CAR = PhysicalVehicleId("pv-1")
+CAR = PhysicalVehicleId(UUID(int=1))
+VISIT = ZoneVisitId(UUID(int=101))
+EPISODE = ParkingEpisodeId(UUID(int=201))
 
 
 def at(seconds: float) -> datetime:
@@ -29,7 +32,7 @@ def visit_key(rule_code: str = "DISABLED_ZONE_UNAUTHORIZED") -> IncidentKey:
         # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
         physical_vehicle_id=CAR,
         rule_code=rule_code,
-        zone_visit_id=ZoneVisitId("visit-1"),
+        zone_visit_id=VISIT,
         zone_id=ZoneId(12),
     )
 
@@ -39,7 +42,7 @@ def episode_key(rule_code: str = "BAD_PARKING") -> IncidentKey:
         # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
         physical_vehicle_id=CAR,
         rule_code=rule_code,
-        parking_episode_id=ParkingEpisodeId("episode-1"),
+        parking_episode_id=EPISODE,
         zone_id=ZoneId(12),
     )
 
@@ -154,39 +157,38 @@ def test_repeated_match_after_reopen_produces_no_duplicate() -> None:
     assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=22)) is None
 
 
-def test_incident_id_is_deterministic() -> None:
-    ids = []
-    for _ in range(2):
-        reducer = InMemoryIncidentReducer()
-        ids.append(reducer.reduce(signal(visit_key(), matched=True, confirmable=True)).incident.incident_id)
-    assert ids[0] == ids[1]
+def test_incident_id_is_uuid_and_stable_from_open_to_resolve() -> None:
+    reducer = InMemoryIncidentReducer()
+    key = visit_key()
+    opened = reducer.reduce(signal(key, matched=True, confirmable=True))
+    resolved = reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
+
+    assert isinstance(opened.incident.incident_id, UUID)
+    assert resolved.incident.incident_id == opened.incident.incident_id
 
 
 def episode_scoped_key(
-    *, zone_id: int, victim: str | None = None, vehicle: str = "pv-1"
+    *, zone_id: int, victim: int | None = None, vehicle: int = 1
 ) -> IncidentKey:
     return IncidentKey(
         # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
-        physical_vehicle_id=PhysicalVehicleId(vehicle),
+        physical_vehicle_id=PhysicalVehicleId(UUID(int=vehicle)),
         rule_code="BAD_PARKING",
-        parking_episode_id=ParkingEpisodeId("episode-1"),
+        parking_episode_id=EPISODE,
         zone_id=ZoneId(zone_id),
-        victim_physical_vehicle_id=None if victim is None else PhysicalVehicleId(victim),
+        victim_physical_vehicle_id=(
+            None if victim is None else PhysicalVehicleId(UUID(int=victim))
+        ),
     )
 
 
 def test_incident_id_distinguishes_zone_and_victim() -> None:
-    """서로 다른 IncidentKey는 서로 다른 incident_id를 가져야 한다.
-
-    백엔드는 incident_id로 멱등 upsert를 한다. zone_id와
-    victim_physical_vehicle_id를 ID 유도에서 빼면 아래 네 키가 하나의 ID로
-    합쳐져 서로 다른 네 위반이 조용히 한 건이 된다.
-    """
+    """서로 다른 IncidentKey는 독립된 사건과 ID를 가진다."""
     keys = [
         episode_scoped_key(zone_id=1),
         episode_scoped_key(zone_id=2),
-        episode_scoped_key(zone_id=1, victim="pv-2"),
-        episode_scoped_key(zone_id=1, victim="pv-3"),
+        episode_scoped_key(zone_id=1, victim=2),
+        episode_scoped_key(zone_id=1, victim=3),
     ]
     reducer = InMemoryIncidentReducer()
     ids = {
@@ -196,32 +198,15 @@ def test_incident_id_distinguishes_zone_and_victim() -> None:
     assert len(ids) == len(keys)
 
 
-def test_incident_id_format_is_unchanged_without_zone_and_victim() -> None:
-    """두 필드가 모두 비어 있는 키의 ID는 이전과 글자 그대로 같다."""
-    reducer = InMemoryIncidentReducer()
-    key = IncidentKey(
-        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
-        physical_vehicle_id=CAR,
-        rule_code="BAD_PARKING",
-        parking_episode_id=ParkingEpisodeId("episode-1"),
-    )
-    transition = reducer.reduce(signal(key, matched=True, confirmable=True))
-    assert transition.incident.incident_id == f"BAD_PARKING:episode-1:{T0.isoformat()}"
-
-
-def test_incident_id_does_not_depend_on_physical_vehicle_id() -> None:
-    """스펙 4.3의 physical_vehicle_id 제거가 기존 ID를 바꾸지 않아야 한다.
-
-    ID 유도가 그 필드에 기대면 제거 시점에 모든 사건 ID가 한꺼번에 바뀐다.
-    같은 스코프를 가리키는 두 키는 이미 같은 사건이므로 같은 ID가 맞다.
-    """
+def test_separate_reducers_create_separate_incident_lifecycles() -> None:
+    """독립된 실행이 생성한 새 사건은 같은 불투명 ID를 재사용하지 않는다."""
     ids = [
         InMemoryIncidentReducer()
-        .reduce(signal(episode_scoped_key(zone_id=1, vehicle=vehicle), matched=True, confirmable=True))
+        .reduce(signal(episode_scoped_key(zone_id=1), matched=True, confirmable=True))
         .incident.incident_id
-        for vehicle in ("pv-1", "pv-9")
+        for _ in range(2)
     ]
-    assert ids[0] == ids[1]
+    assert ids[0] != ids[1]
 
 
 def test_naive_datetime_is_rejected() -> None:

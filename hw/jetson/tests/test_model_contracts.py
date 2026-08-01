@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import UUID
 
 from src.actuators.models import ActuatorCommand
 from src.camera.models import CapturedFrame
-from src.communication.models import EntryContext
+from src.communication.models import EntryContext, MoveRequestId, ParkingEventId
 from src.parking.models import (
     AssignmentState,
+    IncidentId,
     ParkingAssignment,
+    ParkingEpisodeId,
     ParkingPipelineResult,
+    ZoneId,
+    ZoneVisitId,
 )
 from src.parking.rules.models import RuleContext
 from src.parking.zone_registry import ZoneRegistry
@@ -18,14 +23,22 @@ from src.sensors.models import SensorObservation
 from src.tracking.models import (
     BoundingBox,
     MotionSignal,
+    ParkingSessionId,
+    PhysicalVehicleId,
     PhysicalVehicleSnapshot,
+    TrackSegmentId,
     TrackingBatch,
+    VehicleId,
 )
 
 NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _make_snapshot(*, physical_vehicle_id: str = "veh-1", camera_id: str = "cam-1") -> PhysicalVehicleSnapshot:
+def _make_snapshot(
+    *,
+    physical_vehicle_id: PhysicalVehicleId = PhysicalVehicleId(UUID(int=1)),
+    camera_id: str = "cam-1",
+) -> PhysicalVehicleSnapshot:
     return PhysicalVehicleSnapshot(
         physical_vehicle_id=physical_vehicle_id,
         camera_id=camera_id,
@@ -70,16 +83,17 @@ class TestPhysicalVehicleSnapshotCameraId:
 class TestTrackingBatch:
     def test_batch_carries_vehicles_and_ended_ids(self):
         snapshot = _make_snapshot()
+        ended_id = PhysicalVehicleId(UUID(int=2))
         batch = TrackingBatch(
             camera_id="cam-1",
             frame_id=42,
             observed_at=NOW,
             vehicles=(snapshot,),
-            ended_vehicle_ids=("veh-0",),
+            ended_vehicle_ids=(ended_id,),
             source_available=True,
         )
         assert batch.vehicles == (snapshot,)
-        assert batch.ended_vehicle_ids == ("veh-0",)
+        assert batch.ended_vehicle_ids == (ended_id,)
 
     def test_source_unavailable_distinct_from_empty_vehicles(self):
         """카메라 장애(source_available=False)와 '차량이 없다'(빈 vehicles)는
@@ -95,13 +109,18 @@ class TestTrackingBatch:
 class TestParkingAssignment:
     def test_assigned_state_carries_zone_id(self):
         assignment = ParkingAssignment(
-            physical_vehicle_id="veh-1", state=AssignmentState.ASSIGNED, zone_id=7,
+            physical_vehicle_id=PhysicalVehicleId(UUID(int=1)),
+            state=AssignmentState.ASSIGNED,
+            zone_id=7,
         )
         assert assignment.state == AssignmentState.ASSIGNED
         assert assignment.zone_id == 7
 
     def test_ambiguous_state_has_no_zone_id(self):
-        assignment = ParkingAssignment(physical_vehicle_id="veh-1", state=AssignmentState.AMBIGUOUS)
+        assignment = ParkingAssignment(
+            physical_vehicle_id=PhysicalVehicleId(UUID(int=1)),
+            state=AssignmentState.AMBIGUOUS,
+        )
         assert assignment.zone_id is None
 
 
@@ -179,3 +198,16 @@ class TestEntryContext:
             session_id=None, duplicate_request=False,
         )
         assert context.vehicle_id is None
+
+
+def test_identifier_types_keep_domain_meanings_separate():
+    assert TrackSegmentId.__supertype__ is int
+    assert PhysicalVehicleId.__supertype__ is UUID
+    assert ParkingSessionId.__supertype__ is int
+    assert VehicleId.__supertype__ is int
+    assert ZoneId.__supertype__ is int
+    assert ZoneVisitId.__supertype__ is UUID
+    assert ParkingEpisodeId.__supertype__ is UUID
+    assert IncidentId.__supertype__ is UUID
+    assert ParkingEventId.__supertype__ is int
+    assert MoveRequestId.__supertype__ is int

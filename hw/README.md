@@ -78,3 +78,8 @@ Spring Backend
 | `tracking/` | 차량 탐지 및 추적 |
 | `scripts/` | 장치별 수동 테스트 스크립트 |
 | `tests/` | 자동 테스트 |
+
+## 식별자
+
+- 식별자의 의미·수명·생성 책임을 변경하거나 연동할 때는
+  [`docs/architecture/identifier-contract.md`](../docs/architecture/identifier-contract.md)를 먼저 확인한다.
