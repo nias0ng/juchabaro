@@ -283,7 +283,7 @@ class TestResolveScope:
     def test_is_a_noop_when_no_incident_matches_the_scope(self) -> None:
         """자격이 있어 애초에 사건이 안 생긴 방문이 닫혀도 아무 일도 안 난다."""
         reducer = InMemoryIncidentReducer()
-        transitions = reducer.resolve_scope(zone_visit_id=ZoneVisitId("visit-never-opened"), observed_at=T0)
+        transitions = reducer.resolve_scope(zone_visit_id=ZoneVisitId(UUID(int=999)), observed_at=T0)
         assert transitions == ()
 
     def test_drops_unconfirmed_candidate_silently(self) -> None:
@@ -322,7 +322,7 @@ class TestResolveScope:
         other_visit = IncidentKey(
             physical_vehicle_id=CAR,
             rule_code="DISABLED_ZONE_UNAUTHORIZED",
-            zone_visit_id=ZoneVisitId("visit-2"),
+            zone_visit_id=ZoneVisitId(UUID(int=102)),
             zone_id=ZoneId(13),
         )
         reducer.reduce(signal(this_visit, matched=True, confirmable=True))
