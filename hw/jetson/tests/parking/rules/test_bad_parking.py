@@ -22,8 +22,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from src.parking.geometry import NormalizedPolygon
+from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     AssignmentState,
+    IncidentTransitionType,
     ParkingAssignment,
     ParkingEpisode,
     ParkingEpisodeId,
@@ -249,3 +251,60 @@ def test_evidence_includes_parking_and_assignment_state() -> None:
     evidence = find(evaluate_open(context), OUT_OF_ZONE).evidence
     assert evidence["parkingState"] == "PARKED"
     assert evidence["assignmentState"] == "UNASSIGNED"
+
+
+def test_switching_classification_resolves_the_previous_code() -> None:
+    """AI 리뷰 제안(MR !141): 분류가 AISLE_BLOCK에서 BAD_PARKING으로 바뀌면
+    이전 코드는 실제로 RESOLVE되고 새 코드가 OPEN된다 — '선택 안 된 코드는
+    matched=False로 나간다'는 설계가 IncidentReducer와 함께 실제로
+    의도대로 동작하는지 확인한다(단일 evaluate_open() 호출 안에서의
+    matched 값만 보는 것과는 다른 검증)."""
+    reducer = InMemoryIncidentReducer()
+
+    aisle_context = make_context(
+        episode=make_episode(ParkingState.PARKED),
+        assignment=make_assignment(AssignmentState.ASSIGNED, zone_id=1),
+        active_zone_visits=(make_aisle_visit(),),
+        zones=[AISLE_ZONE],
+    )
+    first = [t for t in (reducer.reduce(s) for s in evaluate_open(aisle_context)) if t is not None]
+    assert {t.incident.key.rule_code for t in first} == {AISLE_BLOCK}
+    assert first[0].transition_type is IncidentTransitionType.OPEN
+
+    # 다음 프레임: 더 이상 AISLE을 막고 있지 않고, 배정이 AMBIGUOUS로 바뀐다.
+    ambiguous_context = make_context(
+        episode=make_episode(ParkingState.PARKED),
+        assignment=make_assignment(AssignmentState.AMBIGUOUS),
+    )
+    second = [t for t in (reducer.reduce(s) for s in evaluate_open(ambiguous_context)) if t is not None]
+
+    resolved = {t.incident.key.rule_code for t in second if t.transition_type is IncidentTransitionType.RESOLVE}
+    opened = {t.incident.key.rule_code for t in second if t.transition_type is IncidentTransitionType.OPEN}
+    assert resolved == {AISLE_BLOCK}
+    assert opened == {BAD_PARKING}
+
+
+def test_incident_stays_edge_confirmed_while_moving() -> None:
+    """AI 리뷰 제안(MR !141): PARKED에서 확정된 사건은 MOVING 프레임을
+    거쳐도 RESOLVE되지 않고 EDGE_CONFIRMED로 유지된다 — MOVING이 신호를
+    아예 안 내는 설계가 실제로 조기 해소를 막는지 IncidentReducer와
+    함께 확인한다."""
+    reducer = InMemoryIncidentReducer()
+
+    parked_context = make_context(
+        episode=make_episode(ParkingState.PARKED),
+        assignment=make_assignment(AssignmentState.AMBIGUOUS),
+    )
+    for signal in evaluate_open(parked_context):
+        reducer.reduce(signal)
+    assert {i.state.value for i in reducer.snapshot()} == {"EDGE_CONFIRMED"}
+
+    moving_context = make_context(
+        episode=make_episode(ParkingState.MOVING),
+        assignment=make_assignment(AssignmentState.UNASSIGNED),  # 실제로 이동해 위치가 바뀌었다고 가정
+    )
+    transitions = [reducer.reduce(s) for s in evaluate_open(moving_context)]
+
+    assert evaluate_open(moving_context) == ()  # MOVING은 애초에 신호를 안 낸다
+    assert all(t is None for t in transitions)
+    assert {i.state.value for i in reducer.snapshot()} == {"EDGE_CONFIRMED"}
