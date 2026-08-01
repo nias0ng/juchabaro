@@ -1,14 +1,18 @@
 import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { NotificationCard } from '@/features/notification/components/list/notification-card';
-import { NotificationTabs } from '@/features/notification/components/list/notification-tabs';
 import type { NotificationSummary } from '@/features/notification/api/types';
-import { useNotifications } from '@/features/notification/hooks/use-notifications';
+import { useNotifications, type NotificationTab } from '@/features/notification/hooks/use-notifications';
 import { Spacing } from '@/styles';
 
 import { styles } from './notifications-screen.styles';
+
+const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
+  { key: 'all', label: '전체' },
+  { key: 'moveRequest', label: '이동 요청' },
+];
 
 export default function NotificationsScreen() {
   const { notifications, isLoading, error, tab, setTab } = useNotifications();
@@ -37,7 +41,7 @@ export default function NotificationsScreen() {
         <ScreenHeader title="알림" showBackButton={false} />
 
         <Stack gap={Spacing.md} fill>
-          <NotificationTabs active={tab} onChange={setTab} />
+          <SegmentedControl options={TAB_OPTIONS} value={tab} onChange={setTab} />
 
           {statusMessage ? (
             <View style={styles.statusContainer}>

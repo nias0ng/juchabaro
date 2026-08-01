@@ -11,6 +11,7 @@ export * from './main-icon';
 export * from './responsive-container';
 export * from './screen';
 export * from './screen-header';
+export * from './segmented-control';
 export * from './stack';
 export * from './text-field';
 export * from './themed-text';

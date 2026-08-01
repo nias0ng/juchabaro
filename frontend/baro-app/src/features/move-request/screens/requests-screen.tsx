@@ -2,14 +2,15 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestListItemDisplay } from '@/features/move-request/utils/move-request';
 import { Spacing } from '@/styles';
 
 import { RequestListCard } from '../components/requests-list/request-list-card';
-import { RequestsTabSelector, type RequestsScope } from '../components/requests-list/requests-tab-selector';
 import { styles } from './requests-screen.styles';
+
+export type RequestsScope = 'SENT' | 'RECEIVED';
 
 export default function RequestsScreen() {
   const [scope, setScope] = useState<RequestsScope>('SENT');
@@ -17,6 +18,11 @@ export default function RequestsScreen() {
   const receivedQuery = useMoveRequests('RECEIVED');
   const currentQuery = scope === 'SENT' ? sentQuery : receivedQuery;
   const items = currentQuery.moveRequests.map(toRequestListItemDisplay);
+
+  const scopeOptions: { key: RequestsScope; label: string }[] = [
+    { key: 'SENT', label: `보낸 요청 ${sentQuery.moveRequests.length}` },
+    { key: 'RECEIVED', label: `받은 요청 ${receivedQuery.moveRequests.length}` },
+  ];
 
   const statusMessage = currentQuery.isLoading
     ? '이동 요청을 불러오는 중입니다'
@@ -38,12 +44,7 @@ export default function RequestsScreen() {
         <ScreenHeader title="요청" showBackButton={false} />
 
         <Stack gap={Spacing.md}>
-          <RequestsTabSelector
-            value={scope}
-            onChange={setScope}
-            sentCount={sentQuery.moveRequests.length}
-            receivedCount={receivedQuery.moveRequests.length}
-          />
+          <SegmentedControl options={scopeOptions} value={scope} onChange={setScope} />
 
           {statusMessage ? (
             <View style={styles.emptyContainer}>
