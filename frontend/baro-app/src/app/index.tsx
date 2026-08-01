@@ -5,7 +5,7 @@ import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
 
 export default function IndexScreen() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
 
   if (status === 'loading') {
     return (
@@ -15,7 +15,9 @@ export default function IndexScreen() {
     );
   }
 
-  return <Redirect href={status === 'authenticated' ? '/resident' : '/auth'} />;
+  const isResident = status === 'authenticated' && user?.role === 'RESIDENT';
+
+  return <Redirect href={isResident ? '/resident' : '/auth'} />;
 }
 
 const styles = StyleSheet.create({

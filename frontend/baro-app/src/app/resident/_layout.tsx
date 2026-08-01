@@ -49,7 +49,7 @@ function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
   - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/알림/내정보/차량 등)에 들어올 수 없다.
 */
 export default function ResidentLayout() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
 
   // 세션 복원이 끝나기 전에는 guest로 단정할 수 없으므로 로딩 상태로 대기한다.
   if (status === 'loading') {
@@ -62,6 +62,10 @@ export default function ResidentLayout() {
 
   if (status === 'guest') {
     return <Redirect href="/auth/login" />;
+  }
+
+  if (user?.role !== 'RESIDENT') {
+    return <Redirect href="/auth" />;
   }
 
   return (
