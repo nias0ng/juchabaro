@@ -27,14 +27,10 @@ rpi_stub = ModuleType("RPi")
 rpi_stub.__path__ = []
 rpi_stub.GPIO = gpio_stub
 
-with patch.dict(
-    sys.modules,
-    {
-        "RPi": rpi_stub,
-        "RPi.GPIO": gpio_stub,
-    },
-):
-    from src import main as main_module
+sys.modules["RPi"] = rpi_stub
+sys.modules["RPi.GPIO"] = gpio_stub
+
+from src import main as main_module
 
 from src.camera.entry_camera import (
     CameraInitializationError,
