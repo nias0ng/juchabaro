@@ -63,3 +63,16 @@ CAPTURE_RETRY_DELAY_SECONDS: Final[float] = 0.2
 
 # 최초 촬영 실패 후 수행할 전체 재촬영 횟수
 CAPTURE_RETRY_COUNT: Final[int] = 1
+
+
+# [OCR 설정]
+
+OCR_DETECTOR_MODEL_PATH: Final[Path] = Path(
+    "/home/e202/models/plate_detector/bestv1_1.pt"
+)
+OCR_RECOGNIZER_MODEL_DIR: Final[Path] = Path(
+    "/home/e202/models/plate_recognizer"
+)
+
+OCR_DEVICE: Final[str] = "cpu"
+OCR_WARMUP_ENABLED: Final[bool] = True
