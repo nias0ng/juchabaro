@@ -1,4 +1,5 @@
 rpi-lgpio
+python-dotenv==1.2.2
 
 # OCR / vision runtime
 numpy==2.3.5
