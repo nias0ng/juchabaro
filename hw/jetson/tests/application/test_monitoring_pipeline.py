@@ -16,6 +16,7 @@ from src.communication.models import EntryContext
 from src.communication.outbox import JsonlOutbox
 from src.parking.geometry import NormalizedPolygon
 from src.parking.incident_reducer import InMemoryIncidentReducer
+from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
 from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
@@ -112,8 +113,12 @@ def build_pipeline(detector: ScriptedDetector, frame_source: FakeFrameSource, ou
     parking_pipeline = ParkingPipeline(
         zones=ZoneRegistry([DISABLED_ZONE]),
         zone_visit_tracker=InMemoryZoneVisitTracker(entry_confirm_seconds=1.0, exit_confirm_seconds=1.0),
+        parking_episode_tracker=InMemoryParkingEpisodeTracker(
+            parked_after_seconds=600.0, move_confirm_seconds=60.0
+        ),
         incident_reducer=InMemoryIncidentReducer(),
         min_overlap_ratio=0.5,
+        ambiguous_margin=0.1,
     )
     outbox = JsonlOutbox(outbox_path)
     return MonitoringPipeline(
@@ -216,8 +221,12 @@ def test_monitoring_pipeline_forwards_confirmed_transitions_to_outbox(tmp_path):
     parking_pipeline = ParkingPipeline(
         zones=ZoneRegistry([DISABLED_ZONE]),
         zone_visit_tracker=InMemoryZoneVisitTracker(entry_confirm_seconds=1.0, exit_confirm_seconds=1.0),
+        parking_episode_tracker=InMemoryParkingEpisodeTracker(
+            parked_after_seconds=600.0, move_confirm_seconds=60.0
+        ),
         incident_reducer=InMemoryIncidentReducer(),
         min_overlap_ratio=0.5,
+        ambiguous_margin=0.1,
     )
     outbox_path = tmp_path / "outbox.jsonl"
     pipeline = MonitoringPipeline(
@@ -280,8 +289,12 @@ def test_vehicle_matched_via_real_context_matcher_reaches_outbox_end_to_end(tmp_
     parking_pipeline = ParkingPipeline(
         zones=ZoneRegistry([DISABLED_ZONE, ENTRY_ZONE]),
         zone_visit_tracker=InMemoryZoneVisitTracker(entry_confirm_seconds=1.0, exit_confirm_seconds=1.0),
+        parking_episode_tracker=InMemoryParkingEpisodeTracker(
+            parked_after_seconds=600.0, move_confirm_seconds=60.0
+        ),
         incident_reducer=InMemoryIncidentReducer(),
         min_overlap_ratio=0.5,
+        ambiguous_margin=0.1,
     )
     outbox_path = tmp_path / "outbox.jsonl"
     pipeline = MonitoringPipeline(

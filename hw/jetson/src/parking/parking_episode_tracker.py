@@ -27,14 +27,37 @@ ZoneVisitTracker는 사라진 차량에 ABSENT를 계속 먹이면 이탈 확인
 카메라 장애(`source_available=False`)에만 써야 한다 — "이 차량이 이번
 프레임에 없었다"는 의미로 UNKNOWN을 먹이면 사건이 영원히 열린 채 남는다.
 
-**규칙이 상태별로 무엇을 내야 하는가** (T-12 `bad_parking` 구현자를 위한 계약):
+**규칙이 상태별로 무엇을 내야 하는가** (T-12 `bad_parking` 구현자를 위한 계약,
+463에서 MOVING·ENDED 행을 정정 — 아래 참고):
 
 | 에피소드 상태 | 규칙이 낼 신호 | 이유 |
 |---|---|---|
-| `STOP_PENDING` | `matched=True, confirmable=False` | 후보. 아직 주차가 아니다 |
+| `STOP_PENDING` | `matched=True, confirmable=False` | 후보. 아직 주차가 아니다. bbox가 안정적이라 재분류가 안전하다 |
 | `PARKED` | `matched=True, confirmable=True` | 확정 |
-| `MOVING` | `matched=True, confirmable=True` | 이동이 아직 미확인이다. 여기서 해소하면 되돌아올 때 사건이 다시 열려 깜빡인다 |
-| `ENDED` | `matched=False` | 해소. 이 신호가 있어야 `IncidentReducer`가 `RESOLVE`를 만든다 |
+| `MOVING` | 규칙을 아예 거치지 않는다 | 아래 참고 |
+| `ENDED` | 규칙을 아예 거치지 않는다 | 아래 참고 |
+
+**MOVING·ENDED는 규칙이 아니라 조립자가 처리한다(463, `resolve_scope`류의
+446 교훈을 선제 적용).**
+
+ENDED는 조립자가 `IncidentReducer.resolve_episode_scope(parking_episode_id)`를
+직접 호출해 해소한다 — 그 시점의 차량 위치로 rule_code(BAD_PARKING/
+OUT_OF_ZONE/AISLE_BLOCK 중 무엇이었는지)를 재판정해야 하는데, 차량은
+이미 이동 중이라 원래와 다른 rule_code가 나올 수 있고, 추적이 아예
+끊겨 `prune()`이 강제 종료한 경우엔 `RuleContext.vehicle`을 채울 스냅샷
+자체가 없기 때문이다. `resolve_episode_scope`는 이미 기록된 rule_code를
+재사용해 닫으므로 이 문제가 없다.
+
+이 표는 원래 MOVING에서도 규칙이 `matched=True, confirmable=True`를
+내라고 했었다(깜빡임 방지 의도). 하지만 MOVING은 "이동이 실제로 진행
+중"이라는 뜻이라 매 프레임 bbox가 달라진다 — 그대로 재분류하면 두
+스팟에 걸쳐(AMBIGUOUS) BAD_PARKING이던 차량이 이동하며 다른 구역을
+지나가는 순간 분류가 바뀌어 `matched=False`가 나가고, 에피소드가 아직
+ENDED로 확정되지도 않았는데 원래 사건이 조기에 RESOLVE된다. 그래서
+조립자는 MOVING에서 규칙을 아예 안 부르고 기존 EDGE_CONFIRMED 사건을
+그대로 둔다 — 깜빡임 방지라는 원래 의도는 그대로 지키면서 조기 해소
+위험만 없앤다. `bad_parking.evaluate_open()`은 STOP_PENDING/PARKED
+두 상태만 다룬다.
 
 `active_episode()`는 `ZoneVisitTracker.active_visits()`와 달리 네 상태를 전혀
 걸러내지 않는다 — 규칙 구현자가 이 표를 보고 직접 판단해야 한다.

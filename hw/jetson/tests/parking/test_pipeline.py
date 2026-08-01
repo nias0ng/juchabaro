@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from src.parking.geometry import NormalizedPolygon
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import IncidentState, IncidentTransitionType
+from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
 from src.parking.zone_registry import ParkingZone, ZoneRegistry, ZoneType
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
@@ -53,14 +54,31 @@ UNAUTHORIZED = VehicleContext(
 )
 
 
-def make_pipeline(*, zones=(DISABLED_ZONE,), entry=1.0, exit_=1.0, stale=300.0, min_overlap=0.5) -> ParkingPipeline:
+def make_pipeline(
+    *,
+    zones=(DISABLED_ZONE,),
+    entry=1.0,
+    exit_=1.0,
+    stale=300.0,
+    min_overlap=0.5,
+    parked_after=600.0,
+    move_confirm=60.0,
+    episode_stale=900.0,
+    ambiguous_margin=0.1,
+) -> ParkingPipeline:
     return ParkingPipeline(
         zones=ZoneRegistry(list(zones)),
         zone_visit_tracker=InMemoryZoneVisitTracker(
             entry_confirm_seconds=entry, exit_confirm_seconds=exit_, stale_after_seconds=stale
         ),
+        parking_episode_tracker=InMemoryParkingEpisodeTracker(
+            parked_after_seconds=parked_after,
+            move_confirm_seconds=move_confirm,
+            stale_after_seconds=episode_stale,
+        ),
         incident_reducer=InMemoryIncidentReducer(),
         min_overlap_ratio=min_overlap,
+        ambiguous_margin=ambiguous_margin,
     )
 
 
@@ -247,8 +265,13 @@ def test_ev_overstay_opens_after_allowed_minutes_then_resolves_on_exit():
     """T-11/450: EV구역 점유가 allowed_minutes(60분)를 넘기면 OPEN, 이탈하면
     RESOLVE — restricted_zone과 나란히 배선된 ev_overstay 규칙을 pipeline
     레벨에서 확인한다. 전기차로 자격을 갖춘 차량이라 EV_ZONE_UNAUTHORIZED는
-    성립하지 않고, EV_OVERSTAY만 점유 시간으로 판단된다."""
-    pipeline = make_pipeline(zones=(EV_ZONE,))
+    성립하지 않고, EV_OVERSTAY만 점유 시간으로 판단된다.
+
+    parked_after를 넉넉히 크게 준다 — 기본값(600초)이면 이 테스트의 61분짜리
+    정지가 도중에 PARKED로 확정되고, 이탈(OUTSIDE_BBOX)하는 순간
+    assignment_resolver가 UNASSIGNED를 내 bad_parking(463)의 OUT_OF_ZONE이
+    같이 열려 이 테스트가 ev_overstay만 격리해서 보려는 목적과 어긋난다."""
+    pipeline = make_pipeline(zones=(EV_ZONE,), parked_after=10_000.0)
     electric = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=False)
 
     r0 = pipeline.process(batch(snapshot(at=T0, context=electric), at=T0))
@@ -296,6 +319,98 @@ def test_ev_overstay_never_confirms_without_allowed_minutes():
     r = pipeline.process(batch(snapshot(at=long_after, context=electric), at=long_after))
 
     assert r.incident_transitions == ()
+
+
+def test_bad_parking_opens_when_parked_ambiguously_then_resolves_on_departure():
+    """T-12/463: 두 스팟에 동시에 걸쳐(AMBIGUOUS) 정지 상태가 확정
+    (parked_after 경과)되면 BAD_PARKING이 열리고, 이동이 확인(move_confirm
+    경과)되면 에피소드가 ENDED로 닫히면서 resolve_episode_scope로
+    해소된다 — 규칙을 다시 부르지 않는다."""
+    pipeline = make_pipeline(
+        zones=(DISABLED_ZONE, EV_ZONE), parked_after=600.0, move_confirm=60.0
+    )
+    qualified = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=True)
+
+    pipeline.process(batch(snapshot(at=T0, context=qualified), at=T0))
+    parked_at = T0 + timedelta(seconds=600)
+    r1 = pipeline.process(batch(snapshot(at=parked_at, context=qualified), at=parked_at))
+    bad_parking_opens = [
+        t for t in r1.incident_transitions if t.incident.key.rule_code == "BAD_PARKING"
+    ]
+    assert [t.transition_type for t in bad_parking_opens] == [IncidentTransitionType.OPEN]
+
+    moving_started_at = parked_at + timedelta(seconds=1)
+    pipeline.process(
+        batch(snapshot(at=moving_started_at, context=qualified, motion=MotionSignal.MOVING), at=moving_started_at)
+    )
+    ended_at = moving_started_at + timedelta(seconds=60)
+    r2 = pipeline.process(
+        batch(snapshot(at=ended_at, context=qualified, motion=MotionSignal.MOVING), at=ended_at)
+    )
+    bad_parking_resolves = [
+        t for t in r2.incident_transitions if t.incident.key.rule_code == "BAD_PARKING"
+    ]
+    assert [t.transition_type for t in bad_parking_resolves] == [IncidentTransitionType.RESOLVE]
+    assert bad_parking_resolves[0].incident.incident_id == bad_parking_opens[0].incident.incident_id
+
+
+def test_bad_parking_out_of_zone_when_parked_without_a_spot():
+    """어느 스팟에도 걸치지 않은 채 정지가 확정되면 OUT_OF_ZONE이 열린다."""
+    pipeline = make_pipeline(zones=(DISABLED_ZONE,), parked_after=600.0)
+
+    pipeline.process(batch(snapshot(bbox=OUTSIDE_BBOX, at=T0), at=T0))
+    parked_at = T0 + timedelta(seconds=600)
+    r = pipeline.process(batch(snapshot(bbox=OUTSIDE_BBOX, at=parked_at), at=parked_at))
+
+    out_of_zone = [t for t in r.incident_transitions if t.incident.key.rule_code == "OUT_OF_ZONE"]
+    assert [t.transition_type for t in out_of_zone] == [IncidentTransitionType.OPEN]
+
+
+def test_bad_parking_aisle_block_takes_priority_over_assignment():
+    """통행로(AISLE)를 막고 정지가 확정되면 배정 상태와 무관하게
+    AISLE_BLOCK이 열린다."""
+    aisle_zone = ParkingZone(
+        zone_id=5,
+        zone_number="A-01",
+        zone_type=ZoneType.AISLE,
+        polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+    )
+    pipeline = make_pipeline(zones=(aisle_zone,), parked_after=600.0)
+
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    parked_at = T0 + timedelta(seconds=600)
+    r = pipeline.process(batch(snapshot(at=parked_at), at=parked_at))
+
+    aisle_block = [t for t in r.incident_transitions if t.incident.key.rule_code == "AISLE_BLOCK"]
+    assert [t.transition_type for t in aisle_block] == [IncidentTransitionType.OPEN]
+
+
+def test_bad_parking_resolves_via_prune_after_track_loss():
+    """추적이 끊긴 차량도(다음 배치에 없음) 에피소드 유휴 한도를 넘기면
+    prune()이 강제 종료하고, resolve_episode_scope로 해소된다 — 규칙도
+    스냅샷도 필요 없다(zone_visit 쪽 446 교훈과 동일한 구조, 463)."""
+    pipeline = make_pipeline(
+        zones=(DISABLED_ZONE, EV_ZONE), parked_after=600.0, episode_stale=5.0
+    )
+    qualified = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=True)
+
+    pipeline.process(batch(snapshot(at=T0, context=qualified), at=T0))
+    parked_at = T0 + timedelta(seconds=600)
+    r1 = pipeline.process(batch(snapshot(at=parked_at, context=qualified), at=parked_at))
+    bad_parking_opens = [
+        t for t in r1.incident_transitions if t.incident.key.rule_code == "BAD_PARKING"
+    ]
+    assert [t.transition_type for t in bad_parking_opens] == [IncidentTransitionType.OPEN]
+
+    # 차량이 다음 배치부터 아예 안 보인다 — 관측이 뚝 끊김.
+    lost_at = parked_at + timedelta(seconds=10)
+    r2 = pipeline.process(batch(at=lost_at))
+
+    bad_parking_resolves = [
+        t for t in r2.incident_transitions if t.incident.key.rule_code == "BAD_PARKING"
+    ]
+    assert [t.transition_type for t in bad_parking_resolves] == [IncidentTransitionType.RESOLVE]
+    assert bad_parking_resolves[0].incident.incident_id == bad_parking_opens[0].incident.incident_id
 
 
 def test_ended_vehicle_that_never_visited_a_zone_produces_no_transitions():
