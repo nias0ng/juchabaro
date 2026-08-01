@@ -335,6 +335,121 @@ class TestResolveScope:
         assert states[other_visit.zone_visit_id] is IncidentState.EDGE_CONFIRMED
 
 
+class TestResolveEpisodeScope:
+    """`resolve_episode_scope` — parking_episode_id만으로 해소한다(463,
+    resolve_scope와 같은 이유).
+
+    `bad_parking`은 ParkingEpisode가 ENDED로 전이할 때 matched=False를
+    내야 하는데, 그 시점엔 차량이 이미 이동 중이거나(현재 위치를 다시 계산하면
+    원래와 다른 rule_code가 나올 수 있음) 추적이 아예 끊겨 있을 수 있다
+    (`RuleContext.vehicle`을 채울 스냅샷 자체가 없음). "에피소드가 끝났다"는
+    사실 자체가 해소 사유이므로, 이미 기록된 rule_code를 재사용해 닫는다.
+    """
+
+    def test_closes_the_incident_scoped_to_the_parking_episode_id(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = episode_key()
+        opened = reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        transitions = reducer.resolve_episode_scope(
+            parking_episode_id=key.parking_episode_id, observed_at=at(10)
+        )
+
+        assert len(transitions) == 1
+        assert transitions[0].transition_type is IncidentTransitionType.RESOLVE
+        assert transitions[0].incident.incident_id == opened.incident.incident_id
+        assert transitions[0].incident.resolved_at == at(10)
+
+    def test_does_not_need_rule_code_to_resolve(self) -> None:
+        """rule_code를 몰라도(차량이 이동해 현재 위치로는 재구성 못 해도)
+        parking_episode_id만 있으면 해소된다 — 이 테스트의 핵심 목적이다."""
+        reducer = InMemoryIncidentReducer()
+        key = episode_key(rule_code="OUT_OF_ZONE")
+        reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        transitions = reducer.resolve_episode_scope(
+            parking_episode_id=key.parking_episode_id, observed_at=at(10)
+        )
+
+        assert len(transitions) == 1
+        assert transitions[0].incident.key.rule_code == "OUT_OF_ZONE"
+
+    def test_is_a_noop_when_no_incident_matches_the_scope(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        transitions = reducer.resolve_episode_scope(
+            parking_episode_id=ParkingEpisodeId(UUID(int=999)), observed_at=T0
+        )
+        assert transitions == ()
+
+    def test_drops_unconfirmed_candidate_silently(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = episode_key()
+        reducer.reduce(signal(key, matched=True, confirmable=False))
+
+        transitions = reducer.resolve_episode_scope(
+            parking_episode_id=key.parking_episode_id, observed_at=at(5)
+        )
+
+        assert transitions == ()
+        assert reducer.snapshot() == ()
+
+    def test_is_idempotent(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = episode_key()
+        reducer.reduce(signal(key, matched=True, confirmable=True))
+
+        first = reducer.resolve_episode_scope(parking_episode_id=key.parking_episode_id, observed_at=at(10))
+        second = reducer.resolve_episode_scope(parking_episode_id=key.parking_episode_id, observed_at=at(11))
+
+        assert len(first) == 1
+        assert second == ()
+
+    def test_rejects_backward_observation(self) -> None:
+        reducer = InMemoryIncidentReducer()
+        key = episode_key()
+        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
+
+        with pytest.raises(ValueError, match="과거"):
+            reducer.resolve_episode_scope(parking_episode_id=key.parking_episode_id, observed_at=at(5))
+
+    def test_only_resolves_incidents_in_the_matching_scope(self) -> None:
+        """다른 parking_episode_id로 열린 사건은 건드리지 않는다."""
+        reducer = InMemoryIncidentReducer()
+        this_episode = episode_key()
+        other_episode = IncidentKey(
+            physical_vehicle_id=CAR,
+            rule_code="OUT_OF_ZONE",
+            parking_episode_id=ParkingEpisodeId(UUID(int=202)),
+            zone_id=ZoneId(13),
+        )
+        reducer.reduce(signal(this_episode, matched=True, confirmable=True))
+        reducer.reduce(signal(other_episode, matched=True, confirmable=True))
+
+        reducer.resolve_episode_scope(
+            parking_episode_id=this_episode.parking_episode_id, observed_at=at(10)
+        )
+
+        states = {
+            incident.key.parking_episode_id: incident.state for incident in reducer.snapshot()
+        }
+        assert states[this_episode.parking_episode_id] is IncidentState.RESOLVED
+        assert states[other_episode.parking_episode_id] is IncidentState.EDGE_CONFIRMED
+
+    def test_does_not_resolve_zone_visit_scoped_incidents(self) -> None:
+        """parking_episode_id 스코프 해소는 zone_visit_id로 열린 사건(예:
+        restricted_zone)을 건드리면 안 된다 — 두 스코프는 독립이다."""
+        reducer = InMemoryIncidentReducer()
+        zone_visit_scoped = visit_key()
+        reducer.reduce(signal(zone_visit_scoped, matched=True, confirmable=True))
+
+        transitions = reducer.resolve_episode_scope(
+            parking_episode_id=ParkingEpisodeId(UUID(int=999)), observed_at=at(10)
+        )
+
+        assert transitions == ()
+        assert reducer.snapshot()[0].state is IncidentState.EDGE_CONFIRMED
+
+
 def test_evidence_is_carried_into_incident_snapshot() -> None:
     reducer = InMemoryIncidentReducer()
     sig = IncidentSignal(

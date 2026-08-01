@@ -14,6 +14,13 @@ rule_code를 재구성할 수 없어 해소 자체가 조용히 생략된다. �
 다시 판정할 문제가 아니다. `resolve_scope`는 이미 기록된 `Incident.key`를
 그대로 재사용해 `zone_visit_id`만으로 찾아 닫으므로, 규칙 쪽이 무엇이었는지
 다시 알아낼 필요가 없다.
+
+**`resolve_episode_scope`(463)도 같은 이유로 존재한다.** `bad_parking`이
+`ParkingEpisode`의 `ENDED` 전이에서 해소하려면, 그 시점엔 차량이 이미
+이동 중이라 현재 위치로 rule_code(BAD_PARKING/OUT_OF_ZONE/AISLE_BLOCK)를
+다시 판정하면 원래와 다른 값이 나올 수 있고, 추적이 아예 끊긴 경우엔
+`RuleContext.vehicle`을 채울 스냅샷조차 없다. `parking_episode_id`만으로
+찾아 닫으면 이 문제가 사라진다.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from src.parking.models import (
     IncidentState,
     IncidentTransition,
     IncidentTransitionType,
+    ParkingEpisodeId,
     ZoneVisitId,
 )
 from src.parking.time_guard import ensure_forward_observation
@@ -69,6 +77,16 @@ class IncidentReducer(Protocol):
         """이 zone_visit_id를 스코프로 하는 열린 사건을 전부 해소한다.
 
         rule_code를 몰라도 된다 — 이미 기록된 사건의 rule_code를 그대로 쓴다.
+        """
+
+        ...
+
+    def resolve_episode_scope(
+        self, *, parking_episode_id: ParkingEpisodeId, observed_at: datetime
+    ) -> tuple[IncidentTransition, ...]:
+        """이 parking_episode_id를 스코프로 하는 열린 사건을 전부 해소한다.
+
+        `resolve_scope`의 에피소드 버전이다 — rule_code를 몰라도 된다.
         """
 
         ...
@@ -123,6 +141,32 @@ class InMemoryIncidentReducer:
         transitions: list[IncidentTransition] = []
         # 순회 중 삭제(CANDIDATE 정리)가 있어 키를 먼저 스냅샷 뜬다.
         scoped_keys = [key for key in self._incidents if key.zone_visit_id == zone_visit_id]
+        for key in scoped_keys:
+            current = self._incidents[key]
+            ensure_forward_observation(observed_at, _latest_timestamp(current))
+            transition = self._resolve_incident(key, current, observed_at)
+            if transition is not None:
+                transitions.append(transition)
+        return tuple(transitions)
+
+    def resolve_episode_scope(
+        self, *, parking_episode_id: ParkingEpisodeId, observed_at: datetime
+    ) -> tuple[IncidentTransition, ...]:
+        """이 parking_episode_id를 스코프로 하는 열린 사건을 전부 해소한다.
+
+        `bad_parking`은 `ParkingEpisode`가 `ENDED`로 전이할 때 이 메서드로
+        해소한다 — 그 시점엔 차량이 이미 이동 중이거나 추적이 끊겨 있어
+        현재 위치로 rule_code(BAD_PARKING/OUT_OF_ZONE/AISLE_BLOCK)를 다시
+        판정할 수 없다. `resolve_scope`(zone_visit_id)와 같은 이유로,
+        이미 기록된 `Incident.key`를 그대로 재사용해 찾아서 닫는다.
+
+        이 parking_episode_id로 열린 사건이 없으면 빈 튜플을 반환한다.
+        """
+
+        transitions: list[IncidentTransition] = []
+        scoped_keys = [
+            key for key in self._incidents if key.parking_episode_id == parking_episode_id
+        ]
         for key in scoped_keys:
             current = self._incidents[key]
             ensure_forward_observation(observed_at, _latest_timestamp(current))
