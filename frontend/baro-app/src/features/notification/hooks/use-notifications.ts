@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { getNotifications } from '@/features/notification/api/notification-api';
 import type { NotificationSummary } from '@/features/notification/api/types';
@@ -16,8 +16,6 @@ export function useNotifications() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [tab, setTab] = useState<NotificationTab>('all');
-  // Notification 엔티티에 읽음 여부 필드가 없어 로컬 상태로만 처리한다(새로고침하면 전부 안읽음으로 초기화).
-  const [readIds, setReadIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (status !== 'authenticated' || !accessToken) {
@@ -56,24 +54,11 @@ export function useNotifications() {
     [notifications, tab],
   );
 
-  const isUnread = useCallback((notificationId: number) => !readIds.has(notificationId), [readIds]);
-
-  const markAsRead = useCallback((notificationId: number) => {
-    setReadIds((prev) => (prev.has(notificationId) ? prev : new Set(prev).add(notificationId)));
-  }, []);
-
-  const markAllAsRead = useCallback(() => {
-    setReadIds(new Set(notifications.map((item) => item.notificationId)));
-  }, [notifications]);
-
   return {
     notifications: filteredNotifications,
     isLoading,
     error,
     tab,
     setTab,
-    isUnread,
-    markAsRead,
-    markAllAsRead,
   };
 }
