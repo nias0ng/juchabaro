@@ -126,6 +126,50 @@ def test_occupancy_over_allowed_minutes_is_confirmable() -> None:
     assert find(signals, 1).confirmable is True
 
 
+def test_fractional_allowed_minutes_is_respected() -> None:
+    """allowed_minutes가 정수가 아니어도(예: 1.5분) 경계 비교가 그대로 맞는다."""
+    zone = make_zone(1, ZoneType.EV_FAST, allowed_minutes=1.5)
+
+    under = evaluate_open(make_context(
+        [zone], [make_visit(1)], observed_at=T0 + timedelta(minutes=1.4)
+    ))
+    over = evaluate_open(make_context(
+        [zone], [make_visit(1)], observed_at=T0 + timedelta(minutes=1.6)
+    ))
+
+    assert find(under, 1).confirmable is False
+    assert find(over, 1).confirmable is True
+
+
+def test_zero_allowed_minutes_confirms_immediately() -> None:
+    """allowed_minutes=0은 zone_registry 파싱 경로에서는 거부되지만(양수 필수),
+    ParkingZone을 직접 생성하는 경로(테스트, 향후 다른 구역 소스)에는 그
+    검증이 없다. 이 규칙은 별도로 막지 않으므로 0이면 진입 즉시(경과 0분에도
+    0 이상이라) 확정된다는 실제 동작을 고정해 둔다."""
+    signals = evaluate_open(make_context(
+        [make_zone(1, ZoneType.EV_FAST, allowed_minutes=0.0)],
+        [make_visit(1)],
+        observed_at=T0,
+    ))
+    assert find(signals, 1).confirmable is True
+
+
+def test_two_ev_zones_with_different_allowed_minutes_are_independent() -> None:
+    """서로 다른 allowed_minutes를 가진 두 EV구역에 동시에 방문 중이면, 같은
+    경과 시간에도 각 구역의 기준으로 독립적으로 판정된다(AI 리뷰 제안,
+    MR !136)."""
+    signals = evaluate_open(make_context(
+        [
+            make_zone(1, ZoneType.EV_FAST, allowed_minutes=30.0),
+            make_zone(2, ZoneType.EV_SLOW, allowed_minutes=90.0),
+        ],
+        [make_visit(1), make_visit(2)],
+        observed_at=T0 + timedelta(minutes=60),
+    ))
+    assert find(signals, 1).confirmable is True
+    assert find(signals, 2).confirmable is False
+
+
 def test_missing_allowed_minutes_is_never_confirmable() -> None:
     """구역에 allowed_minutes가 설정돼 있지 않으면 아무리 오래 있어도 확정하지 않는다."""
     signals = evaluate_open(make_context(
