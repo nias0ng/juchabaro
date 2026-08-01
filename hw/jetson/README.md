@@ -2,6 +2,15 @@
 
 주차장 내부 영상 분석, 현장 장치 제어 및 Backend 통신을 담당한다.
 
+## 구현 전 필수 참조
+
+`hw/jetson`의 도메인 모델, 상태 전이, 저장 구조 또는 식별자 관련 코드를 수정하기 전에 다음 문서를 확인한다.
+
+- [Jetson 도메인 설계](../../docs/architecture/jetson/README.md)
+- [식별자 수명 및 매핑 계약](../../docs/architecture/identifier-contract.md)
+
+위 문서는 목표 계약을 설명하는 Draft이며 현재 구현 상태를 나타내는 inventory가 아니다. 코드와 문서가 충돌하면 임의로 한쪽에 맞추지 말고 차이를 먼저 확인한다. 후속 계약으로 남겨진 API·DTO·wire mapping은 추정해서 구현하지 않는다.
+
 ## 실행 환경
 
 - Python 3.10.12
