@@ -58,6 +58,15 @@ export function postJson<T>(path: string, data: unknown, accessToken?: string): 
   });
 }
 
+// 일부 필드만 변경하는 API에 사용한다. 전달하지 않은 필드는 서버에서 기존 값을 유지한다.
+export function patchJson<T>(path: string, data: unknown, accessToken: string): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
 // 이미지 등 파일 업로드가 필요한 POST. multipart/form-data로 보낸다.
 export function postForm<T>(path: string, data: FormData, accessToken?: string): Promise<T> {
   return request<T>(path, {

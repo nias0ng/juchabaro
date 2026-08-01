@@ -1,13 +1,15 @@
-import { Modal, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
 
 import { TextField } from '@/components/ui';
+import { Palette } from '@/styles';
 
 import { styles } from './account-withdrawal-modal.styles';
 
 type AccountWithdrawalModalProps = {
   visible: boolean;
   currentPassword: string;
-  noticeMessage?: string;
+  isSubmitting: boolean;
+  errorMessage?: string;
   onChangeCurrentPassword: (value: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -16,7 +18,8 @@ type AccountWithdrawalModalProps = {
 export function AccountWithdrawalModal({
   visible,
   currentPassword,
-  noticeMessage,
+  isSubmitting,
+  errorMessage,
   onChangeCurrentPassword,
   onCancel,
   onConfirm,
@@ -24,7 +27,12 @@ export function AccountWithdrawalModal({
   const canConfirm = currentPassword.length > 0;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={isSubmitting ? undefined : onCancel}
+    >
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <View style={styles.iconCircle}>
@@ -45,29 +53,35 @@ export function AccountWithdrawalModal({
             placeholder="현재 비밀번호를 입력해 주세요"
           />
 
-          {noticeMessage ? (
+          {errorMessage ? (
             <View style={styles.notice}>
-              <Text style={styles.noticeText}>{noticeMessage}</Text>
+              <Text style={styles.noticeText}>{errorMessage}</Text>
             </View>
           ) : null}
 
           <View style={styles.actions}>
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ disabled: !canConfirm }}
-              disabled={!canConfirm}
+              accessibilityState={{ disabled: !canConfirm || isSubmitting, busy: isSubmitting }}
+              disabled={!canConfirm || isSubmitting}
               style={({ pressed }) => [
                 styles.withdrawButton,
                 pressed && styles.withdrawButtonPressed,
-                !canConfirm && styles.buttonDisabled,
+                (!canConfirm || isSubmitting) && styles.buttonDisabled,
               ]}
               onPress={onConfirm}
             >
-              <Text style={styles.withdrawButtonText}>회원 탈퇴</Text>
+              {isSubmitting ? (
+                <ActivityIndicator color={Palette.white} />
+              ) : (
+                <Text style={styles.withdrawButtonText}>회원 탈퇴</Text>
+              )}
             </Pressable>
 
             <Pressable
               accessibilityRole="button"
+              accessibilityState={{ disabled: isSubmitting }}
+              disabled={isSubmitting}
               style={({ pressed }) => [styles.cancelButton, pressed && styles.cancelButtonPressed]}
               onPress={onCancel}
             >

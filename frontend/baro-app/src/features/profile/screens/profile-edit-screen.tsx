@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 
 import {
   AppButton,
+  FormErrorBanner,
   GradientScreenBackground,
   ResponsiveContainer,
   ScreenHeader,
@@ -11,7 +12,8 @@ import {
 } from '@/components/ui';
 import { formatPhoneNumber } from '@/features/auth/validation/signup';
 import { HouseholdInfoRow } from '@/features/profile/components/profile-edit/household-info-row';
-import { useProfileEditForm } from '@/features/profile/hooks/use-profile-edit-form';
+import { ProfilePasswordFields } from '@/features/profile/components/profile-edit/profile-password-fields';
+import { useProfileUpdateForm } from '@/features/profile/hooks/use-profile-update-form';
 import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
 
@@ -19,22 +21,15 @@ import { styles } from './profile-edit-screen.styles';
 
 export default function ProfileEditScreen() {
   const { user } = useAuth();
-  const [showApiNotice, setShowApiNotice] = useState(false);
   const {
     name,
     setName,
-    currentPassword,
-    setCurrentPassword,
-    newPassword,
-    setNewPassword,
-    confirmPassword,
-    setConfirmPassword,
-    hasPasswordInput,
-    currentPasswordValid,
-    newPasswordValid,
-    confirmPasswordValid,
+    password,
     canSave,
-  } = useProfileEditForm();
+    isSubmitting,
+    errorMessage,
+    submit,
+  } = useProfileUpdateForm();
 
   const householdLabel = user?.buildingNumber && user?.unitNumber
     ? `${user.buildingNumber}동 ${user.unitNumber}호`
@@ -67,72 +62,23 @@ export default function ProfileEditScreen() {
 
           <HouseholdInfoRow value={householdLabel} />
 
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>비밀번호 변경</Text>
-            <Text style={styles.sectionDescription}>
-              비밀번호를 변경하지 않으려면 아래 항목은 비워 두세요.
-            </Text>
-          </View>
+          <ProfilePasswordFields form={password} />
 
-          <TextField
-            label="현재 비밀번호"
-            value={currentPassword}
-            onChangeText={setCurrentPassword}
-            secureTextEntry
-            autoComplete="current-password"
-            placeholder="현재 비밀번호를 입력해 주세요"
-            error={
-              hasPasswordInput && !currentPasswordValid
-                ? '비밀번호를 변경하려면 현재 비밀번호가 필요해요'
-                : undefined
-            }
-          />
-
-          <TextField
-            label="새 비밀번호"
-            value={newPassword}
-            onChangeText={setNewPassword}
-            secureTextEntry
-            autoComplete="password-new"
-            placeholder="새 비밀번호를 입력해 주세요"
-            helperText="최소 8자 · 영문 · 숫자 · 특수문자를 포함해 주세요"
-            error={
-              hasPasswordInput && !newPasswordValid
-                ? '영문, 숫자, 특수문자를 모두 포함해 8자 이상 입력해 주세요'
-                : undefined
-            }
-          />
-
-          <TextField
-            label="새 비밀번호 확인"
-            value={confirmPassword}
-            onChangeText={setConfirmPassword}
-            secureTextEntry
-            autoComplete="password-new"
-            placeholder="새 비밀번호를 다시 입력해 주세요"
-            error={
-              confirmPassword.length > 0 && !confirmPasswordValid
-                ? '비밀번호가 일치하지 않아요'
-                : undefined
-            }
-          />
-
-          {showApiNotice ? (
-            <View style={styles.apiNotice}>
-              <Text style={styles.apiNoticeText}>
-                화면 입력과 검증만 적용된 상태예요. API 연결 후 실제로 저장됩니다.
-              </Text>
-            </View>
-          ) : null}
+          {errorMessage ? <FormErrorBanner message={errorMessage} /> : null}
 
           <AppButton
             label="변경 사항 저장"
             variant="neutral"
             size="lg"
             fullWidth
-            disabled={!canSave}
+            loading={isSubmitting}
+            disabled={!canSave || isSubmitting}
             style={styles.saveButton}
-            onPress={() => setShowApiNotice(true)}
+            onPress={async () => {
+              if (await submit()) {
+                router.replace('/resident/my-page');
+              }
+            }}
           />
         </Stack>
       </ResponsiveContainer>

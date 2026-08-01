@@ -1,8 +1,8 @@
 import { StyleSheet } from 'react-native';
 
-import { ControlHeight, FontWeight, Palette, Spacing } from '@/styles';
+import { ControlHeight, FontWeight, Palette, Radius, Spacing } from '@/styles';
 
-// 피그마 로그아웃 텍스트/아이콘 색상(#ba1a1a). 기존 팔레트 red500과는 다른 톤이라 리터럴로 둔다.
+// 피그마 로그아웃 색상은 공통 red500보다 어두워 이 컴포넌트 안에서만 사용한다.
 export const LOGOUT_COLOR = '#ba1a1a';
 
 export const styles = StyleSheet.create({
@@ -12,7 +12,7 @@ export const styles = StyleSheet.create({
     width: '100%',
     minHeight: ControlHeight.md,
     paddingVertical: Spacing.base + 1,
-    borderRadius: 999,
+    borderRadius: Radius.full,
     backgroundColor: Palette.white,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 6 },
