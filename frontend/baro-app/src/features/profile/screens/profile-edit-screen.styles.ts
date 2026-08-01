@@ -3,23 +3,26 @@ import { StyleSheet } from 'react-native';
 import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
-  header: {
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.lg,
-  },
-  headerAction: {
-    fontSize: 13,
-    fontWeight: FontWeight.bold,
-    color: Palette.violet500,
-  },
   content: {
-    paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.xl,
   },
   activeField: {
     borderWidth: 1,
     borderColor: Palette.violet500,
+  },
+  sectionHeader: {
+    gap: Spacing.xs,
+    paddingTop: Spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: FontWeight.bold,
+    color: Palette.gray975,
+  },
+  sectionDescription: {
+    fontSize: 11.5,
+    color: Palette.gray500,
   },
   verifiedBadge: {
     backgroundColor: Palette.teal100,
@@ -32,14 +35,18 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Palette.teal600,
   },
-  withdrawLink: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xs,
+  apiNotice: {
+    borderRadius: Radius.md,
+    backgroundColor: Palette.violet100,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.base,
   },
-  withdrawText: {
-    fontSize: 12.5,
-    fontWeight: FontWeight.medium,
-    color: Palette.gray400,
-    textDecorationLine: 'underline',
+  apiNoticeText: {
+    fontSize: 11.5,
+    lineHeight: 18,
+    color: Palette.violet600,
+  },
+  saveButton: {
+    marginTop: Spacing.sm,
   },
 });

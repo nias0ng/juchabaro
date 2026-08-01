@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text } from 'react-native';
 
 import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
+import { AccountWithdrawalModal } from '@/features/profile/components/account-withdrawal-modal';
 import { ProfileIcon } from '@/features/profile/components/profile-icon';
 import { ProfileMenuRow } from '@/features/profile/components/profile-menu-row';
 import { ProfileStatsRow } from '@/features/profile/components/profile-stats-row';
@@ -24,6 +25,9 @@ export default function MyPageScreen() {
   const { user, logout } = useAuth();
   const { isLoading: isVehicleLoading, vehicleCount, primaryVehicle } = useVehicleSummary();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isWithdrawalOpen, setIsWithdrawalOpen] = useState(false);
+  const [withdrawalPassword, setWithdrawalPassword] = useState('');
+  const [withdrawalNotice, setWithdrawalNotice] = useState<string>();
 
   const meta = user?.buildingNumber && user?.unitNumber ? `${user.buildingNumber}동 ${user.unitNumber}호` : '';
 
@@ -40,6 +44,12 @@ export default function MyPageScreen() {
     await logout();
   };
 
+  const closeWithdrawalModal = () => {
+    setIsWithdrawalOpen(false);
+    setWithdrawalPassword('');
+    setWithdrawalNotice(undefined);
+  };
+
   return (
     <GradientScreenBackground>
       <ResponsiveContainer>
@@ -50,22 +60,29 @@ export default function MyPageScreen() {
             name={user?.nickname ?? ''}
             meta={meta}
             statusLabel={user ? STATUS_LABEL[user.status] : undefined}
-            onPress={() => router.push('/resident/profile-edit')}
           />
 
           <ProfileStatsRow vehicleCount={vehicleCount} />
 
-          <VehicleShortcutCard subtitle={vehicleSubtitle} onPress={() => router.push('/resident/vehicles')} />
+          <VehicleShortcutCard
+            subtitle={vehicleSubtitle}
+            onPress={() => router.push('/resident/vehicles')}
+          />
 
           <Stack gap={Spacing.sm + 2}>
             <ProfileMenuRow
+              label="내 정보 수정"
+              icon={<ProfileIcon name="user" size={20} />}
+              onPress={() => router.push('/resident/profile-edit')}
+            />
+            <ProfileMenuRow
               label="알림 설정"
-              icon={<ProfileIcon name="bell" size={18} />}
+              icon={<ProfileIcon name="bell" size={20} />}
               onPress={() => router.push('/resident/notification-settings')}
             />
             <ProfileMenuRow
               label="요청 내역"
-              icon={<ProfileIcon name="history" size={18} />}
+              icon={<ProfileIcon name="history" size={20} />}
               onPress={() => router.push('/resident/request-history')}
             />
           </Stack>
@@ -86,8 +103,30 @@ export default function MyPageScreen() {
               </Stack>
             )}
           </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            style={styles.withdrawLink}
+            onPress={() => setIsWithdrawalOpen(true)}
+          >
+            <Text style={styles.withdrawText}>회원 탈퇴</Text>
+          </Pressable>
         </Stack>
       </ResponsiveContainer>
+
+      <AccountWithdrawalModal
+        visible={isWithdrawalOpen}
+        currentPassword={withdrawalPassword}
+        noticeMessage={withdrawalNotice}
+        onChangeCurrentPassword={(value) => {
+          setWithdrawalPassword(value);
+          setWithdrawalNotice(undefined);
+        }}
+        onCancel={closeWithdrawalModal}
+        onConfirm={() =>
+          setWithdrawalNotice('화면만 구현된 상태예요. API 연결 후 실제 탈퇴 요청이 전송됩니다.')
+        }
+      />
     </GradientScreenBackground>
   );
 }

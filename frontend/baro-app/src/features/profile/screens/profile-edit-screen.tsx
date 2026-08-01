@@ -1,11 +1,16 @@
-import { router } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Text, View } from 'react-native';
 
-import { AppButton, Screen, ScreenHeader, Stack, TextField } from '@/components/ui';
+import {
+  AppButton,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  Stack,
+  TextField,
+} from '@/components/ui';
 import { formatPhoneNumber } from '@/features/auth/validation/signup';
 import { HouseholdInfoRow } from '@/features/profile/components/profile-edit/household-info-row';
-import { ProfileAvatarEditor } from '@/features/profile/components/profile-edit/profile-avatar-editor';
-import { SettingsMenuCard } from '@/features/profile/components/profile-edit/settings-menu-card';
 import { useProfileEditForm } from '@/features/profile/hooks/use-profile-edit-form';
 import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
@@ -14,70 +19,123 @@ import { styles } from './profile-edit-screen.styles';
 
 export default function ProfileEditScreen() {
   const { user } = useAuth();
-  const { isEditing, name, setName, password, setPassword, startEditing, save } = useProfileEditForm();
+  const [showApiNotice, setShowApiNotice] = useState(false);
+  const {
+    name,
+    setName,
+    currentPassword,
+    setCurrentPassword,
+    newPassword,
+    setNewPassword,
+    confirmPassword,
+    setConfirmPassword,
+    hasPasswordInput,
+    currentPasswordValid,
+    newPasswordValid,
+    confirmPasswordValid,
+    canSave,
+  } = useProfileEditForm();
 
   const householdLabel = user?.buildingNumber && user?.unitNumber
     ? `${user.buildingNumber}동 ${user.unitNumber}호`
     : '위치 정보 없음';
 
   return (
-    <Screen scroll edges={['top', 'right', 'left']}>
-      <ScreenHeader
-        title="내 정보 수정"
-        style={styles.header}
-        right={
-          <Pressable accessibilityRole="button" onPress={isEditing ? save : startEditing}>
-            <Text style={styles.headerAction}>{isEditing ? '저장' : '수정'}</Text>
-          </Pressable>
-        }
-      />
+    <GradientScreenBackground>
+      <ResponsiveContainer>
+        <ScreenHeader title="내 정보 수정" />
 
-      <Stack gap={Spacing.md} style={styles.content}>
-        <ProfileAvatarEditor name={name} />
+        <Stack gap={Spacing.md} style={styles.content}>
+          <TextField
+            label="이름"
+            value={name}
+            onChangeText={setName}
+            style={styles.activeField}
+          />
 
-        <TextField
-          label="이름"
-          value={name}
-          onChangeText={setName}
-          editable={isEditing}
-          style={isEditing ? styles.activeField : undefined}
-        />
+          <TextField
+            label="휴대폰 번호"
+            value={formatPhoneNumber(user?.phoneNumber ?? '')}
+            onChangeText={() => {}}
+            editable={false}
+            rightAdornment={
+              <View style={styles.verifiedBadge}>
+                <Text style={styles.verifiedBadgeText}>인증됨</Text>
+              </View>
+            }
+          />
 
-        <TextField
-          label="휴대폰 번호"
-          value={formatPhoneNumber(user?.phoneNumber ?? '')}
-          onChangeText={() => {}}
-          editable={false}
-          rightAdornment={
-            <View style={styles.verifiedBadge}>
-              <Text style={styles.verifiedBadgeText}>인증됨</Text>
+          <HouseholdInfoRow value={householdLabel} />
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>비밀번호 변경</Text>
+            <Text style={styles.sectionDescription}>
+              비밀번호를 변경하지 않으려면 아래 항목은 비워 두세요.
+            </Text>
+          </View>
+
+          <TextField
+            label="현재 비밀번호"
+            value={currentPassword}
+            onChangeText={setCurrentPassword}
+            secureTextEntry
+            autoComplete="current-password"
+            placeholder="현재 비밀번호를 입력해 주세요"
+            error={
+              hasPasswordInput && !currentPasswordValid
+                ? '비밀번호를 변경하려면 현재 비밀번호가 필요해요'
+                : undefined
+            }
+          />
+
+          <TextField
+            label="새 비밀번호"
+            value={newPassword}
+            onChangeText={setNewPassword}
+            secureTextEntry
+            autoComplete="password-new"
+            placeholder="새 비밀번호를 입력해 주세요"
+            helperText="최소 8자 · 영문 · 숫자 · 특수문자를 포함해 주세요"
+            error={
+              hasPasswordInput && !newPasswordValid
+                ? '영문, 숫자, 특수문자를 모두 포함해 8자 이상 입력해 주세요'
+                : undefined
+            }
+          />
+
+          <TextField
+            label="새 비밀번호 확인"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            autoComplete="password-new"
+            placeholder="새 비밀번호를 다시 입력해 주세요"
+            error={
+              confirmPassword.length > 0 && !confirmPasswordValid
+                ? '비밀번호가 일치하지 않아요'
+                : undefined
+            }
+          />
+
+          {showApiNotice ? (
+            <View style={styles.apiNotice}>
+              <Text style={styles.apiNoticeText}>
+                화면 입력과 검증만 적용된 상태예요. API 연결 후 실제로 저장됩니다.
+              </Text>
             </View>
-          }
-        />
+          ) : null}
 
-        <HouseholdInfoRow value={householdLabel} />
-
-        {isEditing ? (
-          <>
-            <TextField
-              label="비밀번호"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              placeholder="새 비밀번호 입력"
-            />
-            {/* 회원 탈퇴 API가 없어 눌러도 동작하지 않는다. */}
-            <Pressable accessibilityRole="button" disabled style={styles.withdrawLink}>
-              <Text style={styles.withdrawText}>회원 탈퇴</Text>
-            </Pressable>
-          </>
-        ) : (
-          <SettingsMenuCard onPressNotificationSettings={() => router.push('/resident/notification-settings')} />
-        )}
-
-        {/* TODO(profile-api): PATCH /users/me가 준비되면 실제 저장 요청으로 교체한다. */}
-        <AppButton label="변경 사항 저장" variant="neutral" size="lg" fullWidth onPress={save} />
-      </Stack>
-    </Screen>
+          <AppButton
+            label="변경 사항 저장"
+            variant="neutral"
+            size="lg"
+            fullWidth
+            disabled={!canSave}
+            style={styles.saveButton}
+            onPress={() => setShowApiNotice(true)}
+          />
+        </Stack>
+      </ResponsiveContainer>
+    </GradientScreenBackground>
   );
 }

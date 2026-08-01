@@ -38,7 +38,7 @@ export function useVehicleSummary() {
   return {
     isLoading,
     vehicleCount: vehicles.length,
-    // 백엔드에 "대표 차량" 지정 필드가 없어 목록의 첫 차량을 임시로 대표 차량처럼 보여준다.
+    // 서버에 대표 차량 필드가 없어 목록의 첫 번째 차량을 대표 문구에 사용한다.
     primaryVehicle: vehicles[0] ?? null,
   };
 }

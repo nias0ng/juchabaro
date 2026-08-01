@@ -1,23 +1,42 @@
 import { useState } from 'react';
 
+import { isConfirmPasswordValid, isPasswordValid } from '@/features/auth/validation/signup';
 import { useAuth } from '@/providers/auth-provider';
 
-// I-02(보기)/I-03(수정)은 피그마에서 같은 "내 정보 수정" 화면의 두 상태라서 하나의 훅으로 관리한다.
 export function useProfileEditForm() {
   const { user } = useAuth();
-  const [isEditing, setIsEditing] = useState(false);
-  const [name, setName] = useState(() => user?.nickname ?? '');
-  const [password, setPassword] = useState('');
+  const initialName = user?.nickname ?? '';
+  const [name, setName] = useState(initialName);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
-  const startEditing = () => setIsEditing(true);
+  const hasPasswordInput =
+    currentPassword.length > 0 || newPassword.length > 0 || confirmPassword.length > 0;
+  const currentPasswordValid = !hasPasswordInput || currentPassword.length > 0;
+  const newPasswordValid = !hasPasswordInput || isPasswordValid(newPassword);
+  const confirmPasswordValid = !hasPasswordInput || isConfirmPasswordValid(newPassword, confirmPassword);
+  const hasChanges = name.trim() !== initialName || hasPasswordInput;
+  const canSave =
+    hasChanges &&
+    name.trim().length > 0 &&
+    currentPasswordValid &&
+    newPasswordValid &&
+    confirmPasswordValid;
 
-  // TODO(profile-api): PATCH /users/me가 아직 없어 실제로는 저장하지 않는다.
-  // 화면 로컬 상태만 "보기 모드"로 되돌리고, 방금 입력한 이름은 그대로 화면에 남겨서
-  // 최소한 이번 세션 안에서는 수정한 것처럼 보이게 한다.
-  const save = () => {
-    setIsEditing(false);
-    setPassword('');
+  return {
+    name,
+    setName,
+    currentPassword,
+    setCurrentPassword,
+    newPassword,
+    setNewPassword,
+    confirmPassword,
+    setConfirmPassword,
+    hasPasswordInput,
+    currentPasswordValid,
+    newPasswordValid,
+    confirmPasswordValid,
+    canSave,
   };
-
-  return { isEditing, name, setName, password, setPassword, startEditing, save };
 }
