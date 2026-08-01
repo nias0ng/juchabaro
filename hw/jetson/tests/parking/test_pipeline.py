@@ -413,6 +413,39 @@ def test_bad_parking_resolves_via_prune_after_track_loss():
     assert bad_parking_resolves[0].incident.incident_id == bad_parking_opens[0].incident.incident_id
 
 
+def test_stop_pending_candidate_does_not_leak_when_vehicle_moves_before_confirming():
+    """박시현 리뷰(MR !141): STOP_PENDING 중 bad_parking이 CANDIDATE를
+    열어 둔 채로 확정(parked_after) 전에 차량이 움직이면, 예전엔
+    ParkingEpisodeTracker가 None을 반환해 그 CANDIDATE를 해소할 방법이
+    없어 IncidentReducer 안에 영원히 남았다(리소스 누수). 이제
+    ParkingEpisodeTracker가 ENDED로 보고해 resolve_episode_scope가
+    정리한다 — reducer 안에 아무 흔적도 안 남아야 한다."""
+    # GENERAL 구역 두 개를 같은 자리에 겹쳐 둔다 — restricted_zone(DISABLED/EV
+    # 전용구역 아님)도 ev_overstay(EV 아님)도 반응하지 않아 bad_parking의
+    # AMBIGUOUS 후보만 순수하게 격리해서 볼 수 있다.
+    general_a = ParkingZone(
+        zone_id=10, zone_number="G-10", zone_type=ZoneType.GENERAL,
+        polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+    )
+    general_b = ParkingZone(
+        zone_id=11, zone_number="G-11", zone_type=ZoneType.GENERAL,
+        polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+    )
+    pipeline = make_pipeline(zones=(general_a, general_b), parked_after=600.0)
+    reducer = pipeline._incident_reducer  # 화이트박스 확인
+
+    # STOP_PENDING 중에도 두 스팟에 걸쳐(AMBIGUOUS) 있으면 bad_parking이
+    # matched=True, confirmable=False인 CANDIDATE를 연다.
+    pipeline.process(batch(snapshot(at=T0), at=T0))
+    assert any(i.key.rule_code == "BAD_PARKING" for i in reducer.snapshot())
+
+    # 확정(600초)되기 한참 전에 이동을 시작한다 — 후보가 성립하지 못한 채 끝난다.
+    moving_at = T0 + timedelta(seconds=100)
+    pipeline.process(batch(snapshot(at=moving_at, motion=MotionSignal.MOVING), at=moving_at))
+
+    assert reducer.snapshot() == ()  # CANDIDATE가 정리됐다 — 누수 없음
+
+
 def test_ended_vehicle_that_never_visited_a_zone_produces_no_transitions():
     """구역을 한 번도 안 밟은 채 사라진 차량은 아무 사건도 만들지 않는다.
 

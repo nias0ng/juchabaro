@@ -267,18 +267,24 @@ class InMemoryParkingEpisodeTracker:
         self, slot: _EpisodeSlot, signal: MotionSignal, observed_at: datetime
     ) -> ParkingEpisode | None:
         if signal is MotionSignal.MOVING:
-            # 확정 전에 움직였다. 후보를 버린다 — 에피소드가 성립하지 않았으므로
-            # 종료로 보고하지 않는다.
+            # 확정 전에 움직였다. 에피소드는 성립하지 않았으므로(parked_at은
+            # None으로 남는다) PARKED가 된 적은 없지만, ENDED로는 보고한다
+            # (463, MR !141 리뷰로 발견). prune()의 강제 종료가 미확정
+            # STOP_PENDING 후보도 ENDED로 보고하는 것과 같은 이유다 — 이
+            # 후보가 이미 규칙에서 matched=True인 CANDIDATE 사건을 열게
+            # 했다면, 신고 없이는 그 사건을 resolve_episode_scope로 해소할
+            # 방법이 없다. 새 정지 후보는 새 episode_id를 받으므로 이
+            # 후보의 사건 키는 다시 평가될 길이 없어, 신고 없이 사라지면
+            # IncidentReducer 안에 CANDIDATE가 영원히 남는다(백엔드로
+            # 나가는 데이터는 틀리지 않지만 리소스 누수다).
             #
-            # 비대칭 주의(의도적으로 미해결, T-12 규칙 설계 소관): prune()의
-            # 강제 종료는 미확정 STOP_PENDING 후보도 ENDED로 보고하지만, 여기
-            # MOVING 경로는 None을 반환해 아무것도 보고하지 않는다. 이 후보가
-            # 이미 규칙에 matched=True인 CANDIDATE 사건을 열게 했다면, 그
-            # 사건은 여기서 해소를 못 받고 영영 열린 채 남는다 —
-            # 새 정지 후보는 새 episode_id를 받으므로 이 후보의 사건 키는
-            # 다시 평가될 길이 없다. 백엔드로 나가는 데이터는 틀리지 않지만 리소스 누수다.
-            del self._slots[slot.episode.physical_vehicle_id]
-            return None
+            # 슬롯을 여기서 바로 지우지 않는다 — `_advance_departing`과
+            # 같은 이유다. 조립자가 이번 프레임에 `active_episode()`로
+            # 이 ENDED를 읽어야 하므로, 슬롯은 이번 프레임의 `prune()`(이미
+            # 닫힌 슬롯을 지우는 1단계) 또는 다음 `update()` 호출의 자기
+            # 정리가 지운다.
+            slot.episode = replace(slot.episode, state=ParkingState.ENDED, ended_at=observed_at)
+            return slot.episode
 
         accumulated = slot.accumulate(observed_at)
         slot.episode = replace(

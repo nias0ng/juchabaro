@@ -77,14 +77,24 @@ def test_stationary_observed_seconds_is_reported() -> None:
     assert episode.stationary_observed_seconds == pytest.approx(120.0)
 
 
-def test_moving_during_stop_pending_discards_the_candidate() -> None:
+def test_moving_during_stop_pending_reports_ended_without_ever_parking() -> None:
+    """463(MR !141 리뷰) 이전에는 None을 반환해 이 후보가 이미 규칙에서
+    matched=True인 CANDIDATE 사건을 열었다면 그 사건이 IncidentReducer 안에
+    영원히 남았다 — resolve_episode_scope를 부를 방법이 없었기 때문이다.
+    이제는 ENDED로 보고해 조립자가 해소할 수 있게 한다. parked_at은
+    여전히 None이다 — 확정된 적이 없다는 사실은 그대로 보존된다."""
     tracker = make_tracker(parked=600.0)
     feed(tracker, MotionSignal.STATIONARY, 0)
-    assert feed(tracker, MotionSignal.MOVING, 100.0) is None
-    # 다시 정지하면 누적이 0에서 시작한다.
-    episode = feed(tracker, MotionSignal.STATIONARY, 200.0)
-    assert episode.state is ParkingState.STOP_PENDING
-    assert episode.stationary_observed_seconds == 0.0
+    episode = feed(tracker, MotionSignal.MOVING, 100.0)
+    assert episode.state is ParkingState.ENDED
+    assert episode.parked_at is None
+    assert episode.ended_at == at(100.0)
+
+    # 다시 정지하면 새 에피소드다 — 누적이 0에서 시작하고 새 episode_id를 받는다.
+    reopened = feed(tracker, MotionSignal.STATIONARY, 200.0)
+    assert reopened.state is ParkingState.STOP_PENDING
+    assert reopened.stationary_observed_seconds == 0.0
+    assert reopened.episode_id != episode.episode_id
 
 
 def test_unknown_does_not_advance_the_parking_timer() -> None:
