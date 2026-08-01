@@ -243,6 +243,61 @@ def test_incident_reducer_state_matches_expected_lifecycle():
     assert states == [IncidentState.EDGE_CONFIRMED]
 
 
+def test_ev_overstay_opens_after_allowed_minutes_then_resolves_on_exit():
+    """T-11/450: EV구역 점유가 allowed_minutes(60분)를 넘기면 OPEN, 이탈하면
+    RESOLVE — restricted_zone과 나란히 배선된 ev_overstay 규칙을 pipeline
+    레벨에서 확인한다. 전기차로 자격을 갖춘 차량이라 EV_ZONE_UNAUTHORIZED는
+    성립하지 않고, EV_OVERSTAY만 점유 시간으로 판단된다."""
+    pipeline = make_pipeline(zones=(EV_ZONE,))
+    electric = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=False)
+
+    r0 = pipeline.process(batch(snapshot(at=T0, context=electric), at=T0))
+    assert r0.incident_transitions == ()  # ENTERING — 아직 확정 전
+
+    entered_at = T0 + timedelta(seconds=1)
+    r1 = pipeline.process(batch(snapshot(at=entered_at, context=electric), at=entered_at))
+    assert r1.incident_transitions == ()  # INSIDE 확정만 됨 — 점유 시간이 아직 60분 미만
+
+    still_under_limit = T0 + timedelta(minutes=59)
+    r2 = pipeline.process(batch(snapshot(at=still_under_limit, context=electric), at=still_under_limit))
+    assert r2.incident_transitions == ()
+
+    over_limit = T0 + timedelta(minutes=61)
+    r3 = pipeline.process(batch(snapshot(at=over_limit, context=electric), at=over_limit))
+    assert [t.transition_type for t in r3.incident_transitions] == [IncidentTransitionType.OPEN]
+    assert r3.incident_transitions[0].incident.key.rule_code == "EV_OVERSTAY"
+
+    exiting_at = over_limit + timedelta(seconds=1)
+    r4 = pipeline.process(batch(snapshot(bbox=OUTSIDE_BBOX, at=exiting_at, context=electric), at=exiting_at))
+    assert r4.incident_transitions == ()  # EXITING — 아직 안 닫힘
+
+    exited_at = exiting_at + timedelta(seconds=1)
+    r5 = pipeline.process(batch(snapshot(bbox=OUTSIDE_BBOX, at=exited_at, context=electric), at=exited_at))
+    assert [t.transition_type for t in r5.incident_transitions] == [IncidentTransitionType.RESOLVE]
+    assert r5.incident_transitions[0].incident.incident_id == r3.incident_transitions[0].incident.incident_id
+
+
+def test_ev_overstay_never_confirms_without_allowed_minutes():
+    """구역에 allowed_minutes가 없으면 아무리 오래 점유해도 EV_OVERSTAY가
+    확정되지 않는다."""
+    unlimited_zone = ParkingZone(
+        zone_id=4,
+        zone_number="EV-02",
+        zone_type=ZoneType.EV_SLOW,
+        polygon=NormalizedPolygon(((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))),
+        allowed_minutes=None,
+    )
+    pipeline = make_pipeline(zones=(unlimited_zone,))
+    electric = VehicleContext(parking_session_id=1, vehicle_id=1, is_electric=True, is_disabled_vehicle=False)
+
+    pipeline.process(batch(snapshot(at=T0, context=electric), at=T0))
+    pipeline.process(batch(snapshot(at=T0 + timedelta(seconds=1), context=electric), at=T0 + timedelta(seconds=1)))
+    long_after = T0 + timedelta(days=1)
+    r = pipeline.process(batch(snapshot(at=long_after, context=electric), at=long_after))
+
+    assert r.incident_transitions == ()
+
+
 def test_ended_vehicle_that_never_visited_a_zone_produces_no_transitions():
     """구역을 한 번도 안 밟은 채 사라진 차량은 아무 사건도 만들지 않는다.
 
