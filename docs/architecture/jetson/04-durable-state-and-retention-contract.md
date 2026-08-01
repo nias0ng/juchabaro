@@ -1,511 +1,400 @@
 # Jetson 상태 보존 및 Retention 계약
 
-> 상태: Draft · 관련 이슈: S15P11E202-461 · 범위: Jetson target domain contract · 비범위: 구현 상세, 테스트 계획, 배포 계획
+> 상태: Draft · 관련 이슈: S15P11E202-461 · 책임: 동일 장치의 영속 상태, 재시작, outbox, evidence와 저장 상한
 
-이 문서는 Jetson이 확정한 상태와 외부 전이를 어떻게 보존하고, 언제 전체 상태를 최소 정보로 축약하거나 제거할 수 있는지 정의한다. 저장 기술, DB schema, repository 구현은 다루지 않는다.
+이 문서는 같은 Jetson과 같은 SD카드에서 process crash, 전원 장애와 네트워크 단절이 발생해도 이미 확정한 상태와 미전송 handoff를 다시 이어가는 최소 계약을 정의한다.
 
-Backend와 상태를 비교하고 최종 적용 여부를 확인하는 방법은 [Jetson–Backend 상태 Reconciliation 계약](./05-backend-reconciliation-contract.md)을 따른다.
+## 1. 범위
 
-## 문제 정의
+이 문서가 보장하는 것은 다음과 같다.
 
-현재 상태 축약, 상태 저장, scope 검색, 종료 사실 보존, 중복 방지를 하나의 in-memory collection이 담당하면 다음 문제가 생긴다.
+- 접수를 성공으로 응답한 command·entry input의 재시작 후 중복 억제
+- PARKED·UNPARKED·Incident·EXIT 등 확정 상태의 복구
+- 공개 전이와 outbox의 원자적 기록
+- 동일 payload·revision·Idempotency-Key 재전송
+- evidence file spool의 일관성
+- 64GB SD를 소진하지 않는 제한된 retention과 degraded 동작
 
-- 종료된 scope까지 active 조회 대상에 남는다.
-- scope 종료 조회 비용이 전체 누적 사건 수에 비례한다.
-- 프로세스 재시작 시 후보·OPEN·publication revision을 잃는다.
-- domain state 변경과 outbox 기록이 분리되면 둘 중 하나만 성공할 수 있다.
-- 네트워크 ACK 여부를 복구할 수 없어 재전송과 중복 방지를 함께 보장하기 어렵다.
+다음은 보장하지 않는다.
 
-목표는 모든 과거 상태를 영구 보관하는 것이 아니라, 현재 판단·복구·중복 방지에 필요한 정보만 책임에 맞게 분리하는 것이다.
+- 다른 Jetson 또는 다른 SD카드로의 상태 복구
+- Backend snapshot에서 live PhysicalVehicle·ParkingEpisode·Incident 재생성
+- raw frame, bbox, TrackSegment 복구
+- Backend 업무 상태 reconciliation
+- DB schema와 저장소 제품의 최종 선택
 
-## 보존 원칙
+`[결정]` 구현은 하나의 local transactional store, 재구성 가능한 in-memory cache와 evidence file spool로 구성한다. SQLite WAL은 유력한 구현 후보지만 제품 선택과 schema는 별도 ADR에서 확정한다.
 
-1. lifecycle 종료와 저장소 정리는 별개다.
-2. 관측 `UNKNOWN`은 retention 만료나 lifecycle 종료의 근거가 아니다.
-3. authoritative 현재 상태는 durable state store가 보유한다.
-4. active index는 현재 활성 scope만 가리키는 파생 조회 구조다.
-5. terminal scope 전체를 active store에 계속 보존하지 않는다.
-6. terminal scope는 필요한 최소 tombstone으로 축약할 수 있다.
-7. 공개 전이와 이를 만든 domain state 변경은 하나의 consistency boundary에서 확정한다.
-8. 공개 payload는 생성 시점의 immutable 사실이며 retry 때 현재 상태로 재구성하지 않는다.
-9. Backend에 공개한 전이는 최종 적용을 확인하지 못한 채 시간이 지났다는 이유로 삭제하지 않는다.
-10. 메모리에서 내리는 것과 durable state를 삭제하는 것을 구분한다.
+## 2. 저장 등급
 
-## 논리 구성요소
-
-```mermaid
-flowchart LR
-    DS["Durable state store"] --> AI["Active scope index"]
-    DS --> SR["Scope relation index"]
-    DS --> TS["Terminal tombstones"]
-    DS --> OB["Transactional outbox"]
-    OB --> DR["Delivery receipts"]
-    OB --> BC["Backend correlations"]
-    TS --> RP["Retention policy"]
-    DR --> RP
-    BC --> RP
-```
-
-### Durable state store
-
-PROVISIONAL과 ACTIVE scope의 authoritative snapshot을 보존한다.
-
-최소한 다음 의미를 복구할 수 있어야 한다.
-
-- ScopeRef와 domain state
-- LifecyclePhase와 transition sequence
-- ObservationState와 마지막 신뢰 관측 시각
-- scope별 누적 trusted duration
-- record version
-- publication revision
-- domain key와 lifetime scope 관계
-- Backend correlation
-- payload contract version
-
-raw frame, 반복 bbox, 매 frame의 동일 신호는 현재 상태 복구에 필요하지 않으므로 기본 durable state 대상이 아니다.
-
-### Active scope index
-
-현재 PROVISIONAL·ACTIVE scope를 빠르게 찾기 위한 파생 구조다.
-
-필요한 조회는 다음과 같다.
-
-```text
-ScopeRef로 현재 상태 조회
-domain key로 현재 활성 aggregate 조회
-lifetime scope로 연결된 활성 Incident 조회
-ParkingSession으로 연결된 활성 child scope 조회
-subject·victim 관계로 BlockingRelation 조회
-```
-
-Active index는 별도의 authoritative state가 아니다.
-
-- durable state에서 재구성할 수 있어야 한다.
-- commit된 상태만 반영한다.
-- terminal scope를 포함하지 않는다.
-- cache miss가 lifecycle 의미를 바꾸지 않는다.
-
-### Scope relation index
-
-scope 사이의 조회 관계를 표현한다.
-
-대표 관계:
-
-| 관계 | 용도 |
-|---|---|
-| `LIFETIME_SCOPE` | Incident를 ZoneVisit·ParkingEpisode·BlockingRelation 종료와 연결 |
-| `SESSION` | Session 종료 시 관련 scope 조회 |
-| `SUBJECT` | BlockingRelation·Incident의 가해 차량 관계 |
-| `VICTIM` | BlockingRelation·Incident의 피해 차량 관계 |
-| `DERIVED_FROM` | 어떤 상태가 평가 근거였는지 추적 |
-| `CORRELATED_WITH` | lifecycle 종속 없이 업무·전송 ID 연결 |
-
-관계가 저장됐다고 자동 종료가 발생하지 않는다. 종료 전파 의미는 [Jetson Scope 전파 및 종료 계약](./03-scope-propagation-contract.md)에서만 정의한다.
-
-### Tombstone
-
-terminal scope 전체를 보존하는 archive가 아니라 다음을 위한 최소 종료 사실이다.
-
-- terminal ID 재사용 방지
-- stale observation·command 거부
-- publication revision 중복 방지
-- 늦은 ACK와 reconciliation 처리
-- 같은 domain key의 이전 사건과 새 사건 구분
-- child·evidence·delivery 정리 여부 확인
-
-### Transactional outbox
-
-Backend에 공개할 domain transition을 네트워크와 분리해 보존한다.
-
-Outbox는 다음을 보유한다.
-
-- delivery ID
-- aggregate type·ID
-- publication revision
-- transition type
-- Idempotency-Key
-- immutable payload와 transition hash
-- destination
-- delivery state
-- retry 정보
-- Backend ACK와 오류 요약
-
-Outbox는 domain 판단을 바꾸지 않는다.
-
-### Delivery receipt
-
-성공한 outbox 전체 payload를 영원히 보존하지 않고도 다음을 증명하기 위한 최소 기록이다.
-
-- 어떤 Idempotency-Key가 성공했는가
-- 어떤 aggregate revision이 적용됐는가
-- 어떤 payload hash가 전송됐는가
-- 언제 Backend가 적용했는가
-- 어떤 Backend correlation을 받았는가
-
-### Backend correlation
-
-Jetson aggregate와 Backend 업무 ID의 연결이다.
-
-```text
-incidentId ↔ eventId
-incidentId ↔ requestId
-incidentId ↔ notificationId
-parkingEpisodeId ↔ Backend parking state
-verification attempt ↔ requestId
-```
-
-Correlation은 domain identity를 대체하지 않는다. `eventId`를 Incident ID로 사용하거나 `requestId`를 vehicle identity로 사용하지 않는다.
-
-## Consistency boundary
-
-공개 전이를 만드는 상태 변경은 다음 단위로 함께 확정돼야 한다.
-
-```text
-domain snapshot 또는 tombstone
-+ active·relation index 변경
-+ publication revision 증가
-+ immutable outbox message
-```
-
-일부만 성공한 상태를 허용하지 않는다.
-
-### Incident OPEN
-
-```text
-CANDIDATE → OPEN
-+ publication revision 증가
-+ lifetime scope 관계 유지
-+ OPEN outbox 생성
-```
-
-### Incident RESOLVE
-
-```text
-OPEN·CLEAR_PENDING → RESOLVED
-+ active index에서 제거
-+ relation index에서 제거
-+ terminal tombstone 생성
-+ RESOLVE outbox 생성
-```
-
-### Candidate 취소
-
-```text
-PROVISIONAL → CANCELED
-+ active index에서 제거
-+ 공개 outbox 없음
-```
-
-### Scope 종료
-
-하나의 ZoneVisit이나 ParkingSession 종료로 여러 Incident가 함께 끝나면, 해당 종료 사실과 이에 따른 child 상태 변경을 하나의 논리적 consistency boundary로 취급한다. 중간 일부 Incident만 RESOLVE된 상태를 정상 결과로 인정하지 않는다.
-
-## 저장 내구성 등급
-
-모든 관측을 같은 수준으로 보존하지 않는다.
-
-| 등급 | 대상 | 보존 의미 |
+| 등급 | 대상 | 장애 뒤 의미 |
 |---|---|---|
-| Ephemeral | evidence로 승격되지 않은 raw frame, bbox, TrackSegment, 순간 신호 | 재시작 후 새 관측으로 다시 생성 |
-| Checkpointed | PhysicalVehicle 관측, ZoneVisit timer, STOP_PENDING 누적 시간 | 안전한 하한을 주기적으로 복구 |
-| Immediately durable | EntryMatch, ContextBinding, Session, PARKED·UNPARKED, Incident 전이, Verification, outbox | 전이와 동시에 보존 |
+| Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal | 복구하지 않고 새 관측으로 생성 |
+| Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer, motion anchor | 마지막 안전한 하한부터 재개 |
+| Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
 
-Checkpoint 사이의 장애로 누적 시간을 잃을 수는 있다. 잃은 시간을 추정해 보충하지 않는다. 이 원칙은 확정을 늦출 수 있지만 거짓 확정을 만들지 않는다.
+`[제안값]` dirty checkpoint는 최대 10초마다 하나의 batch transaction으로 기록한다. crash로 잃은 최대 10초의 trusted time은 추정 보충하지 않는다. 확정이 조금 늦어질 수는 있지만 거짓 확정을 만들지 않는다.
 
-## 저장 단계
+## 3. 최소 영속 record
 
-```mermaid
-stateDiagram-v2
-    [*] --> ACTIVE_HOT
-    ACTIVE_HOT --> ACTIVE_SUSPENDED: "장기 UNKNOWN·hot cache eviction"
-    ACTIVE_SUSPENDED --> ACTIVE_HOT: "재관측·업무 접근"
+### 3.1 Active snapshot
 
-    ACTIVE_HOT --> TERMINATED_UNCONFIRMED: "도메인 종료"
-    ACTIVE_SUSPENDED --> TERMINATED_UNCONFIRMED: "authoritative 상위 종료"
+현재 판단을 재개하는 데 필요한 값만 저장한다.
 
-    TERMINATED_UNCONFIRMED --> TERMINATED_CONFIRMED: "scope별 종료 확인 근거 충족"
-    TERMINATED_CONFIRMED --> MINIMAL_TOMBSTONE: "full payload 보존 기간 만료"
-    MINIMAL_TOMBSTONE --> [*]: "모든 retention 조건 만료"
+```text
+scope type·ID
+domain state
+domain key와 필요한 parent/context reference
+observation state와 last reliable time
+trusted accumulator와 적용된 scalar 설정값
+recordVersion
+publicationRevision
 ```
 
-### ACTIVE_HOT
+### 3.2 Outbox
 
-현재 처리에서 반복 조회되는 active scope다. 메모리 cache에 둘 수 있다.
+```text
+deliveryId
+aggregate type·ID
+publicationRevision
+transition type
+immutable serialized payload
+payload hash
+Idempotency-Key
+delivery state
+attempt count / nextAttemptAt / last error
+```
 
-### ACTIVE_SUSPENDED
+serializer·hash algorithm·wire schema는 `[후속 계약]`에서 고정한다. Jetson은 한 번 저장한 payload bytes를 retry 때 다시 생성하지 않는다.
 
-domain lifecycle은 ACTIVE지만 장기 `UNKNOWN`이거나 당장 반복 조회하지 않는 상태다.
+### 3.3 Receipt와 tombstone
 
-- hot cache에서 내릴 수 있다.
-- durable state는 유지한다.
-- RESOLVE·UNPARKED·EXIT를 만들지 않는다.
-- 재관측이나 reconciliation으로 ACTIVE_HOT에 돌아올 수 있다.
+전체 lifecycle archive 대신 다음 최소 사실을 보존한다.
 
-### 종료 확인 근거
+```text
+scope 또는 dedup identity
+final state·reason·occurredAt
+final publicationRevision와 payload hash
+Backend correlation·confirmedAt, 존재하는 경우
+expiresAt
+```
 
-모든 terminal scope가 Backend publication을 갖는 것은 아니다. Scope는 종료 시 다음 중 하나의 확인 근거를 명시한다.
+### 3.4 Evidence metadata
 
-| 확인 근거 | 적용 대상 | confirmed 조건 |
+```text
+evidenceId
+incidentId / publicationRevision
+capturedAt / imageType
+final path / byteSize / checksum
+state / last error
+Backend ACK, 존재하는 경우
+retention disposition
+```
+
+범용 relation graph, 모든 내부 transition의 immutable event log와 전체 payload archive는 필수 저장 구조가 아니다. 실제 조회에 필요한 foreign key와 index만 둔다. cache와 index는 store에서 재구성할 수 있어야 하며 authoritative state가 아니다.
+
+## 4. Consistency boundary
+
+### 4.1 공개 전이
+
+다음은 한 transaction으로 commit한다.
+
+```text
+domain snapshot 또는 terminal tombstone
++ recordVersion
++ publicationRevision
++ immutable outbox row
+```
+
+장애가 어느 시점에 발생해도 “state만 바뀌고 outbox가 없음” 또는 “outbox만 있고 state가 없음”을 허용하지 않는다.
+
+### 4.2 아직 publication할 수 없는 전이
+
+ContextBinding 전 PARKED처럼 외부 correlation이 부족한 상태는 다음만 commit한다.
+
+```text
+domain snapshot
++ original occurredAt
++ pending handoff marker
+```
+
+authoritative active binding 또는 late historical correlation receipt가 생기면 누락된 전이를 시간·aggregate 순서대로 immutable outbox로 만드는 transaction을 실행한다. publication을 만들기 전에 임의 sessionId를 채우지 않는다.
+
+pending handoff marker는 domain scope가 아니라 publication eligibility workflow다. 상태는 `WAITING_CORRELATION → MATERIALIZED | EXPIRED`로 충분하다. `EXPIRED / UNBOUND_CONTEXT_EXPIRED`는 ParkingEpisode나 Incident를 다시 종료하는 reason이 아니라 외부 publication을 만들 수 없었다는 disposition이다.
+
+### 4.3 Incident Candidate와 evidence
+
+Candidate 생성 transaction에서 `incidentId`와 Candidate snapshot을 함께 저장한다. Candidate evidence는 같은 ID를 사용하며 OPEN transaction에서 publication revision에 귀속한다. OPEN 전 evidence 상태와 incidentId는 local-only이고 외부에 공개하지 않는다.
+
+Evidence binary는 임시 `.part` 파일에 쓰고 size·checksum을 확인한 뒤 file fsync-equivalent, final path atomic rename, parent-directory fsync-equivalent 순서로 내구성을 확보한다. 그 뒤에만 `READY` metadata를 commit한다. local store도 power-loss durable commit mode를 사용해야 한다.
+
+rename 뒤 metadata commit 전에 죽으면 metadata 없는 final orphan이 생길 수 있다. restart spool scan은 orphan `.part`와 metadata 없는 final file을 모두 격리·정리한다. 반대로 READY metadata가 있는데 파일이 없거나 checksum이 다르면 `FAILED / LOST_OR_CORRUPTED`로 바꾼다. 이미 OPEN publication revision에 귀속된 evidence에만 `EvidenceUnavailable` outbox를 만들며, pre-OPEN failure는 local metadata로 남겼다가 Incident가 OPEN될 때 귀속·공개하거나 Candidate 취소와 함께 정리한다.
+
+### 4.4 입력 접수
+
+Jetson inbound boundary는 domain state를 바꾸는 `EntryDecision`, `EntryReviewResolution`, `SessionContextUpdate`, `MoveVerificationCommand`를 다음 값과 함께 durable하게 저장한 뒤에만 성공 응답한다. ZoneDefinitionSnapshot은 active scope가 없는 통제된 기동에서 별도 atomic 설정 배포로 적용한다.
+
+```text
+input identity와 revision 또는 attempt
+payload hash
+immutable request 또는 필요한 command snapshot
+initial workflow state
+```
+
+동일 identity와 같은 payload retry는 기존 결과를 반환한다. 동일 identity의 다른 payload는 계약 오류다.
+
+## 5. Transactional outbox
+
+### 5.1 상태
+
+```text
+PENDING → IN_FLIGHT → DELIVERED
+IN_FLIGHT → RETRY_WAIT → IN_FLIGHT
+IN_FLIGHT → FAILED_TERMINAL
+FAILED_TERMINAL → RETRY_WAIT  [explicit intervention only]
+```
+
+- `DELIVERED`는 `[후속 계약]`에서 정한 Backend 적용 확인을 받았다는 뜻이다.
+- `FAILED_TERMINAL`은 인증·schema·payload처럼 retry로 회복되지 않는 오류에만 사용한다. domain transition을 취소하지 않으며 health와 운영 대상이다.
+- persisted IN_FLIGHT는 restart 때 RETRY_WAIT로 돌려 같은 payload를 다시 보낼 수 있다.
+- FAILED_TERMINAL에서 RETRY_WAIT로 돌아가는 전이는 인증·Backend schema 복구 같은 명시적 운영 조치 뒤에만 허용하며 payload는 바꾸지 않는다.
+- FAILED_TERMINAL은 같은 aggregate의 뒤 revision도 계속 차단한다. 개별 revision을 local에서 건너뛰거나 waive하는 상태는 현재 계약에 두지 않는다.
+
+### 5.2 순서와 동시성
+
+- aggregate·destination·publicationRevision당 outbox row는 하나다.
+- 같은 aggregate에서는 가장 낮은 미확인 revision만 claim할 수 있다.
+- revision gap이 있으면 뒤 revision 전송을 보류한다.
+- camera/inference loop와 publisher를 분리한다.
+- `[제안값]` publisher concurrency는 1로 시작한다.
+
+### 5.3 Retry
+
+`[제안값]` retry 가능한 네트워크·5xx 오류는 1초부터 시작하는 exponential backoff와 jitter를 사용하고 최대 간격을 5분으로 제한한다. 횟수만으로 FAILED_TERMINAL로 바꾸지 않는다. 24시간 연속 실패하면 health 경고를 올리고, 7일 offline SLO를 넘으면 CRITICAL 운영 상태로 보고하되 quota가 남아 있는 동안 동일 payload retry를 계속한다. 인증·schema·payload처럼 반복해도 회복되지 않는 오류만 FAILED_TERMINAL로 격리한다.
+
+ACK를 받은 뒤 DELIVERED commit 전에 process가 죽을 수 있으므로 Backend는 같은 Idempotency-Key와 payload의 retry를 멱등 처리해야 한다. 정확한 보장 기간은 `[후속 계약]`이다.
+
+Backend application confirmation은 최소한 다음을 반환하거나 같은 publication identity로 조회할 수 있어야 한다.
+
+```text
+aggregate ID / publicationRevision
+payload hash
+APPLIED | ALREADY_APPLIED | CONFLICT
+Backend correlation
+confirmedAt
+```
+
+같은 revision의 다른 hash는 자동 덮어쓰기나 새 revision 생성 없이 FAILED_TERMINAL로 격리한다. 7일 offline SLO를 넘긴 미확인 publication도 local에서 삭제하거나 payload를 바꾸지 않는다. 동일 identity 재전송과 application status 조회 중 무엇을 사용할지, Backend uniqueness·조회 보존 기간은 `[후속 계약]`에서 함께 정한다.
+
+이 후속 계약이 확정되기 전에는 7일 retry를 배포 완료 보장이 아니라 용량·운영 설계 목표로 취급한다.
+
+## 6. 동일 장치 재시작
+
+재시작은 다음 순서를 따른다.
+
+1. local store를 열고 migration과 빠른 integrity check를 수행한다.
+2. active snapshot, dedup record, 미완료 outbox와 evidence metadata를 복구한다.
+3. persisted IN_FLIGHT를 RETRY_WAIT로 되돌린다.
+4. domain state는 유지하고 관측 기반 scope의 observation을 UNKNOWN으로 시작한다.
+5. trusted timer를 마지막 checkpoint 하한부터 재개하고 downtime을 더하지 않는다.
+6. READY evidence의 파일 존재와 checksum을 확인하고 orphan `.part`와 metadata 없는 final file을 정리한다.
+7. deployment metadata에 저장한 effective cap을 읽고 현재 filesystem·영역 사용량과 watermark를 다시 계산해 필요한 DRAIN을 적용한다. 현재 free space를 설치 baseline으로 다시 사용하지 않는다.
+8. outbox publisher를 시작한다.
+9. store가 정상이라면 camera·model을 기동하고 첫 정상 전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존 PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며 새 scope·Candidate는 만들지 않는다.
+
+TrackSegment와 raw frame은 복구하지 않는다. 복구된 OPEN Incident를 새 incidentId로 만들거나 PARKED 차량이 이동했다고 추정하지 않는다.
+
+store integrity가 실패하거나 writable하지 않으면 새 durable transition을 확정하거나 ACK가 필요한 delivery를 진행하지 않는다. health는 `NOT_READY / STORAGE_FAILURE`로 표시하고 진단만 수행한다.
+
+## 7. Retention
+
+### 7.1 기본 원칙
+
+1. cache eviction은 domain transition이 아니다.
+2. ACTIVE·OPEN·PARKED를 age만으로 종료하지 않는다.
+3. publication 적용 여부와 evidence 보존 여부를 구분한다.
+4. 원본 CCTV 영상은 저장하지 않는다.
+5. 저장공간을 지키기 위해 evidence binary를 줄일 수 있지만 손실 사실을 숨기지 않는다.
+6. outbox를 무한히 늘리지 않는다. quota에 가까워지면 신규 durable work를 중지한다.
+
+### 7.2 초기 보존값
+
+다음은 pilot 실측 전 `[제안값]`이다.
+
+| 대상 | 초기 보존 |
+|---|---|
+| 공개되지 않은 terminal Candidate | child·publication이 없으면 종료 후 1시간 |
+| ACTIVE·OPEN·PARKED snapshot | 실제 lifecycle 종료까지; hot cache에서는 내릴 수 있음 |
+| Backend 적용 확인된 DELIVERED outbox payload | aggregate가 active여도 confirmation 24시간 뒤 delivery receipt로 축약 |
+| delivery receipt | confirmedAt부터 14일 |
+| 공개된 terminal snapshot·tombstone | 적용 미확인 중에는 age purge 금지; confirmed 시점부터 14일 |
+| local-only terminal tombstone | terminal 시점부터 14일 |
+| FAILED_TERMINAL payload | age만으로 축약·waive 금지; 명시적 운영 복구 뒤 같은 payload를 retry할 때까지 보존 |
+| correlation을 기다리는 terminal handoff marker | local terminal 또는 entry/review terminal 중 늦은 시점부터 최대 7일, 이후 marker를 `EXPIRED / UNBOUND_CONTEXT_EXPIRED` 처리 |
+| processed entry/command dedup | workflow가 active인 동안 보존; terminal result 또는 마지막 accepted retry 중 늦은 시점부터 7일 |
+| ACK된 evidence binary | 정상 시 최대 24시간, WARN 이상에서는 즉시 정리 가능 |
+| 미ACK evidence binary | best effort, 최대 7일 또는 evidence quota·filesystem floor 도달 전까지 |
+| evidence metadata | 관련 EvidenceArtifact·EvidenceUnavailable이 모두 confirmed된 시점부터 14일; 미확인·FAILED_TERMINAL publication은 purge를 막고 Incident tombstone이 더 길면 그 기간에 맞춤 |
+| 지원 offline retry | 7일 |
+| service log | 최대 7일이면서 log quota 이내 |
+
+미ACK evidence가 7일 또는 storage pressure로 제거되면 다음을 보존한다.
+
+```text
+state = EVICTED
+reason = RETENTION_EXPIRED 또는 STORAGE_PRESSURE
+checksum / byteSize / capturedAt
+incidentId / publicationRevision
+evictedAt
+```
+
+이를 업로드 성공으로 기록하지 않는다. 삭제 전에는 진행 중 upload lease가 끝났는지 확인하고 metadata의 `EVICTION_PENDING/EVICTED` 전이를 durable workflow로 남긴다. 외부 publication revision에 귀속된 evidence에만 `EvidenceUnavailable` outbox를 만들며, crash가 발생하면 restart가 미완료 eviction을 계속한다.
+
+미전송 outbox는 age만으로 조용히 삭제하지 않는다. offline retry 7일은 용량 설계와 운영 개입의 SLO다. quota에 도달하면 DRAIN으로 전환해 신규 durable 입력을 막고 기존 delivery와 정리를 우선한다.
+
+## 8. 64GB SD 초기 예산
+
+64GB 표기 용량 전체를 애플리케이션이 사용할 수 있다고 가정하지 않는다. JetPack·OS·runtime·model을 설치한 실제 filesystem을 기준으로 계산한다.
+
+`[제안값]` 애플리케이션 가변 데이터의 최대 hard cap은 12GiB다. 실제 cap은 설치 직후 여유 공간과 30% 보호 floor를 함께 사용해 더 작아질 수 있다.
+
+| 영역 | 최대 Hard cap | 비고 |
+|---|---:|---|
+| state DB, WAL, outbox, receipt·tombstone | 2GiB | 1.75GiB부터 신규 durable work 제한 |
+| evidence spool | 8GiB | ACK된 파일부터 정리 |
+| service log | 512MiB | rotation 필수 |
+| temp·`.part` | 512MiB | restart 때 orphan 정리 |
+| app safety reserve | 1GiB | transaction·checkpoint 여유 |
+
+다음 식으로 장치별 유효 cap을 계산한다.
+
+```text
+deploymentBaselineFreeBytes = 설치·model 배포 완료 직후 측정한 root free bytes
+deploymentBaselineAppDataBytes = 같은 시점에 이미 존재하는 app mutable bytes
+protectedFloorBytes = rootTotalBytes × 0.30
+effectiveMutableCap = max(0, min(12GiB,
+    deploymentBaselineAppDataBytes + deploymentBaselineFreeBytes - protectedFloorBytes))
+reservedNonEvidence = 2GiB + 512MiB + 512MiB + 1GiB
+effectiveEvidenceCap = max(0, min(8GiB, effectiveMutableCap - reservedNonEvidence))
+```
+
+두 baseline과 계산된 cap은 deployment metadata로 저장한다. 일반 restart에서는 다시 계산하지 않고 OS·runtime·model 설치량이 바뀌는 통제된 배포에서만 기존 app data를 포함해 새 baseline을 만든다. `appDataBytes`는 state 영역, evidence, log와 temp의 실제 합이며 1GiB safety reserve는 사용량이 아니다.
+
+정상 배포 승인 시 현재 watermark가 NORMAL이어야 한다. 즉 root free space가 42% 이상이고 각 실제 영역이 quota의 70% 미만이며 `appDataBytes < min(11GiB, effectiveMutableCap - 1GiB)`여야 한다. `effectiveMutableCap ≤ reservedNonEvidence`인 장치도 승인하지 않는다. evidence는 pilot의 최대 일일 발생량을 사용해 다음 조건도 만족해야 한다.
+
+```text
+baselineEvidenceBytes + pilotPeakDailyArtifactBytes × 7 + maxNextEvidenceSetBytes
+≤ effectiveEvidenceCap × 0.85
+```
+
+`maxNextEvidenceSetBytes`는 한 Incident OPEN transaction이 예약할 수 있는 전체 evidence 합이다. 현재 최대 두 장과 artifact당 2MiB hard limit을 적용하면 4MiB다.
+
+따라서 표의 8GiB evidence와 12GiB app cap은 항상 확보되는 할당량이 아니라 장치가 충분히 비어 있을 때의 상한이다.
+
+### 8.1 Evidence 크기
+
+`[제안값]` 기본 evidence는 다음으로 제한한다.
+
+- Incident OPEN당 still image 1장, 규칙상 필요한 경우 최대 2장
+- 최대 1280×720 JPEG
+- 목표 512KiB 이하, artifact hard limit 2MiB
+- video와 durable ring buffer 없음
+- retry 때 새 이미지를 만들지 않음
+
+hard limit을 만족하지 못하면 binary를 계속 쓰지 않고 `FAILED / RESOURCE_LIMIT` metadata를 남긴다.
+
+RESOURCE_LIMIT 또는 storage eviction은 외부 Incident revision에 이미 귀속된 경우에만 같은 evidence identity의 `EvidenceUnavailable` publication을 만들며 upload 성공으로 취급하지 않는다. pre-OPEN artifact는 Incident OPEN 전까지 외부에 노출하지 않는다.
+
+## 9. Storage watermark와 degraded 동작
+
+하나라도 조건을 만족하면 더 높은 단계로 전환한다. percentage는 현재 root filesystem의 실제 total/free byte를 기준으로 한다.
+
+| 단계 | 조건 `[제안값]` | 동작 |
 |---|---|---|
-| `PUBLICATION_APPLIED` | UNPARKED, Incident RESOLVE, MoveVerification 결과, Jetson EXIT처럼 terminal과 직접 연결된 Backend publication이 있는 scope | Backend가 해당 aggregate의 최종 공개 revision과 transition hash 적용을 확인함 |
-| `AUTHORITATIVE_PARENT_CLOSED` | Session EXIT로 끝났고 별도 UNPARKED처럼 직접 terminal publication을 만들지 않는 child scope | Backend의 authoritative parent 종료와 로컬 child 종료가 연결됐으며, child가 만든 다른 publication은 모두 적용됨 |
-| `LOCAL_ONLY` | 외부에 공개되지 않은 candidate, TrackSegment, 내부 ZoneVisit·relation 등 | 공개 revision·correlation이 없고 local child·replay·stale-input 방지 조건을 모두 충족함 |
+| `NORMAL` | free space ≥ 40%, 각 영역 < 70% quota | 모든 기능 수행 |
+| `WARN` | free space < 40% 또는 실제 영역 ≥ 70% quota | ACK evidence와 orphan·expired temp 정리, log rotate, upload 우선, health 경고 |
+| `CRITICAL` | free space < 35% 또는 실제 영역 ≥ 85% quota | 새 binary evidence capture 전체 중지, RESOURCE_PRESSURE metadata·domain/outbox 기록 유지 |
+| `DRAIN` | free space < 30% 또는 DB+WAL+outbox+receipt ≥ 1.75GiB 또는 app data ≥ `min(11GiB, effectiveMutableCap - 1GiB)` | readiness false, 새 durable scope·Candidate·evidence와 새 업무를 만드는 inbound·non-terminal publication 중지; 기존 scope의 terminal 전이·publication, delivery·정리·health 우선 |
 
-Evidence의 영구 실패처럼 publication ACK로 완료할 수 없는 workflow는 명시적인 `EVIDENCE_UNAVAILABLE` 확인을 종료 근거로 사용한다. 어떤 근거를 사용하더라도 미완료 publication을 무시하거나 공개 사실을 local-only로 강등할 수 없다.
+30% filesystem floor를 침범하면서 신규 데이터를 계속 받지 않는다. evidence를 먼저 축소하고 마지막에 admission을 중지한다. DRAIN에서는 camera·inference를 drain-only mode로 유지하고 usable write reserve 안에서 기존 scope의 bounded checkpoint, RESOLVE·UNPARKED·EXIT와 그 outbox를 우선 기록한다. 기존 scope를 terminal로 만드는 authoritative inbound와 이미 접수한 identity의 멱등 retry만 reserve 안에서 허용한다.
 
-PARKED나 Incident OPEN처럼 scope가 ACTIVE일 때 이미 만든 선행 publication은 terminal 확인 근거 자체는 아니지만, 해당 scope를 축약하기 전에 모두 적용돼 있어야 한다.
-
-### TERMINATED_UNCONFIRMED
-
-로컬 lifecycle은 끝났지만 해당 scope에 적용되는 종료 확인 근거가 아직 충족되지 않았다.
-
-다음 중 존재하는 정보를 완전한 형태로 보존한다.
-
-- terminal 상태와 종료 사유
-- 정확한 publication payload
-- publication revision과 transition hash
-- Idempotency-Key
-- Backend correlation
-- evidence reference
-
-공개된 적 없는 local-only scope에는 publication payload·revision·Idempotency-Key가 없을 수 있다. 이 경우 그것을 임의로 생성하지 않고 local 종료·참조·replay 근거를 보존한다.
-
-### TERMINATED_CONFIRMED
-
-scope별 종료 확인 근거를 충족한 상태다. 공개 scope는 Backend가 동일 aggregate revision과 transition hash를 적용했음을 확인한 상태이며, 늦은 재전송과 reconciliation을 위해 안전 구간 동안 full record를 더 유지한다. Local-only scope는 stale input·재생 방지에 필요한 local 안전 구간을 적용한다.
-
-### MINIMAL_TOMBSTONE
-
-다음 최소 정보만 남긴다.
+drain-only mode는 기존 confirmed scope의 terminal-progress 경로만 관측한다. 예를 들어 PARKED→MOVE_PENDING→ENDED, OPEN→CLEAR_PENDING→RESOLVED, INSIDE→EXITING→ENDED는 reserve 안에서 진행할 수 있다. 반대로 STOP_PENDING→PARKED, CANDIDATE→OPEN처럼 새 durable 사실·publication을 확장하는 경로는 현재 state와 trusted timer 하한을 유지하고 observation을 `UNKNOWN / RESOURCE_PRESSURE`로 둔다. 복구 뒤 정상 sample부터 재개하며 DRAIN 시간을 소급 누적하지 않는다.
 
 ```text
-ScopeRef
-final domain state
-termination kind·reason·time
-final lifecycle sequence
-final publication revision (if published)
-domain key 또는 key hash
-lifetime scope reference
-last transition hash (if published)
-termination confirmation basis·evidence reference
-retainUntil
+usableWriteReserve = max(0, min(
+    currentRootFreeBytes - protectedFloorBytes,
+    effectiveMutableCap - appDataBytes,
+    2GiB - stateRegionBytes))
 ```
 
-## Scope별 보존
+1GiB app safety reserve는 목표 상한이고 state 영역이 1.75GiB에서 DRAIN에 들어오면 실제 reserve는 최대 256MiB다. 다음 최악 크기 write가 usableWriteReserve를 넘으면 해당 전이를 메모리에서만 만들지 않고 observation·readiness를 UNKNOWN/NOT_READY로 둔다.
 
-| Scope | ACTIVE 보존 | 기본 종료 확인 근거 | Tombstone 목적 |
-|---|---|---|---|
-| Camera source session | 현재 실행 동안 | `LOCAL_ONLY` | 원칙적으로 불필요 |
-| TrackSegment | 메모리 중심 | `LOCAL_ONLY` | 불필요 |
-| PhysicalVehicle | 관측 또는 session 연결 동안 | `LOCAL_ONLY` + child 정리 | identity 재사용·merge 추적 |
-| EntryMatchAttempt | PENDING 동안 | `LOCAL_ONLY` + 결과 조회·command replay 계약 | attempt 중복 방지 |
-| ContextBinding | Session 활성 동안 | `AUTHORITATIVE_PARENT_CLOSED` 또는 `LOCAL_ONLY` correction | 잘못된 재연결 방지 |
-| ParkingSessionMirror | ACTIVE 동안 | Jetson EXIT는 `PUBLICATION_APPLIED`, Backend 선종료는 `AUTHORITATIVE_PARENT_CLOSED` | session 중복·stale 입력 방지 |
-| ZoneVisit | non-terminal 동안 | `LOCAL_ONLY` + 방문 기반 Incident 정리 | 같은 visitId 재생성 방지 |
-| ParkingEpisode | non-terminal 동안 | UNPARKED는 `PUBLICATION_APPLIED`, Session EXIT 종료는 `AUTHORITATIVE_PARENT_CLOSED` | episode 중복 전이 방지 |
-| BlockingRelation | non-terminal 동안 | `LOCAL_ONLY` + 관련 Incident 정리 | relation 중복·stale 관계 방지 |
-| Incident | CANDIDATE·OPEN·CLEAR_PENDING 동안 | 공개 사건은 `PUBLICATION_APPLIED`, 후보 취소는 `LOCAL_ONLY` | incidentId·revision·이전 key 구분 |
-| MoveVerificationAttempt | ACCEPTED·CHECKING 동안 | 결과가 있으면 `PUBLICATION_APPLIED`, 미공개 취소는 `LOCAL_ONLY` | command 중복 방지 |
-| Outbox message | 미완료 동안 | Backend 적용 확인 | receipt로 축약 |
-| EvidenceArtifact | 캡처·업로드 동안 | 업로드 ACK 또는 명시적 `EVIDENCE_UNAVAILABLE` 확인 | metadata·checksum·실패 근거 보존 |
+disk 상태는 `[제안값]` 30초마다 그리고 모든 DB·evidence·temp·log write 전에 `현재 사용량 + 예약한 다음 write 상한`으로 검사한다. 5분 연속으로 다음을 만족하면 한 단계씩 복귀한다.
 
-## Active scope 보존
+- DRAIN 해제: free ≥ 32%, DB 영역 < 1.5GiB, app data < `min(10GiB, effectiveMutableCap - 2GiB)`
+- CRITICAL 해제: free ≥ 37%, 실제 영역 < 80% quota
+- WARN 해제: free ≥ 42%, 실제 영역 < 65% quota
 
-다음 active 상태에는 시간 기반 자동 삭제를 적용하지 않는다.
+prospective check를 구현하려면 저장소 ADR에서 `maxSerializedOutboxPayloadBytes`, `maxDbTransactionAndWalGrowthBytes`, WAL checkpoint·rotation 상한, `maxTempWriteBytes`, `maxLogWriteBytes`를 반드시 정해야 한다. 하나의 in-process quota governor가 모든 app writer의 byte budget을 atomic reservation·settlement로 직렬화하고 commit 직전 root free space를 다시 검사해야 한다. evidence의 현재 artifact 상한은 2MiB, evidence set 상한은 4MiB다. 이 값과 실제 schema가 확정되기 전에는 reserve 검증을 완료한 것으로 보지 않는다.
 
-- session에 연결된 PhysicalVehicle
-- PARKED ParkingEpisode
-- OPEN Incident
-- 활성 ParkingSession
-- 진행 중 MoveVerification
-- 미완료 outbox
-- DEAD_LETTER
-- Backend 적용을 확인하지 못한 terminal scope
+## 10. Runtime 자원 경계
 
-장기 UNKNOWN으로 메모리 사용량이 증가하면 `ACTIVE_SUSPENDED`로 내린다. 이를 `TERMINATED`로 바꾸지 않는다.
+현재 8GB 통합 메모리 장치에서는 다음을 기본으로 한다.
 
-Active scope를 최종 정리하려면 신뢰 가능한 자체 종료 또는 Backend가 확인한 authoritative Session 종료가 필요하다.
+- camera 1대
+- YOLOv8n, batch 1
+- model/inference owner 1개
+- API worker 1개
+- frame queue 최대 2장
+- evidence encoder concurrency 1
+- raw frame과 반복 bbox 비영속
+- LED·speaker는 event-driven projection
 
-## Candidate retention
+입력 해상도, TensorRT FP16 여부와 목표 FPS는 실측 전 `[제안값]`이다. 같은 process 또는 장치에서 model worker를 복제하지 않는다. queue가 가득 차면 가장 오래된 ephemeral frame을 drop하고 counter를 올리며 queue를 확장하지 않는다.
 
-Backend에 공개된 적 없는 후보는 제한적으로 만료시킬 수 있다.
+## 11. Health와 검증 기준
 
-| 후보 | 만료 가능 조건 |
-|---|---|
-| PhysicalVehicle candidate | binding·child·공개 사실 없음 |
-| ZoneVisit ENTERING | 공개 사건 없음, 후보 replay window 만료 |
-| ParkingEpisode STOP_PENDING | 공개 사실 없음, 복구 checkpoint 정책 만료 |
-| BlockingRelation candidate | OPEN Incident 없음 |
-| Incident candidate | publication revision이 0 |
-
-관측 `UNKNOWN` 자체는 후보 취소 근거가 아니다. 운영상 보존 기한으로 내부 후보를 정리한다면 다음처럼 상태축을 구분하고 외부 RESOLVE를 만들지 않는다.
+health는 최소한 다음을 구분한다.
 
 ```text
-domain state    = CANCELED
-lifecycle phase = TERMINATED
-termination kind = EXPIRED
-reason code     = LOCAL_CANDIDATE_RETENTION_EXPIRED
+store writable / integrity
+filesystem free bytes와 watermark
+camera heartbeat
+model loaded
+last valid inference time
+oldest pending outbox age와 개수
+evidence spool bytes
+active UNKNOWN count와 최장 지속 시간
+MemAvailable과 swap 증감
+thermal throttle count
+frame drop counter
 ```
 
-## Incident tombstone과 재성립
+구현 완료 판단에는 최소한 다음 검증이 필요하다.
 
-동일 domain key의 이전 tombstone이 있다는 이유만으로 새 Incident를 영구 차단하지 않는다.
+1. domain state와 outbox commit 사이 강제 종료 후 복구
+2. ACK 직전·직후 강제 종료와 중복 retry
+3. PARKED·OPEN 상태 재시작 후 identity 재연결
+4. camera 장애 중 trusted timer 미누적
+5. evidence `.part`와 orphan file 복구
+6. WARN·CRITICAL·DRAIN watermark 강제 도달과 복귀
+7. `baselineDbRegionBytes + sevenDayPeakGrowthBytes + maxDbTransactionAndWalGrowthBytes < 1.5GiB`인지 7일 offline 모사로 확인
+8. model/engine hash, input size, precision과 camera 수를 고정한 실제 Jetson 24시간 soak test
+9. `[제안값]` OOM 0회, 지속 swap 증가 없음, thermal throttle 0회, soak 전체 sample의 `min(MemAvailable) ≥ 1GiB`
+10. `baselineEvidenceBytes + pilotPeakDailyArtifactBytes × 7 + maxNextEvidenceSetBytes ≤ effectiveEvidenceCap × 0.85`
 
-```text
-새 MATCHED 시각 ≤ 이전 resolvedAt
-→ stale signal이므로 무시 또는 거부
+이 측정 전까지 8GB 적합성은 설계 가정이며 검증 완료로 표시하지 않는다.
 
-새 MATCHED 시각 > 이전 resolvedAt
-+ 신뢰 가능한 clear 구간 존재
-+ lifetime scope가 유효
-→ 새 incidentId 생성 가능
-```
+24시간 soak는 자원 적합성 검증이지 탐지 정확도 검증이 아니다. 배포 전에는 model·dataset version을 고정하고 별도 labeled scenario에서 차량 미탐지로 인한 거짓 `NOT_PRESENT_CONFIRMED`와 주차·Incident 판정 품질을 검증해야 하며 합격 metric은 모델 평가 계약에서 정한다.
 
-이미 종료된 ZoneVisit 같은 terminal lifetime scope에는 새 Incident를 만들지 않는다. lifetime scope tombstone이 stale recreation을 차단한다.
+## 12. 보존 불변조건
 
-## Outbox retention
-
-| Delivery state | 자동 삭제 |
-|---|---|
-| `PENDING` | 금지 |
-| `IN_FLIGHT` | 금지 |
-| `RETRY_WAIT` | 금지 |
-| `DEAD_LETTER` | 금지 |
-| `DELIVERED`, `BackendApplicationConfirmation` 미확인 | 금지 |
-| `DELIVERED`, revision·hash의 `BackendApplicationConfirmation` 확인 | 안전 구간 뒤 receipt로 축약 가능 |
-| Delivery receipt | Backend idempotency·replay 기간 뒤 purge 가능 |
-
-동일 publication을 retry할 때 현재 aggregate에서 payload를 다시 만들지 않는다. 생성 당시 immutable payload와 같은 Idempotency-Key를 사용한다.
-
-DEAD_LETTER는 관리자가 재처리하거나 명시적으로 포기하기 전까지 보존한다. domain lifecycle을 되돌리거나 undelivered publication을 공간 확보 목적으로 삭제하지 않는다.
-
-## Evidence retention
-
-전달 가능한 Evidence가 Backend upload ACK를 받기 전:
-
-- 복구 가능한 evidence 파일 삭제 금지
-- Incident RESOLVE·Session EXIT 이후에도 업로드 계속
-- DEAD_LETTER 자동 삭제 금지
-
-Backend ACK 이후:
-
-- evidence binary의 authoritative owner는 Backend다.
-- Jetson은 local evidence grace 기간 동안 파일을 유지한다.
-- 진행 중 업무가 local 파일을 필요로 하면 삭제를 연기한다.
-- 파일 삭제 후에도 evidence ID, checksum, capturedAt, Backend correlation은 Incident tombstone과 같은 의미 기간 동안 보존한다.
-
-`FAILED` Evidence는 전달 성공으로 간주하지 않는다. 복구 가능한 binary가 있으면 명시적 처리 전까지 보존한다. binary가 이미 손실·손상됐거나 복구 불가능함이 확인됐다면 실패 reason·checksum 가능 여부·Incident revision을 보존하고, Backend 또는 계약된 운영 권한자의 `EVIDENCE_UNAVAILABLE` 확인 뒤에만 parent 보존 blocker를 해제한다. 이 확인 뒤에도 실패 metadata는 Incident tombstone과 같은 의미 기간 동안 남긴다.
-
-## Retention 계약 변수
-
-기간 숫자를 도메인 코드에 고정하지 않고 다음 계약 변수로 표현한다.
-
-| 변수 | 의미 |
-|---|---|
-| `W_backend_idempotency` | Backend가 Idempotency-Key 결과를 기억한다고 보장하는 기간 |
-| `W_backend_applied_edge` | Backend가 aggregate별 applied revision·transition hash·correlation을 조회 가능하게 보존하는 기간 |
-| `W_command_replay` | 동일 command가 다시 전달될 수 있는 최대 기간 |
-| `W_offline_retry` | 네트워크 장애 뒤 publication을 재시도하는 운영 기간 |
-| `W_reconciliation_overlap` | Backend 확인 뒤 local record를 추가 보존하는 안전 구간 |
-| `W_candidate_replay` | 늦은 observation으로 후보가 재생될 수 있는 구간 |
-| `W_evidence_local` | Evidence ACK 뒤 local binary 보존 기간 |
-
-각 기간은 다음 기준 시점에서 시작한다.
-
-| 변수 | 기준 시점 |
-|---|---|
-| `W_offline_retry` | immutable publication이 생성된 `recordedAt` |
-| `W_backend_idempotency` | Backend가 해당 Idempotency-Key를 처음 적용하거나 처리 결과로 고정한 시각 |
-| `W_backend_applied_edge` | Backend의 `appliedAt` |
-| `W_reconciliation_overlap` | Jetson이 유효한 `BackendApplicationConfirmation`을 확보한 시각 |
-| `W_command_replay` | command가 복구 가능하게 접수된 시각과 terminal 결과 생성 시각 중 늦은 시각 |
-| `W_candidate_replay` | 공개되지 않은 candidate가 terminal이 된 시각 |
-| `W_evidence_local` | Backend evidence ACK 시각 |
-
-Backend가 제공하는 retention contract나 application confirmation은 가능한 경우 계산된 `retainUntil`도 함께 제공한다. 기준 시각이 불명확하면 더 이른 purge를 추정하지 않는다.
-
-필수 관계:
-
-```text
-W_backend_idempotency
-≥ W_offline_retry
-
-W_backend_applied_edge
-≥ W_offline_retry + W_reconciliation_overlap
-
-delivery receipt retention
-≥ max(W_backend_idempotency, W_backend_applied_edge)
-
-published scope tombstone retention
-≥ delivery receipt retention
-
-processed command retention
-≥ W_command_replay
-
-terminal full payload retention
-≥ Backend final revision 확인 시점 + W_reconciliation_overlap
-
-evidence metadata retention
-≥ Incident tombstone retention
-```
-
-구체적인 값은 Backend와 운영 계약에서 정한다. 계약 기간이 짧아져도 이미 생성된 record의 `retainUntil`을 소급해 당기지 않는다. 기간이 길어지면 기존 record를 연장할 수 있다.
-
-## Compaction과 Purge 조건
-
-Full terminal record를 `MINIMAL_TOMBSTONE`으로 축약하는 것과 tombstone 자체를 최종 삭제하는 것은 다른 전이다.
-
-### Full record → MINIMAL_TOMBSTONE
-
-다음을 모두 만족해야 한다.
-
-1. scope별 종료 확인 근거가 충족됐다.
-2. 관련 미완료 또는 `DEAD_LETTER` publication이 없다.
-3. full payload·evidence를 요구하는 reconciliation·충돌·관리자 보존이 없다.
-4. 공개 scope는 Backend 최종 적용 확인 뒤 `W_reconciliation_overlap`이 지났다.
-5. local-only scope는 child·stale-input·local replay 안전 구간이 지났다.
-
-### MINIMAL_TOMBSTONE → Purged
-
-Terminal scope는 다음을 모두 만족해야 최종 purge할 수 있다.
-
-1. 해당 scope의 종료 확인 근거가 계속 유효하다.
-2. 공개 scope라면 관련 publication이 모두 Backend에 적용됐고 최종 revision·hash 확인 기록이 남아 있다.
-3. 미완료 또는 `DEAD_LETTER` outbox가 없다.
-4. active child scope가 없다.
-5. 미완료 EvidenceArtifact가 없고, 영구 실패 evidence는 `EVIDENCE_UNAVAILABLE` 확인을 받았다.
-6. 진행 중 MoveVerification이 참조하지 않는다.
-7. 해당되는 command replay 기간이 끝났다.
-8. 공개 scope에는 Backend idempotency·applied-edge 보장 기간과 reconciliation overlap이 끝났다.
-9. local-only scope에는 stale-input·candidate replay 안전 구간이 끝났다.
-10. 관리자 보존·reconciliation 충돌 대상이 아니다.
-
-Backend에 공개된 전이는 적용 확인 없이 시간이 오래 지났다는 이유로 purge하지 않는다. 반대로 공개된 적 없는 local-only scope에는 존재하지 않는 Backend revision 확인을 요구하지 않는다.
-
-## 재시작 복구
-
-재시작 시 다음 순서를 의미 계약으로 보장한다.
-
-1. PROVISIONAL·ACTIVE snapshot을 복구한다.
-2. domain lifecycle은 복구한 상태를 유지한다.
-3. 관측 기반 scope의 ObservationState를 `UNKNOWN`으로 시작한다.
-4. 중단 시간을 trusted duration에 포함하지 않는다.
-5. active·relation index를 authoritative state에서 재구성한다.
-6. 미완료 outbox와 command workflow를 재개한다.
-7. delivered 여부가 불명확한 publication은 같은 revision·Idempotency-Key로 확인한다.
-8. Backend reconciliation로 Session·context·applied revision을 비교한다.
-
-TrackSegment나 raw bbox는 복구하지 않는다. 복구된 PhysicalVehicle·ZoneVisit·ParkingEpisode·Incident는 새 관측을 얻기 전까지 `UNKNOWN`이다.
-
-## 보존 불변조건
-
-1. cache eviction은 lifecycle transition을 만들지 않는다.
-2. ACTIVE·UNKNOWN scope를 retention 시간만으로 종료하지 않는다.
-3. 공개 전이와 domain state 변경이 서로 다른 consistency boundary에 놓이지 않는다.
-4. terminal scope를 active 조회 대상으로 계속 보존하지 않는다.
-5. tombstone은 full archive가 아니라 중복·복구에 필요한 최소 사실이다.
-6. Backend 확인 전 publication payload를 축약하지 않는다.
-7. DEAD_LETTER와 미업로드 evidence를 자동 삭제하지 않는다.
-8. 새 Incident를 만들 수 있다는 이유로 이전 tombstone을 즉시 삭제하지 않는다.
-9. Backend 업무 상태를 Jetson domain lifecycle의 purge 근거로 사용하지 않는다.
-10. retention 정책 변경으로 기존 보존 기한을 소급 단축하지 않는다.
+1. 공개 전이와 outbox는 한 transaction이다.
+2. 성공 응답은 durable acceptance 뒤에만 반환한다.
+3. retry payload·revision·Idempotency-Key는 immutable이다.
+4. 같은 aggregate의 뒤 revision을 앞 revision보다 먼저 보내지 않는다.
+5. restart와 downtime은 새 domain 사실이나 trusted time이 아니다.
+6. raw frame과 반복 signal을 durable store에 쓰지 않는다.
+7. evidence eviction은 Incident RESOLVE나 delivery 성공을 만들지 않는다.
+8. storage pressure에서는 evidence capture 중지 후 admission DRAIN 순서로 축소한다.
+9. device replacement와 Backend snapshot 복구를 이 계약에 암묵적으로 포함하지 않는다.

@@ -1,262 +1,218 @@
 # Jetson Scope 전파 및 종료 계약
 
-> 상태: Draft · 관련 이슈: S15P11E202-461 · 범위: Jetson target domain contract · 비범위: 구현 상세, 테스트 계획, 배포 계획
+> 상태: Draft · 관련 이슈: S15P11E202-461 · 책임: scope 사이의 재평가와 종료 전파
 
-이 문서는 한 scope의 관측·전이가 다른 scope에 어떤 영향을 주는지 고정한다. 각 scope 내부 상태와 공통 lifecycle 의미는 [Jetson Scope 수명주기 계약](./02-scope-lifecycle-contract.md)을 따른다.
+이 문서는 한 scope의 변화가 다른 scope에 미치는 영향만 정의한다. 상태 자체의 의미는 [Scope 수명주기 계약](./02-scope-lifecycle-contract.md)을 따른다.
 
-## 핵심 원칙
+## 1. 전파 원칙
 
-한 scope가 다른 scope의 입력이라는 사실만으로 종료를 자동 전파하지 않는다. 관계마다 다음 중 어떤 동작이 필요한지 명시한다.
+1. 참조 관계만으로 종료를 cascade하지 않는다.
+2. observation 변화는 기본적으로 재평가 또는 timer 정지만 일으킨다.
+3. `REEVALUATE`는 새 관측으로 규칙을 다시 계산하라는 trigger이며 domain state가 아니다.
+4. ParkingEpisode의 MOVEMENT_CONFIRMED 종료와 movement는 Incident를 직접 RESOLVE하지 않는다.
+5. 실제 Session EXIT만 session-scoped 물리 사실의 terminal 전파를 조정한다.
+6. Backend의 행정 종료는 실제 EXIT와 구분한다.
+7. 공개 전이를 수반하는 다중 변경은 `04`의 한 consistency boundary로 commit한다.
 
-| 동작 | 의미 |
-|---|---|
-| `KEEP` | 확정된 lifecycle과 domain state를 유지한다. |
-| `OBSERVATION_UNKNOWN` | lifecycle은 유지하고 관측 상태만 `UNKNOWN`으로 바꾼다. |
-| `REEVALUATE` | 최신 도메인 사실을 사용해 규칙이나 공간 관계를 다시 평가한다. |
-| `CANCEL` | 아직 공개되지 않은 `PROVISIONAL` scope를 외부 전이 없이 취소한다. |
-| `END_NORMAL` | scope 자체의 정상 종료 조건이 확인됐다. |
-| `END_FORCED` | authoritative 상위 scope나 정정에 의해 종료한다. |
-| `PUBLISH` | 외부에 알릴 domain transition을 생성한다. |
-
-다음 세 등식은 성립하지 않는다.
-
-```text
-관측 소실 = 물리 상태 종료
-차량 이동 = Incident 해소
-의존 관계 = lifecycle 종속 관계
-```
-
-## 전체 관계
+## 2. 관계 개요
 
 ```mermaid
 flowchart TD
-    CAM["Camera observation"] -. "관측 신뢰도" .-> TS["TrackSegment"]
-    TS -. "segment 연결·소실" .-> PV["PhysicalVehicle"]
-
-    EM["EntryMatchAttempt"] --> CB["ContextBinding"]
-    PS["ParkingSessionMirror"] --> CB
-    PV --> CB
-
+    TS["TrackSegment"] --> PV["PhysicalVehicle"]
+    EA["EntryMatchAttempt"] --> CB["ContextBinding"]
+    CB --> PV
+    CB --> SM["ParkingSessionMirror"]
     PV --> ZV["ZoneVisit"]
     PV --> PE["ParkingEpisode"]
-    PE -. "생성 조건·재평가" .-> BR["BlockingRelation"]
-
-    ZV --> RE["RuleEvaluator"]
-    PE --> RE
-    BR --> RE
-    CB --> RE
-    RE --> IR["IncidentReducer"]
-    IR --> IN["Incident"]
-
-    IN --> MV["MoveVerificationAttempt"]
-    IN --> PUB["Domain publication"]
-    PE --> PUB
-    PS --> PUB
+    PE --> PA["ParkingAssignment"]
+    PV --> BR["BlockingRelation"]
+    ZV --> RULE["RuleEvaluator"]
+    PE --> RULE
+    PA --> RULE
+    BR --> RULE
+    CB --> RULE
+    RULE --> IR["IncidentReducer"]
+    IR --> INC["Incident"]
 ```
 
-실선도 모두 자동 cascade를 뜻하지 않는다. 종료가 전파되는 관계는 아래 행렬에서만 정한다.
+화살표는 입력 또는 조회 관계다. 자동 lifecycle 종속성을 뜻하지 않는다.
 
-## 관측과 추적
+## 3. 관측과 tracking
 
-| 발생한 변화 | 직접 영향 | 하위 scope 처리 | 외부 출력 |
+| 발생한 변화 | 직접 영향 | 재평가 | 금지되는 추론 |
 |---|---|---|---|
-| Camera `UNAVAILABLE` | 관측 기반 scope의 신뢰도 상실 | lifecycle 유지, 관측을 `UNKNOWN`, 시간 누적 정지 | 없음 |
-| Camera 회복 | 즉시 정상으로 간주하지 않음 | `DEGRADED`에서 scope별 재확인 후 `OBSERVED` | 실제 domain transition이 있을 때만 |
-| TrackSegment 종료, 다른 segment 존재 | PhysicalVehicle 동일성 유지 | ZoneVisit·ParkingEpisode에 영향 없음 | 없음 |
-| TrackSegment 종료, 대체 segment 없음 | PhysicalVehicle 재식별 유예 | 하위 lifecycle 유지, 관측만 `DEGRADED` 또는 `UNKNOWN` | 없음 |
-| 동일 PhysicalVehicle 재식별 성공 | 기존 identity의 관측 복구 | 기존 scope를 새 신뢰 관측부터 재개 | 실제 전이가 있을 때만 |
-| 재식별 보존 기한 만료, 공개 사실 없음 | 로컬 identity hypothesis 정리 가능 | 공개되지 않은 후보만 만료 가능 | 없음 |
-| 재식별 보존 기한 만료, session·공개 사실 존재 | durable suspended 상태로 이동 | `ACTIVE + UNKNOWN` 유지 | 없음 |
-| 프로세스 재시작 | 기존 TrackSegment는 이어 붙이지 않음 | durable lifecycle 복구, 관측은 `UNKNOWN` | pending publication만 재개 |
+| 한 TrackSegment 종료 | EntityResolver가 segment 연결 해제 | 재식별 후보 탐색 | PhysicalVehicle·ZoneVisit·ParkingEpisode·Incident 종료 |
+| tracker reset | 모든 기존 segment 종료 | 새 segment를 PhysicalVehicle에 재연결 | 실제 출차·UNPARKED·RESOLVE |
+| camera/pipeline unavailable | 관측 기반 scope를 DEGRADED 또는 UNKNOWN | timer 정지, health 갱신 | 빈 frame을 차량 부재로 해석 |
+| 장기 UNKNOWN | operational health 경고 | 복구 시 다시 관측 | 시간만으로 terminal 전이 |
+| 정상 전체 관측에서 `NOT_PRESENT_CONFIRMED` | `PHYSICAL_VEHICLE_LEFT` 처리 시작 | session 유무와 관계없이 child·Incident 정리 뒤 PhysicalVehicle RETIRED 조건 평가 | 단순 tracker timeout과 동일시 |
+| process restart | TrackSegment 폐기, durable state 복원 | 첫 정상 관측부터 재평가 | downtime을 trusted duration에 합산 |
 
-Camera unavailable이나 stale prune은 `ZoneVisit.OUTSIDE`, `ParkingEpisode.ENDED`, `Incident.RESOLVED`, `ParkingSession.EXITED`의 근거가 될 수 없다. `TrackingBatch.source_available=false`인 구간도 같은 원칙을 따른다.
+camera 한 대가 전체 모형을 관측한다는 전제가 성립할 때만 `NOT_PRESENT_CONFIRMED`를 사용할 수 있다. 부분 frame, camera unavailable과 calibration 오류 중에는 사용할 수 없다.
 
-재관측 후에는 중단 시간을 wall-clock 차이로 소급하지 않는다. 확인 타이머는 새 신뢰 관측부터 다시 진행한다.
+NOT_PRESENT_CONFIRMED된 차량에 active ContextBinding 또는 행정 종료 뒤 보존한 session–vehicle correlation이 있으면 physicalPresenceState를 `EXITED / JETSON_EXIT_CONFIRMED / FULL_AREA_ABSENCE`로 전환하고 SessionExit을 만들 수 있다. 어느 session과도 연결되지 않아도 `PHYSICAL_VEHICLE_LEFT`로 local child와 Incident를 종료할 수 있다.
 
-## 입차 매칭과 ContextBinding
+## 4. 입차 문맥과 ContextBinding
 
-| 발생한 변화 | EntryMatchAttempt | ContextBinding | Parking·Incident 영향 |
+Access decision과 EntryMatchOutcome은 독립적으로 전파한다.
+
+| 변화 | EntryMatchAttempt | ContextBinding | Parking·Incident 영향 |
 |---|---|---|---|
-| 입차 문맥 접수 | `PENDING` 생성 | 아직 없음 | 차량 상태를 session에 귀속하지 않음 |
-| 매칭 성공 | `MATCHED`로 정상 종료 | 새 binding 생성 | 보류 중인 session-scoped publication을 전송할 수 있음 |
-| 매칭 기한 만료 | `EXPIRED` | 생성하지 않음 | 자격을 무자격으로 추정하지 않음 |
-| Camera unavailable 중 만료 | 사유를 `SOURCE_UNAVAILABLE`로 구분 | 생성하지 않음 | retryable 결과로 유지 가능 |
-| 동일 차량 자격 정정 | 새 attempt 없음 | context version 갱신 | 관련 규칙을 `REEVALUATE` |
-| 다른 PhysicalVehicle로 재연결 | 기존 binding 강제 종료 | 새 binding 생성 | 이전 차량 상태 자동 상속 금지 |
-| ParkingSession 종료 | 진행 중 attempt 취소 | binding 강제 종료 | Session EXIT 전파 적용 |
+| ALLOW 문맥 수신 | PENDING 생성·재개 | 아직 없음 | 자격은 binding 전까지 authoritative하지 않음 |
+| REVIEW 문맥 수신 | 물리 매칭 계속 | 생성 금지 | 자격 의존 규칙은 UNKNOWN |
+| DENY 문맥 수신 | 물리 매칭 가능 | 생성 금지 | 등록 차량·session을 추론하지 않음 |
+| ACTIVE PhysicalVehicle MATCHED + authoritative session | MATCHED | BOUND 생성 | 보류된 session-scoped 사실을 시간 순서로 publication 가능 |
+| REVIEW_PENDING이 더 높은 decisionRevision의 REVIEW_ALLOW로 확정 | 기존 match 결과 사용 가능 | target이 ACTIVE면 BOUND | 자격 규칙 재평가 |
+| 행정 종료 뒤 PhysicalVehicle MATCHED | MATCHED 보존 | active binding 없이 유일한 exit-only mirror correlation | active target은 INSIDE 추적, RETIRED target은 historical EXIT 처리 |
+| ALLOW가 physical departure·RETIRED 뒤 도착 | match 결과 보존 | active binding 없이 historical correlation receipt | pending 사실과 SessionExit을 original occurredAt 순서로 materialize |
+| REVIEW가 DENY·EXPIRED | match 결과는 보존 | 생성하지 않음 | local 관측 유지; Incident는 entryAttemptId+physicalVehicleId 의미로 handoff |
+| 자격 context 변경 | 변화 없음 | 같은 binding의 context update | restricted-zone 규칙 REEVALUATE |
 
-차량 자격 정정과 물리 차량 연결 정정은 다르다. `isElectric`, `isDisabledVehicle` 같은 자격 변경은 동일 binding의 version을 올리고 규칙을 재평가한다. `physicalVehicleId`를 바꾸는 정정은 이전 binding을 끝내고 새 binding을 생성하며, 위치가 가깝다는 이유만으로 ParkingEpisode나 Incident를 옮기지 않는다.
+binding 전에 PARKED와 후속 UNPARKED가 모두 발생했더라도 retention 안에 binding되면 원래 `occurredAt`과 aggregate revision 순서로 publication한다. binding되지 않은 session-scoped 사실은 Backend 사실로 가장하지 않는다.
 
-## ZoneVisit
+## 5. ZoneDefinition과 ZoneVisit
 
-### 활성 방문
-
-```text
-ZoneVisit ENTERING·INSIDE·EXITING
-→ Pipeline
-→ RuleEvaluator가 현재 규칙 성립 여부 평가
-→ IncidentSignal
-→ IncidentReducer가 사건 상태로 축약
-```
-
-전용구역 무자격과 EV 초과 점유처럼 방문 자체를 수명 범위로 삼는 규칙은 활성 ZoneVisit을 기준으로 평가한다.
-
-### 종료된 방문
-
-```text
-ZoneVisit 종료 확정
-→ Pipeline이 zoneVisitId와 종료 사유 전달
-→ IncidentReducer가 lifetime scope index 조회
-→ 후보는 취소
-→ OPEN 사건은 RESOLVE
-```
-
-종료 경로에서는 현재 ZoneRegistry를 다시 조회하거나 `ruleCode`를 재구성하지 않는다. OPEN 당시 Incident가 보존한 lifetime scope와 rule 정보를 사용한다.
-
-| ZoneVisit 변화 | Incident 처리 | 외부 출력 |
+| 변화 | ZoneVisit | Incident 영향 |
 |---|---|---|
-| `ENTERING` 생성 | 필요하면 내부 후보 생성 | 없음 |
-| `ENTERING` 후보 취소 | 관련 후보 취소 | 없음 |
-| `INSIDE` 확정 | 방문 기반 규칙 평가 | 조건 충족 시 Incident OPEN |
-| `INSIDE` 유지 | 현재 규칙 재평가 | 새 전이가 있을 때만 |
-| 신뢰 가능한 구역 이탈 | 해당 visit 기반 Incident 종료 | Incident RESOLVE |
-| 관측 `UNKNOWN` | 후보·OPEN 상태 유지, timer 정지 | 없음 |
-| ParkingSession EXIT | 후보 취소, OPEN 사건 강제 종료 | Incident RESOLVE |
-| 권한 있는 Zone definition 교체·삭제 | 기존 definition의 visit 강제 종료 | 기존 사건 RESOLVE, 필요하면 새 visit에서 새 OPEN |
-| ZoneRegistry 조회 실패·설정 미로딩 | visit lifecycle 유지, observation `UNKNOWN` | 없음 |
+| zone 진입 confirmation | INSIDE | 방문 기반 규칙 평가 |
+| 정상 관측에서 zone 이탈 confirmation | ENDED | 해당 ZoneVisit을 key로 쓰는 Incident에 직접 종료 입력 전달 |
+| ZoneRegistry 조회 실패 | lifecycle 유지, observation UNKNOWN | timer 정지, 출력 없음 |
+| 통제된 기동에서 새 ZoneDefinition 적용 | active scope가 없는 상태에서 새 version 사용 | 실행 중 hot replacement 없음 |
 
-권한 있는 versioned 설정 전이로 Zone definition이 바뀌면 기존 visit을 새 정의 아래에서 계속 사용하지 않는다. 기존 `zoneDefinitionVersion`의 방문을 끝내고, 차량이 새 정의에서도 존재하면 새 `zoneVisitId`를 생성한다. 현재 registry에서 조회되지 않는다는 사실만으로 삭제를 추정하지 않는다.
+ZoneVisit ENDED는 이미 이탈 confirmation을 마친 사실이므로 해당 visit 기반 Incident의 직접 종료 입력이다. 같은 사건에 별도 NOT_MATCHED·clear timer를 다시 적용하지 않는다. IncidentReducer가 동일 `incidentId`의 RESOLVE publication을 만들며 다른 rule에는 전파하지 않는다.
 
-## ParkingEpisode
+## 6. ParkingEpisode, assignment와 movement
 
-| ParkingEpisode 변화 | Assignment | 규칙·관계 | Incident | 외부 출력 |
+| 변화 | ParkingEpisode·assignment | BlockingRelation | Incident | 외부 출력 |
 |---|---|---|---|---|
-| `STOP_PENDING` | 후보 계산 가능 | 규칙은 `confirmable=false` | 후보만 가능 | 없음 |
-| 확정 전 이동 | 후보 폐기 | 평가 종료 | 후보 취소 | 없음 |
-| `PARKED` 확정 | 대표 assignment 확정 | 불량 주차 평가, 차단 관계 탐색 | OPEN 가능 | PARKED, Incident OPEN |
-| `PARKED` 유지 | jitter에 안정적으로 유지 | 현재 규칙·관계 재평가 | 유지·해소·새 사건 | 새 전이가 있을 때만 |
-| 이동 확정 | assignment 종료 | 규칙과 BlockingRelation 재평가 | episode-scoped 사건 RESOLVE | UNPARKED |
-| 관측 `UNKNOWN` | 기존 assignment 보존 | 평가·timer 보류 | OPEN 유지 | 없음 |
-| ParkingSession EXIT | active assignment 참조 해제, 마지막 값을 episode terminal snapshot에 고정 | 관계 강제 정리 | 사건 강제 RESOLVE | UNPARKED는 보내지 않음 |
+| 정지 후보 | STOP_PENDING | 필요하면 후보 geometry 계산 | parking rule 후보는 `confirmable=false` | 없음 |
+| PARKED 확정 | PARKED + 안정된 assignment | 차단 후보 평가 가능 | parking rule 평가 | PARKED eligibility 생성 |
+| movement 후보 | MOVE_PENDING | 현재 관계 유지 | 기존 상태 유지 | 없음 |
+| movement 취소 | PARKED 복귀 | 필요하면 재평가 | 필요하면 재평가 | 없음 |
+| movement 확정 | ENDED, assignment 종료 | REEVALUATE | REEVALUATE | UNPARKED |
+| 실제 Session EXIT | ENDED / PHYSICAL_EXIT | 실제 부재 기준 정리 | Session EXIT 경로 적용 | 별도 UNPARKED 없음 |
 
-주차장 안에서 재배치하면 `UNPARKED`를 발행한다. 출차로 Session이 종료되면 별도 `UNPARKED`를 발행하지 않고 Session EXIT가 점유 해제의 상위 사실이 된다.
-
-## BlockingRelation
-
-ParkingEpisode 종료는 BlockingRelation 종료가 아니라 재평가 trigger다.
+movement 확정 뒤 Incident 처리 순서는 다음과 같다.
 
 ```text
-ParkingEpisode 이동 확정
-→ BlockingRelation geometry 재평가
-→ 계속 막고 있으면 BLOCKING 유지
-→ clear confirmation을 통과하면 종료
+ParkingEpisode ENDED와 UNPARKED publication 계획
+→ 최신 위치·assignment·zone·관계로 RuleEvaluator 실행
+→ MATCHED: 기존 Incident OPEN 유지
+→ NOT_MATCHED: CLEAR_PENDING 뒤 RESOLVE
+→ UNKNOWN: 기존 lifecycle 유지
+→ 현재 시점에 확정된 domain 변경과 outbox를 한 local transaction으로 commit
 ```
 
-| 발생한 변화 | BlockingRelation | DOUBLE_PARKING Incident |
+parking rule이 PARKED를 OPEN 조건으로 삼더라도 movement 자체나 episode 공백을 `NOT_MATCHED`로 해석하지 않는다. 한 신뢰 가능한 sample에서 규칙별 필수 geometry·assignment가 유효하고 위반 술어가 false이면 `NOT_MATCHED`다. IncidentReducer가 이후 clear 시간을 누적하며, 필수 입력이 불확실하면 `UNKNOWN / confirmable=false`다.
+
+새 위치에서 계속 불량 주차하거나 AISLE을 막는다면 새 Incident를 OPEN하지 않고 기존 Incident를 유지한다. clear confirmation 뒤 다시 성립한 경우에만 새 Incident다.
+
+## 7. BlockingRelation
+
+| 변화 | relation | DOUBLE_PARKING Incident |
 |---|---|---|
-| 두 PARKED 차량의 차단 후보 확인 | `CANDIDATE` | 후보 가능 |
-| 차단 확인 조건 충족 | `BLOCKING` | OPEN 가능 |
-| 가해 차량 이동, 여전히 차단 | `BLOCKING` 유지 | OPEN 유지 |
-| clear 후보 | `CLEAR_PENDING` | OPEN 유지 |
-| clear 확인 조건 충족 | 정상 종료 | RESOLVE |
-| 어느 한 차량 관측 UNKNOWN | lifecycle 유지, 관측 UNKNOWN | OPEN 유지 |
-| subject·victim Session EXIT | 강제 종료 | RESOLVE |
-| egress corridor 제거·정정 | 강제 종료 또는 새 relation 생성 | 기존 사건 RESOLVE |
+| 차단 후보 생성 | CANDIDATE | 후보 평가 가능 |
+| geometry confirm | BLOCKING | MATCHED·OPEN 가능 |
+| subject/victim 이동 | REEVALUATE | 직접 RESOLVE하지 않음 |
+| Candidate에서 정상 관측으로 차단 비성립 | CANCELED | Incident Candidate가 있으면 취소 |
+| BLOCKING·CLEAR_PENDING에서 차단 불성립 | CLEAR_PENDING → RESOLVED | relation 기반 Incident에 직접 종료 입력 전달 |
+| 한쪽 관측 UNKNOWN | lifecycle 유지 | OPEN 유지 또는 후보 timer 정지 |
+| 관련 차량 실제 EXIT | CANDIDATE는 CANCELED, BLOCKING·CLEAR_PENDING은 RESOLVED | SESSION_EXITED 또는 관계 해소로 RESOLVE |
 
-차단 관계가 한 번 신뢰 가능하게 해소된 뒤 다시 성립하면 새 `blockingRelationId`와 새 Incident를 생성한다.
+BlockingRelation RESOLVED는 자체 clear confirmation을 마친 사실이므로 같은 Incident에 별도 clear timer를 다시 적용하지 않는다.
 
-## Incident
+## 8. Incident
 
-RuleEvaluator는 현재 규칙 결과만 만든다. 결과는 `MATCHED`, `NOT_MATCHED`, `UNKNOWN`의 삼상태여야 한다. `UNKNOWN`을 `NOT_MATCHED`로 번역하지 않는다.
-
-| 입력 | CANDIDATE | OPEN·CLEAR_PENDING | 외부 출력 |
+| 입력 | CANDIDATE | OPEN·CLEAR_PENDING | 출력 |
 |---|---|---|---|
-| `MATCHED`, 아직 확정 불가 | 생성·유지 | OPEN이면 유지 | 없음 |
-| `MATCHED`, 확정 가능 | OPEN 전환 | OPEN 유지 | OPEN 1회 |
-| 신뢰 가능한 `NOT_MATCHED` | 취소 | CLEAR_PENDING 후 RESOLVE 가능 | OPEN됐던 사건만 RESOLVE |
-| `UNKNOWN` | 유지, timer 정지 | 유지, timer 정지 | 없음 |
-| lifetime scope 정상 종료 | 취소 | 정상 RESOLVE | RESOLVE |
-| ParkingSession EXIT | 취소 | 강제 RESOLVE | RESOLVE |
-| Backend 전송 실패 | 상태 유지 | 상태 유지 | 같은 revision 재시도 |
+| MATCHED | confirm 누적 후 OPEN | OPEN 유지 또는 CLEAR_PENDING에서 OPEN 복귀 | 최초 OPEN만 publication |
+| NOT_MATCHED | CANCELED | CLEAR_PENDING·clear 완료 후 RESOLVED | OPEN됐던 사건만 RESOLVE |
+| UNKNOWN | lifecycle 유지, timer 정지 | lifecycle 유지, timer 정지 | 없음 |
+| ParkingEpisode MOVEMENT_CONFIRMED 종료·movement | 최신 규칙 재평가 | 최신 규칙 재평가 | 직접 출력 없음 |
+| ZoneVisit ENDED·BlockingRelation RESOLVED | 후보 취소 가능 | 직접 종료 입력으로 해당 Incident RESOLVE | 필요하면 RESOLVE |
+| `PHYSICAL_VEHICLE_LEFT` | 후보 취소 | session 유무와 관계없이 해당 차량의 OPEN Incident RESOLVE | 필요하면 RESOLVE |
 
-RESOLVED Incident는 다시 OPEN하지 않는다. 동일 규칙이 신뢰 가능한 비위반 구간 뒤 다시 성립하면 새 `incidentId`를 생성한다. 일시적 UNKNOWN 동안에는 기존 Incident를 유지하므로 불필요한 새 사건이 생기지 않는다.
+CANDIDATE 생성 시 `incidentId`를 발급한다. OPEN은 같은 ID의 첫 publication이다. ParkingEpisode는 이 표의 직접 종료 입력에 포함하지 않는다.
 
-## ParkingSession EXIT
+## 9. Session 종료
 
-ParkingSession은 Jetson 도메인에서 가장 강한 authoritative terminal scope다.
+### 9.1 실제 EXIT
 
-| 대상 | EXIT 처리 | 외부 의미 |
+실제 출차 또는 unbound 차량의 `PHYSICAL_VEHICLE_LEFT`가 확인되면 `PhysicalPresenceCoordinator`가 다음 변경을 하나의 논리적 종료로 계획한다.
+
+| 대상 | 처리 | 외부 전이 |
 |---|---|---|
-| EntryMatchAttempt | 진행 중이면 `CANCELED / SESSION_EXITED`로 종료 | terminal 매칭 결과 `CANCELED` |
-| ContextBinding | 강제 종료 | 없음 |
-| PhysicalVehicle | 자동 종료하지 않음 | binding만 해제 |
-| ZoneVisit | 강제 종료 | 방문 기반 Incident 정리 |
-| ParkingEpisode | 강제 종료 | 별도 UNPARKED 없음 |
-| ParkingAssignment | episode의 active 참조를 해제하고 terminal episode snapshot에 마지막 값을 고정 | 없음 |
-| BlockingRelation | 강제 종료 | DOUBLE_PARKING 정리 |
-| Incident | `SESSION_EXITED`로 RESOLVE | Incident RESOLVE |
-| MoveVerificationAttempt | `RESOLVED/SESSION_EXITED` 결과 | Verification result |
-| EvidenceArtifact | 취소하지 않음 | 기존 업로드 계속 |
-| ParkingSessionMirror | Jetson 출차 확인이면 정상 종료, Backend `CLOSED` 적용이면 authoritative 강제 종료 | Jetson 출차 확인 때만 EXIT; Backend 선종료에는 새 edge EXIT 없음 |
+| ParkingSessionMirror, 존재하는 경우 | physicalPresenceState=EXITED + physicalTerminationOrigin | SessionExit |
+| ContextBinding | ENDED | 별도 출력 없음 |
+| ZoneVisit | ENTERING은 CANCELED, INSIDE·EXITING은 ENDED; reason=PHYSICAL_EXIT | 직접 출력 없음 |
+| ParkingEpisode | STOP_PENDING은 CANCELED, PARKED·MOVE_PENDING은 ENDED; reason=PHYSICAL_EXIT | 별도 UNPARKED 없음 |
+| BlockingRelation | CANDIDATE는 CANCELED, BLOCKING·CLEAR_PENDING은 RESOLVED; reason=PHYSICAL_EXIT | 직접 출력 없음 |
+| Incident | CANDIDATE는 취소, OPEN·CLEAR_PENDING은 session correlation이 있으면 `SESSION_EXITED`, 없으면 `PHYSICAL_VEHICLE_LEFT`로 RESOLVE | Incident RESOLVE |
+| MoveVerificationAttempt | departed 차량을 subject로 하는 non-terminal attempt를 COMPLETED로 만들고 result=RESOLVED, reason=SESSION_EXITED 또는 PHYSICAL_VEHICLE_LEFT | 결과 publication |
 
-Jetson 내부에서는 하위 상태를 모두 명시적으로 종료한다. Incident의 공식 외부 lifecycle은 Incident RESOLVE가 담당하고, Session EXIT는 Session terminal 사실과 Backend 누락 정리의 안전망이다.
+PhysicalVehicle는 session의 child가 아니지만 실제 부재와 모든 child domain 정리가 확인되면 RETIRED할 수 있다. session correlation이 없는 차량은 SessionExit 없이 같은 local 종료 transaction을 실행한다. 미완료 delivery는 RETIRED를 막지 않고 tombstone과 outbox에서 계속한다.
 
-## MoveVerification
+### 9.2 Backend 행정 종료
 
-MoveVerification은 이동 자체가 아니라 요청받은 Incident의 현재 성립 여부를 확인한다.
+Backend의 행정 `CLOSED`, 취소, 데이터 정정은 실제 출차가 아니다.
 
-| 확인 결과 | 의미 |
-|---|---|
-| `RESOLVED` | 대상 Incident 원인이 불성립하거나 Session이 종료됨 |
-| `STILL_ACTIVE` | 신뢰 가능한 재평가에서 규칙이 계속 성립함 |
-| `UNKNOWN` | 기한 안에 신뢰 가능한 현장 판단을 얻지 못함 |
+- ParkingSessionMirror의 administrativeState를 CLOSED로 바꾼다.
+- ContextBinding을 `ENDED / ADMIN_CLOSED`로 끝내고 향후 session-scoped publication을 보류한다.
+- stale session context로 새 사실을 열지는 않지만 이미 공개한 aggregate의 terminal revision은 저장된 correlation으로 계속 전달한다.
+- mirror의 physicalVehicleId·entryAttemptId correlation은 실제 출차 확인까지 유지한다.
+- 마지막 context는 감사 근거로만 보존하고 자격 의존 규칙은 새 authoritative context 전까지 UNKNOWN으로 평가한다.
+- PhysicalVehicle, ZoneVisit, ParkingEpisode와 Incident를 자동 종료하지 않는다.
+- 이미 공개한 사실의 correction·수용 방식은 후속 Backend 계약에서 정한다.
+
+행정 종료 뒤 실제 차량 출차가 확인되면 같은 mirror의 physicalPresenceState를 EXITED로 바꾸고 물리 child를 정리한다. administrativeState를 ACTIVE로 되돌리는 전이가 아니며, local 관측 origin일 때만 새 SessionExit을 만든다.
+
+한 번도 binding되지 않았고 matchState가 EXPIRED·FAILED·CANCELED인 UNCONFIRMED mirror는 행정 종료 시 `NO_PHYSICAL_CORRELATION` tombstone으로 축약할 수 있다. 물리 차량과의 연결을 입증한 적이 없으므로 EXIT나 child 종료를 추론하지 않는다.
+
+행정 종료 전에 binding되지 못했더라도 matchState가 MATCHED라면 physicalVehicleId를 exit-only correlation으로 보존하고 active target의 presence를 INSIDE로 둔다. 이미 RETIRED된 target은 historical EXIT 경로를 적용한다.
+
+## 10. MoveVerification
+
+| 현장 결과 | Jetson 결과 | Backend 후속 |
+|---|---|---|
+| targetIncidentIds가 모두 RESOLVED 또는 공통 subjectPhysicalVehicle의 실제 출차 | `RESOLVED` | `[후속 계약]` COMPLETED 후보 |
+| 대상 중 하나라도 최신 규칙이 MATCHED | `STILL_ACTIVE` | `[후속 계약]` reminder 또는 admin 후보 |
+| MATCHED는 없지만 대상 중 하나라도 판단 불가 또는 CLEAR_PENDING | `UNKNOWN` | `[후속 계약]` 재확인 또는 admin 후보 |
+
+camera unavailable, tracker 소실과 restart gap은 UNKNOWN 근거이지 RESOLVED 근거가 아니다.
+
+## 11. Local actuator
+
+LED와 speaker는 domain owner가 아니라 현재 활성 Incident의 local projection이다.
+
+- Incident OPEN·RESOLVE에 따라 projection을 다시 계산한다.
+- publication retry는 같은 경고음을 반복 시작시키는 새 domain event가 아니다.
+- 한 Incident가 RESOLVE돼도 같은 actuator를 요구하는 다른 OPEN Incident가 있으면 경고를 유지한다.
+- 재시작 뒤 durable OPEN Incident에서 projection을 재구성한다.
+- rule별 LED·speaker pattern과 반복 시간은 `[후속 계약]`이다.
+
+## 12. Restart 전파
+
+재시작은 domain event가 아니다.
 
 ```text
-movementDetected=true
-+ 규칙이 계속 성립
-→ STILL_ACTIVE
+durable scope state 복원
+→ observation UNKNOWN
+→ TrackSegment 새로 생성
+→ camera·model 정상 확인
+→ PhysicalVehicle 재식별 또는 NOT_PRESENT_CONFIRMED
+→ RuleEvaluator 재실행
 ```
 
-Camera unavailable, TrackSegment 소실, 재시작 gap은 `UNKNOWN` 근거이지 `RESOLVED` 근거가 아니다. Backend의 `COMPLETED`, `RENOTIFIED`, `NEED_ADMIN`은 이 결과를 받은 뒤 Backend가 결정하는 업무 상태다.
+미완료 outbox와 evidence는 domain 재평가와 독립적으로 재개한다. 동일 장치 재시작의 상세 순서는 `04`가 정의한다.
 
-## Outbox와 Evidence
+## 13. 전파 불변조건
 
-도메인 전송 실패는 domain lifecycle을 되돌리지 않는다. 동일 publication revision과 동일 payload를 재전송한다.
-
-| 발생한 변화 | Domain scope | Delivery 처리 |
-|---|---|---|
-| 공개 전이 생성 | lifecycle 전이 확정 | 동일 전이를 durable outbox에 기록 |
-| HTTP 일시 실패 | 변경 없음 | retry 대기 |
-| HTTP ACK | 변경 없음 | 전달 완료와 Backend correlation 기록 |
-| 프로세스 재시작 | durable state 복구 | 미완료 전송 재개 |
-| DEAD_LETTER | 변경 없음 | 자동 삭제·domain rollback 금지 |
-| Incident RESOLVE | Incident terminal | 기존 OPEN evidence 업로드 계속 |
-| Session EXIT | Session terminal | 기존 evidence 업로드 계속 |
-
-Evidence upload가 Backend `eventId`를 필요로 한다면 Incident OPEN 적용 확인 뒤 진행한다. 이는 전송 dependency이지 Incident lifecycle dependency가 아니다.
-
-## 재시작 전파
-
-재시작 직후 상태는 다음과 같다.
-
-```text
-durable domain lifecycle = 복구
-observation state = UNKNOWN
-delivery state = 복구
-TrackSegment = 새로 생성
-```
-
-복구된 OPEN Incident를 새 Incident로 만들지 않는다. 복구된 PARKED episode를 이동한 것으로 보지 않는다. 첫 신뢰 관측을 얻기 전까지 규칙 해소와 시간 누적을 보류한다.
-
-## 전파 불변조건
-
-1. 관측 상태 변경은 lifecycle 종료를 직접 만들지 않는다.
-2. TrackSegment 종료는 PhysicalVehicle의 물리적 종료가 아니다.
-3. ZoneVisit 종료는 신뢰 가능한 이탈 또는 authoritative 상위 종료에서만 발생한다.
-4. ParkingEpisode 종료는 이동 확인 또는 authoritative 상위 종료에서만 발생한다.
-5. BlockingRelation은 실제 clear 확인 전까지 유지한다.
-6. Incident는 `NOT_MATCHED`, lifetime scope 종료, authoritative correction으로만 해소한다.
-7. 후보 취소는 외부 RESOLVE를 만들지 않는다.
-8. 참조 관계만으로 자동 cascade하지 않고, 이 문서의 행렬에 명시된 전이만 전파한다. Session EXIT는 가장 넓은 강제 종료 전파다.
-9. 전송 실패는 domain state를 변경하지 않는다.
-10. 동일 terminal scope를 재활성화하지 않는다.
+1. TrackSegment 소실은 물리적 종료가 아니다.
+2. camera unavailable과 장기 UNKNOWN은 terminal 전이를 만들지 않는다.
+3. 정상 전체 관측의 absence confirmation만 물리 부재 근거가 될 수 있다.
+4. ParkingEpisode의 MOVEMENT_CONFIRMED 종료는 Incident의 REEVALUATE trigger다.
+5. movement만으로 Incident를 RESOLVE하지 않는다.
+6. RuleEvaluator는 Incident state를 직접 변경하지 않는다.
+7. actual Session EXIT와 Backend 행정 종료를 구분한다.
+8. UNKNOWN 기간을 confirmation 시간에 합산하지 않는다.
+9. 하나의 source 변화가 여러 공개 전이를 만들면 원자적으로 기록한다.
