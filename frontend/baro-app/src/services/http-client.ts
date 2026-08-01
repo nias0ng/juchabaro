@@ -11,7 +11,6 @@ type ApiEnvelope<T> = {
   result: T;
 };
 
-// 실제 배포가 완료되면 -> .env.local을 만들어서 서버 주소 연결
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
 // 모든 API 호출이 거치는 공통 통로. 여기 하나만 있으면
@@ -23,7 +22,6 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
       0,
     );
   }
-
 
   const isFormData = init.body instanceof FormData;
 

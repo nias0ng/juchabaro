@@ -100,22 +100,15 @@ export default function ResidentLayout() {
           title: '내 정보',
         }}
       />
-      {/* 탭바에는 없지만(Figma BottomTabBar 기준) 홈 화면의 "내 차량" 바로가기로는 계속 접근 가능해야 해서 라우트는 남기고 탭에서만 숨긴다. */}
-      <Tabs.Screen name="vehicles" options={{ href: null }} />
-      {/* 이동 요청 상세는 URL/알림에서 접근하지만 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="request-detail" options={{ href: null }} />
-      {/* F-02 응답 완료는 E-11에서 응답 후 도달하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="response-complete" options={{ href: null }} />
-      {/* I-02/I-03 내 정보 수정은 내 정보 카드를 눌러서 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="profile-edit" options={{ href: null }} />
-      {/* I-04 알림 설정은 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="notification-settings" options={{ href: null }} />
-      {/* 요청 내역도 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="request-history" options={{ href: null }} />
-      {/* J-01 주차 도면 전체 보기는 URL로 직접 접근하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="parking-map" options={{ href: null }} />
-      {/* J-02 위반 이력 전체는 URL로 직접 접근하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="violation-history" options={{ href: null }} />
+      {/* 아래는 URL·다른 화면의 메뉴/바로가기로만 진입하는 화면들이라 라우트는 두고 하단 탭에서만 숨긴다(href: null). */}
+      <Tabs.Screen name="vehicles" options={{ href: null }} /> {/* 홈 화면 "내 차량" 바로가기 */}
+      <Tabs.Screen name="request-detail" options={{ href: null }} /> {/* URL/알림에서 진입 */}
+      <Tabs.Screen name="response-complete" options={{ href: null }} /> {/* E-11 응답 후 도달 */}
+      <Tabs.Screen name="profile-edit" options={{ href: null }} /> {/* 내 정보 카드에서 진입 */}
+      <Tabs.Screen name="notification-settings" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
+      <Tabs.Screen name="request-history" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
+      <Tabs.Screen name="parking-map" options={{ href: null }} /> {/* URL로 직접 진입 */}
+      <Tabs.Screen name="violation-history" options={{ href: null }} /> {/* URL로 직접 진입 */}
     </Tabs>
   );
 }
