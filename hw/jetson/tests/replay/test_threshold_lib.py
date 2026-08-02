@@ -14,8 +14,10 @@ import pytest
 
 from scripts.threshold_lib import (
     build_candidates,
+    build_flicker_gaps,
     compute_dwell_seconds,
     evaluate_threshold,
+    extract_frames_for_candidate,
     load_completed_visits,
     recommend_threshold,
     sweep_thresholds,
@@ -140,3 +142,70 @@ def test_recommend_threshold_falls_back_when_zero_fp_impossible_in_grid():
     assert recommendation["zeroFalsePositive"] is False
     assert recommendation["falsePositiveCount"] == 1
     assert recommendation["thresholdSeconds"] == 1.0  # 오탐이 어차피 안 사라지면 그나마 작은 값
+
+
+def test_extract_frames_for_candidate_returns_expected_count(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video_path = tmp_path / "tiny.mp4"
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (32, 32))
+    for _ in range(50):
+        writer.write(np.zeros((32, 32, 3), dtype=np.uint8))
+    writer.release()
+
+    out_dir = tmp_path / "frames"
+    paths = extract_frames_for_candidate(
+        video_path, center_seconds=2.5, out_dir=out_dir, before_seconds=1.0, after_seconds=1.0, step_seconds=1.0
+    )
+
+    assert len(paths) == 3  # t-1.0s, t+0.0s, t+1.0s
+    assert all(p.exists() for p in paths)
+
+
+def test_build_flicker_gaps_pairs_same_vehicle_reentry(tmp_path):
+    path = tmp_path / "zone_visits.jsonl"
+    _write_jsonl(path, [
+        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v2", "physicalVehicleId": "pv-1",
+         "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
+        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v3", "physicalVehicleId": "pv-2",
+         "enteredCandidateAt": "1970-01-01T00:00:20+00:00"},
+    ])
+
+    gaps = build_flicker_gaps("video1", path)
+
+    assert len(gaps) == 1
+    assert gaps[0]["zoneVisitId"] == "v1"
+    assert gaps[0]["nextVisitId"] == "v2"
+    assert gaps[0]["gapSeconds"] == pytest.approx(0.4)
+
+
+def test_build_flicker_gaps_ignores_visits_with_no_later_reentry(tmp_path):
+    path = tmp_path / "zone_visits.jsonl"
+    _write_jsonl(path, [
+        # v1 자신의 ENTERING 전이 — 같은 (physicalVehicleId, zoneId) 키로 entries_by_key에
+        # 들어가지만 exitedAt보다 이전이라 재진입이 아니다. entries_by_key 자체가 비어
+        # 있어서 걸러지는 게 아니라 시각 비교로 걸러져야 한다는 걸 확인한다.
+        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredCandidateAt": "1970-01-01T00:00:02+00:00"},
+        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+    ])
+
+    assert build_flicker_gaps("video1", path) == []
+
+
+def test_build_flicker_gaps_ignores_reentry_from_different_vehicle(tmp_path):
+    path = tmp_path / "zone_visits.jsonl"
+    _write_jsonl(path, [
+        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        # 시각상으로는 exitedAt 직후라 재진입처럼 보이지만 physicalVehicleId가 다르다 —
+        # 시각 비교만으로는 걸러지지 않고 키(physicalVehicleId, zoneId) 매칭이 걸러내야 한다.
+        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v2", "physicalVehicleId": "pv-2",
+         "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
+    ])
+
+    assert build_flicker_gaps("video1", path) == []

@@ -136,3 +136,84 @@ def recommend_threshold(sweep_results: list[dict[str, Any]]) -> dict[str, Any]:
         return {**best, "zeroFalsePositive": True}
     best = min(sweep_results, key=lambda r: (r["falsePositiveCount"], r["thresholdSeconds"]))
     return {**best, "zeroFalsePositive": False}
+
+
+def extract_frames_for_candidate(
+    video_path: Path,
+    center_seconds: float,
+    out_dir: Path,
+    *,
+    before_seconds: float = 2.0,
+    after_seconds: float = 2.0,
+    step_seconds: float = 1.0,
+) -> list[Path]:
+    """`center_seconds` 전후 구간의 프레임을 PNG로 추출해 `out_dir`에 저장한다.
+
+    정지 프레임 한 장으로는 "통과 중"과 "차를 대는 중"을 구분할 수 없어 짧은
+    구간을 여러 장 뽑는다. `hw/jetson` 자체 환경에는 cv2가 없을 수 있어 이
+    함수를 부르는 쪽(Task 4의 실행 절차)은 cv2가 설치된 인터프리터로 돌려야
+    한다 — 예: `ai/training/.venv`.
+    """
+
+    import cv2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"영상을 열 수 없습니다: {video_path}")
+    fps = capture.get(cv2.CAP_PROP_FPS)
+    paths: list[Path] = []
+    t = center_seconds - before_seconds
+    end = center_seconds + after_seconds
+    while t <= end + 1e-9:
+        frame_index = max(0, int(round(t * fps)))
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if ok:
+            offset_ms = int(round((t - center_seconds) * 1000))
+            frame_path = out_dir / f"t{offset_ms:+06d}ms.png"
+            cv2.imwrite(str(frame_path), frame)
+            paths.append(frame_path)
+        t += step_seconds
+    capture.release()
+    return paths
+
+
+def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any]]:
+    """같은 `physicalVehicleId`·`zoneId`가 방문을 닫고 곧바로 새 방문을 여는 간격을 모은다.
+
+    실제로 구역을 떠난 게 아니라 탐지가 잠깐 끊긴 것일 가능성이 있는 재진입
+    후보다. `zone_exit_confirm_seconds`가 이 간격보다 커야 그 순간의 RESOLVE를
+    막을 수 있다 — 위반 여부 라벨은 필요 없다.
+    """
+
+    records = _read_jsonl(zone_visits_path)
+    exits_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    entries_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for record in records:
+        key = (record["physicalVehicleId"], record["zoneId"])
+        if record["state"] == "OUTSIDE":
+            exits_by_key.setdefault(key, []).append(record)
+        elif record["state"] == "ENTERING":
+            entries_by_key.setdefault(key, []).append(record)
+
+    gaps: list[dict[str, Any]] = []
+    for key, exits in exits_by_key.items():
+        entries = entries_by_key.get(key, [])
+        for exit_record in exits:
+            exited_at = datetime.fromisoformat(exit_record["exitedAt"])
+            later_entries = [
+                entry for entry in entries
+                if datetime.fromisoformat(entry["enteredCandidateAt"]) > exited_at
+            ]
+            if not later_entries:
+                continue
+            next_entry = min(later_entries, key=lambda e: e["enteredCandidateAt"])
+            gap_seconds = (datetime.fromisoformat(next_entry["enteredCandidateAt"]) - exited_at).total_seconds()
+            gaps.append({
+                "video": video,
+                "zoneVisitId": exit_record["zoneVisitId"],
+                "nextVisitId": next_entry["zoneVisitId"],
+                "gapSeconds": gap_seconds,
+            })
+    return gaps
