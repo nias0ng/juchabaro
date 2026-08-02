@@ -1,10 +1,16 @@
-"""카메라가 생산하는 프레임과 촬영 메타데이터 모델."""
+"""카메라가 생산하는 비영속 frame과 촬영 메타데이터 모델.
+
+CapturedFrame과 image binary는 SQLite 복구 대상이 아니다. 재시작 뒤에는 새
+frame을 생성하며 evidence로 명시적으로 예약된 정지 이미지만 별도 spool에 둔다.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+from src.domain.models import require_aware, require_non_negative, require_positive
 
 
 @dataclass(frozen=True)
@@ -23,3 +29,11 @@ class CapturedFrame:
     width: int
     height: int
     calibration_id: str | None
+
+    def __post_init__(self) -> None:
+        require_aware(self.captured_at, "captured_at")
+        require_non_negative(self.frame_id, "frame_id")
+        require_positive(self.width, "width")
+        require_positive(self.height, "height")
+        if not self.camera_id:
+            raise ValueError("camera_id must not be empty")
