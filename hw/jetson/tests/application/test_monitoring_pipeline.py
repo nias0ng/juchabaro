@@ -216,6 +216,20 @@ def test_run_does_not_count_result_when_consumer_fails() -> None:
     assert len(workflow.results) == 1
 
 
+def test_run_honors_stop_request_before_capturing_next_frame() -> None:
+    frame_source = _FrameSource(
+        [SimpleNamespace(calibration_id="pilot-v1")]
+    )
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(frame_source, tracking, workflow)
+
+    assert pipeline.run(stop_requested=lambda: True) == 0
+
+    assert workflow.results == []
+    assert tracking.full_area_flags == []
+
+
 def test_capture_failure_pauses_absence_confirmation_and_propagates() -> None:
     tracking = _TrackingPipeline()
     workflow = _FrameWorkflow()

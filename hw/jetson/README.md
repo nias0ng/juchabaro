@@ -113,10 +113,14 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 `RestartAwareEntityResolver`를 구현해 복구 후보를 인계받을 수 있지만,
 실제 재식별 근거와 구현은 후속 범위다.
 
-Backend endpoint·DTO·Idempotency-Key를 exact bytes로 만드는 adapter와 outbox publisher,
-실제 camera worker 기동은 후속 연동 계약·실행 wiring 범위다.
-현재 FastAPI `main.py`는 API-only로 실행되어 camera·model owner를
-암묵적으로 복제하지 않는다.
+`main.py`는 migration, ZoneDefinition 검증, inbound application 조립과
+단일 monitoring thread의 시작·정상 종료 생명주기를 소유한다.
+Backend endpoint·DTO·Idempotency-Key를 exact bytes로 만드는 adapter와
+outbox publisher는 후속 연동 계약 범위이다. 따라서 module-level
+FastAPI `app`은 아직 API-only이며, 그 계약을 구현한 배포 entrypoint가
+`MonitoringPipelineFactory`를 명시적으로 주입했을 때만 camera·model owner를
+하나 기동한다. 계약 확정 전 임시 serializer나 no-op publisher는
+사용하지 않는다.
 
 `EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,

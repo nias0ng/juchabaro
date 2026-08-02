@@ -205,15 +205,19 @@ class MonitoringPipeline:
         self,
         *,
         result_consumer: Callable[[FrameObservationResult], None] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
     ) -> int:
-        """durable frame을 소스 소진까지 처리한다.
+        """durable frame을 소스 소진 또는 종료 요청까지 처리한다.
 
         optional consumer는 commit 후 telemetry·overlay용이며 durable
         저장 책임을 갖지 않는다. consumer 예외는 숨기지 않는다.
+        종료 요청은 frame 경계에서만 확인해 capture·model을 다른
+        thread에서 동시에 close하지 않는다.
         """
 
         frames = 0
-        while True:
+        should_stop = stop_requested or (lambda: False)
+        while not should_stop():
             try:
                 result = self.process_next_frame()
             except EndOfVideo:
