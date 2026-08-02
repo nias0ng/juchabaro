@@ -15,6 +15,20 @@ export const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 2,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerLabel: {
+    fontSize: 12.5,
+    color: '#9599a7',
+  },
+  headerValue: {
+    fontSize: 15,
+    fontWeight: FontWeight.semibold,
+    color: Palette.gray975,
+  },
   title: {
     fontSize: 12.5,
     fontWeight: FontWeight.bold,
@@ -32,6 +46,10 @@ export const styles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 4.5,
+    backgroundColor: Palette.emerald500,
+  },
+  dotFinal: {
+    backgroundColor: '#7a6ff0',
   },
   line: {
     flex: 1,
@@ -51,8 +69,11 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
   },
+  stepLabelFinal: {
+    color: '#7a6ff0',
+  },
   stepDetail: {
-    fontSize: 10.5,
+    fontSize: 11,
     color: '#9599a7',
   },
   pendingRow: {

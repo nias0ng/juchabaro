@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { ControlHeight, FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { ControlHeight, FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   row: {
@@ -13,11 +13,7 @@ export const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md + 2,
     minHeight: ControlHeight.md,
     paddingVertical: Spacing.base + 2,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
-    elevation: 2,
+    ...Shadows.card,
   },
   rowPressed: {
     backgroundColor: Palette.gray50,

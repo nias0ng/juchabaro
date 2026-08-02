@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   card: {
@@ -9,10 +9,7 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     padding: Spacing.md + 2,
     gap: Spacing.sm + 2,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
+    ...Shadows.card,
     elevation: 3,
   },
   // 응답 완료 카드만 테두리를 추가로 보여준다.
