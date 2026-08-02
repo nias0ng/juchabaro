@@ -1,5 +1,6 @@
 import { Modal, Pressable, Text, View } from 'react-native';
 
+import { ParkingLegend } from '@/features/parking/components/parking-legend';
 import { ParkingSpotMap } from '@/features/parking/components/parking-spot-map';
 import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
 import { toParkingStatusDisplay } from '@/features/parking/utils/parking-zone';
@@ -41,24 +42,14 @@ export function RequestComposeZonePickerModal({ visible, onClose, onSelectSpot }
 
           <ParkingSpotMap cells={status?.cells ?? []} message={message} onPressCell={onSelectSpot} />
 
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: Palette.violet300 }]} />
-              <Text style={styles.legendText}>주차 중</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: Palette.gray100 }]} />
-              <Text style={styles.legendText}>비어 있음</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: Palette.teal100 }]} />
-              <Text style={styles.legendText}>충전구역</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: Palette.sky100 }]} />
-              <Text style={styles.legendText}>장애인구역</Text>
-            </View>
-          </View>
+          <ParkingLegend
+            items={[
+              { label: '주차 중', color: Palette.violet300 },
+              { label: '비어 있음', color: Palette.gray100 },
+              { label: '충전구역', color: Palette.teal100 },
+              { label: '장애인구역', color: Palette.sky100 },
+            ]}
+          />
         </View>
       </View>
     </Modal>

@@ -7,10 +7,13 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.sm,
   },
+  rowWrap: {
+    flexWrap: 'wrap',
+  },
   pill: {
     backgroundColor: Palette.white,
     borderRadius: Radius.full,
-    paddingHorizontal: Spacing.md - 1,
+    paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm + 1,
   },
   pillSelected: {
@@ -19,7 +22,7 @@ export const styles = StyleSheet.create({
   pillText: {
     fontSize: 12.5,
     fontWeight: FontWeight.medium,
-    color: '#5c6070',
+    color: Palette.gray600,
   },
   pillTextSelected: {
     color: Palette.white,

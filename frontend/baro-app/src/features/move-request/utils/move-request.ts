@@ -6,7 +6,6 @@ import type {
   MoveRequestSummary,
   MoveRequestType,
 } from '@/features/move-request/api/types';
-import type { RequestOverdueTimelineStep } from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
 import type { RequestListItemDisplay } from '@/features/move-request/components/requests-list/request-list-card';
 import type { RequestListStatus } from '@/features/move-request/components/requests-list/request-status-badge';
 
@@ -98,13 +97,12 @@ export function toRequestWaitingDisplay(detail: MoveRequestDetail): RequestWaiti
   };
 }
 
-export type RequestCompletedTimelineStep = {
+export type RequestTimelineStep = {
   label: string;
   detail: string;
-  isFinal: boolean;
-  // 기본(에메랄드/보라) 조합과 다른 색이 필요할 때만 지정한다. (재알림 이력 표시용)
   dotColor?: string;
   labelColor?: string;
+  isFinal?: boolean;
 };
 
 const REMINDER_ROUND_LABELS = ['1차 재알림', '2차 재알림', '3차 재알림'] as const;
@@ -112,7 +110,7 @@ const REMINDER_ROUND_LABELS = ['1차 재알림', '2차 재알림', '3차 재알�
 export type RequestCompletedDisplay = {
   endTimeLabel: string;
   durationLabel: string | null;
-  timeline: RequestCompletedTimelineStep[];
+  timeline: RequestTimelineStep[];
 };
 
 // 분 단위 숫자를 "18분" / "1시간 5분" 형태로 변환.
@@ -130,13 +128,11 @@ export function formatDurationLabel(startIso: string, endIso: string): string | 
   return formatMinutesLabel(minutes);
 }
 
-// 이동 완료(COMPLETED) 화면(E-13)에서 표시할 문자열로 변환
 export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCompletedDisplay {
   const latestResponse = detail.responses[detail.responses.length - 1];
-  // history를 시간순으로 쌓아두므로, 가장 마지막 EVENT_RESOLVED 알림 시각을 종료 시각으로 쓴다.
   const resolvedEntry = [...detail.history].reverse().find((item) => item.notificationType === 'EVENT_RESOLVED');
 
-  const timeline: RequestCompletedTimelineStep[] = [
+  const timeline: RequestTimelineStep[] = [
     { label: '요청 접수', detail: formatTime24(detail.requestedAt), isFinal: false },
   ];
 
@@ -144,7 +140,6 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
     timeline.push({ label: '이동 진행', detail: formatTime24(latestResponse.respondedAt), isFinal: false });
   }
 
-  // 약속을 어겨서 재알림이 나갔던 적이 있으면, 완료 화면에서도 그 이력을 그대로 보여준다.
   detail.history
     .filter((item) => item.notificationType === 'REMINDER')
     .forEach((reminder, index) => {
@@ -167,13 +162,12 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
   };
 }
 
-// E-14/E-15의 "진행 기록" 앞부분(요청 전송 → 이동 예정 시간 → 미이동 확인)은 두 화면이 동일하게 쓴다.
 function buildOverdueLeadingSteps(
   detail: MoveRequestDetail,
   firstStepDetail: string,
-): RequestOverdueTimelineStep[] {
+): RequestTimelineStep[] {
   const latestResponse = detail.responses[detail.responses.length - 1];
-  const steps: RequestOverdueTimelineStep[] = [
+  const steps: RequestTimelineStep[] = [
     { label: '이동 요청 전송', detail: firstStepDetail, dotColor: '#7a6ff0' },
   ];
 
@@ -195,21 +189,19 @@ function buildOverdueLeadingSteps(
 }
 
 export type RequestOverdueDisplay = {
-  timeline: RequestOverdueTimelineStep[];
+  timeline: RequestTimelineStep[];
 };
 
-// RESPONDED 상태인데 dueAt이 지난 경우(E-14). 아직 재알림은 안 나갔고, 곧 나갈 예정인 상태.
 export function toRequestOverdueDisplay(detail: MoveRequestDetail): RequestOverdueDisplay {
   return { timeline: buildOverdueLeadingSteps(detail, formatTime12(detail.requestedAt)) };
 }
 
 export type RequestReminderDisplay = {
   reminderRoundLabel: string;
-  timeline: RequestOverdueTimelineStep[];
+  timeline: RequestTimelineStep[];
   pendingStep: { label: string; status: string };
 };
 
-// REMINDER_SENT + 응답 있음(E-15). 약속을 어겨서 재알림까지 나간 상태.
 export function toRequestReminderDisplay(detail: MoveRequestDetail): RequestReminderDisplay {
   const reminders = detail.history.filter((item) => item.notificationType === 'REMINDER');
   const timeline = buildOverdueLeadingSteps(
@@ -267,7 +259,6 @@ function formatDateTimeLabel(iso: string): string {
   return `${month}/${day} ${time}`;
 }
 
-// 요청 내역(목록) 화면에서 표시할 문자열로 변환
 export function toRequestSummaryDisplay(summary: MoveRequestSummary): RequestSummaryDisplay {
   return {
     requestId: summary.requestId,
@@ -317,7 +308,6 @@ export function toRequestListItemDisplay(item: MoveRequestListItem): RequestList
     plateNumber: maskPlateNumber(display.plateNumber),
     situationLabel,
     closedSummary,
-    // RESPONDED일 때만 의미가 있다 — 카드 쪽에서 useCountdown으로 실시간 남은 시간을 계산한다.
     dueAt: status === 'RESPONDED' ? item.dueAt : undefined,
     respondedAt: status === 'RESPONDED' ? item.respondedAt : undefined,
     estimatedMinutes: status === 'RESPONDED' ? item.estimatedMinutes : undefined,

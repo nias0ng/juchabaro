@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 import type { ParkingStatusDisplay } from '../utils/parking-zone';
 import { Palette } from '@/styles';
 
+import { ParkingLegend } from './parking-legend';
 import { ParkingSpotMap } from './parking-spot-map';
 import { styles } from './parking-status-card.styles';
 
@@ -58,28 +59,15 @@ export function ParkingStatusCard({
 
         <ParkingSpotMap cells={status?.cells ?? []} message={mapMessage} />
 
-        <View style={styles.legendRow}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.violet300 }]} />
-            <Text style={styles.legendText}>{status ? status.occupiedLabel : '주차 중 -'}</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.gray100 }]} />
-            <Text style={styles.legendText}>{status ? status.availableLabel : '비어 있음 -'}</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.teal100 }]} />
-            <Text style={styles.legendText}>충전구역</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.sky100 }]} />
-            <Text style={styles.legendText}>장애인구역</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.peach100 }]} />
-            <Text style={styles.legendText}>{status ? status.violationLabel : '위반 -'}</Text>
-          </View>
-        </View>
+        <ParkingLegend
+          items={[
+            { label: status ? status.occupiedLabel : '주차 중 -', color: Palette.violet300 },
+            { label: status ? status.availableLabel : '비어 있음 -', color: Palette.gray100 },
+            { label: '충전구역', color: Palette.teal100 },
+            { label: '장애인구역', color: Palette.sky100 },
+            { label: status ? status.violationLabel : '위반 -', color: Palette.peach100 },
+          ]}
+        />
       </View>
     </Pressable>
   );

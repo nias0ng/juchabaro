@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   header: {
@@ -23,10 +23,6 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.xl + 2,
     padding: Spacing.md,
     gap: Spacing.base,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
-    elevation: 2,
+    ...Shadows.card,
   },
 });

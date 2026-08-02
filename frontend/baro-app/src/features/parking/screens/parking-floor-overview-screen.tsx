@@ -2,12 +2,11 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
+import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import { ParkingFloorGrid } from '../components/parking-floor-grid';
 import { ParkingFloorLegend } from '../components/parking-floor-legend';
-import { ParkingFloorTabs } from '../components/parking-floor-tabs';
 import {
   MOCK_PARKING_FLOORS,
   getMyVehicleLocation,
@@ -56,7 +55,7 @@ export default function ParkingFloorOverviewScreen() {
 
       <ResponsiveContainer style={styles.content}>
         <Stack gap={Spacing.base + 2}>
-          <ParkingFloorTabs floors={FLOOR_TAB_OPTIONS} active={activeFloor} onChange={setActiveFloor} />
+          <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={setActiveFloor} />
 
           <View style={styles.mapCard}>
             {/* TODO: 주차 구역 API 및 DB 구축 후 실제 주차 현황 데이터로 교체 */}
