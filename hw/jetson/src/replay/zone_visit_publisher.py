@@ -23,13 +23,16 @@ class ZoneVisitPublisherError(RuntimeError):
 
 # 상태별로 "언제 관측됐다"고 볼 수 있는 유일한 필드. ENTERING/EXITING은 아직
 # 확정 전이라 후보 시각(entered_candidate_at/exit_candidate_at)을 쓰고,
-# INSIDE/OUTSIDE는 확정 시각(entered_at/exited_at)을 쓴다 — 새 upstream 필드를
-# 만들지 않고 ZoneVisit이 이미 들고 있는 값 중 하나를 고르는 것뿐이다.
+# INSIDE/ENDED/CANCELED는 확정 시각(entered_at/ended_at)을 쓴다 — 새 upstream
+# 필드를 만들지 않고 ZoneVisit이 이미 들고 있는 값 중 하나를 고르는 것뿐이다.
+# ENDED/CANCELED는 둘 다 종료 시각을 ended_at 하나에만 담는다(models.py의
+# ZoneVisit.__post_init__ 불변식 참고).
 _OBSERVED_AT_FIELD_BY_STATE: dict[ZoneVisitState, str] = {
     ZoneVisitState.ENTERING: "entered_candidate_at",
     ZoneVisitState.INSIDE: "entered_at",
     ZoneVisitState.EXITING: "exit_candidate_at",
-    ZoneVisitState.OUTSIDE: "exited_at",
+    ZoneVisitState.ENDED: "ended_at",
+    ZoneVisitState.CANCELED: "ended_at",
 }
 
 
@@ -56,7 +59,8 @@ def zone_visit_to_jsonable(visit: ZoneVisit) -> dict[str, Any]:
         "enteredCandidateAt": None if visit.entered_candidate_at is None else visit.entered_candidate_at.isoformat(),
         "enteredAt": None if visit.entered_at is None else visit.entered_at.isoformat(),
         "exitCandidateAt": None if visit.exit_candidate_at is None else visit.exit_candidate_at.isoformat(),
-        "exitedAt": None if visit.exited_at is None else visit.exited_at.isoformat(),
+        "endedAt": None if visit.ended_at is None else visit.ended_at.isoformat(),
+        "terminationReason": visit.termination_reason,
     }
 
 
@@ -120,7 +124,7 @@ class DedupingZoneVisitPublisher:
     `zone_visit_tracker.py`의 `_advance_inside`는 PRESENT가 이어지는 동안
     같은 INSIDE 방문을 프레임마다 그대로 반환한다 — 조립기가 그걸 매 프레임
     그대로 발행하면 한 차량이 한 구역에 20프레임 머무를 때 거의 같은 레코드가
-    20줄 나온다. 실제로 의미 있는 것은 ENTERING/INSIDE/EXITING/OUTSIDE 네
+    20줄 나온다. 실제로 의미 있는 것은 ENTERING/INSIDE/EXITING/ENDED/CANCELED 다섯
     상태로의 전이뿐이므로, 여기서 visit_id별 마지막 상태를 기억해 두고 상태가
     바뀌었을 때(또는 처음 보는 visit_id일 때)만 내부 발행기에 넘긴다.
 
