@@ -33,7 +33,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1, 2)
+        assert runner.apply() == (1, 2, 3)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
@@ -41,6 +41,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
         assert [(row["version"], row["name"]) for row in history] == [
             (1, "0001_initial"),
             (2, "0002_tracking_session_lifecycle"),
+            (3, "0003_parking_timer_policy_snapshots"),
         ]
     finally:
         connection.close()
@@ -89,6 +90,122 @@ def test_tracking_session_migration_upgrades_an_applied_initial_schema(
             """
         ).fetchone()
         assert tuple(row) == (1_000_000, 123)
+    finally:
+        connection.close()
+
+
+def test_parking_timer_policy_migration_backfills_existing_snapshots(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    for version in ("0001_initial.sql", "0002_tracking_session_lifecycle.sql"):
+        (migrations / version).write_text(
+            (source / version).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == (1, 2)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO physical_vehicles(
+                physical_vehicle_id, domain_state, observation_state,
+                last_reliable_observed_at_us, absence_trusted_duration_us,
+                absence_confirmation_duration_us,
+                trusted_sample_max_gap_duration_us, absence_confirmed_at_us,
+                record_version, created_at_us, updated_at_us
+            ) VALUES ('legacy-parking-vehicle', 'ACTIVE', 'OBSERVED', 10,
+                      0, 5000000, 1000000, NULL, 7, 1, 10)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO zone_visits(
+                zone_visit_id, physical_vehicle_id, zone_id,
+                zone_definition_version, domain_state, observation_state,
+                last_reliable_observed_at_us, entry_trusted_duration_us,
+                exit_trusted_duration_us, entry_confirmation_duration_us,
+                exit_confirmation_duration_us, entered_candidate_at_us,
+                record_version, created_at_us, updated_at_us
+            ) VALUES ('legacy-visit', 'legacy-parking-vehicle', 3, 4,
+                      'ENTERING', 'OBSERVED', 10, 123, 45, 2000000,
+                      3000000, 1, 9, 1, 10)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO parking_episodes(
+                parking_episode_id, physical_vehicle_id, domain_state,
+                observation_state, last_reliable_observed_at_us,
+                stationary_trusted_duration_us, movement_trusted_duration_us,
+                parking_confirmation_duration_us,
+                movement_confirmation_duration_us, last_motion_signal,
+                record_version, publication_revision, created_at_us, updated_at_us
+            ) VALUES ('legacy-episode', 'legacy-parking-vehicle',
+                      'STOP_PENDING', 'OBSERVED', 10, 321, 54, 600000000,
+                      2000000, 'STATIONARY', 11, 0, 1, 10)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO incidents(
+                incident_id, rule_code, key_scope_type, key_scope_id,
+                subject_physical_vehicle_id, domain_state, observation_state,
+                last_reliable_observed_at_us, confirm_trusted_duration_us,
+                clear_trusted_duration_us, confirm_duration_us,
+                clear_duration_us, first_observed_at_us, record_version,
+                publication_revision, created_at_us, updated_at_us
+            ) VALUES ('legacy-incident', 'BAD_PARKING', 'PHYSICAL_VEHICLE',
+                      'legacy-parking-vehicle', 'legacy-parking-vehicle',
+                      'CANDIDATE', 'OBSERVED', 10, 222, 33, 2000000,
+                      3000000, 1, 13, 0, 1, 10)
+            """
+        )
+        connection.commit()
+
+        migration = "0003_parking_timer_policy_snapshots.sql"
+        (migrations / migration).write_text(
+            (source / migration).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        assert MigrationRunner(connection, migrations).apply() == (3,)
+
+        assert tuple(
+            connection.execute(
+                "SELECT entry_trusted_duration_us, record_version, "
+                "trusted_sample_max_gap_duration_us FROM zone_visits "
+                "WHERE zone_visit_id = 'legacy-visit'"
+            ).fetchone()
+        ) == (123, 9, 1_000_000)
+        assert tuple(
+            connection.execute(
+                "SELECT stationary_trusted_duration_us, record_version, "
+                "trusted_sample_max_gap_duration_us FROM parking_episodes "
+                "WHERE parking_episode_id = 'legacy-episode'"
+            ).fetchone()
+        ) == (321, 11, 1_000_000)
+        assert tuple(
+            connection.execute(
+                "SELECT confirm_trusted_duration_us, record_version, "
+                "trusted_sample_max_gap_duration_us FROM incidents "
+                "WHERE incident_id = 'legacy-incident'"
+            ).fetchone()
+        ) == (222, 13, 1_000_000)
+
+        for table in ("zone_visits", "parking_episodes", "incidents"):
+            with pytest.raises(sqlite3.IntegrityError, match="trusted sample gap"):
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute(
+                        f"UPDATE {table} "
+                        "SET trusted_sample_max_gap_duration_us = NULL"
+                    )
+                finally:
+                    connection.rollback()
     finally:
         connection.close()
 
@@ -181,10 +298,11 @@ def test_foreign_key_enforcement_is_effective(tmp_path: Path) -> None:
                     last_reliable_observed_at_us, entered_candidate_at_us,
                     entry_trusted_duration_us, exit_trusted_duration_us,
                     entry_confirmation_duration_us,
-                    exit_confirmation_duration_us, record_version,
+                    exit_confirmation_duration_us,
+                    trusted_sample_max_gap_duration_us, record_version,
                     created_at_us, updated_at_us
                 ) VALUES ('visit', 'missing-vehicle', 1, 1, 'ENTERING',
-                          'OBSERVED', 1, 1, 0, 0, 1, 1, 1, 1, 1)
+                          'OBSERVED', 1, 1, 0, 0, 1, 1, 1, 1, 1, 1)
                 """
             )
         connection.rollback()

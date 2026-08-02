@@ -613,7 +613,7 @@ class InMemoryIncidentReducer:
         ):
             return 0.0
         elapsed_seconds = (observed_at - current.updated_at).total_seconds()
-        if elapsed_seconds > self._trusted_sample_max_gap_seconds:
+        if elapsed_seconds > current.trusted_sample_max_gap_seconds:
             return 0.0
         return elapsed_seconds
 
@@ -643,6 +643,7 @@ class InMemoryIncidentReducer:
             first_observed_at=signal.observed_at,
             created_at=signal.observed_at,
             updated_at=signal.observed_at,
+            trusted_sample_max_gap_seconds=self._trusted_sample_max_gap_seconds,
             entry_attempt_id=entry_attempt_id,
             parking_session_id=parking_session_id,
             zone_id=zone_id,

@@ -157,11 +157,12 @@ def test_durable_incident_transition_and_outbox_roll_back_atomically(
                     domain_state, observation_state, last_reliable_observed_at_us,
                     confirm_trusted_duration_us, clear_trusted_duration_us,
                     confirm_duration_us, clear_duration_us, first_observed_at_us,
-                    record_version, publication_revision, created_at_us, updated_at_us
+                    trusted_sample_max_gap_duration_us, record_version,
+                    publication_revision, created_at_us, updated_at_us
                 ) VALUES (
                     'incident-atomic', 'BAD_PARKING', 'PHYSICAL_VEHICLE',
                     'vehicle-incident', 'vehicle-incident', 'entry-atomic',
-                    'CANDIDATE', 'OBSERVED', 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+                    'CANDIDATE', 'OBSERVED', 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1
                 )
                 """
             )
@@ -278,6 +279,17 @@ def test_optimistic_update_increments_version_and_rejects_stale_writer(
                 changes={"domain_state": "ACTIVE", "updated_at_us": 2},
             ) == 2
 
+        with UnitOfWork(connection):
+            assert optimistic_update(
+                connection,
+                table="physical_vehicles",
+                key_column="physical_vehicle_id",
+                key_value="vehicle-1",
+                expected_record_version=2,
+                next_record_version=10,
+                changes={"updated_at_us": 3},
+            ) == 10
+
         with pytest.raises(OptimisticConcurrencyError):
             with UnitOfWork(connection):
                 optimistic_update(
@@ -293,6 +305,6 @@ def test_optimistic_update_increments_version_and_rejects_stale_writer(
             "SELECT domain_state, record_version, updated_at_us "
             "FROM physical_vehicles WHERE physical_vehicle_id = 'vehicle-1'"
         ).fetchone()
-        assert tuple(row) == ("ACTIVE", 2, 2)
+        assert tuple(row) == ("ACTIVE", 10, 3)
     finally:
         connection.close()

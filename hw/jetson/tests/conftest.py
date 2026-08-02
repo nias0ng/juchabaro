@@ -13,6 +13,8 @@ import pytest
 
 REQUIRED_ENV = {
     "DATABASE_PATH": ":memory:",
+    "EVIDENCE_SPOOL_PATH": "data/test-evidence",
+    "EVIDENCE_SPOOL_CAP_BYTES": str(8 * 1024 * 1024),
     "ZONE_DEFINITION_PATH": "config/zone_definition.pilot.json",
     "ZONE_ENTRY_CONFIRM_SECONDS": "3.0",
     "ZONE_EXIT_CONFIRM_SECONDS": "3.0",

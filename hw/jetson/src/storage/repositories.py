@@ -45,7 +45,11 @@ from .codecs import (
     uuid_from_text,
     uuid_to_text,
 )
-from .models import AcceptedInputRecord, OutboxRecord
+from .models import (
+    AcceptedInputRecord,
+    OutboxRecord,
+    PublicationApplicationStatus,
+)
 from .unit_of_work import require_write_transaction
 
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -57,6 +61,14 @@ class AcceptedInputConflictError(RuntimeError):
 
 class OutboxConflictError(RuntimeError):
     """outbox publication identity가 다른 immutable data로 재사용됐다."""
+
+
+class OutboxAlreadyDeliveredError(RuntimeError):
+    """publication의 Backend application receipt가 이미 보존돼 있다."""
+
+
+class OutboxStateError(RuntimeError):
+    """outbox delivery state가 요청한 명시적 전이를 허용하지 않는다."""
 
 
 class EntryMatchAttemptConflictError(RuntimeError):
@@ -1178,7 +1190,12 @@ class ContextBindingRepository:
 
 
 class OutboxRepository:
-    """aggregate publication revision마다 immutable payload 하나를 만든다."""
+    """immutable publication과 명시적 delivery state machine을 저장한다.
+
+    쓰기 API는 모두 외부 :class:`UnitOfWork`를 요구한다. HTTP I/O는
+    transaction 밖에서 수행하고, claim·ACK·retry 결과만 각각 짧은
+    transaction으로 반영한다.
+    """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -1201,6 +1218,15 @@ class OutboxRepository:
         ).fetchone()
         return _outbox_from_row(row) if row is not None else None
 
+    def get_by_delivery_id(self, delivery_id: str) -> OutboxRecord | None:
+        """delivery identity로 publication을 조회한다."""
+
+        row = self._connection.execute(
+            "SELECT * FROM outbox WHERE delivery_id = ?",
+            (delivery_id,),
+        ).fetchone()
+        return _outbox_from_row(row) if row is not None else None
+
     def enqueue(
         self,
         *,
@@ -1219,6 +1245,29 @@ class OutboxRepository:
             raise ValueError("publication_revision must be positive")
         immutable_payload = _payload_bytes(payload)
         payload_hash = _sha256(immutable_payload)
+
+        receipt = self._connection.execute(
+            """
+            SELECT payload_hash
+            FROM delivery_receipts
+            WHERE aggregate_type = ? AND aggregate_id = ?
+              AND destination = ? AND publication_revision = ?
+            """,
+            (
+                aggregate_type,
+                aggregate_id,
+                destination,
+                publication_revision,
+            ),
+        ).fetchone()
+        if receipt is not None:
+            if str(receipt["payload_hash"]) != payload_hash:
+                raise OutboxConflictError(
+                    "delivered publication identity was reused with a different payload"
+                )
+            raise OutboxAlreadyDeliveredError(
+                "publication was already confirmed and retained as a delivery receipt"
+            )
 
         existing = self.get_by_publication(
             aggregate_type=aggregate_type,
@@ -1289,6 +1338,358 @@ class OutboxRepository:
             raise RuntimeError("outbox record disappeared during its transaction")
         return OutboxEnqueueResult(record=record, created=True)
 
+    def recover_in_flight(
+        self,
+        *,
+        now_us: int | None = None,
+        reason: str = "PROCESS_RESTARTED",
+    ) -> int:
+        """restart 전 ``IN_FLIGHT``를 즉시 retry 가능한 상태로 돌린다."""
+
+        require_write_transaction(self._connection)
+        if not reason:
+            raise ValueError("recovery reason must not be empty")
+        recovered_at = now_us if now_us is not None else _utc_now_microseconds()
+        cursor = self._connection.execute(
+            """
+            UPDATE outbox
+            SET delivery_state = 'RETRY_WAIT',
+                next_attempt_at_us = ?,
+                last_error = ?,
+                updated_at_us = ?,
+                record_version = record_version + 1
+            WHERE delivery_state = 'IN_FLIGHT'
+            """,
+            (recovered_at, reason, recovered_at),
+        )
+        return cursor.rowcount
+
+    def claim_next(
+        self,
+        *,
+        destination: str,
+        now_us: int | None = None,
+    ) -> OutboxRecord | None:
+        """due publication 하나를 aggregate revision 순서로 claim한다.
+
+        revision 2 이상은 직전 revision의 delivered row 또는 receipt가
+        있어야 한다. 더 낮은 미확인 revision이 하나라도 있으면
+        뒤 publication을 건너뛰지 않는다.
+        """
+
+        require_write_transaction(self._connection)
+        if not destination:
+            raise ValueError("destination must not be empty")
+        claimed_at = now_us if now_us is not None else _utc_now_microseconds()
+        row = self._connection.execute(
+            """
+            SELECT candidate.*
+            FROM outbox AS candidate
+            WHERE candidate.destination = ?
+              AND (
+                    candidate.delivery_state = 'PENDING'
+                    OR (
+                        candidate.delivery_state = 'RETRY_WAIT'
+                        AND candidate.next_attempt_at_us IS NOT NULL
+                        AND candidate.next_attempt_at_us <= ?
+                    )
+              )
+              AND (
+                    candidate.publication_revision = 1
+                    OR EXISTS (
+                        SELECT 1
+                        FROM outbox AS predecessor
+                        WHERE predecessor.aggregate_type = candidate.aggregate_type
+                          AND predecessor.aggregate_id = candidate.aggregate_id
+                          AND predecessor.destination = candidate.destination
+                          AND predecessor.publication_revision =
+                              candidate.publication_revision - 1
+                          AND predecessor.delivery_state = 'DELIVERED'
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM delivery_receipts AS receipt
+                        WHERE receipt.aggregate_type = candidate.aggregate_type
+                          AND receipt.aggregate_id = candidate.aggregate_id
+                          AND receipt.destination = candidate.destination
+                          AND receipt.publication_revision =
+                              candidate.publication_revision - 1
+                    )
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM outbox AS blocker
+                    WHERE blocker.aggregate_type = candidate.aggregate_type
+                      AND blocker.aggregate_id = candidate.aggregate_id
+                      AND blocker.destination = candidate.destination
+                      AND blocker.publication_revision <
+                          candidate.publication_revision
+                      AND blocker.delivery_state <> 'DELIVERED'
+              )
+            ORDER BY
+                COALESCE(candidate.next_attempt_at_us, candidate.created_at_us),
+                candidate.created_at_us,
+                candidate.delivery_id
+            LIMIT 1
+            """,
+            (destination, claimed_at),
+        ).fetchone()
+        if row is None:
+            return None
+
+        record = _outbox_from_row(row)
+        cursor = self._connection.execute(
+            """
+            UPDATE outbox
+            SET delivery_state = 'IN_FLIGHT',
+                attempt_count = attempt_count + 1,
+                next_attempt_at_us = NULL,
+                updated_at_us = ?,
+                record_version = record_version + 1
+            WHERE delivery_id = ?
+              AND record_version = ?
+              AND delivery_state IN ('PENDING', 'RETRY_WAIT')
+            """,
+            (claimed_at, record.delivery_id, record.record_version),
+        )
+        if cursor.rowcount != 1:  # pragma: no cover - BEGIN IMMEDIATE serializes writers.
+            raise OptimisticConcurrencyError(
+                f"outbox claim lost a concurrent update: {record.delivery_id}"
+            )
+        claimed = self.get_by_delivery_id(record.delivery_id)
+        if claimed is None:  # pragma: no cover - protects a broken SQLite connection.
+            raise RuntimeError("claimed outbox record disappeared")
+        return claimed
+
+    def schedule_retry(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        next_attempt_at_us: int,
+        error: str,
+        updated_at_us: int | None = None,
+    ) -> OutboxRecord:
+        """retryable 실패를 ``IN_FLIGHT → RETRY_WAIT``로 기록한다."""
+
+        if not error:
+            raise ValueError("retry error must not be empty")
+        updated_at = (
+            updated_at_us if updated_at_us is not None else _utc_now_microseconds()
+        )
+        if next_attempt_at_us < updated_at:
+            raise ValueError("next_attempt_at_us must not be earlier than updated_at_us")
+        return self._transition(
+            delivery_id,
+            expected_record_version=expected_record_version,
+            expected_state=DeliveryState.IN_FLIGHT,
+            changes={
+                "delivery_state": DeliveryState.RETRY_WAIT.value,
+                "next_attempt_at_us": next_attempt_at_us,
+                "last_error": error,
+                "updated_at_us": updated_at,
+            },
+        )
+
+    def mark_delivered(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        application_status: PublicationApplicationStatus | str,
+        confirmed_payload_hash: str,
+        confirmed_at_us: int,
+        receipt_expires_at_us: int,
+        backend_correlation_payload: bytes | bytearray | memoryview | None = None,
+    ) -> OutboxRecord:
+        """Backend application confirmation과 receipt를 원자적으로 남긴다.
+
+        이 local repository는 저장된 payload hash만 대조한다. Backend
+        confirmation의 aggregate identity·publication revision이 request와 같은지
+        검증하는 것은 후속 wire adapter 계약의 책임이다.
+
+        내부 savepoint는 호출자가 예외를 밖의 ``UnitOfWork`` 안에서
+        처리해도 DELIVERED update만 부분 commit되는 것을 막는다.
+        """
+
+        require_write_transaction(self._connection)
+        try:
+            status = PublicationApplicationStatus(application_status)
+        except ValueError as error:
+            raise ValueError(
+                "only APPLIED or ALREADY_APPLIED can mark an outbox row delivered"
+            ) from error
+        if receipt_expires_at_us <= confirmed_at_us:
+            raise ValueError("receipt expiry must be later than confirmation")
+
+        record = self._require_transition_source(
+            delivery_id,
+            expected_record_version=expected_record_version,
+            expected_state=DeliveryState.IN_FLIGHT,
+        )
+        if confirmed_payload_hash != record.payload_hash:
+            raise OutboxConflictError(
+                "Backend confirmation payload hash differs from the immutable publication"
+            )
+        correlation = (
+            _payload_bytes(backend_correlation_payload)
+            if backend_correlation_payload is not None
+            else None
+        )
+
+        savepoint = "outbox_mark_delivered"
+        self._connection.execute(f"SAVEPOINT {savepoint}")
+        try:
+            delivered = self._transition_existing(
+                record,
+                changes={
+                    "delivery_state": DeliveryState.DELIVERED.value,
+                    "next_attempt_at_us": None,
+                    "last_error": None,
+                    "confirmed_at_us": confirmed_at_us,
+                    "updated_at_us": confirmed_at_us,
+                },
+            )
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO delivery_receipts(
+                        delivery_id, aggregate_type, aggregate_id, destination,
+                        publication_revision, payload_hash, application_status,
+                        backend_correlation_payload, confirmed_at_us, expires_at_us
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.delivery_id,
+                        record.aggregate_type,
+                        record.aggregate_id,
+                        record.destination,
+                        record.publication_revision,
+                        record.payload_hash,
+                        status.value,
+                        correlation,
+                        confirmed_at_us,
+                        receipt_expires_at_us,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise OutboxConflictError(
+                    "delivery confirmation conflicts with an existing receipt"
+                ) from error
+            self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException:
+            self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        return delivered
+
+    def mark_failed_terminal(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        error: str,
+        updated_at_us: int | None = None,
+    ) -> OutboxRecord:
+        """non-retryable 실패를 격리하고 뒤 revision을 차단한다."""
+
+        if not error:
+            raise ValueError("terminal error must not be empty")
+        updated_at = (
+            updated_at_us if updated_at_us is not None else _utc_now_microseconds()
+        )
+        return self._transition(
+            delivery_id,
+            expected_record_version=expected_record_version,
+            expected_state=DeliveryState.IN_FLIGHT,
+            changes={
+                "delivery_state": DeliveryState.FAILED_TERMINAL.value,
+                "next_attempt_at_us": None,
+                "last_error": error,
+                "updated_at_us": updated_at,
+            },
+        )
+
+    def retry_failed_terminal(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        next_attempt_at_us: int,
+        updated_at_us: int | None = None,
+    ) -> OutboxRecord:
+        """explicit intervention으로만 terminal publication을 retry한다."""
+
+        updated_at = (
+            updated_at_us if updated_at_us is not None else _utc_now_microseconds()
+        )
+        if next_attempt_at_us < updated_at:
+            raise ValueError("next_attempt_at_us must not be earlier than updated_at_us")
+        return self._transition(
+            delivery_id,
+            expected_record_version=expected_record_version,
+            expected_state=DeliveryState.FAILED_TERMINAL,
+            changes={
+                "delivery_state": DeliveryState.RETRY_WAIT.value,
+                "next_attempt_at_us": next_attempt_at_us,
+                "updated_at_us": updated_at,
+            },
+        )
+
+    def _transition(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        expected_state: DeliveryState,
+        changes: Mapping[str, Any],
+    ) -> OutboxRecord:
+        require_write_transaction(self._connection)
+        record = self._require_transition_source(
+            delivery_id,
+            expected_record_version=expected_record_version,
+            expected_state=expected_state,
+        )
+        return self._transition_existing(record, changes=changes)
+
+    def _require_transition_source(
+        self,
+        delivery_id: str,
+        *,
+        expected_record_version: int,
+        expected_state: DeliveryState,
+    ) -> OutboxRecord:
+        record = self.get_by_delivery_id(delivery_id)
+        if record is None or record.record_version != expected_record_version:
+            raise OptimisticConcurrencyError(
+                f"outbox record is missing or stale: {delivery_id}"
+            )
+        if record.delivery_state is not expected_state:
+            raise OutboxStateError(
+                f"outbox transition requires {expected_state.value}, "
+                f"got {record.delivery_state.value}"
+            )
+        return record
+
+    def _transition_existing(
+        self,
+        record: OutboxRecord,
+        *,
+        changes: Mapping[str, Any],
+    ) -> OutboxRecord:
+        optimistic_update(
+            self._connection,
+            table="outbox",
+            key_column="delivery_id",
+            key_value=record.delivery_id,
+            expected_record_version=record.record_version,
+            changes=changes,
+        )
+        updated = self.get_by_delivery_id(record.delivery_id)
+        if updated is None:  # pragma: no cover - protects a broken SQLite connection.
+            raise RuntimeError("updated outbox record disappeared")
+        return updated
+
 
 def _quoted_identifier(identifier: str) -> str:
     if _SQL_IDENTIFIER.fullmatch(identifier) is None:
@@ -1303,9 +1704,14 @@ def optimistic_update(
     key_column: str,
     key_value: Any,
     expected_record_version: int,
+    next_record_version: int | None = None,
     changes: Mapping[str, Any],
 ) -> int:
-    """field 변경과 ``record_version`` 증가를 원자적으로 수행한다.
+    """field 변경과 ``record_version`` 전진을 원자적으로 수행한다.
+
+    기본은 한 단계 증가한다. frame별 in-memory version을 여러 개 묶어
+    checkpoint하는 aggregate는 더 큰 ``next_record_version``을 전달할 수 있다.
+    어느 경우에도 ``WHERE record_version = expected`` CAS는 유지한다.
 
     새 version을 반환한다. 누락 record와 stale version은 어느 쪽도 안전하게
     덮어쓸 수 없으므로 같은 오류로 처리한다.
@@ -1314,6 +1720,15 @@ def optimistic_update(
     require_write_transaction(connection)
     if expected_record_version < 1:
         raise ValueError("expected_record_version must be positive")
+    resolved_next_version = (
+        expected_record_version + 1
+        if next_record_version is None
+        else next_record_version
+    )
+    if resolved_next_version <= expected_record_version:
+        raise ValueError(
+            "next_record_version must be greater than expected_record_version"
+        )
     if not changes:
         raise ValueError("optimistic update requires at least one field")
     if "record_version" in changes:
@@ -1326,11 +1741,12 @@ def optimistic_update(
         f"{_quoted_identifier(column)} = ?" for column, _ in ordered_changes
     )
     values = [value for _, value in ordered_changes]
+    values.append(resolved_next_version)
     values.extend((key_value, expected_record_version))
     cursor = connection.execute(
         f"""
         UPDATE {table_sql}
-        SET {assignments}, record_version = record_version + 1
+        SET {assignments}, record_version = ?
         WHERE {key_sql} = ? AND record_version = ?
         """,
         values,
@@ -1339,4 +1755,4 @@ def optimistic_update(
         raise OptimisticConcurrencyError(
             f"{table}.{key_column}={key_value!r} is missing or has a newer version"
         )
-    return expected_record_version + 1
+    return resolved_next_version

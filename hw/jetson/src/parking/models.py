@@ -219,6 +219,7 @@ class ZoneVisit:
     record_version: int
     created_at: datetime
     updated_at: datetime
+    trusted_sample_max_gap_seconds: float
     entered_candidate_at: datetime | None = None
     entered_at: datetime | None = None
     exit_candidate_at: datetime | None = None
@@ -231,6 +232,14 @@ class ZoneVisit:
             require_non_negative(getattr(self, name), name)
         for name in ("entry_confirmation_seconds", "exit_confirmation_seconds"):
             require_non_negative(getattr(self, name), name)
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
         require_positive(self.record_version, "record_version")
         for name in (
             "created_at",
@@ -273,6 +282,7 @@ class ParkingEpisode:
     publication_revision: int
     created_at: datetime
     updated_at: datetime
+    trusted_sample_max_gap_seconds: float
     parking_session_id: ParkingSessionId | None = None
     assignment: ParkingAssignment | None = None
     parked_at: datetime | None = None
@@ -285,6 +295,14 @@ class ParkingEpisode:
             require_non_negative(getattr(self, name), name)
         require_positive(self.parking_confirmation_seconds, "parking_confirmation_seconds")
         require_non_negative(self.movement_confirmation_seconds, "movement_confirmation_seconds")
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
         require_positive(self.record_version, "record_version")
         for name in ("created_at", "updated_at", "parked_at", "movement_candidate_at", "ended_at"):
             require_aware(getattr(self, name), name)
@@ -437,6 +455,7 @@ class Incident:
     first_observed_at: datetime
     created_at: datetime
     updated_at: datetime
+    trusted_sample_max_gap_seconds: float
     entry_attempt_id: EntryAttemptId | None = None
     parking_session_id: ParkingSessionId | None = None
     zone_id: ZoneId | None = None
@@ -451,6 +470,14 @@ class Incident:
             require_non_negative(getattr(self, name), name)
         for name in ("confirm_duration_seconds", "clear_duration_seconds"):
             require_non_negative(getattr(self, name), name)
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
         require_positive(self.record_version, "record_version")
         for name in (
             "first_observed_at",

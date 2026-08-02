@@ -79,6 +79,7 @@ class EvidenceArtifact:
             self.local_path is not None and self.byte_size is not None and self.checksum is not None
         )
         requires_binary_metadata = self.state in {
+            EvidenceState.WRITING,
             EvidenceState.READY,
             EvidenceState.UPLOADING,
             EvidenceState.ACKNOWLEDGED,

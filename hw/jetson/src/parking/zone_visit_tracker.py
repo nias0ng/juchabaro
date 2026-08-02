@@ -287,6 +287,7 @@ class InMemoryZoneVisitTracker:
             record_version=1,
             created_at=observed_at,
             updated_at=observed_at,
+            trusted_sample_max_gap_seconds=self._trusted_sample_max_gap_seconds,
             entered_candidate_at=observed_at,
         )
         slot = _VisitSlot(visit=visit, trusted_anchor_at=observed_at)
@@ -320,7 +321,7 @@ class InMemoryZoneVisitTracker:
 
         trusted = slot.visit.entry_trusted_seconds + slot.trusted_delta(
             observed_at,
-            max_gap_seconds=self._trusted_sample_max_gap_seconds,
+            max_gap_seconds=slot.visit.trusted_sample_max_gap_seconds,
         )
         state = (
             ZoneVisitState.INSIDE
@@ -348,7 +349,7 @@ class InMemoryZoneVisitTracker:
         if signal is PresenceSignal.PRESENT:
             trusted = slot.visit.entry_trusted_seconds + slot.trusted_delta(
                 observed_at,
-                max_gap_seconds=self._trusted_sample_max_gap_seconds,
+                max_gap_seconds=slot.visit.trusted_sample_max_gap_seconds,
             )
             slot.visit = replace(
                 slot.visit,
@@ -395,7 +396,7 @@ class InMemoryZoneVisitTracker:
 
         trusted = slot.visit.exit_trusted_seconds + slot.trusted_delta(
             observed_at,
-            max_gap_seconds=self._trusted_sample_max_gap_seconds,
+            max_gap_seconds=slot.visit.trusted_sample_max_gap_seconds,
         )
         slot.visit = replace(
             slot.visit,

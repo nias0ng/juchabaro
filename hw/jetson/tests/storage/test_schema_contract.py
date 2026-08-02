@@ -116,6 +116,7 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
         "zone_visits": {
             "entry_trusted_duration_us",
             "exit_trusted_duration_us",
+            "trusted_sample_max_gap_duration_us",
             "entered_candidate_at_us",
             "entered_at_us",
             "exit_candidate_at_us",
@@ -124,6 +125,7 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
         "parking_episodes": {
             "stationary_trusted_duration_us",
             "movement_trusted_duration_us",
+            "trusted_sample_max_gap_duration_us",
             "session_id",
             "assignment_state",
             "parked_at_us",
@@ -140,6 +142,7 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
             "subject_physical_vehicle_id",
             "confirm_trusted_duration_us",
             "clear_trusted_duration_us",
+            "trusted_sample_max_gap_duration_us",
             "first_observed_at_us",
             "confirmed_at_us",
             "resolved_at_us",
@@ -168,10 +171,11 @@ def test_partial_unique_indexes_enforce_nonterminal_scope_cardinality(
                     last_reliable_observed_at_us, entered_at_us,
                     entry_trusted_duration_us, exit_trusted_duration_us,
                     entry_confirmation_duration_us,
-                    exit_confirmation_duration_us, record_version,
+                    exit_confirmation_duration_us,
+                    trusted_sample_max_gap_duration_us, record_version,
                     created_at_us, updated_at_us
                 ) VALUES ('visit-1', 'vehicle-a', 10, 1, 'INSIDE', 'OBSERVED',
-                          1, 1, 0, 0, 1, 1, 1, 1, 1)
+                          1, 1, 0, 0, 1, 1, 1, 1, 1, 1)
                 """
             )
 
@@ -185,10 +189,11 @@ def test_partial_unique_indexes_enforce_nonterminal_scope_cardinality(
                         last_reliable_observed_at_us, entered_candidate_at_us,
                         entry_trusted_duration_us, exit_trusted_duration_us,
                         entry_confirmation_duration_us,
-                        exit_confirmation_duration_us, record_version,
+                        exit_confirmation_duration_us,
+                        trusted_sample_max_gap_duration_us, record_version,
                         created_at_us, updated_at_us
                     ) VALUES ('visit-2', 'vehicle-a', 10, 1, 'ENTERING',
-                              'OBSERVED', 2, 2, 0, 0, 1, 1, 1, 2, 2)
+                              'OBSERVED', 2, 2, 0, 0, 1, 1, 1, 1, 2, 2)
                     """
                 )
 
@@ -206,10 +211,11 @@ def test_partial_unique_indexes_enforce_nonterminal_scope_cardinality(
                     last_reliable_observed_at_us, entered_candidate_at_us,
                     entry_trusted_duration_us, exit_trusted_duration_us,
                     entry_confirmation_duration_us,
-                    exit_confirmation_duration_us, record_version,
+                    exit_confirmation_duration_us,
+                    trusted_sample_max_gap_duration_us, record_version,
                     created_at_us, updated_at_us
                 ) VALUES ('visit-2', 'vehicle-a', 10, 1, 'ENTERING',
-                          'OBSERVED', 2, 2, 0, 0, 1, 1, 1, 2, 2)
+                          'OBSERVED', 2, 2, 0, 0, 1, 1, 1, 1, 2, 2)
                 """
             )
     finally:
@@ -301,12 +307,13 @@ def test_local_only_open_incident_does_not_require_publication_revision(
                     last_reliable_observed_at_us,
                     confirm_trusted_duration_us, clear_trusted_duration_us,
                     confirm_duration_us, clear_duration_us, first_observed_at_us,
-                    confirmed_at_us, record_version, publication_revision,
+                    confirmed_at_us, trusted_sample_max_gap_duration_us,
+                    record_version, publication_revision,
                     created_at_us, updated_at_us
                 ) VALUES (
                     'incident-local', 'BAD_PARKING', 'PHYSICAL_VEHICLE',
                     'vehicle-local', 'vehicle-local', 'OPEN', 'OBSERVED', 1,
-                    0, 0, 0, 0, 1, 1, 1, 0, 1, 1
+                    0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1
                 )
                 """
             )

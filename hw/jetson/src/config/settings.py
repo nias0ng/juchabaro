@@ -17,6 +17,19 @@ class Settings(BaseSettings):
     # connection을 열고 SQLite file만 공유한다.
     database_path: Path
 
+    # Evidence binary는 DB BLOB이 아니라 동일 장치의 제한된 spool에 둔다.
+    # cap은 설치 완료 뒤 장치 여유공간을 확인해 배포가 직접 정하며, 일반
+    # restart에서 현재 free space를 새 baseline으로 저장하지 않는다.
+    evidence_spool_path: Path
+    evidence_spool_cap_bytes: int
+
+    # 아래 retention·filesystem 비율은 pilot 실측 전 제안값이다. 전역
+    # DB/WAL/log admission DRAIN은 write-size ADR과 application wiring 범위다.
+    evidence_filesystem_floor_ratio: float = 0.30
+    evidence_capture_stop_free_ratio: float = 0.35
+    evidence_ack_retention_seconds: float = 24 * 60 * 60
+    evidence_unacked_retention_seconds: float = 7 * 24 * 60 * 60
+
     # 한 배포의 versioned ZoneDefinition JSON. 실행 중 hot replacement는 하지
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path

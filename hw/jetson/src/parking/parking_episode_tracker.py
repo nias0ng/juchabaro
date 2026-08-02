@@ -324,6 +324,7 @@ class InMemoryParkingEpisodeTracker:
             publication_revision=0,
             created_at=observed_at,
             updated_at=observed_at,
+            trusted_sample_max_gap_seconds=self._trusted_sample_max_gap_seconds,
         )
         self._slots[physical_vehicle_id] = _EpisodeSlot(
             episode=episode,
@@ -359,7 +360,7 @@ class InMemoryParkingEpisodeTracker:
             if slot.trusted_anchor_at is None
             else (observed_at - slot.trusted_anchor_at).total_seconds()
         )
-        if delta > self._trusted_sample_max_gap_seconds:
+        if delta > slot.episode.trusted_sample_max_gap_seconds:
             delta = 0.0
         trusted = slot.episode.stationary_trusted_seconds + delta
         becomes_parked = trusted >= slot.episode.parking_confirmation_seconds
@@ -447,7 +448,9 @@ class InMemoryParkingEpisodeTracker:
 
         trusted = slot.episode.movement_trusted_seconds + slot.trusted_delta(
             observed_at,
-            trusted_sample_max_gap_seconds=self._trusted_sample_max_gap_seconds,
+            trusted_sample_max_gap_seconds=(
+                slot.episode.trusted_sample_max_gap_seconds
+            ),
         )
         slot.episode = replace(
             slot.episode,

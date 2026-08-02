@@ -94,7 +94,21 @@ JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기�
 
 `DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
 Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을
-공유하지 않고 각자 열어 사용한다. `ABSENCE_CONFIRMATION_SECONDS`는
+공유하지 않고 각자 열어 사용한다. 현재 storage 기반은
+aggregate와 immutable outbox row를 같은 SQLite transaction에 저장할 수 있게
+한다. `ParkingPipelineResult`를 실제 transaction consumer에 연결하고
+outbox publisher를 기동하는 application wiring은 후속 리팩터링 범위다.
+Backend endpoint·DTO·Idempotency-Key 형식은 후속 연동 계약이 확정한다.
+
+`EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
+file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,
+`EVIDENCE_SPOOL_CAP_BYTES`는 8GiB를 넘게 설정할 수 없다. root filesystem
+여유공간이 35% 보다 작아질 write는 새 capture를 중지하고 30%
+보호선을 침범하지 않는다. spool 복구·보존·압박 정리 로직을
+제공하지만 capture·upload·기동 흐름에 배선하는 것은 후속 application
+리팩터링 범위다. 원본 video는 이 spool의 보존 대상이 아니다.
+
+`ABSENCE_CONFIRMATION_SECONDS`는
 ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을
 `NOT_PRESENT_CONFIRMED`로 올리는 별도 시간 기준이다.
 `TRUSTED_SAMPLE_MAX_GAP_SECONDS`를 넘는 frame 공백은 camera·pipeline

@@ -21,9 +21,12 @@
 - Backend snapshot에서 live PhysicalVehicle·ParkingEpisode·Incident 재생성
 - raw frame, bbox, TrackSegment 복구
 - Backend 업무 상태 reconciliation
-- DB schema와 저장소 제품의 최종 선택
+- 세부 DDL·index·migration evolution의 최종 형태
 
-`[결정]` 구현은 하나의 local transactional store, 재구성 가능한 in-memory cache와 evidence file spool로 구성한다. SQLite WAL은 유력한 구현 후보지만 제품 선택과 schema는 별도 ADR에서 확정한다.
+`[결정]` 구현은 SQLite WAL 기반의 하나의 local transactional store,
+재구성 가능한 in-memory cache와 제한된 evidence file spool로 구성한다.
+durable domain·workflow state, dedup, outbox와 evidence metadata는 SQLite에
+두고 image binary만 file spool에 둔다.
 
 ## 2. 저장 등급
 
@@ -198,7 +201,10 @@ confirmedAt
 4. domain state는 유지하고 관측 기반 scope의 observation을 UNKNOWN으로 시작한다.
 5. trusted timer를 마지막 checkpoint 하한부터 재개하고 downtime을 더하지 않는다.
 6. READY evidence의 파일 존재와 checksum을 확인하고 orphan `.part`와 metadata 없는 final file을 정리한다.
-7. deployment metadata에 저장한 effective cap을 읽고 현재 filesystem·영역 사용량과 watermark를 다시 계산해 필요한 DRAIN을 적용한다. 현재 free space를 설치 baseline으로 다시 사용하지 않는다.
+7. 통제된 배포가 versioned config로 주입한 장치별 mutable data cap과
+   `EVIDENCE_SPOOL_CAP_BYTES`를 읽고 hard cap 이하인지 검증한 뒤 현재
+   filesystem·영역 사용량과 watermark를 다시 계산해 필요한 DRAIN을 적용한다.
+   runtime은 현재 free space를 설치 baseline으로 삼아 cap을 재산출하지 않는다.
 8. outbox publisher를 시작한다.
 9. store가 정상이라면 camera·model을 기동하고 첫 정상 전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존 PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며 새 scope·Candidate는 만들지 않는다.
 
@@ -266,30 +272,46 @@ evictedAt
 | temp·`.part` | 512MiB | restart 때 orphan 정리 |
 | app safety reserve | 1GiB | transaction·checkpoint 여유 |
 
-다음 식으로 장치별 유효 cap을 계산한다.
+통제된 배포는 다음 식으로 장치별 mutable data cap과 evidence cap을 계산한다.
 
 ```text
 deploymentBaselineFreeBytes = 설치·model 배포 완료 직후 측정한 root free bytes
 deploymentBaselineAppDataBytes = 같은 시점에 이미 존재하는 app mutable bytes
 protectedFloorBytes = rootTotalBytes × 0.30
 effectiveMutableCap = max(0, min(12GiB,
-    deploymentBaselineAppDataBytes + deploymentBaselineFreeBytes - protectedFloorBytes))
+    deploymentBaselineAppDataBytes + deploymentBaselineFreeBytes
+    - protectedFloorBytes))
 reservedNonEvidence = 2GiB + 512MiB + 512MiB + 1GiB
-effectiveEvidenceCap = max(0, min(8GiB, effectiveMutableCap - reservedNonEvidence))
+effectiveEvidenceCap = max(0, min(8GiB,
+    effectiveMutableCap - reservedNonEvidence))
 ```
 
-두 baseline과 계산된 cap은 deployment metadata로 저장한다. 일반 restart에서는 다시 계산하지 않고 OS·runtime·model 설치량이 바뀌는 통제된 배포에서만 기존 app data를 포함해 새 baseline을 만든다. `appDataBytes`는 state 영역, evidence, log와 temp의 실제 합이며 1GiB safety reserve는 사용량이 아니다.
+두 계산 결과는 DB의 `deployment_metadata`로 복구하지 않고 통제된 배포가
+versioned deployment config로 주입한다. evidence 결과는 runtime의
+`EVIDENCE_SPOOL_CAP_BYTES` 입력이 된다.
+OS·runtime·model 설치량이 바뀌는 배포에서만 기존 app data를 포함해 다시
+산정한다. runtime은 주입값을 검증·집행할 뿐 현재 free space를 새 설치
+baseline으로 삼거나 cap을 임의로 늘리지 않는다. `appDataBytes`는 state 영역,
+evidence, log와 temp의 실제 합이며 1GiB safety reserve는 사용량이 아니다.
 
-정상 배포 승인 시 현재 watermark가 NORMAL이어야 한다. 즉 root free space가 42% 이상이고 각 실제 영역이 quota의 70% 미만이며 `appDataBytes < min(11GiB, effectiveMutableCap - 1GiB)`여야 한다. `effectiveMutableCap ≤ reservedNonEvidence`인 장치도 승인하지 않는다. evidence는 pilot의 최대 일일 발생량을 사용해 다음 조건도 만족해야 한다.
+정상 배포 승인 시 현재 watermark가 NORMAL이어야 한다. 즉 root free space가
+42% 이상이고 각 실제 영역이 quota의 70% 미만이며
+`appDataBytes < min(11GiB, effectiveMutableCap - 1GiB)`여야 한다.
+`effectiveMutableCap ≤ reservedNonEvidence`인 장치도 승인하지 않는다.
+evidence는 pilot의
+최대 일일 발생량을 사용해 다음 조건도 만족해야 한다.
 
 ```text
 baselineEvidenceBytes + pilotPeakDailyArtifactBytes × 7 + maxNextEvidenceSetBytes
 ≤ effectiveEvidenceCap × 0.85
 ```
 
-`maxNextEvidenceSetBytes`는 한 Incident OPEN transaction이 예약할 수 있는 전체 evidence 합이다. 현재 최대 두 장과 artifact당 2MiB hard limit을 적용하면 4MiB다.
+`maxNextEvidenceSetBytes`는 한 Incident OPEN transaction이 예약할 수 있는 전체
+evidence 합이다. 현재 최대 두 장과 artifact당 2MiB hard limit을 적용하면
+4MiB다.
 
-따라서 표의 8GiB evidence와 12GiB app cap은 항상 확보되는 할당량이 아니라 장치가 충분히 비어 있을 때의 상한이다.
+따라서 표의 8GiB evidence와 12GiB app cap은 항상 확보되는 할당량이 아니라
+장치가 충분히 비어 있을 때의 상한이다.
 
 ### 8.1 Evidence 크기
 

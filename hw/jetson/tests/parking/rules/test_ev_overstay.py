@@ -102,6 +102,7 @@ def make_context(
         exit_trusted_seconds=0.0,
         entry_confirmation_seconds=1.0,
         exit_confirmation_seconds=1.0,
+        trusted_sample_max_gap_seconds=1.0,
         record_version=1,
         created_at=T0,
         updated_at=observed_at,
