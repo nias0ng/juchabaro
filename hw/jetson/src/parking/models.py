@@ -79,6 +79,13 @@ class ParkingState(str, Enum):
     CANCELED = "CANCELED"
 
 
+class ParkingTransitionType(str, Enum):
+    """A publishable transition from a ParkingEpisode."""
+
+    PARKED = "PARKED"
+    UNPARKED = "UNPARKED"
+
+
 class BlockingRelationState(str, Enum):
     """순서가 있는 subject·victim·egress 차단 관계 상태."""
 
@@ -294,6 +301,29 @@ class ParkingEpisode:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ParkingTransition:
+    """An immutable PARKED or UNPARKED publication projection."""
+
+    transition_type: ParkingTransitionType
+    parking_episode_id: ParkingEpisodeId
+    physical_vehicle_id: PhysicalVehicleId
+    parking_session_id: ParkingSessionId
+    publication_revision: int
+    occurred_at: datetime
+    assignment: ParkingAssignment
+
+    def __post_init__(self) -> None:
+        require_aware(self.occurred_at, "occurred_at")
+        expected_revision = (
+            1 if self.transition_type is ParkingTransitionType.PARKED else 2
+        )
+        if self.publication_revision != expected_revision:
+            raise ValueError(
+                "ParkingTransition revision must follow PARKED=1, UNPARKED=2"
+            )
+
+
+@dataclass(frozen=True, kw_only=True)
 class BlockingRelation:
     """subject가 victim의 egress 영역을 막는 순서 있는 관계 snapshot."""
 
@@ -475,10 +505,39 @@ class IncidentTransition:
 
 
 @dataclass(frozen=True)
+class IncidentReduction:
+    """Incident의 durable update와 0개 이상의 외부 publication을 함께 반환한다.
+
+    Candidate 누적, CLEAR_PENDING, UNKNOWN pause처럼 외부 전이가 없는 변경도
+    저장 경계에서 잃지 않도록 aggregate snapshot을 항상 포함한다. 늦은
+    correlation과 현재 신호가 같은 cycle에 오면 OPEN과 RESOLVE를 revision
+    순서대로 함께 반환할 수 있다.
+    """
+
+    incident: Incident
+    transitions: tuple[IncidentTransition, ...] = ()
+
+    def __post_init__(self) -> None:
+        revisions = [item.incident.publication_revision for item in self.transitions]
+        if revisions != sorted(set(revisions)):
+            raise ValueError("IncidentReduction transitions must have unique revision order")
+        if any(
+            item.incident.incident_id != self.incident.incident_id
+            or item.incident.publication_revision > self.incident.publication_revision
+            for item in self.transitions
+        ):
+            raise ValueError(
+                "IncidentReduction transitions must belong to the updated Incident"
+            )
+
+
+@dataclass(frozen=True)
 class ParkingPipelineResult:
     """후속 application 리팩터링을 위한 한 처리 cycle의 ephemeral 결과."""
 
     zone_visit_updates: tuple[ZoneVisit, ...]
     parking_episode_updates: tuple[ParkingEpisode, ...]
     incident_transitions: tuple[IncidentTransition, ...]
+    parking_transitions: tuple[ParkingTransition, ...] = ()
     blocking_relation_updates: tuple[BlockingRelation, ...] = ()
+    incident_updates: tuple[Incident, ...] = ()

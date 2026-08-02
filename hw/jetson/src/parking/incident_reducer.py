@@ -1,214 +1,819 @@
-"""개별 규칙 결과를 중복 없는 사건 전이로 축약하는 구현 계약.
+"""삼상태 규칙 신호를 durable Incident 수명주기로 축약한다.
 
-CANDIDATE는 Jetson 내부에만 유지한다. 최초 EDGE_CONFIRMED에서 OPEN을 한 번
-만들고, 같은 IncidentKey의 반복 입력은 중복 발행하지 않는다. 확정 조건이
-사라지면 RESOLVED와 RESOLVE를 한 번 만들며, 서로 다른 규칙과 에피소드의
-사건은 동시에 독립적으로 유지한다.
-
-**해소는 규칙 재판정 없이 스코프만으로도 가능하다(`resolve_scope`, 446 후속
-리뷰).** `reduce()`로 해소하려면 호출부가 `IncidentKey`(특히 `rule_code`)를
-다시 만들어야 하는데, `rule_code`는 구역 정의를 다시 조회해야 나온다 —
-방문이 닫히는 시점에 그 구역이 이미 삭제돼 있으면(서버 구역 동기화 등)
-rule_code를 재구성할 수 없어 해소 자체가 조용히 생략된다. 그런데 "방문이
-끝났다"는 사실은 그 방문을 스코프로 삼은 사건이 전부 끝났다는 뜻이지, 규칙을
-다시 판정할 문제가 아니다. `resolve_scope`는 이미 기록된 `Incident.key`를
-그대로 재사용해 `zone_visit_id`만으로 찾아 닫으므로, 규칙 쪽이 무엇이었는지
-다시 알아낼 필요가 없다.
+RuleEvaluator는 현재 술어만 계산한다. 이 reducer가 Candidate 생성, 신뢰 시간
+누적, OPEN/CLEAR_PENDING/terminal 전이와 publication revision을 단독 소유한다.
+UNKNOWN과 일시 미관측은 상태를 끝내지 않고 현재 timer sample chain만 끊는다.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Callable, Protocol
 from uuid import uuid4
 
+from src.domain.models import (
+    ObservationReason,
+    ObservationState,
+    ObservationStatus,
+    require_non_negative,
+    require_positive,
+)
 from src.parking.models import (
+    BlockingRelationId,
     Incident,
     IncidentId,
     IncidentKey,
+    IncidentKeyScope,
+    IncidentReduction,
     IncidentSignal,
+    IncidentSignalValue,
     IncidentState,
     IncidentTransition,
     IncidentTransitionType,
+    ZoneId,
     ZoneVisitId,
 )
 from src.parking.time_guard import ensure_forward_observation
+from src.session.models import EntryAttemptId
+from src.tracking.models import ParkingSessionId, PhysicalVehicleId
 
 
-def _latest_timestamp(incident: Incident) -> datetime:
-    """이 사건에 기록된 가장 나중 시각.
+@dataclass(frozen=True)
+class _LastSample:
+    """현재 process에서 직전 trusted-duration sample의 연속성을 표시한다."""
 
-    `first_observed_at` ≤ `confirmed_at` ≤ `resolved_at`이 사건의 불변식이므로
-    채워진 것 중 가장 늦은 값이 다음 신호가 넘어서야 할 하한이다. 이 하한을
-    깨는 신호를 받아들이면 `resolved_at`이 `confirmed_at`보다 앞서 위반
-    지속시간이 음수인 채로 백엔드에 나간다.
-    """
-
-    return max(
-        timestamp
-        for timestamp in (
-            incident.first_observed_at,
-            incident.confirmed_at,
-            incident.resolved_at,
-        )
-        if timestamp is not None
-    )
+    value: IncidentSignalValue
+    confirmable: bool
 
 
 class IncidentReducer(Protocol):
-    """규칙 신호 하나를 외부 전송 가능한 사건 전이로 축약한다."""
+    """Incident 상태 변경과 선택적 publication을 만드는 경계."""
 
-    def reduce(self, signal: IncidentSignal) -> IncidentTransition | None:
-        """OPEN/RESOLVE가 새로 생긴 경우에만 전이를 반환한다."""
+    def reduce(
+        self,
+        signal: IncidentSignal,
+        *,
+        physical_vehicle_id: PhysicalVehicleId,
+        observation: ObservationStatus,
+        entry_attempt_id: EntryAttemptId | None = None,
+        parking_session_id: ParkingSessionId | None = None,
+        zone_id: ZoneId | None = None,
+        victim_physical_vehicle_id: PhysicalVehicleId | None = None,
+    ) -> IncidentReduction | None:
+        """규칙 신호 하나를 적용한다. 완전 무동작일 때만 ``None``이다."""
 
         ...
 
-    def resolve_scope(
-        self, *, zone_visit_id: ZoneVisitId, observed_at: datetime
-    ) -> tuple[IncidentTransition, ...]:
-        """이 zone_visit_id를 스코프로 하는 열린 사건을 전부 해소한다.
+    def terminate_zone_visit(
+        self,
+        zone_visit_id: ZoneVisitId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "ZONE_VISIT_ENDED",
+    ) -> tuple[IncidentReduction, ...]:
+        """방문을 scope로 하는 모든 nonterminal Incident를 직접 끝낸다."""
 
-        rule_code를 몰라도 된다 — 이미 기록된 사건의 rule_code를 그대로 쓴다.
-        """
+        ...
+
+    def terminate_blocking_relation(
+        self,
+        blocking_relation_id: BlockingRelationId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "BLOCKING_RELATION_RESOLVED",
+    ) -> tuple[IncidentReduction, ...]:
+        """차단 관계를 scope로 하는 nonterminal Incident를 직접 끝낸다."""
+
+        ...
+
+    def terminate_physical_vehicle(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "PHYSICAL_VEHICLE_LEFT",
+    ) -> tuple[IncidentReduction, ...]:
+        """subject 또는 victim 차량에 연결된 Incident를 직접 끝낸다."""
+
+        ...
+
+    def pause_physical_vehicle(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+    ) -> tuple[IncidentReduction, ...]:
+        """차량 일시 미관측 동안 관련 Incident의 timer chain을 끊는다."""
 
         ...
 
 
 class InMemoryIncidentReducer:
-    """규칙 신호를 중복 없는 사건 전이로 축약한다.
+    """process 내부 저장소를 사용하는 IncidentReducer 구현.
 
-    CANDIDATE는 내부에만 유지하고 전이를 만들지 않는다. 같은 IncidentKey의
-    반복 입력은 OPEN을 한 번만 만들고, 확정 조건이 사라지면 RESOLVE를 한 번
-    만든다. 서로 다른 규칙·에피소드의 사건은 독립적으로 유지된다.
+    이 구현은 lifecycle 동작과 테스트를 위한 reference implementation이다.
+    호출자는 반환된 모든 ``IncidentReduction.incident``를 durable 저장 경계에
+    반영해야 하며, ``transitions``가 있으면 같은 transaction에서 outbox를
+    만들어야 한다. 이미 terminal인 local-only Incident의 늦은 correlation은
+    durable pending handoff workflow가 별도로 materialize한다.
     """
 
-    def __init__(self) -> None:
-        self._incidents: dict[IncidentKey, Incident] = {}
-
-    def reduce(self, signal: IncidentSignal) -> IncidentTransition | None:
-        """OPEN/RESOLVE가 새로 생긴 경우에만 전이를 반환한다.
-
-        `signal.observed_at`은 timezone-aware여야 하고 같은 IncidentKey에 이미
-        기록된 가장 나중 시각보다 과거일 수 없다. 위반하면 ValueError다
-        (`time_guard` 참조).
-        """
-
-        current = self._incidents.get(signal.key)
-        # 순서 기준은 사건에 이미 기록된 시각에서 유도한다. IncidentKey별로 마지막
-        # 관측 시각을 따로 들고 있으면 사건 저장소와 별개로 자라는 두 번째 무한
-        # 저장소가 생긴다. 대신 CANDIDATE 구간의 반복 관측은 검사 대상이 아니다 —
-        # 실제 피해(음수 지속시간)는 확정·해소 시각에서만 나온다.
-        ensure_forward_observation(
-            signal.observed_at, None if current is None else _latest_timestamp(current)
+    def __init__(
+        self,
+        *,
+        trusted_sample_max_gap_seconds: float,
+        confirm_duration_seconds: float = 0.0,
+        clear_duration_seconds: float = 0.0,
+    ) -> None:
+        require_positive(
+            trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
         )
-
-        if signal.matched:
-            return self._on_match(signal, current)
-        return self._on_unmatch(signal, current)
-
-    def resolve_scope(
-        self, *, zone_visit_id: ZoneVisitId, observed_at: datetime
-    ) -> tuple[IncidentTransition, ...]:
-        """이 zone_visit_id를 스코프로 하는 열린 사건을 전부 해소한다.
-
-        규칙(rule_code)을 몰라도 된다 — 이미 기록된 `Incident.key`를 그대로
-        재사용해 찾아서 닫는다. 방문이 닫혔다는 사실 자체가 해소 사유이므로,
-        판정 시점에 그 구역이 이미 삭제돼 rule_code를 재구성할 수 없어도
-        (서버 구역 동기화 등) 사건을 닫을 수 있다.
-
-        이 zone_visit_id로 열린 사건이 없으면(예: 자격이 있어 애초에 사건이
-        생기지 않은 방문) 빈 튜플을 반환한다 — 아무 일도 하지 않는다.
-        """
-
-        transitions: list[IncidentTransition] = []
-        # 순회 중 삭제(CANDIDATE 정리)가 있어 키를 먼저 스냅샷 뜬다.
-        scoped_keys = [key for key in self._incidents if key.zone_visit_id == zone_visit_id]
-        for key in scoped_keys:
-            current = self._incidents[key]
-            ensure_forward_observation(observed_at, _latest_timestamp(current))
-            transition = self._resolve_incident(key, current, observed_at)
-            if transition is not None:
-                transitions.append(transition)
-        return tuple(transitions)
-
-    def snapshot(self) -> tuple[Incident, ...]:
-        """현재 유지 중인 사건을 읽기 전용으로 반환한다. 판정에 영향을 주지 않는다."""
-
-        return tuple(self._incidents.values())
-
-    def _on_match(self, signal: IncidentSignal, current: Incident | None) -> IncidentTransition | None:
-        if current is None or current.state is IncidentState.RESOLVED:
-            # 해소된 사건과 같은 키로 다시 성립하면 새 사건이다. 재사용하면
-            # revision이 계속 자라 백엔드가 두 사건을 구분할 수 없다.
-            first_observed_at = signal.observed_at
-            incident = Incident(
-                incident_id=self._new_incident_id(),
-                key=signal.key,
-                state=IncidentState.CANDIDATE,
-                revision=0,
-                first_observed_at=first_observed_at,
+        if trusted_sample_max_gap_seconds < 1e-6:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
             )
-        else:
-            incident = current
+        require_non_negative(confirm_duration_seconds, "confirm_duration_seconds")
+        require_non_negative(clear_duration_seconds, "clear_duration_seconds")
+        self._trusted_sample_max_gap_seconds = trusted_sample_max_gap_seconds
+        self._confirm_duration_seconds = confirm_duration_seconds
+        self._clear_duration_seconds = clear_duration_seconds
+        self._records: dict[IncidentId, Incident] = {}
+        self._latest_id_by_key: dict[IncidentKey, IncidentId] = {}
+        self._active_id_by_key: dict[IncidentKey, IncidentId] = {}
+        self._last_sample_by_id: dict[IncidentId, _LastSample] = {}
 
-        if incident.state is IncidentState.EDGE_CONFIRMED:
-            # 이미 확정해 발행했다. 중복 발행하지 않는다.
-            self._incidents[signal.key] = incident
-            return None
+    def reduce(
+        self,
+        signal: IncidentSignal,
+        *,
+        physical_vehicle_id: PhysicalVehicleId,
+        observation: ObservationStatus,
+        entry_attempt_id: EntryAttemptId | None = None,
+        parking_session_id: ParkingSessionId | None = None,
+        zone_id: ZoneId | None = None,
+        victim_physical_vehicle_id: PhysicalVehicleId | None = None,
+    ) -> IncidentReduction | None:
+        """신호를 적용해 aggregate update와 선택적 publication을 반환한다.
 
-        if not signal.confirmable:
-            # 내부 후보로만 유지한다. Backend로 나가지 않는다.
-            self._incidents[signal.key] = incident
-            return None
+        ``MATCHED``만 새 Candidate를 만든다. ``UNKNOWN``은 기존 상태와 timer를
+        보존하지만 직전 trusted sample 연속성을 끊는다. OPEN이 correlation 없이
+        먼저 확정된 경우에는 publication revision 0으로 유지하며, 뒤 신호에
+        authoritative correlation이 오면 같은 Incident의 revision 1 OPEN을 만든다.
+        """
 
-        confirmed = Incident(
-            incident_id=incident.incident_id,
-            key=incident.key,
-            state=IncidentState.EDGE_CONFIRMED,
-            revision=incident.revision + 1,
-            first_observed_at=incident.first_observed_at,
-            confirmed_at=signal.observed_at,
+        latest = self._latest_for_key(signal.key)
+        ensure_forward_observation(
+            signal.observed_at,
+            None if latest is None else latest.updated_at,
         )
-        self._incidents[signal.key] = confirmed
-        return IncidentTransition(
-            transition_type=IncidentTransitionType.OPEN, incident=confirmed
-        )
+        if (
+            signal.key.scope_type is IncidentKeyScope.PHYSICAL_VEHICLE
+            and signal.key.scope_id != physical_vehicle_id
+        ):
+            raise ValueError(
+                "physical-vehicle IncidentKey must match physical_vehicle_id"
+            )
 
-    def _on_unmatch(self, signal: IncidentSignal, current: Incident | None) -> IncidentTransition | None:
+        current = self._active_for_key(signal.key)
+        effective_value = (
+            signal.value
+            if observation.state is ObservationState.OBSERVED
+            else IncidentSignalValue.UNKNOWN
+        )
         if current is None:
-            return None
-        return self._resolve_incident(signal.key, current, signal.observed_at)
+            if effective_value is not IncidentSignalValue.MATCHED:
+                return None
+            current = self._new_candidate(
+                signal,
+                physical_vehicle_id=physical_vehicle_id,
+                observation=observation,
+                entry_attempt_id=entry_attempt_id,
+                parking_session_id=parking_session_id,
+                zone_id=zone_id,
+                victim_physical_vehicle_id=victim_physical_vehicle_id,
+            )
+            is_new = True
+        else:
+            self._validate_context(
+                current,
+                physical_vehicle_id=physical_vehicle_id,
+                entry_attempt_id=entry_attempt_id,
+                parking_session_id=parking_session_id,
+                zone_id=zone_id,
+                victim_physical_vehicle_id=victim_physical_vehicle_id,
+            )
+            current = self._with_context(
+                current,
+                entry_attempt_id=entry_attempt_id,
+                parking_session_id=parking_session_id,
+                zone_id=zone_id,
+                victim_physical_vehicle_id=victim_physical_vehicle_id,
+            )
+            is_new = False
 
-    def _resolve_incident(
-        self, key: IncidentKey, current: Incident, observed_at: datetime
-    ) -> IncidentTransition | None:
-        """`current`를 RESOLVED로 전이시킨다. `resolve_scope`와 `_on_unmatch`가 공유한다."""
+        materialized_open: IncidentTransition | None = None
+        if self._can_materialize(current):
+            current = replace(current, publication_revision=1)
+            open_snapshot = replace(
+                current,
+                state=IncidentState.OPEN,
+                clear_trusted_seconds=0.0,
+                updated_at=signal.observed_at,
+            )
+            materialized_open = IncidentTransition(
+                transition_type=IncidentTransitionType.OPEN,
+                incident=open_snapshot,
+            )
+
+        if effective_value is IncidentSignalValue.UNKNOWN:
+            paused = replace(
+                current,
+                observation=self._observation_for_value(
+                    effective_value, observation, current
+                ),
+                record_version=current.record_version + (0 if is_new else 1),
+                updated_at=signal.observed_at,
+            )
+            self._save_active(paused)
+            self._last_sample_by_id.pop(paused.incident_id, None)
+            return self._prepend_transition(
+                IncidentReduction(paused), materialized_open
+            )
 
         if current.state is IncidentState.CANDIDATE:
-            # Backend가 본 적 없는 후보다. 조용히 버린다.
-            del self._incidents[key]
-            return None
+            reduction = self._reduce_candidate(
+                current,
+                signal,
+                observation=observation,
+                is_new=is_new,
+            )
+        elif current.state is IncidentState.OPEN:
+            reduction = self._reduce_open(
+                current, signal, observation=observation
+            )
+        elif current.state is IncidentState.CLEAR_PENDING:
+            reduction = self._reduce_clear_pending(
+                current, signal, observation=observation
+            )
+        else:
+            raise RuntimeError("active Incident index contains a terminal aggregate")
+        return self._prepend_transition(reduction, materialized_open)
 
-        if current.state is IncidentState.RESOLVED:
-            # 이미 해소를 알렸다.
-            return None
+    def terminate_zone_visit(
+        self,
+        zone_visit_id: ZoneVisitId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "ZONE_VISIT_ENDED",
+    ) -> tuple[IncidentReduction, ...]:
+        """방문 종료 사실로 해당 visit-scope Incident를 즉시 끝낸다."""
 
-        resolved = Incident(
-            incident_id=current.incident_id,
-            key=current.key,
-            state=IncidentState.RESOLVED,
-            revision=current.revision + 1,
-            first_observed_at=current.first_observed_at,
-            confirmed_at=current.confirmed_at,
-            resolved_at=observed_at,
+        return self._terminate_matching(
+            lambda incident: (
+                incident.key.scope_type is IncidentKeyScope.ZONE_VISIT
+                and incident.key.scope_id == zone_visit_id
+            ),
+            observation=observation,
+            observed_at=observed_at,
+            reason=reason,
         )
-        self._incidents[key] = resolved
-        return IncidentTransition(
-            transition_type=IncidentTransitionType.RESOLVE, incident=resolved
+
+    def terminate_blocking_relation(
+        self,
+        blocking_relation_id: BlockingRelationId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "BLOCKING_RELATION_RESOLVED",
+    ) -> tuple[IncidentReduction, ...]:
+        """관계 종료 사실로 해당 relation-scope Incident를 즉시 끝낸다."""
+
+        return self._terminate_matching(
+            lambda incident: (
+                incident.key.scope_type is IncidentKeyScope.BLOCKING_RELATION
+                and incident.key.scope_id == blocking_relation_id
+            ),
+            observation=observation,
+            observed_at=observed_at,
+            reason=reason,
+        )
+
+    def terminate_physical_vehicle(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str = "PHYSICAL_VEHICLE_LEFT",
+    ) -> tuple[IncidentReduction, ...]:
+        """물리 부재가 확인된 subject/victim의 Incident를 즉시 끝낸다."""
+
+        return self._terminate_matching(
+            lambda incident: (
+                incident.physical_vehicle_id == physical_vehicle_id
+                or incident.victim_physical_vehicle_id == physical_vehicle_id
+            ),
+            observation=observation,
+            observed_at=observed_at,
+            reason=reason,
+        )
+
+    def pause_physical_vehicle(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+    ) -> tuple[IncidentReduction, ...]:
+        """일시 미관측된 subject/victim의 상태를 유지하고 timer를 멈춘다."""
+
+        matched = self._matching_active(
+            lambda candidate: (
+                candidate.physical_vehicle_id == physical_vehicle_id
+                or candidate.victim_physical_vehicle_id == physical_vehicle_id
+            )
+        )
+        for incident in matched:
+            ensure_forward_observation(observed_at, incident.updated_at)
+
+        reductions: list[IncidentReduction] = []
+        for incident in matched:
+            paused = replace(
+                incident,
+                observation=self._paused_observation(
+                    observation,
+                    incident,
+                    reason=ObservationReason.TRACK_LOST,
+                ),
+                record_version=incident.record_version + 1,
+                updated_at=observed_at,
+            )
+            self._save_active(paused)
+            self._last_sample_by_id.pop(paused.incident_id, None)
+            reductions.append(IncidentReduction(paused))
+        return tuple(reductions)
+
+    def snapshot(self) -> tuple[Incident, ...]:
+        """생성 순서대로 nonterminal과 terminal Incident snapshot을 반환한다."""
+
+        return tuple(self._records.values())
+
+    def active_snapshot(self) -> tuple[Incident, ...]:
+        """현재 nonterminal Incident snapshot만 생성 순서대로 반환한다."""
+
+        active_ids = set(self._active_id_by_key.values())
+        return tuple(
+            incident
+            for incident_id, incident in self._records.items()
+            if incident_id in active_ids
+        )
+
+    def _reduce_candidate(
+        self,
+        current: Incident,
+        signal: IncidentSignal,
+        *,
+        observation: ObservationStatus,
+        is_new: bool,
+    ) -> IncidentReduction:
+        if signal.value is IncidentSignalValue.NOT_MATCHED:
+            canceled = replace(
+                current,
+                state=IncidentState.CANCELED,
+                observation=observation,
+                record_version=current.record_version + (0 if is_new else 1),
+                updated_at=signal.observed_at,
+                terminated_at=signal.observed_at,
+                termination_reason="PREDICATE_NOT_MATCHED_BEFORE_CONFIRMATION",
+            )
+            self._save_terminal(canceled)
+            return IncidentReduction(canceled)
+
+        trusted_seconds = current.confirm_trusted_seconds
+        if signal.confirmable:
+            trusted_seconds += self._trusted_delta(
+                current,
+                expected_value=IncidentSignalValue.MATCHED,
+                require_confirmable=True,
+                observed_at=signal.observed_at,
+            )
+
+        if (
+            signal.confirmable
+            and trusted_seconds >= current.confirm_duration_seconds
+        ):
+            opened = replace(
+                current,
+                state=IncidentState.OPEN,
+                observation=observation,
+                confirm_trusted_seconds=trusted_seconds,
+                clear_trusted_seconds=0.0,
+                record_version=current.record_version + (0 if is_new else 1),
+                publication_revision=(1 if self._has_correlation(current) else 0),
+                confirmed_at=signal.observed_at,
+                updated_at=signal.observed_at,
+            )
+            self._save_active(opened)
+            self._remember_sample(opened, signal.value, signal.confirmable)
+            if opened.publication_revision == 0:
+                return IncidentReduction(opened)
+            return self._published_reduction(opened, IncidentTransitionType.OPEN)
+
+        candidate = replace(
+            current,
+            observation=observation,
+            confirm_trusted_seconds=trusted_seconds,
+            record_version=current.record_version + (0 if is_new else 1),
+            updated_at=signal.observed_at,
+        )
+        self._save_active(candidate)
+        self._remember_sample(candidate, signal.value, signal.confirmable)
+        return IncidentReduction(candidate)
+
+    def _reduce_open(
+        self,
+        current: Incident,
+        signal: IncidentSignal,
+        *,
+        observation: ObservationStatus,
+    ) -> IncidentReduction:
+        if signal.value is IncidentSignalValue.MATCHED:
+            opened = replace(
+                current,
+                observation=observation,
+                clear_trusted_seconds=0.0,
+                record_version=current.record_version + 1,
+                updated_at=signal.observed_at,
+            )
+            self._save_active(opened)
+            self._remember_sample(opened, signal.value, signal.confirmable)
+            return IncidentReduction(opened)
+
+        clear_pending = replace(
+            current,
+            state=IncidentState.CLEAR_PENDING,
+            observation=observation,
+            clear_trusted_seconds=0.0,
+            record_version=current.record_version + 1,
+            updated_at=signal.observed_at,
+        )
+        if current.clear_duration_seconds == 0:
+            return self._resolve(
+                clear_pending,
+                observed_at=signal.observed_at,
+                observation=observation,
+                reason="PREDICATE_CLEAR_CONFIRMED",
+                increment_record=False,
+            )
+
+        self._save_active(clear_pending)
+        self._remember_sample(clear_pending, signal.value, signal.confirmable)
+        return IncidentReduction(clear_pending)
+
+    def _reduce_clear_pending(
+        self,
+        current: Incident,
+        signal: IncidentSignal,
+        *,
+        observation: ObservationStatus,
+    ) -> IncidentReduction:
+        if signal.value is IncidentSignalValue.MATCHED:
+            opened = replace(
+                current,
+                state=IncidentState.OPEN,
+                observation=observation,
+                clear_trusted_seconds=0.0,
+                record_version=current.record_version + 1,
+                updated_at=signal.observed_at,
+            )
+            self._save_active(opened)
+            self._remember_sample(opened, signal.value, signal.confirmable)
+            return IncidentReduction(opened)
+
+        trusted_seconds = current.clear_trusted_seconds + self._trusted_delta(
+            current,
+            expected_value=IncidentSignalValue.NOT_MATCHED,
+            require_confirmable=False,
+            observed_at=signal.observed_at,
+        )
+        if trusted_seconds >= current.clear_duration_seconds:
+            ready = replace(current, clear_trusted_seconds=trusted_seconds)
+            return self._resolve(
+                ready,
+                observed_at=signal.observed_at,
+                observation=observation,
+                reason="PREDICATE_CLEAR_CONFIRMED",
+            )
+
+        clear_pending = replace(
+            current,
+            observation=observation,
+            clear_trusted_seconds=trusted_seconds,
+            record_version=current.record_version + 1,
+            updated_at=signal.observed_at,
+        )
+        self._save_active(clear_pending)
+        self._remember_sample(clear_pending, signal.value, signal.confirmable)
+        return IncidentReduction(clear_pending)
+
+    def _terminate_matching(
+        self,
+        predicate: Callable[[Incident], bool],
+        *,
+        observation: ObservationStatus,
+        observed_at: datetime,
+        reason: str,
+    ) -> tuple[IncidentReduction, ...]:
+        if observation.state is not ObservationState.OBSERVED:
+            raise ValueError(
+                "direct Incident termination requires OBSERVED observation"
+            )
+        if not reason:
+            raise ValueError("termination reason must not be empty")
+        matched = self._matching_active(predicate)
+        for incident in matched:
+            ensure_forward_observation(observed_at, incident.updated_at)
+
+        reductions: list[IncidentReduction] = []
+        for incident in matched:
+            if incident.state is IncidentState.CANDIDATE:
+                canceled = replace(
+                    incident,
+                    state=IncidentState.CANCELED,
+                    observation=observation,
+                    record_version=incident.record_version + 1,
+                    updated_at=observed_at,
+                    terminated_at=observed_at,
+                    termination_reason=reason,
+                )
+                self._save_terminal(canceled)
+                reductions.append(IncidentReduction(canceled))
+            else:
+                reductions.append(
+                    self._resolve(
+                        incident,
+                        observed_at=observed_at,
+                        observation=observation,
+                        reason=reason,
+                    )
+                )
+        return tuple(reductions)
+
+    def _resolve(
+        self,
+        current: Incident,
+        *,
+        observed_at: datetime,
+        observation: ObservationStatus,
+        reason: str,
+        increment_record: bool = True,
+    ) -> IncidentReduction:
+        publication_revision = (
+            current.publication_revision + 1
+            if current.publication_revision > 0
+            else 0
+        )
+        resolved = replace(
+            current,
+            state=IncidentState.RESOLVED,
+            observation=observation,
+            record_version=current.record_version + (1 if increment_record else 0),
+            publication_revision=publication_revision,
+            updated_at=observed_at,
+            resolved_at=observed_at,
+            terminated_at=observed_at,
+            termination_reason=reason,
+        )
+        self._save_terminal(resolved)
+        if publication_revision == 0:
+            return IncidentReduction(resolved)
+        return self._published_reduction(resolved, IncidentTransitionType.RESOLVE)
+
+    def _trusted_delta(
+        self,
+        current: Incident,
+        *,
+        expected_value: IncidentSignalValue,
+        require_confirmable: bool,
+        observed_at: datetime,
+    ) -> float:
+        previous = self._last_sample_by_id.get(current.incident_id)
+        if (
+            previous is None
+            or previous.value is not expected_value
+            or (require_confirmable and not previous.confirmable)
+            or current.observation.state is not ObservationState.OBSERVED
+        ):
+            return 0.0
+        elapsed_seconds = (observed_at - current.updated_at).total_seconds()
+        if elapsed_seconds > self._trusted_sample_max_gap_seconds:
+            return 0.0
+        return elapsed_seconds
+
+    def _new_candidate(
+        self,
+        signal: IncidentSignal,
+        *,
+        physical_vehicle_id: PhysicalVehicleId,
+        observation: ObservationStatus,
+        entry_attempt_id: EntryAttemptId | None,
+        parking_session_id: ParkingSessionId | None,
+        zone_id: ZoneId | None,
+        victim_physical_vehicle_id: PhysicalVehicleId | None,
+    ) -> Incident:
+        return Incident(
+            incident_id=IncidentId(uuid4()),
+            key=signal.key,
+            physical_vehicle_id=physical_vehicle_id,
+            state=IncidentState.CANDIDATE,
+            observation=observation,
+            confirm_trusted_seconds=0.0,
+            clear_trusted_seconds=0.0,
+            confirm_duration_seconds=self._confirm_duration_seconds,
+            clear_duration_seconds=self._clear_duration_seconds,
+            record_version=1,
+            publication_revision=0,
+            first_observed_at=signal.observed_at,
+            created_at=signal.observed_at,
+            updated_at=signal.observed_at,
+            entry_attempt_id=entry_attempt_id,
+            parking_session_id=parking_session_id,
+            zone_id=zone_id,
+            victim_physical_vehicle_id=victim_physical_vehicle_id,
+        )
+
+    def _validate_context(
+        self,
+        current: Incident,
+        *,
+        physical_vehicle_id: PhysicalVehicleId,
+        entry_attempt_id: EntryAttemptId | None,
+        parking_session_id: ParkingSessionId | None,
+        zone_id: ZoneId | None,
+        victim_physical_vehicle_id: PhysicalVehicleId | None,
+    ) -> None:
+        if current.physical_vehicle_id != physical_vehicle_id:
+            raise ValueError("Incident physical_vehicle_id cannot change")
+        fixed_context: list[tuple[str, object | None]] = [
+            ("entry_attempt_id", entry_attempt_id),
+            ("parking_session_id", parking_session_id),
+            ("victim_physical_vehicle_id", victim_physical_vehicle_id),
+        ]
+        if current.key.scope_type is not IncidentKeyScope.PHYSICAL_VEHICLE:
+            fixed_context.append(("zone_id", zone_id))
+        for name, incoming in fixed_context:
+            existing = getattr(current, name)
+            if existing is not None and incoming is not None and existing != incoming:
+                raise ValueError(f"Incident {name} cannot change")
+
+    @staticmethod
+    def _with_context(
+        current: Incident,
+        *,
+        entry_attempt_id: EntryAttemptId | None,
+        parking_session_id: ParkingSessionId | None,
+        zone_id: ZoneId | None,
+        victim_physical_vehicle_id: PhysicalVehicleId | None,
+    ) -> Incident:
+        return replace(
+            current,
+            entry_attempt_id=(
+                current.entry_attempt_id
+                if current.entry_attempt_id is not None
+                else entry_attempt_id
+            ),
+            parking_session_id=(
+                current.parking_session_id
+                if current.parking_session_id is not None
+                else parking_session_id
+            ),
+            zone_id=current.zone_id if current.zone_id is not None else zone_id,
+            victim_physical_vehicle_id=(
+                current.victim_physical_vehicle_id
+                if current.victim_physical_vehicle_id is not None
+                else victim_physical_vehicle_id
+            ),
         )
 
     @staticmethod
-    def _new_incident_id() -> IncidentId:
-        """새로 시작한 사건의 불투명한 수명주기 ID를 발급한다."""
+    def _has_correlation(incident: Incident) -> bool:
+        return (
+            incident.entry_attempt_id is not None
+            or incident.parking_session_id is not None
+        )
 
-        return IncidentId(uuid4())
+    def _can_materialize(self, incident: Incident) -> bool:
+        return (
+            incident.state in {IncidentState.OPEN, IncidentState.CLEAR_PENDING}
+            and incident.publication_revision == 0
+            and self._has_correlation(incident)
+        )
+
+    @staticmethod
+    def _prepend_transition(
+        reduction: IncidentReduction,
+        transition: IncidentTransition | None,
+    ) -> IncidentReduction:
+        if transition is None:
+            return reduction
+        return IncidentReduction(
+            reduction.incident,
+            (transition, *reduction.transitions),
+        )
+
+    @staticmethod
+    def _published_reduction(
+        incident: Incident, transition_type: IncidentTransitionType
+    ) -> IncidentReduction:
+        transition = IncidentTransition(
+            transition_type=transition_type,
+            incident=incident,
+        )
+        return IncidentReduction(incident, (transition,))
+
+    def _observation_for_value(
+        self,
+        value: IncidentSignalValue,
+        observation: ObservationStatus,
+        current: Incident,
+    ) -> ObservationStatus:
+        if value is not IncidentSignalValue.UNKNOWN:
+            return observation
+        return self._paused_observation(
+            observation,
+            current,
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+        )
+
+    @staticmethod
+    def _paused_observation(
+        observation: ObservationStatus,
+        current: Incident,
+        *,
+        reason: ObservationReason,
+    ) -> ObservationStatus:
+        if observation.state is not ObservationState.OBSERVED:
+            if observation.last_reliable_observed_at is not None:
+                return observation
+            return replace(
+                observation,
+                last_reliable_observed_at=(
+                    current.observation.last_reliable_observed_at
+                ),
+            )
+        last_reliable = (
+            current.observation.last_reliable_observed_at
+            if current.observation.last_reliable_observed_at is not None
+            else observation.last_reliable_observed_at
+        )
+        return ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=reason,
+            last_reliable_observed_at=last_reliable,
+        )
+
+    def _remember_sample(
+        self,
+        incident: Incident,
+        value: IncidentSignalValue,
+        confirmable: bool,
+    ) -> None:
+        self._last_sample_by_id[incident.incident_id] = _LastSample(
+            value=value,
+            confirmable=confirmable,
+        )
+
+    def _save_active(self, incident: Incident) -> None:
+        self._records[incident.incident_id] = incident
+        self._latest_id_by_key[incident.key] = incident.incident_id
+        self._active_id_by_key[incident.key] = incident.incident_id
+
+    def _save_terminal(self, incident: Incident) -> None:
+        self._records[incident.incident_id] = incident
+        self._latest_id_by_key[incident.key] = incident.incident_id
+        self._active_id_by_key.pop(incident.key, None)
+        self._last_sample_by_id.pop(incident.incident_id, None)
+
+    def _active_for_key(self, key: IncidentKey) -> Incident | None:
+        incident_id = self._active_id_by_key.get(key)
+        return None if incident_id is None else self._records[incident_id]
+
+    def _latest_for_key(self, key: IncidentKey) -> Incident | None:
+        incident_id = self._latest_id_by_key.get(key)
+        return None if incident_id is None else self._records[incident_id]
+
+    def _matching_active(
+        self, predicate: Callable[[Incident], bool]
+    ) -> tuple[Incident, ...]:
+        return tuple(
+            self._records[incident_id]
+            for incident_id in self._active_id_by_key.values()
+            if predicate(self._records[incident_id])
+        )

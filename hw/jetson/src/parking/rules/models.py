@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from src.domain.models import ObservationStatus, require_aware
 from src.parking.models import (
     BlockingRelation,
+    ParkingAssignment,
     ParkingEpisode,
     ZoneVisit,
 )
@@ -33,6 +34,7 @@ class RuleContext:
     session_context: SessionContext | None
     active_zone_visits: tuple[ZoneVisit, ...]
     parking_episode: ParkingEpisode | None
+    parking_assignment: ParkingAssignment | None
     blocking_relations: tuple[BlockingRelation, ...]
     zones: ZoneRegistry
     observed_at: datetime
