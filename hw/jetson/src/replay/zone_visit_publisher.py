@@ -12,13 +12,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Iterable, TextIO
 
-from src.parking.models import ZoneVisit
+from src.parking.models import ZoneVisit, ZoneVisitId, ZoneVisitState
 
 
 class ZoneVisitPublisherError(RuntimeError):
     """방문 전이를 파일에 기록하는 데 실패했다."""
+
+
+# 상태별로 "언제 관측됐다"고 볼 수 있는 유일한 필드. ENTERING/EXITING은 아직
+# 확정 전이라 후보 시각(entered_candidate_at/exit_candidate_at)을 쓰고,
+# INSIDE/OUTSIDE는 확정 시각(entered_at/exited_at)을 쓴다 — 새 upstream 필드를
+# 만들지 않고 ZoneVisit이 이미 들고 있는 값 중 하나를 고르는 것뿐이다.
+_OBSERVED_AT_FIELD_BY_STATE: dict[ZoneVisitState, str] = {
+    ZoneVisitState.ENTERING: "entered_candidate_at",
+    ZoneVisitState.INSIDE: "entered_at",
+    ZoneVisitState.EXITING: "exit_candidate_at",
+    ZoneVisitState.OUTSIDE: "exited_at",
+}
 
 
 def zone_visit_to_jsonable(visit: ZoneVisit) -> dict[str, Any]:
@@ -26,13 +38,21 @@ def zone_visit_to_jsonable(visit: ZoneVisit) -> dict[str, Any]:
 
     `src/communication/outbox.py`의 `transition_to_jsonable`과 같은 와이어
     규칙(camelCase, UUID는 문자열, datetime은 ISO 8601)을 따른다.
+
+    `observedAt`은 현재 상태에 맞는 시각 하나를 골라 파생한 필드다 — 상태별로
+    어떤 datetime이 "이 전이가 관측된 시각"인지가 다르므로(예: INSIDE는
+    entered_at, EXITING은 exit_candidate_at), 소비자가 상태마다 다른 필드를
+    찾지 않고 한 필드만 보고 정렬·비교할 수 있게 한다.
     """
 
+    observed_at_field = _OBSERVED_AT_FIELD_BY_STATE[visit.state]
+    observed_at = getattr(visit, observed_at_field)
     return {
         "zoneVisitId": str(visit.visit_id),
         "physicalVehicleId": str(visit.physical_vehicle_id),
         "zoneId": visit.zone_id,
         "state": visit.state.value,
+        "observedAt": None if observed_at is None else observed_at.isoformat(),
         "enteredCandidateAt": None if visit.entered_candidate_at is None else visit.entered_candidate_at.isoformat(),
         "enteredAt": None if visit.entered_at is None else visit.entered_at.isoformat(),
         "exitCandidateAt": None if visit.exit_candidate_at is None else visit.exit_candidate_at.isoformat(),
@@ -79,8 +99,48 @@ class ZoneVisitJsonlPublisher:
             raise ZoneVisitPublisherError(f"zone visit 파일에 쓰지 못했습니다({self._path}): {exc}") from exc
 
     def close(self) -> None:
-        """파일 핸들을 닫는다."""
+        """파일 핸들을 닫는다.
+
+        버퍼링 때문에 디스크 꽉 참 같은 쓰기 실패가 `write()`가 아니라
+        `close()`의 flush에서 터질 수 있다 — `publish()`와 같은 방식으로
+        감싸지 않으면 `ZoneVisitPublisherError`를 두는 의미가 반쪽만 남는다.
+        """
 
         handle, self._handle = self._handle, None
         if handle is not None:
-            handle.close()
+            try:
+                handle.close()
+            except OSError as exc:
+                raise ZoneVisitPublisherError(f"zone visit 파일을 닫지 못했습니다({self._path}): {exc}") from exc
+
+
+class DedupingZoneVisitPublisher:
+    """visit_id별 마지막으로 발행한 상태를 기억해, 상태가 바뀐 전이만 발행한다.
+
+    `zone_visit_tracker.py`의 `_advance_inside`는 PRESENT가 이어지는 동안
+    같은 INSIDE 방문을 프레임마다 그대로 반환한다 — 조립기가 그걸 매 프레임
+    그대로 발행하면 한 차량이 한 구역에 20프레임 머무를 때 거의 같은 레코드가
+    20줄 나온다. 실제로 의미 있는 것은 ENTERING/INSIDE/EXITING/OUTSIDE 네
+    상태로의 전이뿐이므로, 여기서 visit_id별 마지막 상태를 기억해 두고 상태가
+    바뀌었을 때(또는 처음 보는 visit_id일 때)만 내부 발행기에 넘긴다.
+
+    CLI(`scripts/replay_pilot_video.py`)와 결정론 테스트가 같은 dedup 규칙을
+    쓰도록 여기 하나로 모아 둔다 — 두 곳에 같은 로직을 복붙하면 나중에
+    한쪽만 고쳐 조용히 어긋날 자리가 생긴다.
+    """
+
+    def __init__(self, publisher: ZoneVisitJsonlPublisher) -> None:
+        self._publisher = publisher
+        self._last_published_state: dict[ZoneVisitId, ZoneVisitState] = {}
+
+    def publish_all(self, visits: Iterable[ZoneVisit]) -> int:
+        """상태가 바뀐 방문만 발행하고, 실제로 발행한 건수를 반환한다."""
+
+        published = 0
+        for visit in visits:
+            if self._last_published_state.get(visit.visit_id) == visit.state:
+                continue
+            self._publisher.publish(visit)
+            self._last_published_state[visit.visit_id] = visit.state
+            published += 1
+        return published

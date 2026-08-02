@@ -192,3 +192,14 @@ def test_shifting_t0_shifts_event_timestamps_only(tmp_path, monkeypatch):
         assert datetime.fromisoformat(after["firstObservedAt"]) - datetime.fromisoformat(
             before["firstObservedAt"]
         ) == offset
+        # firstObservedAt만 옮겨서는 "시간만 옮겨가고 다른 건 안 바뀐다"는 것을
+        # 증명하지 못한다 — confirmedAt/resolvedAt도 같은 offset만큼 옮겨야
+        # 판정 로직 자체가 벽시계가 아니라 t0 기준 상대 시간으로만 돈다는 뜻이다.
+        if before["confirmedAt"] is not None and after["confirmedAt"] is not None:
+            assert datetime.fromisoformat(after["confirmedAt"]) - datetime.fromisoformat(
+                before["confirmedAt"]
+            ) == offset
+        if before["resolvedAt"] is not None and after["resolvedAt"] is not None:
+            assert datetime.fromisoformat(after["resolvedAt"]) - datetime.fromisoformat(
+                before["resolvedAt"]
+            ) == offset

@@ -30,24 +30,37 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
+
+**실제 실행은 재현되지 않는다.** 위 예시는 결정론 테스트(`tests/replay/`,
+`tests/application/`)처럼 uuid4()를 몽키패치하지 않으므로, 같은 영상으로 두
+번 돌려도 `zoneVisitId`/`physicalVehicleId`는 실행마다 새로 뽑는 난수라 매번
+다르다. 회귀 확인차 두 실행의 `--out-zone-visits`를 diff한다면 그 두 필드는
+빼고 `zoneId`/`state`/`observedAt`만 비교하거나, diff 전에 두 필드를 지운다.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
-from src.camera.frame_source import EndOfVideo, RemapFrameSource, VideoFileFrameSource
+from src.camera.frame_source import (
+    EndOfVideo,
+    RemapFrameSource,
+    VideoFileFrameSource,
+    calibration_fingerprint,
+    normalize_fingerprint,
+)
 from src.communication.outbox import JsonlOutbox
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.pipeline import ParkingPipeline
 from src.parking.zone_registry import ZoneRegistry
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
-from src.replay.zone_visit_publisher import ZoneVisitJsonlPublisher
+from src.replay.zone_visit_publisher import DedupingZoneVisitPublisher, ZoneVisitJsonlPublisher
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
 from src.tracking.motion_estimator import MotionEstimator
 from src.tracking.pipeline import TrackingPipeline
@@ -65,7 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zones-file", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, default=None)
     parser.add_argument("--camera-id", default="PILOT-VIDEO")
-    parser.add_argument("--model-path", default="ai/training/yolo26n.pt")
+    parser.add_argument(
+        "--model-path", required=True,
+        help="YOLO 가중치 경로. 기본값을 두지 않는다 — 'ai/training/yolo26n.pt'는 README가 문서화한 "
+        "cwd(hw/jetson)에서 실제로 존재하지 않는 경로였다.",
+    )
     parser.add_argument("--out-events", type=Path, required=True, help="확정된 사건 전이 JSONL(프로덕션 outbox 포맷).")
     parser.add_argument(
         "--out-zone-visits", type=Path, required=True,
@@ -106,6 +123,39 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if not args.calibration.is_file():
         raise ReplayArgumentError(f"calibration 파일을 찾을 수 없습니다: {args.calibration}")
+    verify_zone_calibration(args)
+
+
+def verify_zone_calibration(args: argparse.Namespace) -> None:
+    """zones 파일이 `--calibration`/`--remap-balance`와 같은 좌표계에서 찍혔는지 확인한다.
+
+    `ai/tracking/jetson_vehicle_tracking_baseline.py`의 같은 이름 함수와 같은
+    이유다 — remap은 1080p/balance 0.5에서 폴리곤을 최대 133px 옮기므로, 다른
+    보정 설정으로 찍은 zones 파일을 조용히 쓰면 위반 판정이 전부 틀어진다.
+
+    `ZoneRegistry.from_file`은 zones 파일 최상위의 `"calibration"` 키를 내보내지
+    않으므로(구역 파싱 전용) 여기서 원본 JSON을 직접 읽는다. `"calibration"`
+    키가 없으면 `calibration_fingerprint(None, ...)`과 같은 관례로
+    `{"remap": False}`로 간주한다 — baseline처럼 지문 부재를 경고만 하고
+    통과시키지 않는다. 이 리플레이는 §4.7 임계값 산출용이라 보정 불일치를
+    조용히 넘기면 그 산출값 자체가 틀어진다.
+    """
+
+    try:
+        payload = json.loads(args.zones_file.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ReplayArgumentError(f"zones 파일을 읽을 수 없습니다({args.zones_file}): {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ReplayArgumentError(f"zones 파일의 JSON 형식이 올바르지 않습니다({args.zones_file}): {exc}") from exc
+
+    recorded = payload.get("calibration", {"remap": False})
+    expected = calibration_fingerprint(args.calibration, args.remap_balance)
+    if normalize_fingerprint(recorded) != normalize_fingerprint(expected):
+        raise ReplayArgumentError(
+            f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones-file의 calibration={recorded}, "
+            f"현재 --calibration/--remap-balance={expected}. 같은 설정으로 zones 파일을 다시 만들거나 "
+            "--calibration/--remap-balance를 zones 파일에 맞추세요."
+        )
 
 
 def build_pipeline(args: argparse.Namespace) -> tuple[MonitoringPipeline, ZoneVisitJsonlPublisher]:
@@ -147,9 +197,17 @@ def build_pipeline(args: argparse.Namespace) -> tuple[MonitoringPipeline, ZoneVi
 
 
 def run(args: argparse.Namespace) -> int:
-    """영상 → 추적 → 판정 루프를 끝까지 돌리고 두 JSONL 로그를 채운다."""
+    """영상 → 추적 → 판정 루프를 끝까지 돌리고 두 JSONL 로그를 채운다.
+
+    `result.zone_visit_updates`는 (차량, 구역) 쌍이 추적되는 모든 프레임에
+    그 방문을 그대로 반환한다(`zone_visit_tracker.py`의 `_advance_inside`
+    참고) — 한 구역에 20프레임 머무르면 거의 같은 레코드가 20줄 나온다는
+    뜻이다. `DedupingZoneVisitPublisher`로 visit_id별 실제 상태 전이만 걸러
+    발행하고, 로그의 "방문 전이 N건"도 그 걸러진 건수를 센다.
+    """
 
     pipeline, zone_visit_publisher = build_pipeline(args)
+    deduped_publisher = DedupingZoneVisitPublisher(zone_visit_publisher)
 
     frames = 0
     total_zone_visits = 0
@@ -161,9 +219,7 @@ def run(args: argparse.Namespace) -> int:
                 result = pipeline.process_next_frame()
             except EndOfVideo:
                 break
-            for visit in result.zone_visit_updates:
-                zone_visit_publisher.publish(visit)
-            total_zone_visits += len(result.zone_visit_updates)
+            total_zone_visits += deduped_publisher.publish_all(result.zone_visit_updates)
             frames += 1
             if frames % 300 == 0:
                 LOGGER.info("%d 프레임 처리, 방문 전이 %d건", frames, total_zone_visits)

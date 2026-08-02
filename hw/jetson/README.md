@@ -195,6 +195,7 @@ python -m scripts.replay_pilot_video \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
+    --movement-epsilon 0.01 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```
@@ -202,7 +203,16 @@ python -m scripts.replay_pilot_video \
 `--out-events`는 확정된 사건 전이(프로덕션 outbox와 같은 포맷)만 담는다.
 파일럿 영상 리플레이에는 백엔드 입차 이벤트가 없어 `restricted_zone` 규칙이
 항상 미확정(`confirmable=False`)으로 남으므로, 임계값 측정에는
-`--out-zone-visits`(ZoneVisit의 ENTERING→INSIDE 전이 로그)를 쓴다.
+`--out-zone-visits`(ZoneVisit의 ENTERING→INSIDE 전이 로그)를 쓴다. 각 레코드의
+`observedAt`은 상태별로 의미가 맞는 시각(ENTERING은 진입 후보 시각, INSIDE는
+진입 확정 시각, EXITING은 이탈 후보 시각, OUTSIDE는 이탈 확정 시각)을 골라
+담은 필드라, 상태를 가리지 않고 이 필드 하나로 정렬·비교할 수 있다.
 
 `ai/tracking/replay_pilot_video.py`는 옛 baseline(`jetson_vehicle_tracking_baseline.py`)
 전용이며 이 스크립트가 대체하지 않는다 — 그쪽의 폐기는 별도 티켓(T-23) 범위다.
+
+**실제 실행은 재현되지 않는다.** 위 예시나 실제 파일럿 영상 실행은
+`zoneVisitId`/`physicalVehicleId`를 매번 새 난수(`uuid4()`)로 발급하므로, 같은
+영상을 두 번 돌려도 두 필드는 실행마다 달라진다. 회귀 확인차 두 실행의
+`--out-zone-visits`를 diff한다면 그 두 필드는 제외하고 `zoneId`/`state`/
+`observedAt`만 비교한다.
