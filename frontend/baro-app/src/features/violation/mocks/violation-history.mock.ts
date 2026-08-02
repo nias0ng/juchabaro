@@ -71,7 +71,7 @@ export const MOCK_VIOLATION_HISTORY: MockViolationItem[] = [
   },
   {
     id: 'violation-6',
-    type: 'ETC',
+    type: 'ECT',
     title: '기타',
     meta: '6/15 09:41 · 관리사무소 접수',
     status: 'RESOLVED',

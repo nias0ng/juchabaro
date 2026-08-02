@@ -13,7 +13,7 @@ const TYPE_ICON_COLOR: Record<MockViolationType, string> = {
   EV_OVERSTAY: Palette.mint100,
   DISABLED_ZONE_VIOLATION: Palette.sky100,
   OUT_OF_ZONE: Palette.peach100,
-  ETC: Palette.gray100,
+  ECT: Palette.gray100,
 };
 
 type ViolationListItemProps = {
