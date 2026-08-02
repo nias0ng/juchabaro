@@ -185,6 +185,12 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
     실제로 구역을 떠난 게 아니라 탐지가 잠깐 끊긴 것일 가능성이 있는 재진입
     후보다. `zone_exit_confirm_seconds`가 이 간격보다 커야 그 순간의 RESOLVE를
     막을 수 있다 — 위반 여부 라벨은 필요 없다.
+
+    이 측정 절차가 요구하는 raw-pass 설정(`--zone-entry-confirm-seconds 0`)에서는
+    `zone_visit_tracker.py`의 `_open_candidate`가 새 방문을 ENTERING으로 두지 않고
+    첫 관측에서 곧바로 INSIDE로 승격해 반환한다 — 따라서 재진입 후보는 INSIDE
+    상태로 기록에 남는다. `enteredCandidateAt`은 같은 `_open_candidate` 호출에서
+    채워지므로 ENTERING이었다면 가졌을 값과 동일하다.
     """
 
     records = _read_jsonl(zone_visits_path)
@@ -194,7 +200,7 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
         key = (record["physicalVehicleId"], record["zoneId"])
         if record["state"] == "OUTSIDE":
             exits_by_key.setdefault(key, []).append(record)
-        elif record["state"] == "ENTERING":
+        elif record["state"] == "INSIDE":
             entries_by_key.setdefault(key, []).append(record)
 
     gaps: list[dict[str, Any]] = []
@@ -204,11 +210,14 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
             exited_at = datetime.fromisoformat(exit_record["exitedAt"])
             later_entries = [
                 entry for entry in entries
-                if datetime.fromisoformat(entry["enteredCandidateAt"]) > exited_at
+                if entry["zoneVisitId"] != exit_record["zoneVisitId"]
+                and datetime.fromisoformat(entry["enteredCandidateAt"]) > exited_at
             ]
             if not later_entries:
                 continue
-            next_entry = min(later_entries, key=lambda e: e["enteredCandidateAt"])
+            next_entry = min(
+                later_entries, key=lambda e: datetime.fromisoformat(e["enteredCandidateAt"])
+            )
             gap_seconds = (datetime.fromisoformat(next_entry["enteredCandidateAt"]) - exited_at).total_seconds()
             gaps.append({
                 "video": video,

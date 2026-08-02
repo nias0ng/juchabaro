@@ -1,9 +1,10 @@
-"""파일럿 영상 리플레이 원본 데이터에서 임계값 후보를 뽑고 분석하는 라이브러리(466/T-18).
+"""`scripts/threshold_lib.py`의 단위 테스트(466/T-18).
 
-CLI(scripts/replay_pilot_video.py)를 문턱값마다 재실행하지 않는다 — 확인시간을 0으로 두고
-한 번만 돌리면 각 방문의 실제 체류시간이 그대로 로그에 남으므로(zone_visit_tracker.py의
-entry_confirm_seconds<=0/exit_confirm_seconds<=0 경로), 임의의 문턱값에 대해
-"이 방문이 그 문턱값에서도 확정됐을까"를 dwellSeconds >= threshold로 계산할 수 있다.
+방문 필터링·체류시간 계산·문턱값 스윕/추천·프레임 추출·재진입(플리커) 간격 탐지
+각 함수를 raw-pass JSONL 픽스처로 검증한다. `build_flicker_gaps` 관련 픽스처는
+`--zone-entry-confirm-seconds 0`에서 실제로 나오는 상태값(INSIDE)을 그대로
+반영해야 한다 — ENTERING으로 손으로 지어낸 픽스처는 실제 파이프라인 출력과
+어긋나 버그를 가려버린다(리뷰에서 잡힌 사례 참고).
 """
 
 import json
@@ -168,9 +169,12 @@ def test_build_flicker_gaps_pairs_same_vehicle_reentry(tmp_path):
     _write_jsonl(path, [
         {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
          "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
-        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v2", "physicalVehicleId": "pv-1",
+        # raw-pass(--zone-entry-confirm-seconds 0)에서는 새 방문이 ENTERING을 거치지
+        # 않고 첫 관측에서 곧바로 INSIDE로 승격되어 기록된다(zone_visit_tracker.py의
+        # _open_candidate 참고) — 그래서 픽스처도 INSIDE로 둔다.
+        {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v2", "physicalVehicleId": "pv-1",
          "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
-        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v3", "physicalVehicleId": "pv-2",
+        {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v3", "physicalVehicleId": "pv-2",
          "enteredCandidateAt": "1970-01-01T00:00:20+00:00"},
     ])
 
@@ -185,10 +189,11 @@ def test_build_flicker_gaps_pairs_same_vehicle_reentry(tmp_path):
 def test_build_flicker_gaps_ignores_visits_with_no_later_reentry(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        # v1 자신의 ENTERING 전이 — 같은 (physicalVehicleId, zoneId) 키로 entries_by_key에
-        # 들어가지만 exitedAt보다 이전이라 재진입이 아니다. entries_by_key 자체가 비어
-        # 있어서 걸러지는 게 아니라 시각 비교로 걸러져야 한다는 걸 확인한다.
-        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+        # v1 자신의 INSIDE 전이 — 같은 (physicalVehicleId, zoneId) 키로 entries_by_key에
+        # 들어가지만 자기 자신의 exitedAt과 짝지어질 수 있는 후보다. zoneVisitId가
+        # exit_record와 같으므로 자기 자신과의 짝짓기 가드로 걸러져야 한다(시각상으로도
+        # exitedAt보다 이전이라 이중으로 걸러진다).
+        {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
          "enteredCandidateAt": "1970-01-01T00:00:02+00:00"},
         {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
          "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
@@ -204,8 +209,27 @@ def test_build_flicker_gaps_ignores_reentry_from_different_vehicle(tmp_path):
          "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
         # 시각상으로는 exitedAt 직후라 재진입처럼 보이지만 physicalVehicleId가 다르다 —
         # 시각 비교만으로는 걸러지지 않고 키(physicalVehicleId, zoneId) 매칭이 걸러내야 한다.
-        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v2", "physicalVehicleId": "pv-2",
+        {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v2", "physicalVehicleId": "pv-2",
          "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
+    ])
+
+    assert build_flicker_gaps("video1", path) == []
+
+
+def test_build_flicker_gaps_excludes_self_pairing_with_own_zone_visit_id(tmp_path):
+    # 방문 하나의 생애주기 전부(INSIDE 진입 -> OUTSIDE 종료)가 같은 zoneVisitId를
+    # 공유한다. enteredCandidateAt이 exitedAt보다 뒤(재기록/시계 오차 등으로 실제
+    # 발생할 수 있는 값)라 시각 비교만으로는 걸러지지 않는다 —
+    # test_build_flicker_gaps_pairs_same_vehicle_reentry와 구조가 같지만
+    # zoneVisitId가 같다는 점만 다르다. zoneVisitId 배제 가드가 없으면 이 INSIDE
+    # 레코드가 자기 자신의 OUTSIDE와 재진입으로 잘못 짝지어져 가짜 플리커 간격을
+    # 만들어낸다.
+    path = tmp_path / "zone_visits.jsonl"
+    _write_jsonl(path, [
+        {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
+        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
     ])
 
     assert build_flicker_gaps("video1", path) == []
