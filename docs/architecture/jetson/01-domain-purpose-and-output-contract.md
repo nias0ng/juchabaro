@@ -160,7 +160,38 @@ optional egressZoneIds
 - `egressZoneIds`는 주차면에서 빠져나가는 경로를 나타내는 AISLE zone 참조이며 DOUBLE_PARKING 평가에 사용한다.
 - 다섯 타입 모두 하나의 deployment `zoneId` namespace를 사용한다. Backend·Frontend는 그중 주차면 타입만 업무 화면에 projection할 수 있다.
 
-`[결정]` 활성 ZoneVisit은 시작 당시의 `zoneId + zoneDefinitionVersion`을 보존한다. 폴리곤 파일 형식, 좌표 직렬화와 배포 주체는 `[후속 계약]`이다. 현재 한 대의 Jetson에는 version이 명시된 정적 설정을 배포하는 것으로 충분하다. 실행 중 hot replacement와 동적 동기화 서비스는 지원하지 않으며, ZoneDefinition 변경은 active scope가 없는 통제된 기동 시점에 적용한다.
+`[결정]` 활성 ZoneVisit은 시작 당시의 `zoneId + zoneDefinitionVersion`을 보존한다. 현재 한 대의 Jetson에는 version이 명시된 정적 JSON 설정을 배포한다. 실행 중 hot replacement와 동적 동기화 서비스는 지원하지 않으며, ZoneDefinition 변경은 active scope가 없는 통제된 기동 시점에 적용한다.
+
+### 5.3 정적 JSON 배포 형식
+
+Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기동 시 읽는다. JSON은 SQLite로 옮기지 않으며, 일부 구역만 적용하거나 오류 항목을 건너뛰지 않는다.
+
+```json
+{
+  "zoneDefinitionVersion": 1,
+  "calibrationReference": "a5d846f6bfc40eb3",
+  "zones": [
+    {
+      "zoneId": 1,
+      "zoneType": "GENERAL",
+      "polygon": [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3]],
+      "egressZoneIds": [2]
+    },
+    {
+      "zoneId": 2,
+      "zoneType": "AISLE",
+      "polygon": [[0.3, 0.1], [0.5, 0.1], [0.5, 0.3], [0.3, 0.3]]
+    }
+  ]
+}
+```
+
+- 최상위 필드는 `zoneDefinitionVersion`, `calibrationReference`, `zones`다.
+- zone 필수 필드는 `zoneId`, `zoneType`, `polygon`이며 선택 필드는 `allowedDurationSeconds`, `chargerClass`, `egressZoneIds`다.
+- 좌표는 `[x, y]` 순서의 0~1 정규화 값이고, 모든 zone은 같은 calibration 좌표계를 사용한다.
+- `zoneId`는 snapshot 안에서 유일해야 한다.
+- `egressZoneIds`는 주차면 타입에서만 사용하며 같은 snapshot의 `AISLE`을 참조한다. 생략하면 빈 관계다.
+- 구형 `EV_FAST`, `EV_SLOW`, `allowedMinutes`는 받지 않는다.
 
 ## 6. 공통 도메인 결정
 

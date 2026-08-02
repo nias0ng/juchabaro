@@ -64,7 +64,6 @@
 
 - endpoint, HTTP method, DTO와 인증 방식
 - Backend 업무 상태와 Frontend read model의 구체적인 mapping
-- Zone polygon 파일 형식과 배포 절차
 - 법령 기반 EV 허용 시간의 실제 값과 출처
 - DB schema, repository·service interface와 migration
 - TensorRT 변환, 서비스 기동과 성능 튜닝 절차

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,10 @@ class Settings(BaseSettings):
 
     hw_api_key: str = ""
     internal_api_key: str = ""
+
+    # 한 배포의 versioned ZoneDefinition JSON. 실행 중 hot replacement는 하지
+    # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
+    zone_definition_path: Path
 
     # 구역 방문 확인시간(초). 기본값을 두지 않는 이유는 스펙 §4.7에 있다 —
     # zone_entry_confirm_seconds가 전용구역 진입 즉시 판정의 유일한 오탐

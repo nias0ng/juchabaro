@@ -87,6 +87,11 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
+`ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
+구역 JSON 경로를 지정한다. 개발용 예시는
+`config/zone_definition.pilot.json`이다. 구역 정보는 SQLite가 아니라 이 정적
+JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
+
 ## PC 개발 환경에서 실행
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.

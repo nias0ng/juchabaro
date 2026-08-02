@@ -1,0 +1,53 @@
+{
+  "zoneDefinitionVersion": 1,
+  "calibrationReference": "a5d846f6bfc40eb3",
+  "zones": [
+    {
+      "zoneId": 1,
+      "zoneType": "GENERAL",
+      "polygon": [[0.28, 0.056], [0.417, 0.057], [0.416, 0.202], [0.279, 0.202]]
+    },
+    {
+      "zoneId": 2,
+      "zoneType": "GENERAL",
+      "polygon": [[0.279, 0.202], [0.416, 0.202], [0.415, 0.361], [0.277, 0.361]]
+    },
+    {
+      "zoneId": 3,
+      "zoneType": "DISABLED",
+      "polygon": [[0.277, 0.361], [0.415, 0.361], [0.414, 0.517], [0.275, 0.517]]
+    },
+    {
+      "zoneId": 4,
+      "zoneType": "AISLE",
+      "polygon": [[0.275, 0.517], [0.414, 0.517], [0.412, 0.583], [0.273, 0.581]]
+    },
+    {
+      "zoneId": 5,
+      "zoneType": "GENERAL",
+      "polygon": [[0.647, 0.072], [0.798, 0.06], [0.797, 0.211], [0.645, 0.218]]
+    },
+    {
+      "zoneId": 6,
+      "zoneType": "GENERAL",
+      "polygon": [[0.645, 0.218], [0.797, 0.211], [0.796, 0.38], [0.643, 0.389]]
+    },
+    {
+      "zoneId": 7,
+      "zoneType": "EV_CHARGING",
+      "polygon": [[0.643, 0.389], [0.796, 0.38], [0.795, 0.551], [0.641, 0.56]],
+      "allowedDurationSeconds": 7200,
+      "chargerClass": "FAST"
+    },
+    {
+      "zoneId": 8,
+      "zoneType": "AISLE",
+      "polygon": [[0.42, 0.056], [0.638, 0.06], [0.638, 0.58], [0.42, 0.58]]
+    },
+    {
+      "zoneId": 9,
+      "zoneType": "AISLE",
+      "polygon": [[0.27, 0.59], [0.8, 0.575], [0.81, 0.94], [0.265, 0.945]]
+    }
+  ]
+}
