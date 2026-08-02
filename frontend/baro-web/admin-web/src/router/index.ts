@@ -6,19 +6,16 @@ const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
+      path: '/',
+      name: 'splash',
+      component: () => import('../views/SplashView.vue'),
+      meta: { public: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('../views/LoginView.vue'),
       meta: { public: true },
-    },
-    {
-      path: '/',
-      redirect: '/home',
-    },
-    {
-      path: '/home',
-      name: 'dashboard',
-      component: () => import('../views/DashboardView.vue'),
     },
     {
       path: '/events',
@@ -59,8 +56,9 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 
-  if (to.name === 'login' && authStore.status === 'authenticated') {
-    return { name: 'dashboard' }
+  // 스플래시('/')·로그인 화면은 게스트 전용이라, 이미 로그인된 사용자는 사건 목록으로 보낸다.
+  if (isPublic && authStore.status === 'authenticated') {
+    return { name: 'event-list' }
   }
 })
 
