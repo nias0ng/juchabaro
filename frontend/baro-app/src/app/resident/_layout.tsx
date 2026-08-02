@@ -10,7 +10,7 @@ import { Palette } from '@/styles';
 const RESIDENT_NAV_ITEMS: NavItem[] = [
   { key: 'index', label: '홈', icon: 'home' },
   { key: 'requests', label: '요청', icon: 'request' },
-  { key: 'notifications', label: '알림', icon: 'bell' },
+  { key: 'parking-map', label: '주차 현황', icon: 'parking' },
   { key: 'my-page', label: '내 정보', icon: 'user' },
 ];
 
@@ -45,8 +45,8 @@ function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
 
 /*
   ResidentLayout : 입주민 앱의 탭바 레이아웃
-  - 홈, 요청, 알림, 내 정보 탭으로 구성
-  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/알림/내정보/차량 등)에 들어올 수 없다.
+  - 홈, 요청, 주차 현황, 내 정보 탭으로 구성(Figma Z-02 개편 — 알림 탭은 빠지고 홈 화면 벨 아이콘으로만 진입)
+  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/주차 현황/내정보/차량 등)에 들어올 수 없다.
 */
 export default function ResidentLayout() {
   const { status, user } = useAuth();
@@ -89,9 +89,9 @@ export default function ResidentLayout() {
         }}
       />
       <Tabs.Screen
-        name="notifications"
+        name="parking-map"
         options={{
-          title: '알림',
+          title: '주차 현황',
         }}
       />
       <Tabs.Screen
@@ -102,12 +102,12 @@ export default function ResidentLayout() {
       />
       {/* 아래는 URL·다른 화면의 메뉴/바로가기로만 진입하는 화면들이라 라우트는 두고 하단 탭에서만 숨긴다(href: null). */}
       <Tabs.Screen name="vehicles" options={{ href: null }} /> {/* 홈 화면 "내 차량" 바로가기 */}
+      <Tabs.Screen name="notifications" options={{ href: null }} /> {/* 홈 화면 알림 벨 아이콘으로 진입 */}
       <Tabs.Screen name="request-detail" options={{ href: null }} /> {/* URL/알림에서 진입 */}
       <Tabs.Screen name="response-complete" options={{ href: null }} /> {/* E-11 응답 후 도달 */}
       <Tabs.Screen name="profile-edit" options={{ href: null }} /> {/* 내 정보 카드에서 진입 */}
       <Tabs.Screen name="notification-settings" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
       <Tabs.Screen name="request-history" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
-      <Tabs.Screen name="parking-map" options={{ href: null }} /> {/* URL로 직접 진입 */}
       <Tabs.Screen name="violation-history" options={{ href: null }} /> {/* URL로 직접 진입 */}
     </Tabs>
   );
