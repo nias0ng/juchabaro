@@ -99,10 +99,14 @@ def test_loads_tracked_pilot_deployment_snapshot() -> None:
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(1)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(2)
     assert len(registry.all()) == 9
-    assert registry.get(7).zone_type is ZoneType.EV_CHARGING
-    assert registry.get(7).allowed_duration_seconds == 7200.0
+    assert registry.get(1).zone_type is ZoneType.EV_CHARGING
+    assert registry.get(1).allowed_duration_seconds == 7200.0
+    assert registry.get(1).egress_zone_ids == (ZoneId(7),)
+    assert registry.get(7).zone_type is ZoneType.AISLE
+    assert registry.get(8).zone_type is ZoneType.ENTRY_EXIT
+    assert registry.get(9).zone_type is ZoneType.ENTRY_EXIT
 
 
 def test_accepts_all_canonical_zone_types(tmp_path: Path) -> None:
