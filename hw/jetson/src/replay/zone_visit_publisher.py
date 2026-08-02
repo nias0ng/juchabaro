@@ -72,7 +72,11 @@ class ZoneVisitJsonlPublisher:
 
         if self._handle is None:
             raise ZoneVisitPublisherError("JSONL 파일이 열려 있지 않습니다. open()을 먼저 호출하세요.")
-        self._handle.write(json.dumps(zone_visit_to_jsonable(visit), ensure_ascii=False) + "\n")
+        line = json.dumps(zone_visit_to_jsonable(visit), ensure_ascii=False) + "\n"
+        try:
+            self._handle.write(line)
+        except OSError as exc:
+            raise ZoneVisitPublisherError(f"zone visit 파일에 쓰지 못했습니다({self._path}): {exc}") from exc
 
     def close(self) -> None:
         """파일 핸들을 닫는다."""
