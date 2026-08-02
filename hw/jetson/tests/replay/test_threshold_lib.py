@@ -52,12 +52,17 @@ def test_compute_dwell_seconds_returns_none_for_incomplete_visit():
     assert compute_dwell_seconds({"enteredAt": None, "exitedAt": "1970-01-01T00:00:08+00:00"}) is None
 
 
+def test_compute_dwell_seconds_returns_none_for_missing_exit_time():
+    assert compute_dwell_seconds({"enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": None}) is None
+
+
 def test_build_candidates_skips_incomplete_and_computes_dwell(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
         {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1",
          "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
-        {"zoneId": 3, "state": "ENTERING", "zoneVisitId": "v2", "enteredAt": None, "exitedAt": None},
+        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v2",
+         "enteredAt": None, "exitedAt": "1970-01-01T00:00:08+00:00"},
     ])
 
     candidates = build_candidates("video1", path)
