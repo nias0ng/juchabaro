@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import sqlite3
 
+from src.actuators.ports import ActuatorCommandPlanner, ActuatorPort
 from src.application.frame_observation_workflow import (
     FrameObservationWorkflow,
     PublicationPreparer,
@@ -64,6 +65,8 @@ class MonitoringDependencies:
     publication_preparer: PublicationPreparer
     connection_factory: Callable[[], sqlite3.Connection]
     entity_resolver: EntityResolver | None = None
+    actuator_command_planner: ActuatorCommandPlanner | None = None
+    actuator_port: ActuatorPort | None = None
 
 
 def build_monitoring_pipeline(
@@ -142,4 +145,6 @@ def build_monitoring_pipeline(
         frame_workflow=frame_workflow,
         connection_factory=dependencies.connection_factory,
         calibration_reference=zones.calibration_reference,
+        actuator_command_planner=dependencies.actuator_command_planner,
+        actuator_port=dependencies.actuator_port,
     )

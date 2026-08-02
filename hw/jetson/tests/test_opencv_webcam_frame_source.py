@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import pytest
 from src.camera.frame_source import FrameSourceError, OpenCvWebcamFrameSource
+from src.domain.models import ObservationReason, ObservationState
 
 
 class FakeVideoCapture:
@@ -80,9 +81,14 @@ def test_open_raises_frame_source_error_when_device_not_opened(monkeypatch):
     monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
     source = OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0)
 
-    with pytest.raises(FrameSourceError):
+    with pytest.raises(FrameSourceError) as raised:
         source.open()
     assert fake.released  # 실패한 핸들도 반드시 해제해야 한다
+    assert raised.value.observation.state is ObservationState.UNKNOWN
+    assert (
+        raised.value.observation.reason
+        is ObservationReason.CAMERA_UNAVAILABLE
+    )
 
 
 def test_open_is_idempotent(monkeypatch):
@@ -179,8 +185,10 @@ def test_calibration_id_is_none_without_remap(monkeypatch):
 def test_capture_before_open_raises():
     source = OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0)
 
-    with pytest.raises(FrameSourceError):
+    with pytest.raises(FrameSourceError) as raised:
         source.capture()
+
+    assert raised.value.observation.reason is ObservationReason.PIPELINE_STALLED
 
 
 def test_read_failure_raises_frame_source_error(monkeypatch):
@@ -189,8 +197,10 @@ def test_read_failure_raises_frame_source_error(monkeypatch):
     source = OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0)
     source.open()
 
-    with pytest.raises(FrameSourceError):
+    with pytest.raises(FrameSourceError) as raised:
         source.capture()
+
+    assert raised.value.observation.reason is ObservationReason.CAMERA_UNAVAILABLE
 
 
 def test_close_releases_the_device(monkeypatch):

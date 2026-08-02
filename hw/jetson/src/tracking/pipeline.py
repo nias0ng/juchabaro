@@ -16,6 +16,7 @@ from src.domain.models import (
     ObservationReason,
     ObservationState,
     ObservationStatus,
+    require_aware,
     require_positive,
 )
 from src.tracking.entity_resolver import PassthroughEntityResolver
@@ -66,6 +67,7 @@ class TrackingPipeline:
             trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
         )
         self._last_reliable_observed_at = None
+        self._last_frame_id = 0
         self._restart_unresolved_vehicle_ids: set[PhysicalVehicleId] = set()
 
     def open(self) -> None:
@@ -92,6 +94,7 @@ class TrackingPipeline:
                 "frame camera_id does not match the tracking pipeline: "
                 f"expected={self._camera_id}, actual={frame.camera_id}"
             )
+        self._last_frame_id = frame.frame_id
 
         try:
             tracker_result = self._detector.track(frame)
@@ -204,6 +207,54 @@ class TrackingPipeline:
         """
 
         self._presence_confirmer.pause()
+
+    def interrupt_observation(
+        self,
+        *,
+        observed_at: datetime,
+        observation: ObservationStatus,
+    ) -> TrackingBatch:
+        """camera·inference 중단을 terminal 근거가 아닌 batch로 변환한다.
+
+        실제 frame이 없으므로 마지막 완료 frame ID를 유지한다. 이 값은
+        ordering 근거가 아니며, ``observed_at``과 aggregate revision이 상태
+        순서를 결정한다. trusted absence는 누적하지 않지만 이미 확정된
+        NOT_PRESENT 사실은 상위 UoW가 ACK할 때까지 반복한다.
+        """
+
+        require_aware(observed_at, "observed_at")
+        if observation.state is ObservationState.OBSERVED:
+            raise ValueError("observation interruption cannot be OBSERVED")
+        if observation.reason is None:
+            raise ValueError("observation interruption requires a reason")
+        self.pause_absence_confirmation()
+        interrupted = ObservationStatus(
+            state=observation.state,
+            reason=observation.reason,
+            last_reliable_observed_at=self._last_reliable_observed_at,
+        )
+        presence_result = self._presence_confirmer.update(
+            observed_physical_vehicle_ids=set(),
+            observed_at=observed_at,
+            trusted_full_area_sample=False,
+        )
+        return TrackingBatch(
+            camera_id=self._camera_id,
+            frame_id=self._last_frame_id,
+            observed_at=observed_at,
+            vehicles=(),
+            ended_track_segment_ids=(),
+            unobserved_physical_vehicle_ids=(
+                presence_result.unobserved_physical_vehicle_ids
+            ),
+            absence_progress=presence_result.absence_progress,
+            observation=interrupted,
+            full_area_observed=False,
+            all_detections_tracked=False,
+            not_present_confirmed_vehicle_ids=(
+                presence_result.not_present_confirmed_vehicle_ids
+            ),
+        )
 
     def forget_physical_vehicle(self, physical_vehicle_id: PhysicalVehicleId) -> None:
         """상위 owner가 PhysicalVehicle 종료를 commit한 뒤 ephemeral 상태를 정리한다."""

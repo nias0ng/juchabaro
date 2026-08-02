@@ -449,6 +449,33 @@ def test_inference_error_automatically_breaks_absence_time_continuity():
     assert recovered.not_present_confirmed_vehicle_ids == ()
 
 
+def test_camera_interruption_becomes_untrusted_batch_without_absence_gain():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    pipeline = _pipeline(detector, absence_seconds=2.0)
+    first = pipeline.process(_make_frame(1))
+    vehicle_id = first.vehicles[0].physical_vehicle_id
+
+    interrupted = pipeline.interrupt_observation(
+        observed_at=BASE_TIME + timedelta(seconds=100),
+        observation=ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=ObservationReason.CAMERA_UNAVAILABLE,
+        ),
+    )
+
+    assert interrupted.frame_id == 1
+    assert interrupted.vehicles == ()
+    assert interrupted.unobserved_physical_vehicle_ids == (vehicle_id,)
+    assert interrupted.absence_progress[0].trusted_seconds == 0.0
+    assert interrupted.not_present_confirmed_vehicle_ids == ()
+    assert interrupted.observation.state is ObservationState.UNKNOWN
+    assert (
+        interrupted.observation.reason
+        is ObservationReason.CAMERA_UNAVAILABLE
+    )
+
+
 def test_restore_absence_checkpoint_continues_from_durable_lower_bound():
     detector = FakeDetector()
     pipeline = _pipeline(detector, absence_seconds=2.0)

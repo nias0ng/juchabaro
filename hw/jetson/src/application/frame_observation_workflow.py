@@ -84,6 +84,7 @@ class FrameObservationResult:
 
     parking_result: ParkingPipelineResult
     retired_physical_vehicle_ids: tuple[PhysicalVehicleId, ...]
+    active_incidents: tuple[Incident, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ class RuntimeRecoveryResult:
     recovered_outbox_count: int
     active_physical_vehicles: tuple[PhysicalVehicle, ...]
     completed_departure_count: int
+    active_incidents: tuple[Incident, ...]
 
 
 class FrameObservationWorkflow:
@@ -218,6 +220,7 @@ class FrameObservationWorkflow:
             recovered_outbox_count=recovered_outbox_count,
             active_physical_vehicles=active_physical_vehicles,
             completed_departure_count=len(departure_plans),
+            active_incidents=recovered_incidents,
         )
 
     @staticmethod
@@ -402,6 +405,9 @@ class FrameObservationWorkflow:
                     now=batch.observed_at,
                     connection=connection,
                 )
+                active_incidents = IncidentRepository(
+                    connection
+                ).list_active()
         except Exception:
             # SQLite rollback만으로는 transaction 안에서 먼저 변경된
             # in-memory timer·reducer state를 되돌릴 수 없다.
@@ -414,6 +420,7 @@ class FrameObservationWorkflow:
             retired_physical_vehicle_ids=tuple(
                 plan.physical_vehicle_id for plan in departure_plans
             ),
+            active_incidents=active_incidents,
         )
 
     def _enqueue_publications(

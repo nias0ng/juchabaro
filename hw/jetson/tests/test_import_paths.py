@@ -11,7 +11,7 @@ from pathlib import Path
 def test_src_package_is_importable() -> None:
     from src.parking.models import ZoneVisitState
 
-    assert ZoneVisitState.OUTSIDE.value == "OUTSIDE"
+    assert ZoneVisitState.ENTERING.value == "ENTERING"
 
 
 def test_tracking_models_are_importable() -> None:

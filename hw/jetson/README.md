@@ -132,6 +132,14 @@ ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle
 `TRUSTED_SAMPLE_MAX_GAP_SECONDS`를 넘는 frame 공백은 camera·pipeline
 stall로 보고 그 wall-clock을 부재 확정에 더하지 않는다.
 
+Camera·보정 실패는 `FrameSourceError`의 `UNKNOWN` 또는 `DEGRADED`
+관측과 구체적인 reason으로 변환된다. `MonitoringPipeline`은 이 비신뢰
+관측을 active scope에 commit해 timer chain을 끊은 뒤 원래 오류를
+호출자에게 전달한다. LED·speaker는 concrete GPIO 구현 없이
+`ActuatorCommandPlanner`와 `ActuatorPort` 주입 경계만 제공하며, durable
+commit 뒤 전체 active Incident projection을 반복 적용한다. `src/sensors`는
+후속 센서 입력 adapter를 위한 독립 경계이며 현재 실행 pipeline에는 연결하지 않는다.
+
 ## PC 개발 환경에서 실행
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.

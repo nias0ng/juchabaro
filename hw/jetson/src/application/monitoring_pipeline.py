@@ -17,13 +17,18 @@ wall-clock을 NOT_PRESENT 확정 시간에 포함한다. `EndOfVideo`는 리플�
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 import sqlite3
 
+from src.actuators.ports import ActuatorCommandPlanner, ActuatorPort
 from src.application.frame_observation_workflow import (
     FrameObservationResult,
     FrameObservationWorkflow,
 )
 from src.camera.frame_source import EndOfVideo, FrameSource, FrameSourceError
+from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.parking.models import Incident
+from src.tracking.models import TrackingBatch
 from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import TrackingError
 
@@ -39,14 +44,22 @@ class MonitoringPipeline:
         frame_workflow: FrameObservationWorkflow,
         connection_factory: Callable[[], sqlite3.Connection],
         calibration_reference: str,
+        actuator_command_planner: ActuatorCommandPlanner | None = None,
+        actuator_port: ActuatorPort | None = None,
     ) -> None:
         if not calibration_reference:
             raise ValueError("calibration_reference must not be empty")
+        if (actuator_command_planner is None) != (actuator_port is None):
+            raise ValueError(
+                "actuator_command_planner and actuator_port must be provided together"
+            )
         self._frame_source = frame_source
         self._tracking_pipeline = tracking_pipeline
         self._frame_workflow = frame_workflow
         self._connection_factory = connection_factory
         self._calibration_reference = calibration_reference
+        self._actuator_command_planner = actuator_command_planner
+        self._actuator_port = actuator_port
 
     def open(self) -> None:
         """durable runtime을 복원한 뒤 프레임 소스와 추적을 연다."""
@@ -61,9 +74,31 @@ class MonitoringPipeline:
         self._tracking_pipeline.restore_active_checkpoints(
             recovery.active_physical_vehicles
         )
-        self._frame_source.open()
+        self._apply_actuator_projection(
+            recovery.active_incidents,
+            requested_at=datetime.now(timezone.utc),
+        )
+        try:
+            self._frame_source.open()
+        except FrameSourceError as error:
+            self._commit_interruption(
+                observed_at=error.observed_at,
+                observation=error.observation,
+            )
+            self._frame_source.close()
+            raise
         try:
             self._tracking_pipeline.open()
+        except TrackingError:
+            self._commit_interruption(
+                observed_at=datetime.now(timezone.utc),
+                observation=ObservationStatus(
+                    state=ObservationState.UNKNOWN,
+                    reason=ObservationReason.PIPELINE_STALLED,
+                ),
+            )
+            self._frame_source.close()
+            raise
         except Exception:
             # frame source를 먼저 연 뒤 model 로드가 실패해도
             # camera handle을 남기지 않는다. 원래 기동 예외는 유지한다.
@@ -82,8 +117,11 @@ class MonitoringPipeline:
             frame = self._frame_source.capture()
         except EndOfVideo:
             raise
-        except FrameSourceError:
-            self._tracking_pipeline.pause_absence_confirmation()
+        except FrameSourceError as error:
+            self._commit_interruption(
+                observed_at=error.observed_at,
+                observation=error.observation,
+            )
             raise
 
         try:
@@ -97,8 +135,36 @@ class MonitoringPipeline:
                 ),
             )
         except TrackingError:
-            self._tracking_pipeline.pause_absence_confirmation()
+            self._commit_interruption(
+                observed_at=frame.captured_at,
+                observation=ObservationStatus(
+                    state=ObservationState.UNKNOWN,
+                    reason=ObservationReason.PIPELINE_STALLED,
+                ),
+            )
             raise
+
+        return self._commit_batch(tracking_batch)
+
+    def _commit_interruption(
+        self,
+        *,
+        observed_at: datetime,
+        observation: ObservationStatus,
+    ) -> FrameObservationResult:
+        """비신뢰 관측을 같은 frame UoW에 반영해 timer chain을 끊는다."""
+
+        batch = self._tracking_pipeline.interrupt_observation(
+            observed_at=observed_at,
+            observation=observation,
+        )
+        return self._commit_batch(batch)
+
+    def _commit_batch(
+        self,
+        tracking_batch: TrackingBatch,
+    ) -> FrameObservationResult:
+        """TrackingBatch를 commit하고 그 이후의 projection side effect를 적용한다."""
 
         connection = self._connection_factory()
         try:
@@ -112,7 +178,28 @@ class MonitoringPipeline:
             self._tracking_pipeline.forget_physical_vehicle(
                 physical_vehicle_id
             )
+        self._apply_actuator_projection(
+            result.active_incidents,
+            requested_at=tracking_batch.observed_at,
+        )
         return result
+
+    def _apply_actuator_projection(
+        self,
+        incidents: tuple[Incident, ...],
+        *,
+        requested_at: datetime,
+    ) -> None:
+        """commit된 전체 Incident projection만 외부 adapter에 전달한다."""
+
+        if self._actuator_command_planner is None:
+            return
+        assert self._actuator_port is not None
+        commands = self._actuator_command_planner.plan(
+            incidents,
+            requested_at=requested_at,
+        )
+        self._actuator_port.apply_projection(commands)
 
     def run(
         self,
@@ -139,5 +226,7 @@ class MonitoringPipeline:
     def close(self) -> None:
         """프레임 소스와 추적 모델 자원을 해제한다."""
 
-        self._frame_source.close()
-        self._tracking_pipeline.close()
+        try:
+            self._frame_source.close()
+        finally:
+            self._tracking_pipeline.close()
