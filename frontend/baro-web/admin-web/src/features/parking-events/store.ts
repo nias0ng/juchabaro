@@ -3,7 +3,7 @@ import { ref } from 'vue';
 
 import { useAuthStore } from '@/stores/auth-store';
 
-import { EVENT_ROWS, INITIAL_HISTORY, findEventRow, normalizeEventId } from './data';
+import { EVENT_ROWS, INITIAL_HISTORY, MOCK_TODAY, findEventRow, normalizeEventId } from './data';
 import type { HistoryLogEntry, TimelineEntry } from './types';
 
 export const INITIAL_TIMELINE: TimelineEntry[] = [
@@ -18,9 +18,9 @@ function formatNow(): string {
 }
 
 function formatLogTime(): string {
-  const now = new Date();
-  const date = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`;
-  return `${date} ${formatNow()}`;
+  // 날짜는 실제 시스템 날짜가 아니라 이 데모가 가리키는 '오늘'(MOCK_TODAY)을 써야
+  // 이력 관리의 기본 날짜 필터(오늘)에 방금 남긴 로그가 바로 보인다.
+  return `${MOCK_TODAY.replaceAll('-', '.')} ${formatNow()}`;
 }
 
 // 이력 관리 화면에는 실제 처리자 계정이 없으니, 로그인된 관리자 닉네임을 그대로 쓴다.
@@ -40,6 +40,10 @@ export const useParkingEventStore = defineStore('parking-event', () => {
   const selectedId = ref(EVENT_ROWS[0]!.id);
   const oTamIds = ref<Record<string, true>>({});
   const resentIds = ref<Record<string, true>>({});
+  // 관리자가 '완료 처리'로 직접 종결한 사건. 사건 상세 화면의 표시 상태를 덮어쓰는 데 쓴다.
+  const completedIds = ref<Record<string, true>>({});
+  // 관리자가 '관리자 확인'을 남긴 사건. 중복으로 다시 확인 처리를 남기지 못하게 막는 데 쓴다.
+  const reviewedIds = ref<Record<string, true>>({});
   const timelines = ref<Record<string, TimelineEntry[]>>({});
   const history = ref<HistoryLogEntry[]>(INITIAL_HISTORY);
   const nextLogSeq = ref(FIRST_NEW_LOG_SEQ);
@@ -48,8 +52,15 @@ export const useParkingEventStore = defineStore('parking-event', () => {
     selectedId.value = id;
   }
 
+  // 오탐 처리는 토글이다: 이미 오탐으로 표시된 사건에서 다시 누르면 원래 등록되어 있던
+  // 유형으로 되돌린다. 되돌리는 쪽은 실수로 누른 걸 취소하는 것뿐이라 이력에 남기지 않는다.
   function markOtam(id: string) {
     const key = normalizeEventId(id);
+    if (oTamIds.value[key]) {
+      const { [key]: _removed, ...rest } = oTamIds.value;
+      oTamIds.value = rest;
+      return;
+    }
     oTamIds.value = { ...oTamIds.value, [key]: true };
     history.value = [
       {
@@ -60,6 +71,44 @@ export const useParkingEventStore = defineStore('parking-event', () => {
         handler: currentHandlerName(),
         time: formatLogTime(),
         memo: '사건 목록에서 오탐으로 처리함',
+      },
+      ...history.value,
+    ];
+    nextLogSeq.value += 1;
+  }
+
+  // 관리자가 사건 상세에서 직접 사유를 입력해 사건을 완료 처리한다.
+  function completeEvent(id: string, memo: string) {
+    const key = normalizeEventId(id);
+    completedIds.value = { ...completedIds.value, [key]: true };
+    history.value = [
+      {
+        logId: `#L-${nextLogSeq.value}`,
+        eventId: `#${key}`,
+        car: findEventRow(id)?.car ?? '-',
+        actionType: '완료 처리',
+        handler: currentHandlerName(),
+        time: formatLogTime(),
+        memo,
+      },
+      ...history.value,
+    ];
+    nextLogSeq.value += 1;
+  }
+
+  // 완료 처리는 아니지만 관리자가 사건을 확인했다는 사유를 남긴다(상태는 바뀌지 않는다).
+  function acknowledgeEvent(id: string, memo: string) {
+    const key = normalizeEventId(id);
+    reviewedIds.value = { ...reviewedIds.value, [key]: true };
+    history.value = [
+      {
+        logId: `#L-${nextLogSeq.value}`,
+        eventId: `#${key}`,
+        car: findEventRow(id)?.car ?? '-',
+        actionType: '관리자 확인',
+        handler: currentHandlerName(),
+        time: formatLogTime(),
+        memo,
       },
       ...history.value,
     ];
@@ -91,5 +140,19 @@ export const useParkingEventStore = defineStore('parking-event', () => {
     nextLogSeq.value += 1;
   }
 
-  return { selectedId, oTamIds, resentIds, timelines, history, nextLogSeq, setSelectedId, markOtam, resend };
+  return {
+    selectedId,
+    oTamIds,
+    resentIds,
+    completedIds,
+    reviewedIds,
+    timelines,
+    history,
+    nextLogSeq,
+    setSelectedId,
+    markOtam,
+    resend,
+    completeEvent,
+    acknowledgeEvent,
+  };
 });

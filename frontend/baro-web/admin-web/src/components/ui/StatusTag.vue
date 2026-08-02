@@ -18,6 +18,7 @@ withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
   font-size: var(--font-size-sm);
   font-weight: 600;
   line-height: 1.4;
+  white-space: nowrap;
 }
 
 .tone-danger {

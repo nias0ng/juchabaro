@@ -1,15 +1,50 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Bell, Crosshair, ParkingSquare } from '@lucide/vue'
 
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import InfoTooltip from '@/components/ui/InfoTooltip.vue'
 
+// 현재 이 값들이 곧 기본값이며, "현재 적용 설정"의 초기화 버튼은 이 값들로 되돌린다.
+const DEFAULT_STANDARDS = {
+  parkingCompleteMinutes: 10,
+  intrusionThresholdPercent: 40,
+  recheckIntervalSeconds: 60,
+}
+const DEFAULT_TOGGLES = {
+  disabledZoneWarningEnabled: true,
+  pushNotificationEnabled: true,
+  speakerAnnouncementEnabled: true,
+  ledWarningEnabled: true,
+  autoResendOnNoResponseEnabled: true,
+}
+
 const isEditingStandards = ref(false)
-const parkingCompleteMinutes = ref(10)
-const intrusionThresholdPercent = ref(40)
-const recheckIntervalSeconds = ref(60)
+const parkingCompleteMinutes = ref(DEFAULT_STANDARDS.parkingCompleteMinutes)
+const intrusionThresholdPercent = ref(DEFAULT_STANDARDS.intrusionThresholdPercent)
+const recheckIntervalSeconds = ref(DEFAULT_STANDARDS.recheckIntervalSeconds)
+
+const disabledZoneWarningEnabled = ref(DEFAULT_TOGGLES.disabledZoneWarningEnabled)
+// 전기차 충전 구역 허용 시간은 정책상 고정값이라 편집 UI가 없다.
+const EV_FAST_CHARGE_HOURS = 1
+const EV_SLOW_CHARGE_HOURS = 14
+
+const pushNotificationEnabled = ref(DEFAULT_TOGGLES.pushNotificationEnabled)
+const speakerAnnouncementEnabled = ref(DEFAULT_TOGGLES.speakerAnnouncementEnabled)
+const ledWarningEnabled = ref(DEFAULT_TOGGLES.ledWarningEnabled)
+const autoResendOnNoResponseEnabled = ref(DEFAULT_TOGGLES.autoResendOnNoResponseEnabled)
+
+function resetToDefaults() {
+  parkingCompleteMinutes.value = DEFAULT_STANDARDS.parkingCompleteMinutes
+  intrusionThresholdPercent.value = DEFAULT_STANDARDS.intrusionThresholdPercent
+  recheckIntervalSeconds.value = DEFAULT_STANDARDS.recheckIntervalSeconds
+  disabledZoneWarningEnabled.value = DEFAULT_TOGGLES.disabledZoneWarningEnabled
+  pushNotificationEnabled.value = DEFAULT_TOGGLES.pushNotificationEnabled
+  speakerAnnouncementEnabled.value = DEFAULT_TOGGLES.speakerAnnouncementEnabled
+  ledWarningEnabled.value = DEFAULT_TOGGLES.ledWarningEnabled
+  autoResendOnNoResponseEnabled.value = DEFAULT_TOGGLES.autoResendOnNoResponseEnabled
+}
 
 // 숫자만 입력받고, 단위(분/%/초)는 항상 고정 텍스트로 뒤에 붙인다.
 function numericOnly(event: Event): number {
@@ -18,33 +53,37 @@ function numericOnly(event: Event): number {
   return digits === '' ? 0 : Number(digits)
 }
 
-const APPLIED = [
+function onOffLabel(enabled: boolean) {
+  return enabled ? '사용' : '미사용'
+}
+
+const APPLIED = computed(() => [
   {
     group: '관제 기준',
     items: [
-      ['주차 완료 판단 시간', '10분'],
-      ['침범 비율 임계값', '40%'],
-      ['이동 확인 재검사 간격', '60초'],
+      ['주차 완료 판단 시간', `${parkingCompleteMinutes.value}분`],
+      ['침범 비율 임계값', `${intrusionThresholdPercent.value}%`],
+      ['이동 확인 재검사 간격', `${recheckIntervalSeconds.value}초`],
     ],
   },
   {
     group: '전용 구역',
     items: [
-      ['장애인 구역 경고 사용', '사용'],
-      ['전기차 충전 구역 허용 시간(급속)', '1시간'],
-      ['전기차 충전 구역 허용 시간(완속)', '14시간'],
+      ['장애인 구역 경고 사용', onOffLabel(disabledZoneWarningEnabled.value)],
+      ['전기차 충전 구역 허용 시간(급속)', `${EV_FAST_CHARGE_HOURS}시간`],
+      ['전기차 충전 구역 허용 시간(완속)', `${EV_SLOW_CHARGE_HOURS}시간`],
     ],
   },
   {
     group: '알림 및 현장 경고',
     items: [
-      ['앱 푸시 알림', '사용'],
-      ['현장 스피커 안내', '사용'],
-      ['LED 경고등', '사용'],
-      ['미응답 재알림 자동 발송', '사용'],
+      ['앱 푸시 알림', onOffLabel(pushNotificationEnabled.value)],
+      ['현장 스피커 안내', onOffLabel(speakerAnnouncementEnabled.value)],
+      ['LED 경고등', onOffLabel(ledWarningEnabled.value)],
+      ['미응답 재알림 자동 발송', onOffLabel(autoResendOnNoResponseEnabled.value)],
     ],
   },
-]
+])
 </script>
 
 <template>
@@ -137,7 +176,17 @@ const APPLIED = [
                 장애인 구역 경고 사용
                 <InfoTooltip text="장애인 전용 구역에 일반 차량이 주차하면 경고를 표시할지 설정합니다." />
               </span>
-              <span class="toggle on"><span class="toggle-knob" /></span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: disabledZoneWarningEnabled }"
+                role="switch"
+                :aria-checked="disabledZoneWarningEnabled"
+                aria-label="장애인 구역 경고 사용"
+                @click="disabledZoneWarningEnabled = !disabledZoneWarningEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
             </div>
             <div class="ev-time-row">
               <span class="field-label">
@@ -145,9 +194,9 @@ const APPLIED = [
                 <InfoTooltip text="전기차 충전 구역에서 충전 방식별로 허용되는 최대 주차 시간입니다. 급속·완속 모두 고정값입니다." />
               </span>
               <span class="ev-sub">급속</span>
-              <span class="ev-value">1시간</span>
+              <span class="ev-value">{{ EV_FAST_CHARGE_HOURS }}시간</span>
               <span class="ev-sub">완속</span>
-              <span class="ev-value">14시간</span>
+              <span class="ev-value">{{ EV_SLOW_CHARGE_HOURS }}시간</span>
             </div>
           </div>
         </section>
@@ -165,28 +214,68 @@ const APPLIED = [
                 앱 푸시 알림
                 <InfoTooltip text="사건 발생·처리 결과를 관리자 앱으로 푸시 알림을 보낼지 설정합니다." />
               </span>
-              <span class="toggle on"><span class="toggle-knob" /></span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: pushNotificationEnabled }"
+                role="switch"
+                :aria-checked="pushNotificationEnabled"
+                aria-label="앱 푸시 알림"
+                @click="pushNotificationEnabled = !pushNotificationEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
             </div>
             <div class="toggle-field">
               <span class="field-label">
                 현장 스피커 안내
                 <InfoTooltip text="위반 감지 시 현장 스피커로 안내 방송을 재생할지 설정합니다." />
               </span>
-              <span class="toggle on"><span class="toggle-knob" /></span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: speakerAnnouncementEnabled }"
+                role="switch"
+                :aria-checked="speakerAnnouncementEnabled"
+                aria-label="현장 스피커 안내"
+                @click="speakerAnnouncementEnabled = !speakerAnnouncementEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
             </div>
             <div class="toggle-field">
               <span class="field-label">
                 LED 경고등
                 <InfoTooltip text="위반 감지 시 해당 구역의 LED 경고등을 점등할지 설정합니다." />
               </span>
-              <span class="toggle on"><span class="toggle-knob" /></span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: ledWarningEnabled }"
+                role="switch"
+                :aria-checked="ledWarningEnabled"
+                aria-label="LED 경고등"
+                @click="ledWarningEnabled = !ledWarningEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
             </div>
             <div class="toggle-field">
               <span class="field-label">
                 미응답 재알림 자동 발송
                 <InfoTooltip text="차주가 일정 시간 응답하지 않으면 이동 요청을 자동으로 재전송할지 설정합니다." />
               </span>
-              <span class="toggle on"><span class="toggle-knob" /></span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: autoResendOnNoResponseEnabled }"
+                role="switch"
+                :aria-checked="autoResendOnNoResponseEnabled"
+                aria-label="미응답 재알림 자동 발송"
+                @click="autoResendOnNoResponseEnabled = !autoResendOnNoResponseEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
             </div>
           </div>
         </section>
@@ -209,9 +298,7 @@ const APPLIED = [
           </div>
         </div>
         <div class="applied-actions">
-          <button type="button" class="outline-btn">취소</button>
-          <button type="button" class="ghost-primary-btn">초기화</button>
-          <button type="button" class="primary-btn">설정 저장</button>
+          <button type="button" class="ghost-primary-btn" @click="resetToDefaults">초기화</button>
         </div>
       </aside>
     </div>
@@ -286,6 +373,7 @@ const APPLIED = [
   font-size: 12px;
   font-weight: 500;
   color: inherit;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -399,9 +487,12 @@ const APPLIED = [
   align-items: center;
   width: 44px;
   height: 24px;
+  border: none;
   border-radius: var(--radius-full);
   padding: 2px;
   background: var(--panel-muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
 .toggle.on {
@@ -448,6 +539,9 @@ const APPLIED = [
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
   font-size: var(--font-size-sm);
 }
 
@@ -475,28 +569,13 @@ const APPLIED = [
   margin-top: var(--spacing-lg);
 }
 
-.outline-btn,
-.ghost-primary-btn,
-.primary-btn {
+.ghost-primary-btn {
   border-radius: var(--radius-md);
   padding: var(--spacing-sm) var(--spacing-md);
   font-size: var(--font-size-sm);
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
-}
-
-.outline-btn {
-  border: 1px solid var(--panel-border);
-  background: none;
-  color: inherit;
-  transition: background-color 0.15s ease;
-}
-
-.outline-btn:hover {
-  background: var(--panel-muted);
-}
-
-.ghost-primary-btn {
   border: 1px solid color-mix(in oklch, var(--panel-primary) 40%, transparent);
   background: none;
   color: var(--panel-primary);
@@ -505,13 +584,5 @@ const APPLIED = [
 
 .ghost-primary-btn:hover {
   background: var(--panel-primary-soft);
-}
-
-.primary-btn {
-  border: none;
-  font-weight: 600;
-  background: var(--panel-primary);
-  color: var(--panel-on-primary);
-  box-shadow: var(--panel-shadow-pop);
 }
 </style>

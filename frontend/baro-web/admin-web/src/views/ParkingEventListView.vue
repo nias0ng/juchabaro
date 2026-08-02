@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown, Download, Search, Send } from '@lucide/vue'
+import { CheckCircle2, ChevronDown, Download, Eye, Search, Send } from '@lucide/vue'
 
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
@@ -9,6 +9,7 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import AppPagination from '@/components/ui/AppPagination.vue'
 import {
   EVENT_ROWS,
+  MOCK_TODAY,
   STATUS_OPTIONS,
   TYPE_OPTIONS,
   formatDate,
@@ -24,9 +25,10 @@ const PAGE_SIZE = 10
 function exportRowsToCsv(rows: EventRow[], dateFilter: string) {
   const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', 'AI 신뢰도', '상태', '날짜']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
+  // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
   const lines = [
     headers.map(escapeCsv).join(','),
-    ...rows.map((r) => [r.id, r.car, r.type, r.loc, r.time, r.ai, r.st, r.date].map(escapeCsv).join(',')),
+    ...rows.map((r) => [r.id, r.car, rowType(r), r.loc, r.time, r.ai, rowStatus(r), `'${r.date}`].map(escapeCsv).join(',')),
   ]
   // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
@@ -47,7 +49,7 @@ type DropdownName = 'status' | 'type' | 'date'
 
 const statusFilter = ref<string | null>(null)
 const typeFilter = ref<string | null>(null)
-const dateFilter = ref('2026-07-22')
+const dateFilter = ref(MOCK_TODAY)
 const carQuery = ref('')
 const openDropdown = ref<DropdownName | null>(null)
 const page = ref(1)
@@ -72,9 +74,16 @@ function toggleDropdown(name: DropdownName) {
 const selectedRow = computed(
   () => EVENT_ROWS.find((r) => r.id === parkingEventStore.selectedId) ?? EVENT_ROWS[0]!,
 )
-const displayedType = computed(() =>
-  parkingEventStore.oTamIds[normalizeEventId(selectedRow.value.id)] ? '오탐' : selectedRow.value.type,
-)
+// 오탐 처리한 사건은 원래 유형 대신 '오탐'으로, 완료 처리한 사건은 원래 상태 대신 '완료'로
+// 보여준다. 목록 표의 각 행과 사건 상세 패널이 같은 기준으로 표시해야 하므로 함수로 묶는다.
+function rowType(row: EventRow) {
+  return parkingEventStore.oTamIds[normalizeEventId(row.id)] ? '오탐' : row.type
+}
+function rowStatus(row: EventRow) {
+  return parkingEventStore.completedIds[normalizeEventId(row.id)] ? '완료' : row.st
+}
+const displayedType = computed(() => rowType(selectedRow.value))
+const displayedStatus = computed(() => rowStatus(selectedRow.value))
 const timeline = computed(
   () => parkingEventStore.timelines[normalizeEventId(selectedRow.value.id)] ?? INITIAL_TIMELINE,
 )
@@ -116,6 +125,44 @@ const detailFields = computed(
 function handleResendClick(event: MouseEvent, id: string) {
   event.stopPropagation()
   parkingEventStore.resend(id)
+}
+
+// 완료 처리·관리자 확인은 사유(메모)를 직접 남겨야 하는 수동 개입이라 별도 입력창을 둔다.
+const memoText = ref('')
+const isCompleted = computed(() => displayedStatus.value === '완료')
+const isReviewed = computed(() => Boolean(parkingEventStore.reviewedIds[normalizeEventId(selectedRow.value.id)]))
+
+// 이 사건에 남긴 완료 처리·관리자 확인 메모만 최신순으로 모아 보여준다(history는 이미
+// 최신 항목이 앞에 오도록 쌓이므로 필터만 하면 순서가 그대로 유지된다).
+const memoLog = computed(() => {
+  const key = normalizeEventId(selectedRow.value.id)
+  return parkingEventStore.history.filter(
+    (entry) =>
+      normalizeEventId(entry.eventId) === key &&
+      (entry.actionType === '관리자 확인' || entry.actionType === '완료 처리'),
+  )
+})
+
+// 다른 행을 선택하면 이전에 쓰던 메모가 새 사건에 잘못 제출되지 않도록 비운다.
+watch(
+  () => parkingEventStore.selectedId,
+  () => {
+    memoText.value = ''
+  },
+)
+
+function handleCompleteClick() {
+  const memo = memoText.value.trim()
+  if (!memo) return
+  parkingEventStore.completeEvent(selectedRow.value.id, memo)
+  memoText.value = ''
+}
+
+function handleAcknowledgeClick() {
+  const memo = memoText.value.trim()
+  if (!memo) return
+  parkingEventStore.acknowledgeEvent(selectedRow.value.id, memo)
+  memoText.value = ''
 }
 </script>
 
@@ -231,18 +278,18 @@ function handleResendClick(event: MouseEvent, id: string) {
                 >
                   <td class="strong">{{ r.id }}</td>
                   <td class="nowrap">{{ r.car }}</td>
-                  <td><StatusTag :tone="typeTone(r.type)">{{ r.type }}</StatusTag></td>
+                  <td><StatusTag :tone="typeTone(rowType(r))">{{ rowType(r) }}</StatusTag></td>
                   <td class="nowrap muted">{{ r.loc }}</td>
                   <td class="muted">{{ r.time }}</td>
                   <td class="muted">{{ r.ai }}</td>
-                  <td><StatusTag :tone="statusTone(r.st)">{{ r.st }}</StatusTag></td>
+                  <td><StatusTag :tone="statusTone(rowStatus(r))">{{ rowStatus(r) }}</StatusTag></td>
                   <td>
                     <div class="row-actions">
                       <RouterLink :to="`/events/${normalizeEventId(r.id)}`" class="link-btn">상세 보기</RouterLink>
                       <button
                         type="button"
                         class="outline-btn"
-                        :disabled="r.st === '완료' || Boolean(parkingEventStore.resentIds[normalizeEventId(r.id)])"
+                        :disabled="rowStatus(r) === '완료' || Boolean(parkingEventStore.resentIds[normalizeEventId(r.id)])"
                         @click="handleResendClick($event, r.id)"
                       >
                         {{ parkingEventStore.resentIds[normalizeEventId(r.id)] ? '전송됨' : '재알림' }}
@@ -265,7 +312,7 @@ function handleResendClick(event: MouseEvent, id: string) {
       <aside class="panel detail-panel">
         <div class="detail-header">
           <h3>사건 상세</h3>
-          <StatusTag :tone="statusTone(selectedRow.st)">{{ selectedRow.st }}</StatusTag>
+          <StatusTag :tone="statusTone(displayedStatus)">{{ displayedStatus }}</StatusTag>
         </div>
         <dl class="detail-list">
           <div v-for="[k, v] in detailFields" :key="k" class="detail-row">
@@ -285,10 +332,56 @@ function handleResendClick(event: MouseEvent, id: string) {
         </div>
 
         <div class="actions">
-          <button type="button" class="outline-btn" @click="parkingEventStore.markOtam(selectedRow.id)">오탐 처리</button>
+          <button
+            type="button"
+            class="outline-btn"
+            :class="{ active: parkingEventStore.oTamIds[normalizeEventId(selectedRow.id)] }"
+            @click="parkingEventStore.markOtam(selectedRow.id)"
+          >
+            {{ parkingEventStore.oTamIds[normalizeEventId(selectedRow.id)] ? '오탐 해제' : '오탐 처리' }}
+          </button>
           <button type="button" class="primary-btn" @click="parkingEventStore.resend(selectedRow.id)">
             <Send :size="16" /> 이동 요청 재전송
           </button>
+        </div>
+
+        <div class="memo-section">
+          <label class="memo-label" for="list-detail-memo">처리 메모</label>
+          <textarea
+            id="list-detail-memo"
+            v-model="memoText"
+            class="memo-input"
+            rows="2"
+            placeholder="완료 처리 또는 관리자 확인 사유를 입력하세요."
+          />
+          <div class="memo-actions">
+            <button
+              type="button"
+              class="outline-btn"
+              :disabled="isReviewed || !memoText.trim()"
+              @click="handleAcknowledgeClick"
+            >
+              <Eye :size="16" /> {{ isReviewed ? '확인함' : '관리자 확인' }}
+            </button>
+            <button
+              type="button"
+              class="primary-btn"
+              :disabled="isCompleted || !memoText.trim()"
+              @click="handleCompleteClick"
+            >
+              <CheckCircle2 :size="16" /> {{ isCompleted ? '완료됨' : '완료 처리' }}
+            </button>
+          </div>
+
+          <ul v-if="memoLog.length" class="memo-log">
+            <li v-for="entry in memoLog" :key="entry.logId" class="memo-log-item">
+              <div class="memo-log-head">
+                <StatusTag tone="primary">{{ entry.actionType }}</StatusTag>
+                <span class="memo-log-time">{{ entry.time }}</span>
+              </div>
+              <p class="memo-log-text">{{ entry.memo }}</p>
+            </li>
+          </ul>
         </div>
 
         <h4 class="timeline-title">사건 진행 이력</h4>
@@ -321,7 +414,10 @@ function handleResendClick(event: MouseEvent, id: string) {
 
 @media (min-width: 1280px) {
   .layout {
-    grid-template-columns: minmax(0, 2.3fr) minmax(0, 1fr);
+    /* 사건 상세 패널은 폭이 고정이어도 내용이 깨지지 않는 최소값(296px)으로 두고,
+       표 영역이 남는 공간을 전부 가져가게 해 좁은 랩탑 화면에서도 가로 스크롤 없이
+       모든 열이 한 줄로 보이게 한다. */
+    grid-template-columns: minmax(0, 1fr) 296px;
   }
 }
 
@@ -343,12 +439,14 @@ function handleResendClick(event: MouseEvent, id: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   background: none;
   padding: var(--spacing-sm) var(--spacing-base);
   font-size: var(--font-size-sm);
   color: var(--panel-muted-foreground);
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -426,6 +524,7 @@ function handleResendClick(event: MouseEvent, id: string) {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-sm);
+  flex-shrink: 0;
   margin-left: auto;
   border: none;
   border-radius: var(--radius-md);
@@ -434,6 +533,7 @@ function handleResendClick(event: MouseEvent, id: string) {
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--panel-on-primary);
+  white-space: nowrap;
   box-shadow: var(--panel-shadow-pop);
   cursor: pointer;
 }
@@ -458,14 +558,14 @@ thead tr {
 }
 
 th {
-  padding: var(--spacing-base);
+  padding: var(--spacing-sm);
   text-align: left;
   font-weight: 500;
   white-space: nowrap;
 }
 
 td {
-  padding: var(--spacing-base);
+  padding: 14px var(--spacing-sm);
 }
 
 .empty {
@@ -514,6 +614,7 @@ td {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-sm);
   background: none;
@@ -522,6 +623,7 @@ td {
   font-weight: 500;
   color: inherit;
   text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -529,6 +631,13 @@ td {
 .link-btn:hover,
 .outline-btn:hover:not(:disabled) {
   background: var(--panel-muted);
+}
+
+.outline-btn.active {
+  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
+  background: var(--panel-primary-soft);
+  color: var(--panel-primary);
+  font-weight: 600;
 }
 
 .outline-btn:disabled {
@@ -646,6 +755,81 @@ td {
   cursor: pointer;
 }
 
+.primary-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+
+.memo-section {
+  margin-top: 20px;
+  border-top: 1px solid var(--panel-border);
+  padding-top: var(--spacing-base);
+}
+
+.memo-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.memo-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-base);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  color: inherit;
+}
+
+.memo-input:focus {
+  outline: none;
+  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
+}
+
+.memo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+.memo-log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-base) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memo-log-item {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-base);
+}
+
+.memo-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: 4px;
+}
+
+.memo-log-time {
+  font-size: 12px;
+  color: var(--panel-muted-foreground);
+}
+
+.memo-log-text {
+  font-size: var(--font-size-sm);
+  color: var(--panel-muted-foreground);
+}
+
 .timeline-title {
   margin-bottom: var(--spacing-base);
   margin-top: 28px;
@@ -656,6 +840,9 @@ td {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .timeline-item {

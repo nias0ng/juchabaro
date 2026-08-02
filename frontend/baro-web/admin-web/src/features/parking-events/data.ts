@@ -1,9 +1,15 @@
 import type { EventRow, HistoryLogEntry } from './types';
 
+// 이 데모 데이터가 가리키는 가상의 '오늘'. 실제 시스템 날짜(new Date())와 다르기 때문에,
+// 새로 남기는 이력 로그의 날짜도 실제 날짜가 아니라 이 값을 써야 기본 날짜 필터(오늘)에 보인다.
+export const MOCK_TODAY = '2026-07-22';
+
 // ParkingEventListView(사건 목록)와 ParkingEventDetailView(사건 상세, /events/:eventId)가
 // 같은 사건 데이터를 공유한다. id는 목록에서는 '#1032', 라우트 파라미터에서는 '1032' 형태로
 // 섞여 쓰이므로 normalizeEventId로 항상 '#' 없는 형태로 맞춰서 비교/저장한다.
 export const EVENT_ROWS: EventRow[] = [
+  // 관리자 처리(완료 처리/관리자 확인)를 직접 눌러볼 수 있도록 아직 이력에 남지 않은 건.
+  { id: '#1033', car: '44자 5678', type: '미응답', loc: 'B1F 108번 앞', time: '10:41', ai: '85%', st: '검토 중', date: '2026-07-22' },
   { id: '#1032', car: '12가 3456', type: '미응답', loc: 'B1F 102번 앞', time: '10:30', ai: '92%', st: '진행 중', date: '2026-07-22' },
   { id: '#1031', car: '34나 5678', type: '미이동', loc: 'B1F 120번', time: '10:22', ai: '88%', st: '진행 중', date: '2026-07-22' },
   { id: '#1030', car: '56다 9012', type: '오탐', loc: 'B2F EV-02', time: '10:15', ai: '76%', st: '검토 중', date: '2026-07-22' },

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
-  ArrowRight,
   Bell,
   CalendarCheck,
   CheckCircle2,
@@ -16,7 +15,7 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import AppPagination from '@/components/ui/AppPagination.vue'
-import { HISTORY_ACTION_OPTIONS } from '@/features/parking-events/data'
+import { HISTORY_ACTION_OPTIONS, MOCK_TODAY } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 import type { HistoryLogEntry } from '@/features/parking-events/types'
 
@@ -37,13 +36,32 @@ const SUMMARY = [
   { label: '설정 변경', value: 4, icon: Settings, tone: 'success' },
 ]
 
-const TIMELINE = [
-  ['10:42', '관리자A가 #1032 사건을 완료 처리', '관리자 확인 후 정상 주차로 판단'],
-  ['10:35', '관리자B가 B2-EV-02 허용 시간을 변경', '허용 시간 30분 연장'],
-  ['10:21', '관리자A가 #1030 사건을 오탐 처리', '차량 등록 정보 일치 확인'],
-  ['09:58', '관리자C가 #1029 사건을 완료 처리', '입차 시간 수정 후 정상 처리'],
-  ['09:45', '관리자B가 #1028 사건을 관리자 확인', '현장 사진 확인 필요'],
-]
+function exportRowsToCsv(rows: HistoryLogEntry[], dateRange: { start: string; end: string }) {
+  const headers = ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']
+  const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
+  // 처리 시간 앞에 작은따옴표를 붙이면 엑셀이 이 칸(날짜가 포함된 문자열)을 날짜로
+  // 자동 변환하지 않고 텍스트 그대로 표시한다.
+  const lines = [
+    headers.map(escapeCsv).join(','),
+    ...rows.map((r) =>
+      [r.logId, r.eventId, r.car, r.actionType, r.handler, `'${r.time}`, r.memo].map(escapeCsv).join(','),
+    ),
+  ]
+  // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const startStamp = dateRange.start.replaceAll('-', '')
+  const endStamp = dateRange.end.replaceAll('-', '')
+  const stamp = startStamp === endStamp ? startStamp : `${startStamp}-${endStamp}`
+
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `이력_${stamp}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
 
 function actionTone(a = ''): 'success' | 'info' | 'primary' {
   if (a === '완료 처리') return 'success'
@@ -57,7 +75,7 @@ function rowDate(row: HistoryLogEntry) {
 
 type DropdownName = 'date' | 'type'
 
-const dateRange = ref({ start: '2026-07-22', end: '2026-07-22' })
+const dateRange = ref({ start: MOCK_TODAY, end: MOCK_TODAY })
 const typeFilter = ref<string | null>(null)
 const openDropdown = ref<DropdownName | null>(null)
 const query = ref('')
@@ -65,6 +83,10 @@ const page = ref(1)
 
 const filterBarRef = ref<HTMLElement | null>(null)
 const parkingEventStore = useParkingEventStore()
+
+// 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘(MOCK_TODAY) 하루치 전체를
+// 최신순으로 보여주고 넘치는 만큼은 스크롤로 본다(history는 이미 최신 항목이 앞에 온다).
+const todayTimeline = computed(() => parkingEventStore.history.filter((entry) => rowDate(entry) === MOCK_TODAY))
 
 function handleClickOutside(event: MouseEvent) {
   if (filterBarRef.value && !filterBarRef.value.contains(event.target as Node)) {
@@ -151,7 +173,7 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
         <Search :size="16" />
         <input v-model="query" type="text" placeholder="차량 번호 또는 사건 ID 검색">
       </div>
-      <button type="button" class="export-btn">
+      <button type="button" class="export-btn" @click="exportRowsToCsv(filteredRows, dateRange)">
         <Download :size="16" /> 내보내기
       </button>
     </div>
@@ -221,23 +243,23 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
             <h3>활동 타임라인</h3>
             <StatusTag tone="primary">오늘</StatusTag>
           </div>
-          <ol class="timeline">
-            <li v-for="[time, title, desc] in TIMELINE" :key="title" class="timeline-item">
-              <span class="timeline-icon">
-                <CheckCircle2 :size="16" />
-              </span>
-              <div>
-                <p class="timeline-title-row">
-                  <span class="timeline-time">{{ time }}</span>
-                  <span class="timeline-title">{{ title }}</span>
-                </p>
-                <p class="timeline-desc">{{ desc }}</p>
-              </div>
-            </li>
-          </ol>
-          <button type="button" class="more-btn">
-            더 보기 <ArrowRight :size="16" />
-          </button>
+          <div class="timeline-scroll">
+            <ol v-if="todayTimeline.length" class="timeline">
+              <li v-for="entry in todayTimeline" :key="entry.logId" class="timeline-item">
+                <span class="timeline-icon">
+                  <CheckCircle2 :size="16" />
+                </span>
+                <div>
+                  <p class="timeline-title-row">
+                    <span class="timeline-time">{{ entry.time.split(' ')[1] }}</span>
+                    <span class="timeline-title">{{ entry.handler }}가 {{ entry.eventId }} 사건을 {{ entry.actionType }}</span>
+                  </p>
+                  <p class="timeline-desc">{{ entry.memo }}</p>
+                </div>
+              </li>
+            </ol>
+            <p v-else class="timeline-empty">오늘 남긴 활동이 없습니다.</p>
+          </div>
         </section>
       </div>
     </div>
@@ -262,12 +284,14 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   background: none;
   padding: var(--spacing-sm) var(--spacing-base);
   font-size: var(--font-size-sm);
   color: var(--panel-muted-foreground);
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -358,20 +382,18 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-sm);
+  flex-shrink: 0;
   margin-left: auto;
-  border: 1px solid var(--panel-border);
+  border: none;
   border-radius: var(--radius-md);
-  background: none;
+  background: var(--panel-primary);
   padding: var(--spacing-sm) var(--spacing-md);
   font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: inherit;
+  font-weight: 600;
+  color: var(--panel-on-primary);
+  white-space: nowrap;
+  box-shadow: var(--panel-shadow-pop);
   cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.export-btn:hover {
-  background: var(--panel-muted);
 }
 
 .layout {
@@ -557,6 +579,9 @@ td {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .timeline-item {
@@ -594,22 +619,15 @@ td {
   color: var(--panel-muted-foreground);
 }
 
-.more-btn {
-  display: inline-flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 20px;
-  border: none;
-  background: none;
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  cursor: pointer;
-  transition: color 0.15s ease;
+.timeline-scroll {
+  max-height: 360px;
+  overflow-y: auto;
 }
 
-.more-btn:hover {
-  color: var(--panel-primary);
+.timeline-empty {
+  padding: var(--spacing-base) 0;
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--panel-muted-foreground);
 }
 </style>
