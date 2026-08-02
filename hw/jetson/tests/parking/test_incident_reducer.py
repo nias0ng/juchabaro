@@ -1,348 +1,803 @@
-"""사건 축약 테스트. 중복 억제와 RESOLVE 생성이 핵심이다."""
+"""IncidentReducer의 삼상태 timer, publication, 직접 종료 계약 테스트."""
 
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
 
+from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
+    BlockingRelationId,
     IncidentKey,
     IncidentSignal,
+    IncidentSignalValue,
     IncidentState,
     IncidentTransitionType,
-    ParkingEpisodeId,
     ZoneId,
     ZoneVisitId,
 )
-from src.parking.incident_reducer import InMemoryIncidentReducer
-from src.tracking.models import PhysicalVehicleId
+from src.session.models import EntryAttemptId
+from src.tracking.models import ParkingSessionId, PhysicalVehicleId
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
 CAR = PhysicalVehicleId(UUID(int=1))
+OTHER_CAR = PhysicalVehicleId(UUID(int=2))
+VICTIM = PhysicalVehicleId(UUID(int=3))
 VISIT = ZoneVisitId(UUID(int=101))
-EPISODE = ParkingEpisodeId(UUID(int=201))
+RELATION = BlockingRelationId(UUID(int=201))
+ATTEMPT = EntryAttemptId(UUID(int=301))
+SESSION = ParkingSessionId(401)
+TRUSTED_SAMPLE_MAX_GAP_SECONDS = 10.0
 
 
 def at(seconds: float) -> datetime:
     return T0 + timedelta(seconds=seconds)
 
 
-def visit_key(rule_code: str = "DISABLED_ZONE_UNAUTHORIZED") -> IncidentKey:
-    return IncidentKey(
-        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
-        physical_vehicle_id=CAR,
-        rule_code=rule_code,
-        zone_visit_id=VISIT,
-        zone_id=ZoneId(12),
+def observed(seconds: float) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.OBSERVED,
+        last_reliable_observed_at=at(seconds),
     )
 
 
-def episode_key(rule_code: str = "BAD_PARKING") -> IncidentKey:
-    return IncidentKey(
-        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
-        physical_vehicle_id=CAR,
-        rule_code=rule_code,
-        parking_episode_id=EPISODE,
-        zone_id=ZoneId(12),
+def unknown(seconds: float) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.UNKNOWN,
+        reason=ObservationReason.TRACK_LOST,
+        last_reliable_observed_at=at(seconds),
     )
 
 
-def signal(key: IncidentKey, *, matched: bool, confirmable: bool, seconds: float = 0.0) -> IncidentSignal:
+def vehicle_key(rule_code: str = "BAD_PARKING") -> IncidentKey:
+    return IncidentKey.for_physical_vehicle(CAR, rule_code)
+
+
+def visit_key(rule_code: str = "EV_OVERSTAY") -> IncidentKey:
+    return IncidentKey.for_zone_visit(VISIT, rule_code)
+
+
+def relation_key() -> IncidentKey:
+    return IncidentKey.for_blocking_relation(RELATION, "DOUBLE_PARKING")
+
+
+def signal(
+    key: IncidentKey,
+    value: IncidentSignalValue,
+    seconds: float,
+    *,
+    confirmable: bool = False,
+) -> IncidentSignal:
     return IncidentSignal(
-        key=key, matched=matched, confirmable=confirmable, observed_at=at(seconds)
+        key=key,
+        value=value,
+        confirmable=confirmable,
+        observed_at=at(seconds),
     )
 
 
-def test_candidate_produces_no_transition() -> None:
-    """CANDIDATE는 Jetson 내부에만 유지한다."""
-    reducer = InMemoryIncidentReducer()
-    assert reducer.reduce(signal(visit_key(), matched=True, confirmable=False)) is None
-
-
-def test_first_confirmable_match_produces_open() -> None:
-    reducer = InMemoryIncidentReducer()
-    transition = reducer.reduce(signal(visit_key(), matched=True, confirmable=True))
-    assert transition is not None
-    assert transition.transition_type is IncidentTransitionType.OPEN
-    assert transition.incident.state is IncidentState.EDGE_CONFIRMED
-    assert transition.incident.revision == 1
-    assert transition.incident.confirmed_at == T0
-
-
-def test_repeated_match_produces_no_duplicate() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True))
-    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=1)) is None
-    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=2)) is None
-
-
-def test_candidate_then_confirmable_produces_single_open() -> None:
-    """후보로 관측되던 사건이 확정 조건을 만족하면 그때 OPEN 한 번이 나간다."""
-    reducer = InMemoryIncidentReducer()
-    key = episode_key()
-    assert reducer.reduce(signal(key, matched=True, confirmable=False)) is None
-    transition = reducer.reduce(signal(key, matched=True, confirmable=True, seconds=600))
-    assert transition.transition_type is IncidentTransitionType.OPEN
-    # 최초 관측 시각은 후보 시점, 확정 시각은 확정 시점이다.
-    assert transition.incident.first_observed_at == T0
-    assert transition.incident.confirmed_at == at(600)
-
-
-def test_unmatched_after_open_produces_resolve() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True))
-    transition = reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
-    assert transition.transition_type is IncidentTransitionType.RESOLVE
-    assert transition.incident.state is IncidentState.RESOLVED
-    assert transition.incident.revision == 2
-    assert transition.incident.resolved_at == at(10)
-
-
-def test_resolve_is_produced_only_once() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True))
-    assert reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10)) is not None
-    assert reducer.reduce(signal(key, matched=False, confirmable=True, seconds=11)) is None
-
-
-def test_unmatched_candidate_produces_no_transition() -> None:
-    """확정된 적 없는 후보가 사라지면 백엔드는 그 사건을 본 적이 없다."""
-    reducer = InMemoryIncidentReducer()
-    key = episode_key()
-    reducer.reduce(signal(key, matched=True, confirmable=False))
-    assert reducer.reduce(signal(key, matched=False, confirmable=False, seconds=5)) is None
-
-
-def test_unmatched_unknown_key_produces_no_transition() -> None:
-    reducer = InMemoryIncidentReducer()
-    assert reducer.reduce(signal(visit_key(), matched=False, confirmable=True)) is None
-
-
-def test_different_rules_are_independent() -> None:
-    """동시 성립한 두 규칙 중 하나가 다른 하나를 가리지 않는다."""
-    reducer = InMemoryIncidentReducer()
-    a = reducer.reduce(signal(visit_key("EV_ZONE_UNAUTHORIZED"), matched=True, confirmable=True))
-    b = reducer.reduce(signal(visit_key("EV_OVERSTAY"), matched=True, confirmable=True))
-    assert a.transition_type is IncidentTransitionType.OPEN
-    assert b.transition_type is IncidentTransitionType.OPEN
-    assert a.incident.incident_id != b.incident.incident_id
-
-
-def test_reopen_after_resolve_creates_new_incident() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    first = reducer.reduce(signal(key, matched=True, confirmable=True))
-    reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
-    second = reducer.reduce(signal(key, matched=True, confirmable=True, seconds=20))
-    assert second.transition_type is IncidentTransitionType.OPEN
-    assert second.incident.incident_id != first.incident.incident_id
-    assert second.incident.revision == 1
-
-
-def test_repeated_match_after_reopen_produces_no_duplicate() -> None:
-    """재개된 사건도 중복 억제가 유지돼야 한다.
-
-    재개 경로는 CANDIDATE 사건을 새로 만들어 넣는다. 그 사건이 EDGE_CONFIRMED로
-    저장되지 않으면 이후 프레임마다 OPEN이 다시 나간다.
-    """
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True))
-    reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
-    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=20))
-    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=21)) is None
-    assert reducer.reduce(signal(key, matched=True, confirmable=True, seconds=22)) is None
-
-
-def test_incident_id_is_uuid_and_stable_from_open_to_resolve() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    opened = reducer.reduce(signal(key, matched=True, confirmable=True))
-    resolved = reducer.reduce(signal(key, matched=False, confirmable=True, seconds=10))
-
-    assert isinstance(opened.incident.incident_id, UUID)
-    assert resolved.incident.incident_id == opened.incident.incident_id
-
-
-def episode_scoped_key(
-    *, zone_id: int, victim: int | None = None, vehicle: int = 1
-) -> IncidentKey:
-    return IncidentKey(
-        # TODO(spec 4.3): IncidentKey에서 physical_vehicle_id 제거 후 이 인자를 지운다
-        physical_vehicle_id=PhysicalVehicleId(UUID(int=vehicle)),
-        rule_code="BAD_PARKING",
-        parking_episode_id=EPISODE,
-        zone_id=ZoneId(zone_id),
-        victim_physical_vehicle_id=(
-            None if victim is None else PhysicalVehicleId(UUID(int=victim))
-        ),
+def reduce(
+    reducer: InMemoryIncidentReducer,
+    key: IncidentKey,
+    value: IncidentSignalValue,
+    seconds: float,
+    *,
+    confirmable: bool = False,
+    physical_vehicle_id: PhysicalVehicleId = CAR,
+    observation: ObservationStatus | None = None,
+    entry_attempt_id: EntryAttemptId | None = ATTEMPT,
+    parking_session_id: ParkingSessionId | None = None,
+    zone_id: ZoneId | None = None,
+    victim_physical_vehicle_id: PhysicalVehicleId | None = None,
+):
+    return reducer.reduce(
+        signal(key, value, seconds, confirmable=confirmable),
+        physical_vehicle_id=physical_vehicle_id,
+        observation=observation or observed(seconds),
+        entry_attempt_id=entry_attempt_id,
+        parking_session_id=parking_session_id,
+        zone_id=zone_id,
+        victim_physical_vehicle_id=victim_physical_vehicle_id,
     )
 
 
-def test_incident_id_distinguishes_zone_and_victim() -> None:
-    """서로 다른 IncidentKey는 독립된 사건과 ID를 가진다."""
-    keys = [
-        episode_scoped_key(zone_id=1),
-        episode_scoped_key(zone_id=2),
-        episode_scoped_key(zone_id=1, victim=2),
-        episode_scoped_key(zone_id=1, victim=3),
-    ]
-    reducer = InMemoryIncidentReducer()
-    ids = {
-        reducer.reduce(signal(key, matched=True, confirmable=True)).incident.incident_id
-        for key in keys
-    }
-    assert len(ids) == len(keys)
+def test_trusted_sample_max_gap_must_be_positive() -> None:
+    for invalid_gap in (0, 0.0000001, 0.0000006):
+        with pytest.raises(ValueError, match="trusted_sample_max_gap_seconds"):
+            InMemoryIncidentReducer(trusted_sample_max_gap_seconds=invalid_gap)
 
 
-def test_separate_reducers_create_separate_incident_lifecycles() -> None:
-    """독립된 실행이 생성한 새 사건은 같은 불투명 ID를 재사용하지 않는다."""
-    ids = [
-        InMemoryIncidentReducer()
-        .reduce(signal(episode_scoped_key(zone_id=1), matched=True, confirmable=True))
-        .incident.incident_id
-        for _ in range(2)
-    ]
-    assert ids[0] != ids[1]
+def test_confirm_timer_opens_once_after_consecutive_trusted_samples() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+
+    first = reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    middle = reduce(reducer, key, IncidentSignalValue.MATCHED, 3, confirmable=True)
+    opened = reduce(reducer, key, IncidentSignalValue.MATCHED, 5, confirmable=True)
+    repeated = reduce(reducer, key, IncidentSignalValue.MATCHED, 6, confirmable=True)
+
+    assert first.incident.state is IncidentState.CANDIDATE
+    assert first.incident.confirm_trusted_seconds == 0
+    assert middle.incident.confirm_trusted_seconds == 3
+    assert opened.incident.state is IncidentState.OPEN
+    assert opened.incident.confirmed_at == at(5)
+    assert opened.incident.publication_revision == 1
+    assert opened.transitions[0].transition_type is IncidentTransitionType.OPEN
+    assert repeated.incident.state is IncidentState.OPEN
+    assert repeated.transitions == ()
 
 
-def test_naive_datetime_is_rejected() -> None:
-    reducer = InMemoryIncidentReducer()
-    with pytest.raises(ValueError, match="timezone"):
-        reducer.reduce(
-            IncidentSignal(
-                key=visit_key(),
-                matched=True,
-                confirmable=True,
-                observed_at=datetime(2026, 7, 31, 10, 0, 0),
-            )
-        )
-
-
-def test_resolve_before_open_is_rejected() -> None:
-    """confirmed_at보다 앞선 resolved_at은 위반 지속시간을 음수로 만든다."""
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
-    with pytest.raises(ValueError, match="과거"):
-        reducer.reduce(signal(key, matched=False, confirmable=True, seconds=5))
-
-
-def test_confirm_before_first_observation_is_rejected() -> None:
-    reducer = InMemoryIncidentReducer()
-    key = episode_key()
-    reducer.reduce(signal(key, matched=True, confirmable=False, seconds=600))
-    with pytest.raises(ValueError, match="과거"):
-        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=1))
-
-
-def test_same_timestamp_resolve_is_allowed() -> None:
-    """같은 프레임에서 성립과 해소가 이어지는 경우는 정상이다."""
-    reducer = InMemoryIncidentReducer()
-    key = visit_key()
-    reducer.reduce(signal(key, matched=True, confirmable=True))
-    transition = reducer.reduce(signal(key, matched=False, confirmable=True))
-    assert transition.transition_type is IncidentTransitionType.RESOLVE
-
-
-class TestResolveScope:
-    """`resolve_scope` — zone_visit_id만으로 해소한다(446 후속 리뷰).
-
-    핵심 계약: rule_code를 몰라도(구역이 이미 삭제돼 있어도) 이미 열린
-    사건을 찾아 닫을 수 있어야 한다.
-    """
-
-    def test_closes_the_incident_scoped_to_the_zone_visit_id(self) -> None:
-        reducer = InMemoryIncidentReducer()
-        key = visit_key()
-        opened = reducer.reduce(signal(key, matched=True, confirmable=True))
-
-        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
-
-        assert len(transitions) == 1
-        assert transitions[0].transition_type is IncidentTransitionType.RESOLVE
-        assert transitions[0].incident.incident_id == opened.incident.incident_id
-        assert transitions[0].incident.resolved_at == at(10)
-
-    def test_does_not_need_rule_code_to_resolve(self) -> None:
-        """rule_code를 몰라도(구역이 삭제돼 재구성 못 해도) zone_visit_id만
-        있으면 해소된다 — 이 테스트의 핵심 목적이다."""
-        reducer = InMemoryIncidentReducer()
-        key = visit_key(rule_code="EV_ZONE_UNAUTHORIZED")
-        reducer.reduce(signal(key, matched=True, confirmable=True))
-
-        # rule_code를 전혀 언급하지 않고 zone_visit_id만으로 호출한다.
-        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
-
-        assert len(transitions) == 1
-        assert transitions[0].incident.key.rule_code == "EV_ZONE_UNAUTHORIZED"
-
-    def test_is_a_noop_when_no_incident_matches_the_scope(self) -> None:
-        """자격이 있어 애초에 사건이 안 생긴 방문이 닫혀도 아무 일도 안 난다."""
-        reducer = InMemoryIncidentReducer()
-        transitions = reducer.resolve_scope(zone_visit_id=ZoneVisitId(UUID(int=999)), observed_at=T0)
-        assert transitions == ()
-
-    def test_drops_unconfirmed_candidate_silently(self) -> None:
-        reducer = InMemoryIncidentReducer()
-        key = visit_key()
-        reducer.reduce(signal(key, matched=True, confirmable=False))
-
-        transitions = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(5))
-
-        assert transitions == ()
-        assert reducer.snapshot() == ()
-
-    def test_is_idempotent(self) -> None:
-        reducer = InMemoryIncidentReducer()
-        key = visit_key()
-        reducer.reduce(signal(key, matched=True, confirmable=True))
-
-        first = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(10))
-        second = reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(11))
-
-        assert len(first) == 1
-        assert second == ()
-
-    def test_rejects_backward_observation(self) -> None:
-        reducer = InMemoryIncidentReducer()
-        key = visit_key()
-        reducer.reduce(signal(key, matched=True, confirmable=True, seconds=10))
-
-        with pytest.raises(ValueError, match="과거"):
-            reducer.resolve_scope(zone_visit_id=key.zone_visit_id, observed_at=at(5))
-
-    def test_only_resolves_incidents_in_the_matching_scope(self) -> None:
-        """다른 zone_visit_id로 열린 사건은 건드리지 않는다."""
-        reducer = InMemoryIncidentReducer()
-        this_visit = visit_key()
-        other_visit = IncidentKey(
-            physical_vehicle_id=CAR,
-            rule_code="DISABLED_ZONE_UNAUTHORIZED",
-            zone_visit_id=ZoneVisitId(UUID(int=102)),
-            zone_id=ZoneId(13),
-        )
-        reducer.reduce(signal(this_visit, matched=True, confirmable=True))
-        reducer.reduce(signal(other_visit, matched=True, confirmable=True))
-
-        reducer.resolve_scope(zone_visit_id=this_visit.zone_visit_id, observed_at=at(10))
-
-        states = {incident.key.zone_visit_id: incident.state for incident in reducer.snapshot()}
-        assert states[this_visit.zone_visit_id] is IncidentState.RESOLVED
-        assert states[other_visit.zone_visit_id] is IncidentState.EDGE_CONFIRMED
-
-
-def test_evidence_is_carried_into_incident_snapshot() -> None:
-    reducer = InMemoryIncidentReducer()
-    sig = IncidentSignal(
-        key=visit_key(),
-        matched=True,
+def test_restored_incident_does_not_count_process_downtime() -> None:
+    original = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+    checkpoint = reduce(
+        original,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
         confirmable=True,
-        observed_at=T0,
-        evidence={"zonePresenceSeconds": 3.2, "isElectric": False},
+    ).incident
+    restored = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
     )
-    reducer.reduce(sig)
-    assert len(reducer.snapshot()) == 1
+    restored.restore_active((checkpoint,))
+
+    resumed = reduce(
+        restored,
+        key,
+        IncidentSignalValue.MATCHED,
+        100,
+        confirmable=True,
+    )
+    opened = reduce(
+        restored,
+        key,
+        IncidentSignalValue.MATCHED,
+        105,
+        confirmable=True,
+    )
+
+    assert resumed.incident.confirm_trusted_seconds == 0.0
+    assert opened.incident.state is IncidentState.OPEN
+    assert opened.incident.confirm_trusted_seconds == 5.0
+
+
+def test_confirm_timer_does_not_count_a_sample_gap_above_the_limit() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=2,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    progress = reduce(
+        reducer, key, IncidentSignalValue.MATCHED, 2, confirmable=True
+    )
+    after_gap = reduce(
+        reducer, key, IncidentSignalValue.MATCHED, 10, confirmable=True
+    )
+    resumed = reduce(
+        reducer, key, IncidentSignalValue.MATCHED, 12, confirmable=True
+    )
+    opened = reduce(
+        reducer, key, IncidentSignalValue.MATCHED, 13, confirmable=True
+    )
+
+    assert progress.incident.confirm_trusted_seconds == 2
+    assert after_gap.incident.confirm_trusted_seconds == 2
+    assert resumed.incident.confirm_trusted_seconds == 4
+    assert opened.incident.state is IncidentState.OPEN
+
+
+def test_nonconfirmable_match_does_not_advance_candidate_timer() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    waiting = reduce(reducer, key, IncidentSignalValue.MATCHED, 2, confirmable=False)
+    resumed = reduce(reducer, key, IncidentSignalValue.MATCHED, 4, confirmable=True)
+    opened = reduce(reducer, key, IncidentSignalValue.MATCHED, 9, confirmable=True)
+
+    assert waiting.incident.confirm_trusted_seconds == 0
+    assert resumed.incident.confirm_trusted_seconds == 0
+    assert opened.incident.state is IncidentState.OPEN
+
+
+def test_unknown_pauses_without_resetting_accumulated_confirm_time() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    progress = reduce(reducer, key, IncidentSignalValue.MATCHED, 3, confirmable=True)
+    paused = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.UNKNOWN,
+        5,
+        observation=observed(5),
+    )
+    resumed = reduce(reducer, key, IncidentSignalValue.MATCHED, 10, confirmable=True)
+    opened = reduce(reducer, key, IncidentSignalValue.MATCHED, 12, confirmable=True)
+
+    assert progress.incident.confirm_trusted_seconds == 3
+    assert paused.incident.state is IncidentState.CANDIDATE
+    assert paused.incident.observation.state is ObservationState.UNKNOWN
+    assert resumed.incident.confirm_trusted_seconds == 3
+    assert opened.incident.state is IncidentState.OPEN
+
+
+def test_unreliable_observation_turns_matched_signal_into_pause() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    result = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        observation=unknown(0),
+    )
+    assert result is None
+    assert reducer.snapshot() == ()
+
+
+def test_not_matched_cancels_candidate_but_keeps_terminal_snapshot() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=10,
+    )
+    key = vehicle_key()
+    candidate = reduce(
+        reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True
+    )
+    canceled = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+
+    assert canceled.incident.incident_id == candidate.incident.incident_id
+    assert canceled.incident.state is IncidentState.CANCELED
+    assert canceled.incident.terminated_at == at(1)
+    assert canceled.transitions == ()
+    assert reducer.active_snapshot() == ()
+    assert reducer.snapshot() == (canceled.incident,)
+
+
+def test_local_only_open_materializes_when_late_correlation_arrives() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    key = vehicle_key()
+
+    local = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+    published = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        entry_attempt_id=None,
+        parking_session_id=SESSION,
+    )
+
+    assert local.incident.state is IncidentState.OPEN
+    assert local.incident.publication_revision == 0
+    assert local.transitions == ()
+    assert published.incident.incident_id == local.incident.incident_id
+    assert published.incident.publication_revision == 1
+    assert published.incident.parking_session_id == SESSION
+    assert published.transitions[0].transition_type is IncidentTransitionType.OPEN
+
+
+def test_late_correlation_does_not_drop_same_sample_clear_result() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=10,
+        clear_duration_seconds=0,
+    )
+    key = vehicle_key()
+    local = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+
+    resolved = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.NOT_MATCHED,
+        1,
+        entry_attempt_id=None,
+        parking_session_id=SESSION,
+    )
+
+    assert local.incident.publication_revision == 0
+    assert resolved.incident.state is IncidentState.RESOLVED
+    assert [item.transition_type for item in resolved.transitions] == [
+        IncidentTransitionType.OPEN,
+        IncidentTransitionType.RESOLVE,
+    ]
+    assert [item.incident.publication_revision for item in resolved.transitions] == [
+        1,
+        2,
+    ]
+
+
+def test_late_correlation_materializes_open_from_clear_pending() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=10,
+        clear_duration_seconds=5,
+    )
+    key = vehicle_key()
+    reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+    local_clearing = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.NOT_MATCHED,
+        1,
+        entry_attempt_id=None,
+    )
+
+    materialized = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.NOT_MATCHED,
+        2,
+        entry_attempt_id=None,
+        parking_session_id=SESSION,
+    )
+
+    assert local_clearing.incident.state is IncidentState.CLEAR_PENDING
+    assert local_clearing.incident.publication_revision == 0
+    assert materialized.incident.state is IncidentState.CLEAR_PENDING
+    assert materialized.incident.publication_revision == 1
+    assert [item.transition_type for item in materialized.transitions] == [
+        IncidentTransitionType.OPEN
+    ]
+
+
+def test_clear_pending_unknown_pause_and_match_rebound() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        clear_duration_seconds=5,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+
+    clearing = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+    paused = reduce(reducer, key, IncidentSignalValue.UNKNOWN, 3)
+    resumed = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 5)
+    rebound = reduce(reducer, key, IncidentSignalValue.MATCHED, 6, confirmable=True)
+
+    assert clearing.incident.state is IncidentState.CLEAR_PENDING
+    assert paused.incident.state is IncidentState.CLEAR_PENDING
+    assert resumed.incident.clear_trusted_seconds == 0
+    assert rebound.incident.state is IncidentState.OPEN
+    assert rebound.incident.clear_trusted_seconds == 0
+    assert rebound.transitions == ()
+
+
+def test_clear_timer_resolves_published_incident() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        clear_duration_seconds=5,
+    )
+    key = vehicle_key()
+    opened = reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+    progress = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 4)
+    resolved = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 6)
+
+    assert progress.incident.clear_trusted_seconds == 3
+    assert resolved.incident.incident_id == opened.incident.incident_id
+    assert resolved.incident.state is IncidentState.RESOLVED
+    assert resolved.incident.resolved_at == at(6)
+    assert resolved.incident.publication_revision == 2
+    assert resolved.transitions[0].transition_type is IncidentTransitionType.RESOLVE
+
+
+def test_clear_timer_does_not_count_a_sample_gap_above_the_limit() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=2,
+        clear_duration_seconds=5,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+
+    reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+    progress = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 3)
+    after_gap = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 10)
+    resumed = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 12)
+    resolved = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 13)
+
+    assert progress.incident.clear_trusted_seconds == 2
+    assert after_gap.incident.clear_trusted_seconds == 2
+    assert resumed.incident.clear_trusted_seconds == 4
+    assert resolved.incident.state is IncidentState.RESOLVED
+
+
+def test_zero_clear_duration_resolves_on_first_not_matched() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        clear_duration_seconds=0,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    resolved = reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+
+    assert resolved.incident.state is IncidentState.RESOLVED
+    assert resolved.transitions[0].transition_type is IncidentTransitionType.RESOLVE
+
+
+def test_local_only_resolution_stays_unpublished() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        clear_duration_seconds=0,
+    )
+    key = vehicle_key()
+    reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+    resolved = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.NOT_MATCHED,
+        1,
+        entry_attempt_id=None,
+    )
+
+    assert resolved.incident.state is IncidentState.RESOLVED
+    assert resolved.incident.publication_revision == 0
+    assert resolved.transitions == ()
+
+
+def test_reopen_after_terminal_uses_new_incident_id_and_preserves_history() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        clear_duration_seconds=0,
+    )
+    key = vehicle_key()
+    first = reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    reduce(reducer, key, IncidentSignalValue.NOT_MATCHED, 1)
+    second = reduce(reducer, key, IncidentSignalValue.MATCHED, 2, confirmable=True)
+
+    assert second.incident.incident_id != first.incident.incident_id
+    assert [item.state for item in reducer.snapshot()] == [
+        IncidentState.RESOLVED,
+        IncidentState.OPEN,
+    ]
+
+
+def test_zone_visit_direct_termination_cancels_candidate_and_resolves_open() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    candidate = reduce(
+        reducer,
+        visit_key("EV_OVERSTAY"),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=False,
+        zone_id=ZoneId(10),
+    )
+    opened = reduce(
+        reducer,
+        visit_key("EV_ZONE_UNAUTHORIZED"),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        zone_id=ZoneId(10),
+    )
+
+    results = reducer.terminate_zone_visit(
+        VISIT,
+        observation=observed(1),
+        observed_at=at(1),
+    )
+
+    by_id = {result.incident.incident_id: result for result in results}
+    assert by_id[candidate.incident.incident_id].incident.state is IncidentState.CANCELED
+    assert by_id[candidate.incident.incident_id].transitions == ()
+    assert by_id[opened.incident.incident_id].incident.state is IncidentState.RESOLVED
+    assert (
+        by_id[opened.incident.incident_id].transitions[0].transition_type
+        is IncidentTransitionType.RESOLVE
+    )
+    assert reducer.terminate_zone_visit(
+        VISIT, observation=observed(2), observed_at=at(2)
+    ) == ()
+
+
+def test_blocking_relation_direct_termination_resolves_relation_scope() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    opened = reduce(
+        reducer,
+        relation_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        victim_physical_vehicle_id=VICTIM,
+    )
+
+    (resolved,) = reducer.terminate_blocking_relation(
+        RELATION,
+        observation=observed(1),
+        observed_at=at(1),
+    )
+    assert resolved.incident.incident_id == opened.incident.incident_id
+    assert resolved.incident.state is IncidentState.RESOLVED
+
+
+def test_physical_leave_terminates_subject_and_victim_incidents_only() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    subject = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+    )
+    relation = reduce(
+        reducer,
+        relation_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        victim_physical_vehicle_id=VICTIM,
+    )
+    unrelated_key = IncidentKey.for_physical_vehicle(OTHER_CAR, "OUT_OF_ZONE")
+    unrelated = reduce(
+        reducer,
+        unrelated_key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        physical_vehicle_id=OTHER_CAR,
+    )
+
+    subject_results = reducer.terminate_physical_vehicle(
+        CAR, observation=observed(1), observed_at=at(1)
+    )
+    victim_results = reducer.terminate_physical_vehicle(
+        VICTIM, observation=observed(2), observed_at=at(2)
+    )
+
+    assert {result.incident.incident_id for result in subject_results} == {
+        subject.incident.incident_id,
+        relation.incident.incident_id,
+    }
+    assert victim_results == ()
+    assert reducer.active_snapshot() == (unrelated.incident,)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "scope_id"),
+    [
+        ("terminate_zone_visit", VISIT),
+        ("terminate_blocking_relation", RELATION),
+        ("terminate_physical_vehicle", CAR),
+    ],
+)
+@pytest.mark.parametrize(
+    "observation",
+    [
+        unknown(0),
+        ObservationStatus(
+            state=ObservationState.DEGRADED,
+            reason=ObservationReason.PARTIAL_FRAME,
+            last_reliable_observed_at=at(0),
+        ),
+    ],
+)
+def test_direct_termination_requires_observed_evidence(
+    method_name: str,
+    scope_id: object,
+    observation: ObservationStatus,
+) -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+
+    with pytest.raises(ValueError, match="requires OBSERVED"):
+        getattr(reducer, method_name)(
+            scope_id,
+            observation=observation,
+            observed_at=at(1),
+        )
+
+
+def test_pause_physical_vehicle_breaks_candidate_sample_chain() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+    progress = reduce(reducer, key, IncidentSignalValue.MATCHED, 2, confirmable=True)
+
+    (paused,) = reducer.pause_physical_vehicle(
+        CAR,
+        observation=unknown(4),
+        observed_at=at(4),
+    )
+    resumed = reduce(reducer, key, IncidentSignalValue.MATCHED, 10, confirmable=True)
+    opened = reduce(reducer, key, IncidentSignalValue.MATCHED, 13, confirmable=True)
+
+    assert progress.incident.confirm_trusted_seconds == 2
+    assert paused.incident.observation.state is ObservationState.UNKNOWN
+    assert resumed.incident.confirm_trusted_seconds == 2
+    assert opened.incident.state is IncidentState.OPEN
+
+
+def test_pause_preserves_last_reliable_time_when_input_omits_it() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 0, confirmable=True)
+
+    (paused,) = reducer.pause_physical_vehicle(
+        CAR,
+        observation=ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=ObservationReason.TRACK_LOST,
+        ),
+        observed_at=at(1),
+    )
+
+    assert paused.incident.observation.last_reliable_observed_at == at(0)
+
+
+def test_pause_physical_vehicle_also_updates_victim_relation_incident() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    opened = reduce(
+        reducer,
+        relation_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        victim_physical_vehicle_id=VICTIM,
+    )
+
+    (paused,) = reducer.pause_physical_vehicle(
+        VICTIM,
+        observation=unknown(1),
+        observed_at=at(1),
+    )
+
+    assert paused.incident.incident_id == opened.incident.incident_id
+    assert paused.incident.state is IncidentState.OPEN
+    assert paused.incident.observation.state is ObservationState.UNKNOWN
+    assert paused.transitions == ()
+
+
+def test_context_identity_cannot_change_inside_one_incident() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=10,
+    )
+    key = vehicle_key()
+    reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        parking_session_id=SESSION,
+    )
+
+    with pytest.raises(ValueError, match="parking_session_id cannot change"):
+        reduce(
+            reducer,
+            key,
+            IncidentSignalValue.MATCHED,
+            1,
+            confirmable=True,
+            parking_session_id=ParkingSessionId(999),
+        )
+
+
+def test_physical_vehicle_scope_zone_change_is_not_an_identity_conflict() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=10,
+    )
+    key = vehicle_key()
+    first = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        zone_id=ZoneId(10),
+    )
+    moved = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        zone_id=ZoneId(11),
+    )
+
+    # zone은 physical-scope continuity가 아니며 최초 위반 context를 보존한다.
+    assert first.incident.zone_id == ZoneId(10)
+    assert moved.incident.zone_id == ZoneId(10)
+
+
+def test_zone_visit_scope_still_rejects_zone_context_change() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=10,
+    )
+    key = visit_key()
+    reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        zone_id=ZoneId(10),
+    )
+
+    with pytest.raises(ValueError, match="zone_id cannot change"):
+        reduce(
+            reducer,
+            key,
+            IncidentSignalValue.MATCHED,
+            1,
+            confirmable=True,
+            zone_id=ZoneId(11),
+        )
+
+
+def test_backward_observation_is_rejected() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=10,
+    )
+    key = vehicle_key()
+    reduce(reducer, key, IncidentSignalValue.MATCHED, 5, confirmable=True)
+
+    with pytest.raises(ValueError, match="과거"):
+        reduce(reducer, key, IncidentSignalValue.MATCHED, 4, confirmable=True)

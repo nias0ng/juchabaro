@@ -1,25 +1,9 @@
-"""녹화된 영상 파일·실제 웹캠을 읽어 보정까지 끝낸 CapturedFrame을 공급한다.
+"""영상 파일·웹캠 입력을 보정 좌표계의 ``CapturedFrame``으로 변환한다.
 
-ai/tracking/replay/video_source.py(VideoFileFrameSource)와
-ai/tracking/jetson_vehicle_tracking_baseline.py(OpenCvWebcamFrameSource,
-RemapFrameSource, calibration_fingerprint, normalize_fingerprint)에서
-이관(428, 427).
-
-옛 CapturedFrame(frame_id, captured_at, image 3개뿐)과 달리 새
-CapturedFrame(camera/models.py)은 camera_id/width/height/calibration_id가
-필수라, 단순 복붙이 아니라 이 값들을 채우는 코드를 추가했다:
-- VideoFileFrameSource: camera_id는 생성자 인자로 받고, width/height는
-  프레임에서 계산하며, 보정을 하지 않으므로 calibration_id=None
-- OpenCvWebcamFrameSource: 마찬가지로 camera_id를 받고, width/height는
-  요청한 해상도가 아니라 실제로 캡처된 프레임에서 계산한다(카메라가 요청
-  해상도를 그대로 못 맞출 수 있어서) — 보정은 안 하므로 calibration_id=None
-- RemapFrameSource: 실제 보정을 적용하는 쪽이라 calibration_id를
-  calibration_fingerprint()의 해시로 채운다
-
-`OpenCvWebcamFrameSource.captured_at`은 영상 시간이 아니라 벽시계
-(`datetime.now`)다 — 실시간 장치라 재현 가능한 "영상 시간" 개념이 없다.
-결정론적 검증은 `VideoFileFrameSource`(리플레이)의 몫이고, 이 클래스는
-데모/파일럿의 실입력 전용이다.
+``FrameSource``는 장치 생명주기와 RGB frame 공급만 소유한다. 촬영·보정
+실패는 ``FrameSourceError``에 비신뢰 ``ObservationStatus``와 발생 시각을
+담아 application으로 전달한다. 실제 웹캠은 벽시계, 영상 리플레이는 영상
+시간을 사용하며, fisheye 보정은 ``RemapFrameSource``가 담당한다.
 """
 
 from __future__ import annotations
@@ -34,6 +18,12 @@ from typing import Any, Mapping, Protocol
 
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
 from src.camera.models import CapturedFrame
+from src.domain.models import (
+    ObservationReason,
+    ObservationState,
+    ObservationStatus,
+    require_aware,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +32,22 @@ EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class FrameSourceError(RuntimeError):
-    """프레임 공급 중 발생한 오류."""
+    """프레임 공급 실패와 그 시점의 비신뢰 관측을 함께 전달한다."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        state: ObservationState = ObservationState.UNKNOWN,
+        reason: ObservationReason = ObservationReason.CAMERA_UNAVAILABLE,
+        observed_at: datetime | None = None,
+    ) -> None:
+        super().__init__(message)
+        if state is ObservationState.OBSERVED:
+            raise ValueError("FrameSourceError cannot carry OBSERVED state")
+        self.observed_at = observed_at or datetime.now(timezone.utc)
+        require_aware(self.observed_at, "observed_at")
+        self.observation = ObservationStatus(state=state, reason=reason)
 
 
 class EndOfVideo(FrameSourceError):
@@ -67,7 +72,8 @@ def _import_cv2() -> Any:
         import cv2
     except ImportError as exc:
         raise FrameSourceError(
-            f"OpenCV import에 실패했습니다. `pip install opencv-python`으로 설치하세요. 원인: {exc}"
+            f"OpenCV import에 실패했습니다. `pip install opencv-python`으로 설치하세요. 원인: {exc}",
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
         ) from exc
     return cv2
 
@@ -85,7 +91,10 @@ def calibration_fingerprint(calibration_path: Path | None, balance: float) -> di
     try:
         digest = hashlib.sha256(calibration_path.read_bytes()).hexdigest()[:16]
     except OSError as exc:
-        raise FrameSourceError(f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}") from exc
+        raise FrameSourceError(
+            f"calibration 파일을 읽을 수 없습니다({calibration_path}): {exc}",
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+        ) from exc
     return {"remap": True, "calibrationSha256": digest, "balance": round(float(balance), 6)}
 
 
@@ -107,7 +116,10 @@ def normalize_fingerprint(raw: Mapping[str, Any]) -> dict[str, Any]:
             "balance": round(float(raw["balance"]), 6),
         }
     except (KeyError, TypeError, ValueError) as exc:
-        raise FrameSourceError(f"calibration 지문 형식이 올바르지 않습니다: {raw!r} ({exc})") from exc
+        raise FrameSourceError(
+            f"calibration 지문 형식이 올바르지 않습니다: {raw!r} ({exc})",
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+        ) from exc
 
 
 @dataclass
@@ -160,18 +172,27 @@ class VideoFileFrameSource:
         if self._capture is not None:
             return
         if not self.path.exists():
-            raise FrameSourceError(f"영상 파일이 없습니다: {self.path}")
+            raise FrameSourceError(
+                f"영상 파일이 없습니다: {self.path}",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            )
         cv2 = _import_cv2()
         capture = cv2.VideoCapture(str(self.path))
         if not capture.isOpened():
             capture.release()
-            raise FrameSourceError(f"영상 파일을 열 수 없습니다: {self.path}")
+            raise FrameSourceError(
+                f"영상 파일을 열 수 없습니다: {self.path}",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            )
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         if not math.isfinite(fps) or fps <= 0.0:
             capture.release()
             # fps를 모르면 captured_at을 만들 수 없고, 그러면 정차 시간 판정 전체가
             # 무의미해진다. 임의값으로 진행하면 조용히 틀린 결과가 나온다.
-            raise FrameSourceError(f"영상의 fps를 읽을 수 없습니다(fps={fps}): {self.path}")
+            raise FrameSourceError(
+                f"영상의 fps를 읽을 수 없습니다(fps={fps}): {self.path}",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            )
         self._fps = fps
         self._frame_size = (
             int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -187,7 +208,10 @@ class VideoFileFrameSource:
         """다음 프레임을 RGB로 반환한다. 소진되면 EndOfVideo를 던진다."""
 
         if self._capture is None:
-            raise FrameSourceError("영상이 초기화되지 않았습니다. open()을 먼저 호출하세요.")
+            raise FrameSourceError(
+                "영상이 초기화되지 않았습니다. open()을 먼저 호출하세요.",
+                reason=ObservationReason.PIPELINE_STALLED,
+            )
         if self._exhausted:
             raise EndOfVideo(f"영상의 프레임이 소진되었습니다: {self.path}")
         if self.end_seconds is not None and self._next_index >= self.end_seconds * self._fps:
@@ -222,7 +246,7 @@ class VideoFileFrameSource:
 
 @dataclass
 class OpenCvWebcamFrameSource:
-    """일반 웹캠(데모 단계의 천장 카메라)에서 RGB 프레임을 공급한다(427).
+    """일반 웹캠에서 벽시계 시각이 찍힌 RGB 프레임을 공급한다.
 
     `width`/`height`는 카메라에 요청하는 해상도일 뿐이다 — 장치가 그 값을
     그대로 못 맞출 수 있어서, `CapturedFrame.width`/`height`는 실제로 캡처된
@@ -241,8 +265,8 @@ class OpenCvWebcamFrameSource:
     _next_frame_id: int = field(default=1, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # 음수 인덱스를 cv2.VideoCapture에 그대로 넘기면 백엔드마다 다르게(엉뚱한
-        # 장치를 열거나 조용히 실패) 반응한다 — baseline CLI도 같은 이유로 막았다.
+        # 음수 인덱스를 cv2.VideoCapture에 그대로 넘기면 백엔드마다 다르게
+        # 반응하므로 구성 시점에 거부한다.
         if self.camera_index < 0:
             raise ValueError(f"camera_index는 음수일 수 없습니다: {self.camera_index}")
         # 0은 "요청 생략"(장치 기본 해상도 사용)이라는 의미가 있어 허용하지만,
@@ -271,12 +295,22 @@ class OpenCvWebcamFrameSource:
         """다음 프레임을 RGB로 반환한다."""
 
         if self._capture is None:
-            raise FrameSourceError("웹캠이 초기화되지 않았습니다. open()을 먼저 호출하세요.")
+            raise FrameSourceError(
+                "웹캠이 초기화되지 않았습니다. open()을 먼저 호출하세요.",
+                reason=ObservationReason.PIPELINE_STALLED,
+            )
         cv2 = _import_cv2()
         ok, frame_bgr = self._capture.read()
         if not ok or frame_bgr is None:
             raise FrameSourceError(f"웹캠 프레임 캡처에 실패했습니다: index={self.camera_index}")
-        image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        try:
+            image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        except cv2.error as error:
+            raise FrameSourceError(
+                "웹캠 프레임 형식을 RGB로 변환할 수 없습니다.",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+            ) from error
         height, width = image.shape[:2]
         frame = CapturedFrame(
             camera_id=self.camera_id,
@@ -312,7 +346,13 @@ class RemapFrameSource:
     calibration_id 좌표계인지 검증할 수 있게 하기 위함이다(데이터흐름.md §1).
     """
 
-    def __init__(self, *, inner: Any, calibration_path: str, balance: float = DEFAULT_REMAP_BALANCE) -> None:
+    def __init__(
+        self,
+        *,
+        inner: FrameSource,
+        calibration_path: str,
+        balance: float = DEFAULT_REMAP_BALANCE,
+    ) -> None:
         self._inner = inner
         self._calibration_path = calibration_path
         self._balance = balance
@@ -341,14 +381,22 @@ class RemapFrameSource:
                 Path(self._calibration_path), self._balance
             ).get("calibrationSha256")
         # dst 버퍼를 재사용해 프레임당 수 MB 할당을 없앤다(측정상 30% 이상 빠름).
-        undistorted = cv2.remap(
-            frame.image,
-            self._map1,
-            self._map2,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            dst=self._dst,
-        )
+        try:
+            undistorted = cv2.remap(
+                frame.image,
+                self._map1,
+                self._map2,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                dst=self._dst,
+            )
+        except cv2.error as error:
+            raise FrameSourceError(
+                "프레임 왜곡 보정에 실패했습니다.",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+                observed_at=frame.captured_at,
+            ) from error
         self._dst = undistorted
         return CapturedFrame(
             camera_id=frame.camera_id,
@@ -370,10 +418,19 @@ class RemapFrameSource:
 
         shape = getattr(image, "shape", None)
         if shape is None or len(shape) < 2:
-            raise FrameSourceError("프레임 이미지 크기를 확인할 수 없습니다.")
+            raise FrameSourceError(
+                "프레임 이미지 크기를 확인할 수 없습니다.",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+            )
         height, width = int(shape[0]), int(shape[1])
         if height <= 0 or width <= 0:
-            raise FrameSourceError(f"프레임 크기가 올바르지 않아 왜곡 보정을 할 수 없습니다: shape={shape}")
+            raise FrameSourceError(
+                "프레임 크기가 올바르지 않아 왜곡 보정을 할 수 없습니다: "
+                f"shape={shape}",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+            )
         return width, height
 
     def _build_maps(self, frame_size: tuple[int, int], cv2: Any) -> tuple[Any, Any]:
@@ -384,13 +441,33 @@ class RemapFrameSource:
             K_cal, D, cal_size = calibration_utils.load_calibration(self._calibration_path)
             K = calibration_utils.scale_K(K_cal, cal_size, frame_size)
         except calibration_utils.CalibrationError as exc:
-            raise FrameSourceError(str(exc)) from exc
+            raise FrameSourceError(
+                str(exc),
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            ) from exc
         if cal_size != frame_size:
             LOGGER.info("캘리브레이션 해상도 %s를 프레임 해상도 %s로 스케일링했습니다.", cal_size, frame_size)
-        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            K, D, frame_size, np.eye(3), balance=self._balance
-        )
-        return cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, frame_size, cv2.CV_16SC2)
+        try:
+            new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+                K,
+                D,
+                frame_size,
+                np.eye(3),
+                balance=self._balance,
+            )
+            return cv2.fisheye.initUndistortRectifyMap(
+                K,
+                D,
+                np.eye(3),
+                new_K,
+                frame_size,
+                cv2.CV_16SC2,
+            )
+        except cv2.error as error:
+            raise FrameSourceError(
+                "calibration 값으로 왜곡 보정 맵을 만들 수 없습니다.",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            ) from error
 
     def close(self) -> None:
         # 맵/버퍼는 1080p에서 12~22MB라, 재연결 루프가 추가될 경우를 대비해 여기서 놓아준다.

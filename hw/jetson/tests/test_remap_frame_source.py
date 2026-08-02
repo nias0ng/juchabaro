@@ -7,12 +7,13 @@
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pytest
 from src.camera.frame_source import FrameSourceError, RemapFrameSource
-from src.camera.models import CapturedFrame
+from src.domain.models import ObservationReason, ObservationState
 
 # 눈에 보일 만큼 휘게 만드는, 실제 광각 렌즈에 가까운 배럴 왜곡 계수.
 FIXTURE_K = [[260.0, 0.0, 205.0], [0.0, 260.0, 148.0], [0.0, 0.0, 1.0]]
@@ -36,7 +37,7 @@ class FakeFrameSource:
         self.opened = True
 
     def capture(self):
-        frame = CapturedFrame(
+        frame = SimpleNamespace(
             camera_id=self.camera_id,
             frame_id=self._next_frame_id,
             captured_at=datetime.now(timezone.utc),
@@ -173,8 +174,11 @@ def test_rejects_zero_sized_frame_with_frame_source_error(tmp_path):
     )
     source.open()
 
-    with pytest.raises(FrameSourceError):
+    with pytest.raises(FrameSourceError) as raised:
         source.capture()
+
+    assert raised.value.observation.state is ObservationState.DEGRADED
+    assert raised.value.observation.reason is ObservationReason.PARTIAL_FRAME
 
 
 def test_wraps_missing_calibration_file_as_frame_source_error(tmp_path):
@@ -185,8 +189,13 @@ def test_wraps_missing_calibration_file_as_frame_source_error(tmp_path):
     )
     source.open()
 
-    with pytest.raises(FrameSourceError):
+    with pytest.raises(FrameSourceError) as raised:
         source.capture()
+
+    assert (
+        raised.value.observation.reason
+        is ObservationReason.DEPENDENCY_UNAVAILABLE
+    )
 
 
 def test_reuses_calibration_across_captures(tmp_path):

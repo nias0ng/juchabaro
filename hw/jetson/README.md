@@ -87,6 +87,63 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
+`ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
+구역 JSON 경로를 지정한다. 개발용 예시는
+`config/zone_definition.pilot.json`이다. 구역 정보는 SQLite가 아니라 이 정적
+JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
+
+`DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
+Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을
+공유하지 않고 각자 열어 사용한다. `FrameObservationWorkflow`는
+tracking·session·parking aggregate·physical departure·immutable outbox row를
+같은 SQLite transaction에 저장한다. `MonitoringPipeline`은 commit된
+PhysicalVehicle 종료만 tracking에 ACK한다. correlation 전에 확정된
+PARKED·Incident는 pending marker로 보존하고, 늦은 authoritative
+correlation이 오면 원래 occurredAt·revision 순서로 outbox를 만든다.
+`build_monitoring_pipeline()`은 이 owner들을 하나의 frame Unit of Work로
+조립하지만, 임시 Backend serializer나 장치 설정을 발명하지 않고
+배포 계층에서 명시적으로 주입받는다.
+
+재시작은 active observation을 `UNKNOWN / PROCESS_RESTARTED`로 끊고
+downtime을 trusted timer에 더하지 않는다. 현재 기본
+`PassthroughEntityResolver`는 process 간 재식별을 지원하지 않으므로,
+복원한 차량이 있는데 detection이 남아 있으면 신규 scope 생성과
+부재 확정을 멈춘다. 정상 전체 영역이 빈 관측에서만
+보수적 종료를 재개한다. process 간 재식별 adapter는
+`RestartAwareEntityResolver`를 구현해 복구 후보를 인계받을 수 있지만,
+실제 재식별 근거와 구현은 후속 범위다.
+
+`main.py`는 migration, ZoneDefinition 검증, inbound application 조립과
+단일 monitoring thread의 시작·정상 종료 생명주기를 소유한다.
+Backend endpoint·DTO·Idempotency-Key를 exact bytes로 만드는 adapter와
+outbox publisher는 후속 연동 계약 범위이다. 따라서 module-level
+FastAPI `app`은 아직 API-only이며, 그 계약을 구현한 배포 entrypoint가
+`MonitoringPipelineFactory`를 명시적으로 주입했을 때만 camera·model owner를
+하나 기동한다. 계약 확정 전 임시 serializer나 no-op publisher는
+사용하지 않는다.
+
+`EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
+file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,
+`EVIDENCE_SPOOL_CAP_BYTES`는 8GiB를 넘게 설정할 수 없다. root filesystem
+여유공간이 35% 보다 작아질 write는 새 capture를 중지하고 30%
+보호선을 침범하지 않는다. spool 복구·보존·압박 정리 로직을
+제공하지만 capture·upload·기동 흐름에 배선하는 것은 후속 application
+리팩터링 범위다. 원본 video는 이 spool의 보존 대상이 아니다.
+
+`ABSENCE_CONFIRMATION_SECONDS`는
+ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을
+`NOT_PRESENT_CONFIRMED`로 올리는 별도 시간 기준이다.
+`TRUSTED_SAMPLE_MAX_GAP_SECONDS`를 넘는 frame 공백은 camera·pipeline
+stall로 보고 그 wall-clock을 부재 확정에 더하지 않는다.
+
+Camera·보정 실패는 `FrameSourceError`의 `UNKNOWN` 또는 `DEGRADED`
+관측과 구체적인 reason으로 변환된다. `MonitoringPipeline`은 이 비신뢰
+관측을 active scope에 commit해 timer chain을 끊은 뒤 원래 오류를
+호출자에게 전달한다. LED·speaker는 concrete GPIO 구현 없이
+`ActuatorCommandPlanner`와 `ActuatorPort` 주입 경계만 제공하며, durable
+commit 뒤 전체 active Incident projection을 반복 적용한다. `src/sensors`는
+후속 센서 입력 adapter를 위한 독립 경계이며 현재 실행 pipeline에는 연결하지 않는다.
+
 ## PC 개발 환경에서 실행
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.

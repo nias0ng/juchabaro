@@ -1,7 +1,8 @@
-"""구역 방문, 주차 에피소드, 위반 사건의 공통 상태 계약.
+"""ZoneVisit, ParkingEpisode, BlockingRelation과 Incident 계약.
 
-공간 겹침·이동·위반 여부의 계산 방법은 정의하지 않고, 계산된 신호가
-따라야 할 상태와 식별자만 고정한다.
+공간·주차 scope의 수명과 Incident 수명을 분리한다. 특히 이동 확정은
+ParkingEpisode를 끝내고 규칙 재평가를 요청할 뿐 Incident를 직접 해소하지
+않는다. 반복 frame 신호와 bbox는 이 모듈의 durable record가 아니다.
 """
 
 from __future__ import annotations
@@ -12,21 +13,46 @@ from enum import Enum
 from typing import Mapping, NewType
 from uuid import UUID
 
-from src.tracking.models import (
-    MotionSignal,
-    ParkingSessionId,
-    PhysicalVehicleId,
+from src.domain.models import (
+    ObservationStatus,
+    require_aware,
+    require_non_negative,
+    require_positive,
 )
+from src.session.models import EntryAttemptId
+from src.tracking.models import MotionSignal, ParkingSessionId, PhysicalVehicleId
 
 
 ZoneId = NewType("ZoneId", int)
+ZoneDefinitionVersion = NewType("ZoneDefinitionVersion", int)
 ZoneVisitId = NewType("ZoneVisitId", UUID)
 ParkingEpisodeId = NewType("ParkingEpisodeId", UUID)
+BlockingRelationId = NewType("BlockingRelationId", UUID)
 IncidentId = NewType("IncidentId", UUID)
+
+NormalizedPoint = tuple[float, float]
+NormalizedPolygon = tuple[NormalizedPoint, ...]
+
+
+class ZoneType(str, Enum):
+    """현재 단일-camera 배포에서 사용하는 기본 Zone 종류."""
+
+    GENERAL = "GENERAL"
+    DISABLED = "DISABLED"
+    EV_CHARGING = "EV_CHARGING"
+    AISLE = "AISLE"
+    ENTRY_EXIT = "ENTRY_EXIT"
+
+
+class EntryExitRole(str, Enum):
+    """ENTRY_EXIT 구역이 입차와 출차 중 어느 경계인지 구분한다."""
+
+    ENTRY = "ENTRY"
+    EXIT = "EXIT"
 
 
 class PresenceSignal(str, Enum):
-    """구역 기하 계산 구현체가 방문 상태 머신에 전달하는 관측값."""
+    """구역 기하 계산이 ZoneVisitTracker에 전달하는 삼상태 관측."""
 
     PRESENT = "PRESENT"
     ABSENT = "ABSENT"
@@ -34,147 +60,511 @@ class PresenceSignal(str, Enum):
 
 
 class ZoneVisitState(str, Enum):
-    """차량 하나와 구역 하나 사이의 방문 상태."""
+    """한 PhysicalVehicle과 한 zone 사이의 연속 방문 상태."""
 
-    OUTSIDE = "OUTSIDE"
     ENTERING = "ENTERING"
     INSIDE = "INSIDE"
     EXITING = "EXITING"
+    ENDED = "ENDED"
+    CANCELED = "CANCELED"
 
 
 class ParkingState(str, Enum):
-    """물리 차량의 주차 에피소드 상태."""
+    """한 PhysicalVehicle의 연속 정지·주차 행위 상태."""
 
-    MOVING = "MOVING"
     STOP_PENDING = "STOP_PENDING"
     PARKED = "PARKED"
+    MOVE_PENDING = "MOVE_PENDING"
     ENDED = "ENDED"
+    CANCELED = "CANCELED"
+
+
+class ParkingTransitionType(str, Enum):
+    """A publishable transition from a ParkingEpisode."""
+
+    PARKED = "PARKED"
+    UNPARKED = "UNPARKED"
+
+
+class BlockingRelationState(str, Enum):
+    """순서가 있는 subject·victim·egress 차단 관계 상태."""
+
+    CANDIDATE = "CANDIDATE"
+    BLOCKING = "BLOCKING"
+    CLEAR_PENDING = "CLEAR_PENDING"
+    RESOLVED = "RESOLVED"
+    CANCELED = "CANCELED"
 
 
 class IncidentState(str, Enum):
-    """Jetson 내부 후보부터 Backend 전송 이후 해소까지의 사건 상태."""
+    """로컬 Candidate부터 공개·해소까지의 Incident 상태."""
 
     CANDIDATE = "CANDIDATE"
-    EDGE_CONFIRMED = "EDGE_CONFIRMED"
+    OPEN = "OPEN"
+    CLEAR_PENDING = "CLEAR_PENDING"
     RESOLVED = "RESOLVED"
+    CANCELED = "CANCELED"
+
+
+class IncidentSignalValue(str, Enum):
+    """RuleEvaluator가 IncidentReducer에 전달하는 삼상태 술어 결과."""
+
+    MATCHED = "MATCHED"
+    NOT_MATCHED = "NOT_MATCHED"
+    UNKNOWN = "UNKNOWN"
 
 
 class IncidentTransitionType(str, Enum):
-    """Backend 전송 대상이 되는 사건 전이."""
+    """Backend publication 대상이 되는 Incident 전이."""
 
     OPEN = "OPEN"
     RESOLVE = "RESOLVE"
 
 
+class IncidentKeyScope(str, Enum):
+    """규칙별 Incident continuity를 결정하는 scope 종류."""
+
+    ZONE_VISIT = "ZONE_VISIT"
+    PHYSICAL_VEHICLE = "PHYSICAL_VEHICLE"
+    BLOCKING_RELATION = "BLOCKING_RELATION"
+
+
 class AssignmentState(str, Enum):
-    """대표 주차면 배정 결과(데이터흐름.md §3 "대표 주차면 배정"). 최고·차순위
-    겹침 비율 차이가 마진 이내면 한 구역의 주인으로 억지로 고정하지 않고
-    `AMBIGUOUS`로 둔다. 어느 구역에도 겹치지 않으면 `UNASSIGNED`다 — 이 값을
-    백엔드 이벤트 타입 `OUT_OF_ZONE`(구역 밖 + 10분 주차 확정까지 된 위반)과
-    같은 이름으로 두지 않는 이유는, 이건 순간순간의 공간적 사실이고 그건 그
-    사실에 주차 확정까지 더해진 위반 이벤트라 서로 다른 개념이기 때문이다.
-    마진 계산 자체는 T-10의 몫이며 여기서는 상태만 정의한다."""
+    """ParkingEpisode 안에서 안정화한 대표 주차 위치 결과."""
 
     ASSIGNED = "ASSIGNED"
     AMBIGUOUS = "AMBIGUOUS"
     UNASSIGNED = "UNASSIGNED"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
+class ZoneDefinition:
+    """통제된 기동 시 배포하는 versioned 공간 정의."""
+
+    zone_id: ZoneId
+    zone_type: ZoneType
+    polygon: NormalizedPolygon
+    zone_definition_version: ZoneDefinitionVersion
+    calibration_reference: str
+    entry_exit_role: EntryExitRole | None = None
+    allowed_duration_seconds: float | None = None
+    charger_class: str | None = None
+    egress_zone_ids: tuple[ZoneId, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_positive(self.zone_definition_version, "zone_definition_version")
+        if not self.calibration_reference:
+            raise ValueError("calibration_reference must not be empty")
+        if len(self.polygon) < 3:
+            raise ValueError("zone polygon requires at least three points")
+        for point in self.polygon:
+            if len(point) != 2 or not all(0.0 <= coordinate <= 1.0 for coordinate in point):
+                raise ValueError("zone polygon coordinates must be normalized to [0, 1]")
+
+        is_entry_exit = self.zone_type is ZoneType.ENTRY_EXIT
+        if is_entry_exit != (self.entry_exit_role is not None):
+            raise ValueError(
+                "ENTRY_EXIT requires entry_exit_role; other zone types must not carry it"
+            )
+
+        ev_only_values_present = self.allowed_duration_seconds is not None or self.charger_class is not None
+        if ev_only_values_present and self.zone_type is not ZoneType.EV_CHARGING:
+            raise ValueError("allowed duration and charger class are valid only for EV_CHARGING")
+        if self.allowed_duration_seconds is not None:
+            require_positive(self.allowed_duration_seconds, "allowed_duration_seconds")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ParkingAssignment:
+    """ParkingEpisode에 포함되는 대표 주차 위치 값 객체."""
+
+    state: AssignmentState
+    representative_footprint: NormalizedPolygon
+    confidence: float
+    last_stable_at: datetime
+    zone_id: ZoneId | None = None
+    unassigned_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        require_aware(self.last_stable_at, "last_stable_at")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("assignment confidence must be between 0 and 1")
+        if len(self.representative_footprint) < 3:
+            raise ValueError("representative footprint requires at least three points")
+        for point in self.representative_footprint:
+            if len(point) != 2 or not all(0.0 <= coordinate <= 1.0 for coordinate in point):
+                raise ValueError("representative footprint must use normalized coordinates")
+
+        is_assigned = self.state is AssignmentState.ASSIGNED
+        if is_assigned != (self.zone_id is not None):
+            raise ValueError("ASSIGNED requires zone_id; non-assigned states must not have one")
+        if is_assigned == (self.unassigned_reason is not None):
+            raise ValueError("non-assigned states require unassigned_reason exclusively")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ZoneVisit:
-    """한 물리 차량이 한 구역을 연속해서 방문한 구간."""
+    """한 PhysicalVehicle과 한 versioned zone 사이의 연속 방문 snapshot."""
 
     visit_id: ZoneVisitId
     physical_vehicle_id: PhysicalVehicleId
     zone_id: ZoneId
+    zone_definition_version: ZoneDefinitionVersion
     state: ZoneVisitState
+    observation: ObservationStatus
+    entry_trusted_seconds: float
+    exit_trusted_seconds: float
+    entry_confirmation_seconds: float
+    exit_confirmation_seconds: float
+    record_version: int
+    created_at: datetime
+    updated_at: datetime
+    trusted_sample_max_gap_seconds: float
     entered_candidate_at: datetime | None = None
     entered_at: datetime | None = None
     exit_candidate_at: datetime | None = None
-    exited_at: datetime | None = None
+    ended_at: datetime | None = None
+    termination_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        require_positive(self.zone_definition_version, "zone_definition_version")
+        for name in ("entry_trusted_seconds", "exit_trusted_seconds"):
+            require_non_negative(getattr(self, name), name)
+        for name in ("entry_confirmation_seconds", "exit_confirmation_seconds"):
+            require_non_negative(getattr(self, name), name)
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
+        require_positive(self.record_version, "record_version")
+        for name in (
+            "created_at",
+            "updated_at",
+            "entered_candidate_at",
+            "entered_at",
+            "exit_candidate_at",
+            "ended_at",
+        ):
+            require_aware(getattr(self, name), name)
+
+        is_terminal = self.state in {ZoneVisitState.ENDED, ZoneVisitState.CANCELED}
+        if is_terminal != (self.ended_at is not None):
+            raise ValueError("terminal ZoneVisit must have ended_at")
+        if is_terminal != (self.termination_reason is not None):
+            raise ValueError("terminal ZoneVisit must have termination_reason")
+        if self.state in {ZoneVisitState.INSIDE, ZoneVisitState.EXITING, ZoneVisitState.ENDED}:
+            if self.entered_at is None:
+                raise ValueError("confirmed visit state requires entered_at")
+        if self.state is ZoneVisitState.ENTERING and self.entered_candidate_at is None:
+            raise ValueError("ENTERING ZoneVisit requires entered_candidate_at")
+        if self.state is ZoneVisitState.EXITING and self.exit_candidate_at is None:
+            raise ValueError("EXITING ZoneVisit requires exit_candidate_at")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ParkingEpisode:
-    """정지 후보 시작부터 주차 확정 및 종료까지의 독립된 주차 구간."""
+    """정지 후보부터 주차 확정과 이동·실제 출차까지의 행위 snapshot."""
 
     episode_id: ParkingEpisodeId
     physical_vehicle_id: PhysicalVehicleId
-    parking_session_id: ParkingSessionId | None
     state: ParkingState
-    stationary_observed_seconds: float
+    observation: ObservationStatus
+    stationary_trusted_seconds: float
+    movement_trusted_seconds: float
+    parking_confirmation_seconds: float
+    movement_confirmation_seconds: float
     last_signal: MotionSignal
-    last_observed_at: datetime
+    record_version: int
+    publication_revision: int
+    created_at: datetime
+    updated_at: datetime
+    trusted_sample_max_gap_seconds: float
+    parking_session_id: ParkingSessionId | None = None
+    assignment: ParkingAssignment | None = None
     parked_at: datetime | None = None
+    movement_candidate_at: datetime | None = None
     ended_at: datetime | None = None
+    termination_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("stationary_trusted_seconds", "movement_trusted_seconds", "publication_revision"):
+            require_non_negative(getattr(self, name), name)
+        require_positive(self.parking_confirmation_seconds, "parking_confirmation_seconds")
+        require_non_negative(self.movement_confirmation_seconds, "movement_confirmation_seconds")
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
+        require_positive(self.record_version, "record_version")
+        for name in ("created_at", "updated_at", "parked_at", "movement_candidate_at", "ended_at"):
+            require_aware(getattr(self, name), name)
+        was_parked = self.state in {ParkingState.PARKED, ParkingState.MOVE_PENDING, ParkingState.ENDED}
+        if was_parked and (self.parked_at is None or self.assignment is None):
+            raise ValueError("parked episode states require parked_at and assignment")
+        is_terminal = self.state in {ParkingState.ENDED, ParkingState.CANCELED}
+        if is_terminal != (self.ended_at is not None):
+            raise ValueError("terminal ParkingEpisode must have ended_at")
+        if is_terminal != (self.termination_reason is not None):
+            raise ValueError("terminal ParkingEpisode must have termination_reason")
+        if self.state is ParkingState.MOVE_PENDING and self.movement_candidate_at is None:
+            raise ValueError("MOVE_PENDING ParkingEpisode requires movement_candidate_at")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ParkingTransition:
+    """An immutable PARKED or UNPARKED publication projection."""
+
+    transition_type: ParkingTransitionType
+    parking_episode_id: ParkingEpisodeId
+    physical_vehicle_id: PhysicalVehicleId
+    parking_session_id: ParkingSessionId
+    publication_revision: int
+    occurred_at: datetime
+    assignment: ParkingAssignment
+
+    def __post_init__(self) -> None:
+        require_aware(self.occurred_at, "occurred_at")
+        expected_revision = (
+            1 if self.transition_type is ParkingTransitionType.PARKED else 2
+        )
+        if self.publication_revision != expected_revision:
+            raise ValueError(
+                "ParkingTransition revision must follow PARKED=1, UNPARKED=2"
+            )
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlockingRelation:
+    """subject가 victim의 egress 영역을 막는 순서 있는 관계 snapshot."""
+
+    blocking_relation_id: BlockingRelationId
+    subject_physical_vehicle_id: PhysicalVehicleId
+    victim_physical_vehicle_id: PhysicalVehicleId
+    egress_zone_id: ZoneId
+    state: BlockingRelationState
+    observation: ObservationStatus
+    confirm_trusted_seconds: float
+    clear_trusted_seconds: float
+    confirm_duration_seconds: float
+    clear_duration_seconds: float
+    record_version: int
+    created_at: datetime
+    updated_at: datetime
+    source_parking_episode_id: ParkingEpisodeId | None = None
+    confirmed_at: datetime | None = None
+    resolved_at: datetime | None = None
+    terminated_at: datetime | None = None
+    termination_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.subject_physical_vehicle_id == self.victim_physical_vehicle_id:
+            raise ValueError("blocking relation subject and victim must differ")
+        for name in ("confirm_trusted_seconds", "clear_trusted_seconds"):
+            require_non_negative(getattr(self, name), name)
+        for name in ("confirm_duration_seconds", "clear_duration_seconds"):
+            require_non_negative(getattr(self, name), name)
+        require_positive(self.record_version, "record_version")
+        for name in ("created_at", "updated_at", "confirmed_at", "resolved_at", "terminated_at"):
+            require_aware(getattr(self, name), name)
+        is_confirmed = self.state in {
+            BlockingRelationState.BLOCKING,
+            BlockingRelationState.CLEAR_PENDING,
+            BlockingRelationState.RESOLVED,
+        }
+        if is_confirmed != (self.confirmed_at is not None):
+            raise ValueError("confirmed blocking states require confirmed_at exclusively")
+        is_terminal = self.state in {BlockingRelationState.RESOLVED, BlockingRelationState.CANCELED}
+        if is_terminal != (self.terminated_at is not None):
+            raise ValueError("terminal BlockingRelation must have terminated_at")
+        if is_terminal != (self.termination_reason is not None):
+            raise ValueError("terminal BlockingRelation must have termination_reason")
+        if (self.state is BlockingRelationState.RESOLVED) != (self.resolved_at is not None):
+            raise ValueError("only RESOLVED BlockingRelation has resolved_at")
 
 
 @dataclass(frozen=True)
 class IncidentKey:
-    """중복 판정과 사건 동일성 판단에 사용하는 도메인 키."""
+    """규칙별 continuity scope와 rule code로 고정한 local composite key."""
 
-    physical_vehicle_id: PhysicalVehicleId
+    scope_type: IncidentKeyScope
+    scope_id: UUID
     rule_code: str
-    parking_episode_id: ParkingEpisodeId | None = None
-    zone_visit_id: ZoneVisitId | None = None
-    zone_id: ZoneId | None = None
-    victim_physical_vehicle_id: PhysicalVehicleId | None = None
+
+    def __post_init__(self) -> None:
+        if not self.rule_code:
+            raise ValueError("rule_code must not be empty")
+        if not isinstance(self.scope_id, UUID):
+            raise TypeError("IncidentKey scope_id must be a UUID-based domain identifier")
+
+    @classmethod
+    def for_zone_visit(cls, zone_visit_id: ZoneVisitId, rule_code: str) -> "IncidentKey":
+        return cls(IncidentKeyScope.ZONE_VISIT, zone_visit_id, rule_code)
+
+    @classmethod
+    def for_physical_vehicle(
+        cls, physical_vehicle_id: PhysicalVehicleId, rule_code: str
+    ) -> "IncidentKey":
+        return cls(IncidentKeyScope.PHYSICAL_VEHICLE, physical_vehicle_id, rule_code)
+
+    @classmethod
+    def for_blocking_relation(
+        cls, blocking_relation_id: BlockingRelationId, rule_code: str
+    ) -> "IncidentKey":
+        return cls(IncidentKeyScope.BLOCKING_RELATION, blocking_relation_id, rule_code)
 
 
 @dataclass(frozen=True)
 class IncidentSignal:
-    """개별 위반 규칙이 사건 축약기에 전달하는 공통 결과."""
+    """상태 없는 RuleEvaluator가 IncidentReducer에 전달하는 결과."""
 
     key: IncidentKey
-    matched: bool
+    value: IncidentSignalValue
     confirmable: bool
     observed_at: datetime
     evidence: Mapping[str, object] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        require_aware(self.observed_at, "observed_at")
+        if self.value is not IncidentSignalValue.MATCHED and self.confirmable:
+            raise ValueError("confirmable applies only to MATCHED IncidentSignal")
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, kw_only=True)
 class Incident:
-    """동일한 IncidentKey로 유지되는 사건의 현재 상태."""
+    """같은 IncidentKey를 Candidate부터 terminal까지 유지하는 aggregate."""
 
     incident_id: IncidentId
     key: IncidentKey
+    physical_vehicle_id: PhysicalVehicleId
     state: IncidentState
-    revision: int
+    observation: ObservationStatus
+    confirm_trusted_seconds: float
+    clear_trusted_seconds: float
+    confirm_duration_seconds: float
+    clear_duration_seconds: float
+    record_version: int
+    publication_revision: int
     first_observed_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    trusted_sample_max_gap_seconds: float
+    entry_attempt_id: EntryAttemptId | None = None
+    parking_session_id: ParkingSessionId | None = None
+    zone_id: ZoneId | None = None
+    victim_physical_vehicle_id: PhysicalVehicleId | None = None
     confirmed_at: datetime | None = None
     resolved_at: datetime | None = None
+    terminated_at: datetime | None = None
+    termination_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("confirm_trusted_seconds", "clear_trusted_seconds", "publication_revision"):
+            require_non_negative(getattr(self, name), name)
+        for name in ("confirm_duration_seconds", "clear_duration_seconds"):
+            require_non_negative(getattr(self, name), name)
+        require_positive(
+            self.trusted_sample_max_gap_seconds,
+            "trusted_sample_max_gap_seconds",
+        )
+        if round(self.trusted_sample_max_gap_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "trusted_sample_max_gap_seconds must be at least one microsecond"
+            )
+        require_positive(self.record_version, "record_version")
+        for name in (
+            "first_observed_at",
+            "created_at",
+            "updated_at",
+            "confirmed_at",
+            "resolved_at",
+            "terminated_at",
+        ):
+            require_aware(getattr(self, name), name)
+
+        was_opened = self.state in {
+            IncidentState.OPEN,
+            IncidentState.CLEAR_PENDING,
+            IncidentState.RESOLVED,
+        }
+        if was_opened != (self.confirmed_at is not None):
+            raise ValueError("opened Incident states require confirmed_at")
+        if self.state in {IncidentState.CANDIDATE, IncidentState.CANCELED}:
+            if self.publication_revision != 0:
+                raise ValueError("Candidate and Canceled Incident are never published")
+        if self.publication_revision > 0 and (
+            self.entry_attempt_id is None and self.parking_session_id is None
+        ):
+            raise ValueError("published Incident requires entryAttempt or session correlation")
+        is_terminal = self.state in {IncidentState.RESOLVED, IncidentState.CANCELED}
+        if is_terminal != (self.terminated_at is not None):
+            raise ValueError("terminal Incident must have terminated_at")
+        if is_terminal != (self.termination_reason is not None):
+            raise ValueError("terminal Incident must have termination_reason")
+        if (self.state is IncidentState.RESOLVED) != (self.resolved_at is not None):
+            raise ValueError("only RESOLVED Incident has resolved_at")
 
 
 @dataclass(frozen=True)
 class IncidentTransition:
-    """확정 또는 해소 시 Backend로 전달할 수 있는 사건 전이."""
+    """Incident aggregate와 함께 원자적으로 outbox에 기록할 공개 전이."""
 
     transition_type: IncidentTransitionType
     incident: Incident
 
+    def __post_init__(self) -> None:
+        expected_state = (
+            IncidentState.OPEN
+            if self.transition_type is IncidentTransitionType.OPEN
+            else IncidentState.RESOLVED
+        )
+        if self.incident.state is not expected_state:
+            raise ValueError("IncidentTransition type must match the aggregate state")
+        if self.incident.publication_revision < 1:
+            raise ValueError("IncidentTransition requires a materialized publication revision")
+
 
 @dataclass(frozen=True)
-class ParkingAssignment:
-    """물리 차량 하나에 대해 `assignment_resolver`가 정한 대표 주차면.
+class IncidentReduction:
+    """Incident의 durable update와 0개 이상의 외부 publication을 함께 반환한다.
 
-    실제 배정 로직(겹침 비율 비교, `AMBIGUOUS` 마진 계산)은 T-10의 몫이다 —
-    여기서는 규칙 평가기(`RuleContext`)가 참조할 수 있도록 결과 형태만 고정한다.
+    Candidate 누적, CLEAR_PENDING, UNKNOWN pause처럼 외부 전이가 없는 변경도
+    저장 경계에서 잃지 않도록 aggregate snapshot을 항상 포함한다. 늦은
+    correlation과 현재 신호가 같은 cycle에 오면 OPEN과 RESOLVE를 revision
+    순서대로 함께 반환할 수 있다.
     """
 
-    physical_vehicle_id: PhysicalVehicleId
-    state: AssignmentState
-    zone_id: ZoneId | None = None
+    incident: Incident
+    transitions: tuple[IncidentTransition, ...] = ()
+
+    def __post_init__(self) -> None:
+        revisions = [item.incident.publication_revision for item in self.transitions]
+        if revisions != sorted(set(revisions)):
+            raise ValueError("IncidentReduction transitions must have unique revision order")
+        if any(
+            item.incident.incident_id != self.incident.incident_id
+            or item.incident.publication_revision > self.incident.publication_revision
+            for item in self.transitions
+        ):
+            raise ValueError(
+                "IncidentReduction transitions must belong to the updated Incident"
+            )
 
 
 @dataclass(frozen=True)
 class ParkingPipelineResult:
-    """`parking` 계층이 한 번의 처리에서 `application`으로 반환하는 결과 묶음.
-
-    application이 외부(Backend·actuators)로 전달해야 하는 값은 주로
-    `parking_episode_updates`의 `PARKED`/`ENDED` 전이와
-    `incident_transitions`의 `OPEN`/`RESOLVE`다(데이터흐름.md §3).
-    """
+    """한 frame Unit of Work가 영속 snapshot·publication으로 반영할 결과."""
 
     zone_visit_updates: tuple[ZoneVisit, ...]
     parking_episode_updates: tuple[ParkingEpisode, ...]
     incident_transitions: tuple[IncidentTransition, ...]
+    parking_transitions: tuple[ParkingTransition, ...] = ()
+    blocking_relation_updates: tuple[BlockingRelation, ...] = ()
+    incident_updates: tuple[Incident, ...] = ()
