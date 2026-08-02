@@ -49,6 +49,7 @@ from src.parking.zone_registry import ZoneRegistry
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.replay.zone_visit_publisher import ZoneVisitJsonlPublisher
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
+from src.tracking.motion_estimator import MotionEstimator
 from src.tracking.pipeline import TrackingPipeline
 
 LOGGER = logging.getLogger("replay_pilot_video")
@@ -118,7 +119,11 @@ def build_pipeline(args: argparse.Namespace) -> tuple[MonitoringPipeline, ZoneVi
     detector = UltralyticsVehicleTracker(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence
     )
-    tracking_pipeline = TrackingPipeline(camera_id=args.camera_id, detector=detector)
+    tracking_pipeline = TrackingPipeline(
+        camera_id=args.camera_id,
+        detector=detector,
+        motion_estimator=MotionEstimator(movement_epsilon=args.movement_epsilon),
+    )
 
     zones = ZoneRegistry.from_file(args.zones_file)
     parking_pipeline = ParkingPipeline(
