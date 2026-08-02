@@ -1,6 +1,9 @@
+import type { MoveEventType } from '@/features/move-request/api/types';
+
 export type ViolationStatus = 'UNRESOLVED' | 'RESOLVED';
 
-export type MockViolationType = 'LANE_VIOLATION' | 'DOUBLE_PARKING' | 'EV_OVERSTAY';
+// 이동 요청의 eventType과 같은 분류를 그대로 쓴다(위반 종류는 결국 같은 개념이라 따로 안 둔다).
+export type MockViolationType = MoveEventType;
 
 export type MockViolationItem = {
   id: string;
@@ -28,7 +31,7 @@ export const MOCK_VIOLATION_SUMMARY: MockViolationSummary = {
 export const MOCK_VIOLATION_HISTORY: MockViolationItem[] = [
   {
     id: 'violation-1',
-    type: 'LANE_VIOLATION',
+    type: 'BAD_PARKING',
     title: '주차선 침범',
     meta: '7/23 14:59 · 침범 43% · B-14',
     status: 'UNRESOLVED',
@@ -52,9 +55,25 @@ export const MOCK_VIOLATION_HISTORY: MockViolationItem[] = [
   },
   {
     id: 'violation-4',
-    type: 'LANE_VIOLATION',
-    title: '주차선 침범',
+    type: 'DISABLED_ZONE_VIOLATION',
+    title: '장애인 주차구역 위반',
+    meta: '7/9 11:04 · 미인증 차량 · B1-D1',
+    status: 'RESOLVED',
+    monthLabel: '2026년 7월',
+  },
+  {
+    id: 'violation-5',
+    type: 'OUT_OF_ZONE',
+    title: '구역 외 주차',
     meta: '6/29 18:02 · A-07',
+    status: 'RESOLVED',
+    monthLabel: '2026년 6월',
+  },
+  {
+    id: 'violation-6',
+    type: 'ETC',
+    title: '기타',
+    meta: '6/15 09:41 · 관리사무소 접수',
     status: 'RESOLVED',
     monthLabel: '2026년 6월',
   },

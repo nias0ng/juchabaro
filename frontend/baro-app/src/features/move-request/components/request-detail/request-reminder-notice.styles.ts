@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { Palette, Radius, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
@@ -11,6 +11,14 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md - 1,
     paddingVertical: Spacing.sm + 3,
+    gap: Spacing.xxs,
+  },
+  emphasis: {
+    fontSize: 13,
+    lineHeight: 17.5,
+    fontWeight: FontWeight.bold,
+    textAlign: 'center',
+    color: '#a35b3d',
   },
   text: {
     fontSize: 13,

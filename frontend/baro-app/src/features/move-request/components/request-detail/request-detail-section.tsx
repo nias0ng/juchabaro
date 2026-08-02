@@ -8,6 +8,9 @@ import { RequestReminderNotice } from './request-reminder-notice';
 import { RequestTimeActions } from './request-time-actions';
 import { styles } from './request-detail-section.styles';
 
+const AUTO_ESCALATION_EMPHASIS = '5분 후 관리자에게 신고 데이터가 자동 전송됩니다.';
+const AUTO_ESCALATION_MESSAGE = '전송 이후에는 취소할 수 없으며, 관리자가 확인 후 일괄 신고합니다.';
+
 type RequestDetailSectionProps = {
   photos: { imageId: number; imageUrl: string }[];
   summaryTitle: string;
@@ -20,6 +23,10 @@ type RequestDetailSectionProps = {
   reminderMessage: string;
   // showActions가 false일 때만 쓰인다. 응답 버튼 자리에 대신 보여줄 안내(예: 관리사무소 전달 안내).
   noticeMessage?: string;
+  // 충전구역 초과 점유/장애인 구역 위반: AI가 자동 감지해서 응답을 받을 사람이 없다.
+  // showActions가 true여도 응답 버튼 대신 경과 시간 + 자동 전송 경고만 보여준다.
+  isAutoEscalation?: boolean;
+  occupancyElapsedLabel?: string;
   submitError?: string;
   actionsDisabled: boolean;
   onPressImmediate: () => void;
@@ -39,6 +46,8 @@ export function RequestDetailSection({
   showActions,
   reminderMessage,
   noticeMessage,
+  isAutoEscalation,
+  occupancyElapsedLabel,
   submitError,
   actionsDisabled,
   onPressImmediate,
@@ -58,7 +67,19 @@ export function RequestDetailSection({
 
         <RequestInfoCard violationType={violationType} plateNumber={plateNumber} location={location} />
 
-        {showActions ? (
+        {showActions && isAutoEscalation ? (
+          <View style={styles.autoEscalation}>
+            <View style={styles.timerRow}>
+              <Text style={styles.label}>경과 시간</Text>
+              <Text style={styles.timerValue}>{occupancyElapsedLabel ?? '00:00'}</Text>
+            </View>
+            <RequestReminderNotice
+              tone="danger"
+              emphasis={AUTO_ESCALATION_EMPHASIS}
+              message={AUTO_ESCALATION_MESSAGE}
+            />
+          </View>
+        ) : showActions ? (
           <>
             <RequestReminderNotice message={reminderMessage} />
 

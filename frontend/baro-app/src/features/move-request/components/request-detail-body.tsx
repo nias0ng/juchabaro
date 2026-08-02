@@ -107,6 +107,8 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
       showActions={vm.showResponseActions}
       reminderMessage={vm.isReminderSentNoResponse ? REMINDER_SENT_MESSAGE : REMINDER_MESSAGE}
       noticeMessage={vm.isNeedAdmin ? NEED_ADMIN_MESSAGE : undefined}
+      isAutoEscalation={vm.isAutoEscalationType}
+      occupancyElapsedLabel={vm.occupancyElapsedLabel}
       submitError={vm.submitError}
       actionsDisabled={vm.hasResponded || vm.isSubmitting}
       onPressImmediate={() => handleRespond('WILL_MOVE', 10)}

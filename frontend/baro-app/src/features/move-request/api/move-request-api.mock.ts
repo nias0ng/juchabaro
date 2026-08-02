@@ -28,6 +28,7 @@ function resolveMockImageUri(source: number | string | { uri: string }): string 
 // 실제 주차 사건 사진 대신 넣어둔 테스트용 로컬 이미지. imageUrl 타입(string)을 맞추려고 uri만 뽑아둔다.
 const mockPhoto1 = resolveMockImageUri(require('@/assets/images/move-request/request-detail/mock-parking-photo-1.png'));
 const mockPhoto2 = resolveMockImageUri(require('@/assets/images/move-request/request-detail/mock-parking-photo-2.png'));
+const mockDisabledZonePhoto = resolveMockImageUri(require('@/assets/images/violation/violation-detected-photo.png'));
 
 // Figma E-11 기준. 아직 응답 전(SENT) 상태라 dueAt/responses가 비어있다.
 // let인 이유: POST 응답 mock이 이 값을 실제로 바꿔서, 응답 제출 후 재조회하면 바뀐 상태를 볼 수 있게 한다.
@@ -214,6 +215,29 @@ function buildNeedAdminMockDetail(requestId: number): MoveRequestDetail {
   };
 }
 
+// 자동 감지(AI) 위반 확인용: /resident/request-detail?requestId=992 로 들어가면 장애인 구역 위반이
+// SENT 상태로 열린다. 응답 버튼 대신 경과 시간 링 + 관리사무소 자동 전송 경고가 보여야 한다.
+function buildAutoEscalationMockDetail(requestId: number): MoveRequestDetail {
+  const requestedAt = new Date(Date.now() - 34_000);
+
+  return {
+    ...mockRequestDetail,
+    requestId,
+    requestStatus: 'SENT',
+    requestedAt: requestedAt.toISOString(),
+    dueAt: null,
+    event: {
+      eventId: 102,
+      eventType: 'DISABLED_ZONE_VIOLATION',
+      reason: null,
+      zoneNumber: 'B1-D1',
+      images: [{ imageId: 403, imageType: 'PARKING_STATE', imageUrl: mockDisabledZonePhoto }],
+    },
+    responses: [],
+    history: [{ notificationType: 'MOVE_REQUEST', sentAt: requestedAt.toISOString() }],
+  };
+}
+
 export async function getMoveRequestDetailMock(requestId: number): Promise<MoveRequestDetail> {
   await delay(MOCK_RESPONSE_DELAY_MS);
 
@@ -239,6 +263,10 @@ export async function getMoveRequestDetailMock(requestId: number): Promise<MoveR
 
   if (requestId === 994) {
     return buildReminderOverdueMockDetail(requestId);
+  }
+
+  if (requestId === 992) {
+    return buildAutoEscalationMockDetail(requestId);
   }
 
   applyMockAutoComplete();
