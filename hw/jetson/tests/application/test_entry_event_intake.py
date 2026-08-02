@@ -206,6 +206,32 @@ def test_domain_identity_controls_retry_independently_of_transport_key(
         connection.close()
 
 
+def test_upstream_duplicate_marker_does_not_change_durable_decision(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    intake = _intake()
+    try:
+        assert intake.receive(
+            _entry_context(duplicate_request=False),
+            idempotency_key="backend-request-1",
+            connection=connection,
+        ) is True
+        assert intake.receive(
+            _entry_context(duplicate_request=True),
+            idempotency_key="backend-request-1",
+            connection=connection,
+        ) is False
+
+        receipt = AcceptedInputRepository(connection).get(
+            "EntryDecision", TRACKING_ID, 0
+        )
+        assert receipt is not None
+        assert b'"duplicateRequest"' not in receipt.request_payload
+    finally:
+        connection.close()
+
+
 def test_receipt_rolls_back_when_attempt_insert_conflicts(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "jetson.db")
     intake = _intake()

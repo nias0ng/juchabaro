@@ -21,13 +21,20 @@ from src.domain.models import (
 from src.tracking.entity_resolver import PassthroughEntityResolver
 from src.tracking.models import (
     MotionSignal,
+    PhysicalVehicle,
     PhysicalVehicleId,
+    PhysicalVehicleState,
     PhysicalVehicleSnapshot,
     TrackingBatch,
 )
 from src.tracking.motion_estimator import MotionEstimator
 from src.tracking.presence_confirmer import PhysicalVehiclePresenceConfirmer
-from src.tracking.protocols import Detector, EntityResolver, TrackingError
+from src.tracking.protocols import (
+    Detector,
+    EntityResolver,
+    RestartAwareEntityResolver,
+    TrackingError,
+)
 
 
 class TrackingPipeline:
@@ -59,6 +66,7 @@ class TrackingPipeline:
             trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
         )
         self._last_reliable_observed_at = None
+        self._restart_unresolved_vehicle_ids: set[PhysicalVehicleId] = set()
 
     def open(self) -> None:
         """탐지·tracker 모델을 초기화한다."""
@@ -92,6 +100,47 @@ class TrackingPipeline:
             # trusted duration에 포함하지 않게 연속성을 끊고 원 예외를 유지한다.
             self.pause_absence_confirmation()
             raise
+
+        if self._restart_unresolved_vehicle_ids and (
+            tracker_result.observations
+            or not tracker_result.all_detections_tracked
+        ):
+            # 현재 기본 resolver는 process 간 re-identification 근거가
+            # 없다. 기존 차량을 새 UUID로 중복 생성하거나
+            # 존재하는데 출차로 확정하지 않고, 전체 영역이
+            # 빌 때까지 보수적 degraded 상태로 멈춘다.
+            observation = ObservationStatus(
+                state=ObservationState.UNKNOWN,
+                reason=ObservationReason.REIDENTIFICATION_UNCERTAIN,
+                last_reliable_observed_at=self._last_reliable_observed_at,
+            )
+            presence_result = self._presence_confirmer.update(
+                observed_physical_vehicle_ids=set(),
+                observed_at=frame.captured_at,
+                trusted_full_area_sample=False,
+            )
+            self._entity_resolver.end_track_segments(
+                set(tracker_result.ended_track_segment_ids)
+            )
+            return TrackingBatch(
+                camera_id=self._camera_id,
+                frame_id=frame.frame_id,
+                observed_at=frame.captured_at,
+                vehicles=(),
+                ended_track_segment_ids=(
+                    tracker_result.ended_track_segment_ids
+                ),
+                unobserved_physical_vehicle_ids=(
+                    presence_result.unobserved_physical_vehicle_ids
+                ),
+                absence_progress=presence_result.absence_progress,
+                observation=observation,
+                full_area_observed=full_area_observed,
+                all_detections_tracked=False,
+                not_present_confirmed_vehicle_ids=(
+                    presence_result.not_present_confirmed_vehicle_ids
+                ),
+            )
         batch_observation = self._batch_observation(
             observed_at=frame.captured_at,
             full_area_observed=full_area_observed,
@@ -162,6 +211,43 @@ class TrackingPipeline:
         self._entity_resolver.forget_physical_vehicle(physical_vehicle_id)
         self._presence_confirmer.forget(physical_vehicle_id)
         self._motion_estimator.forget(physical_vehicle_id)
+        self._restart_unresolved_vehicle_ids.discard(physical_vehicle_id)
+
+    def restore_active_checkpoints(
+        self,
+        vehicles: tuple[PhysicalVehicle, ...],
+    ) -> None:
+        """재시작 active identity와 durable 부재 checkpoint를 복원한다.
+
+        restart-aware resolver는 durable 후보를 받아 즉시 재식별을
+        재개한다. 기본 ``PassthroughEntityResolver``는 process 간
+        재식별을 지원하지 않으므로 detection이 남아 있는 동안 신규
+        identity 생성과 부재 누적을 멈추고, 정상 전체 영역이 빈 뒤에만
+        durable 하한에서 NOT_PRESENT를 재개한다.
+        """
+
+        identities = tuple(vehicle.physical_vehicle_id for vehicle in vehicles)
+        if len(identities) != len(set(identities)):
+            raise ValueError("restart checkpoints contain duplicate PhysicalVehicleId")
+        for vehicle in vehicles:
+            if vehicle.state is not PhysicalVehicleState.ACTIVE:
+                raise ValueError("only ACTIVE PhysicalVehicle may be restored")
+            self.restore_absence_checkpoint(
+                vehicle.physical_vehicle_id,
+                trusted_seconds=vehicle.absence_trusted_seconds,
+                absence_confirmation_seconds=(
+                    vehicle.absence_confirmation_seconds
+                ),
+                trusted_sample_max_gap_seconds=(
+                    vehicle.trusted_sample_max_gap_seconds
+                ),
+                confirmed_at=vehicle.absence_confirmed_at,
+            )
+        if isinstance(self._entity_resolver, RestartAwareEntityResolver):
+            self._entity_resolver.restore_active_physical_vehicles(vehicles)
+            self._restart_unresolved_vehicle_ids.clear()
+        else:
+            self._restart_unresolved_vehicle_ids = set(identities)
 
     def restore_absence_checkpoint(
         self,

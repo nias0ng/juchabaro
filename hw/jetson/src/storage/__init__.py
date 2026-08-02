@@ -55,6 +55,10 @@ from .repositories import (
     OutboxEnqueueResult,
     OutboxRepository,
     OutboxStateError,
+    PendingHandoffConflictError,
+    PendingHandoffEnsureResult,
+    PendingHandoffRepository,
+    PendingHandoffStateError,
     optimistic_update,
 )
 from .unit_of_work import TransactionStateError, UnitOfWork
@@ -83,7 +87,11 @@ __all__ = [
     "ParkingEpisodeConflictError",
     "ParkingEpisodeRepository",
     "PendingHandoffRecord",
+    "PendingHandoffConflictError",
+    "PendingHandoffEnsureResult",
+    "PendingHandoffRepository",
     "PendingHandoffState",
+    "PendingHandoffStateError",
     "PublicationApplicationStatus",
     "StorageConfigurationError",
     "StorageIntegrityError",

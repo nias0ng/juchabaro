@@ -230,6 +230,28 @@ def updates_for(result, rule_code: str):
     )
 
 
+def test_runtime_checkpoint_restores_all_parking_owners() -> None:
+    pipeline, visit_tracker, episode_tracker, reducer = make_pipeline(
+        (DISABLED_ZONE,),
+        entry_seconds=0.0,
+    )
+    checkpoint = pipeline.checkpoint_state()
+
+    pipeline.process(
+        batch(0, snapshot(0)),
+        session_contexts={CAR: UNAUTHORIZED},
+    )
+    assert visit_tracker.active_visits(CAR)
+    assert episode_tracker.active_episode(CAR) is not None
+    assert reducer.active_snapshot()
+
+    pipeline.restore_state(checkpoint)
+
+    assert visit_tracker.active_visits(CAR) == ()
+    assert episode_tracker.active_episode(CAR) is None
+    assert reducer.active_snapshot() == ()
+
+
 def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident() -> None:
     pipeline, _, _, _ = make_pipeline((DISABLED_ZONE,))
     contexts = {CAR: UNAUTHORIZED}
@@ -504,6 +526,7 @@ def test_confirmed_absence_requires_explicit_physical_exit() -> None:
     exit_plan = pipeline.physical_exit(
         physical_vehicle_id=CAR,
         observed_at=at(2),
+        incident_termination_reason="SESSION_EXITED",
     )
     assert [visit.state for visit in exit_plan.zone_visit_updates] == [
         ZoneVisitState.ENDED
@@ -515,6 +538,7 @@ def test_confirmed_absence_requires_explicit_physical_exit() -> None:
     assert [item.transition_type for item in resolved] == [
         IncidentTransitionType.RESOLVE
     ]
+    assert resolved[0].incident.termination_reason == "SESSION_EXITED"
     assert visit_tracker.active_visits(CAR) == ()
     assert episode_tracker.active_episode(CAR) is None
 

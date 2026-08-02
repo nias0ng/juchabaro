@@ -24,7 +24,9 @@ from src.session.models import (
     EntryMatchAttempt,
     EntryMatchState,
     ParkingSessionMirror,
+    PhysicalExitEvidence,
     PhysicalPresenceState,
+    PhysicalTerminationOrigin,
     SessionAdministrativeState,
     SessionContext,
 )
@@ -224,6 +226,15 @@ def test_parking_session_mirror_round_trip_conflict_and_optimistic_save(
             repository.add(mirror)
 
         assert repository.get(SESSION_ID) == mirror
+        assert (
+            repository.get_exit_enabled_by_physical_vehicle_id(VEHICLE_ID)
+            == mirror
+        )
+        assert repository.get_exit_enabled_by_physical_vehicle_id(
+            PhysicalVehicleId(
+                UUID("10000000-0000-4000-8000-000000000099")
+            )
+        ) is None
 
         with pytest.raises(ParkingSessionMirrorConflictError):
             with UnitOfWork(connection):
@@ -242,10 +253,41 @@ def test_parking_session_mirror_round_trip_conflict_and_optimistic_save(
         with UnitOfWork(connection):
             repository.save(closed, expected_record_version=1)
         assert repository.get(SESSION_ID) == closed
+        # 행정 종료는 실제 출차가 아니므로 exit-only correlation을 유지한다.
+        assert (
+            repository.get_exit_enabled_by_physical_vehicle_id(VEHICLE_ID)
+            == closed
+        )
 
         with pytest.raises(OptimisticConcurrencyError):
             with UnitOfWork(connection):
                 repository.save(closed, expected_record_version=1)
+
+        disabled = replace(
+            closed,
+            exit_correlation_enabled=False,
+            record_version=3,
+            updated_at=NOW + timedelta(seconds=2),
+        )
+        with UnitOfWork(connection):
+            repository.save(disabled, expected_record_version=2)
+        assert repository.get_exit_enabled_by_physical_vehicle_id(VEHICLE_ID) is None
+
+        exited = replace(
+            disabled,
+            physical_presence_state=PhysicalPresenceState.EXITED,
+            physical_termination_origin=(
+                PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
+            ),
+            physical_exit_evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+            exited_at=NOW + timedelta(seconds=3),
+            exit_correlation_enabled=True,
+            record_version=4,
+            updated_at=NOW + timedelta(seconds=3),
+        )
+        with UnitOfWork(connection):
+            repository.save(exited, expected_record_version=3)
+        assert repository.get_exit_enabled_by_physical_vehicle_id(VEHICLE_ID) is None
 
         missing_parent = replace(
             mirror,
@@ -283,8 +325,24 @@ def test_context_binding_lists_only_active_and_translates_fk_conflict(
             _add_binding_dependencies(connection)
             repository.add(binding)
 
+        attempt_repository = EntryMatchAttemptRepository(connection)
+        assert (
+            attempt_repository.get_matched_by_physical_vehicle_id(VEHICLE_ID)
+            == _attempt()
+        )
+        assert attempt_repository.get_matched_by_physical_vehicle_id(
+            PhysicalVehicleId(
+                UUID("10000000-0000-4000-8000-000000000099")
+            )
+        ) is None
         assert repository.get(BINDING_ID) == binding
         assert repository.get_by_entry_attempt_id(binding.entry_attempt_id) == binding
+        assert repository.get_active_by_physical_vehicle_id(VEHICLE_ID) == binding
+        assert repository.get_active_by_physical_vehicle_id(
+            PhysicalVehicleId(
+                UUID("10000000-0000-4000-8000-000000000099")
+            )
+        ) is None
         assert repository.list_active() == (binding,)
 
         with pytest.raises(ContextBindingConflictError):
@@ -330,6 +388,7 @@ def test_context_binding_lists_only_active_and_translates_fk_conflict(
             repository.save(ended, expected_record_version=1)
 
         assert repository.get(BINDING_ID) == ended
+        assert repository.get_active_by_physical_vehicle_id(VEHICLE_ID) is None
         assert repository.list_active() == ()
         with pytest.raises(OptimisticConcurrencyError):
             with UnitOfWork(connection):

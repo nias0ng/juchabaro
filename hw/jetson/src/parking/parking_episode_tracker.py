@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 import math
@@ -77,6 +78,21 @@ class ParkingEpisodeTracker(Protocol):
 
         ...
 
+    def checkpoint_state(self) -> object:
+        """application transaction 전 rollback checkpoint를 반환한다."""
+
+        ...
+
+    def restore_state(self, checkpoint: object) -> None:
+        """commit 실패 전 runtime state로 복구한다."""
+
+        ...
+
+    def restore_active(self, episodes: tuple[ParkingEpisode, ...]) -> None:
+        """restart 시 durable nonterminal episode를 끊은 timer chain으로 복원한다."""
+
+        ...
+
 
 @dataclass
 class _EpisodeSlot:
@@ -140,6 +156,34 @@ class InMemoryParkingEpisodeTracker:
         self._trusted_sample_max_gap_seconds = trusted_sample_max_gap_seconds
         self._slots: dict[PhysicalVehicleId, _EpisodeSlot] = {}
 
+    def checkpoint_state(self) -> object:
+        """mutable slot을 transaction rollback용으로 복사한다."""
+
+        return deepcopy(self._slots)
+
+    def restore_state(self, checkpoint: object) -> None:
+        """``checkpoint_state``가 생성한 slot snapshot을 복구한다."""
+
+        if not isinstance(checkpoint, dict):
+            raise TypeError("invalid ParkingEpisodeTracker checkpoint")
+        self._slots = deepcopy(checkpoint)
+
+    def restore_active(self, episodes: tuple[ParkingEpisode, ...]) -> None:
+        """SQLite active snapshot을 wall-clock 보충 없이 복원한다."""
+
+        restored: dict[PhysicalVehicleId, _EpisodeSlot] = {}
+        for episode in episodes:
+            if episode.state not in _NON_TERMINAL_STATES:
+                raise ValueError("only nonterminal ParkingEpisode may be restored")
+            if episode.physical_vehicle_id in restored:
+                raise ValueError("duplicate active ParkingEpisode restore key")
+            restored[episode.physical_vehicle_id] = _EpisodeSlot(
+                episode=episode,
+                # process downtime을 trusted duration으로 더하지 않는다.
+                trusted_anchor_at=None,
+            )
+        self._slots = restored
+
     def update(
         self,
         *,
@@ -152,8 +196,9 @@ class InMemoryParkingEpisodeTracker:
     ) -> ParkingEpisode | None:
         """한 motion sample을 적용한다.
 
-        ParkingAssignment는 PARKED로 전이할 때 필수다. PARKED 이후 전달된 새
-        assignment는 같은 episode 안의 최신 안정값으로 교체한다.
+        ParkingAssignment는 PARKED로 전이할 때 필수다. episode의
+        assignment는 느은 correlation 후에도 원래 PARKED projection을
+        재구성할 수 있게 확정 시점 snapshot으로 고정한다.
         """
 
         if (
@@ -401,7 +446,6 @@ class InMemoryParkingEpisodeTracker:
             slot.episode = replace(
                 slot.episode,
                 observation=observation,
-                assignment=assignment or slot.episode.assignment,
                 last_signal=signal,
                 record_version=slot.episode.record_version + 1,
                 updated_at=observed_at,
@@ -437,7 +481,6 @@ class InMemoryParkingEpisodeTracker:
                 slot.episode,
                 state=ParkingState.PARKED,
                 observation=observation,
-                assignment=assignment or slot.episode.assignment,
                 movement_trusted_seconds=0.0,
                 last_signal=signal,
                 record_version=slot.episode.record_version + 1,

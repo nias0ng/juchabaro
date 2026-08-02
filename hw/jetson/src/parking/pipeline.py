@@ -7,15 +7,14 @@ snapshot이 아니라 호출자가 제공한 mapping에서만 조회한다.
 
 TrackSegment 종료와 PhysicalVehicle 종료는 서로 다른 사실이다.
 ``ended_track_segment_ids``와 일시 미관측은 어떤 child scope도 끝내지 않으며,
-확정된 실제 출차는 상위 PhysicalPresenceCoordinator가 ``physical_exit()``으로
+확정된 실제 출차는 상위 ``PhysicalPresenceWorkflow``가 ``physical_exit()``으로
 별도 전달해야 한다. 공개 전이는 aggregate와 같은 transaction에서 즉시
 기록하고, 공개 전이가 없는 timer snapshot은 04 계약의 dirty checkpoint로
 합쳐 기록한다.
 
 현재 ``InMemory*`` owner들은 reference implementation이라 호출 중 상태를
-변경한다. 따라서 이 결과 자체는 rollback 가능한 영속 plan이 아니다. 실제
-조립 단계에서는 repository 기반 owner와 outbox를 하나의 UnitOfWork에 연결해야
-하며, commit 실패 뒤 같은 in-memory instance를 그대로 retry하면 안 된다.
+변경한다. application UnitOfWork는 호출 전 checkpoint를 보존하고
+commit 실패 시 DB rollback과 함께 runtime owner도 복구해야 한다.
 
 이미 terminal이 된 local-only episode의 늦은 binding은 이 active pipeline이
 메모리에 보존하지 않는다. 04 계약의 pending handoff workflow가 durable terminal
@@ -27,7 +26,7 @@ RuleContext와 결과의 relation tuple은 명시적으로 비어 있다.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime
 import math
 
@@ -109,12 +108,48 @@ class ParkingPipeline:
         self._assignment_min_overlap_ratio = assignment_min_overlap_ratio
         self._assignment_ambiguous_margin = assignment_ambiguous_margin
 
+    def checkpoint_state(self) -> tuple[object, object, object]:
+        """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
+
+        return (
+            self._zone_visit_tracker.checkpoint_state(),
+            self._parking_episode_tracker.checkpoint_state(),
+            self._incident_reducer.checkpoint_state(),
+        )
+
+    def restore_state(
+        self,
+        checkpoint: tuple[object, object, object],
+    ) -> None:
+        """DB rollback과 함께 세 owner를 같은 frame 전 시점으로 되돌린다."""
+
+        if len(checkpoint) != 3:
+            raise ValueError("invalid ParkingPipeline checkpoint")
+        visit_state, episode_state, incident_state = checkpoint
+        self._zone_visit_tracker.restore_state(visit_state)
+        self._parking_episode_tracker.restore_state(episode_state)
+        self._incident_reducer.restore_state(incident_state)
+
+    def restore_active(
+        self,
+        *,
+        zone_visits: tuple[ZoneVisit, ...],
+        parking_episodes: tuple[ParkingEpisode, ...],
+        incidents: tuple[Incident, ...],
+    ) -> None:
+        """durable active aggregate를 끊은 timer chain으로 기동 복원한다."""
+
+        self._zone_visit_tracker.restore_active(zone_visits)
+        self._parking_episode_tracker.restore_active(parking_episodes)
+        self._incident_reducer.restore_active(incidents)
+
     def process(
         self,
         batch: TrackingBatch,
         *,
         session_contexts: Mapping[PhysicalVehicleId, SessionContext] | None = None,
         entry_attempt_ids: Mapping[PhysicalVehicleId, EntryAttemptId] | None = None,
+        skip_unobserved_vehicle_ids: Collection[PhysicalVehicleId] = (),
     ) -> ParkingPipelineResult:
         """한 TrackingBatch를 nonterminal 주차 상태 변경 계획으로 변환한다.
 
@@ -227,7 +262,12 @@ class ParkingPipeline:
 
         # TrackSegment 종료는 의도적으로 사용하지 않는다. PhysicalVehicle의
         # 일시 미관측만 각 aggregate의 trusted sample chain을 끊는다.
+        skipped_unobserved_ids = set(skip_unobserved_vehicle_ids)
         for physical_vehicle_id in batch.unobserved_physical_vehicle_ids:
+            if physical_vehicle_id in skipped_unobserved_ids:
+                # confirmed departure retry의 immutable occurredAt보다 느린
+                # frame 시각으로 child를 먼저 pause하지 않는다.
+                continue
             observation = _unobserved_observation(batch.observation)
             zone_visit_updates.extend(
                 self._zone_visit_tracker.pause_physical_vehicle(
@@ -267,11 +307,12 @@ class ParkingPipeline:
         *,
         physical_vehicle_id: PhysicalVehicleId,
         observed_at: datetime,
+        incident_termination_reason: str = "PHYSICAL_VEHICLE_LEFT",
     ) -> ParkingPipelineResult:
         """확정된 실제 출차를 child scope 종료 계획으로 변환한다.
 
         이 메서드는 ``process()``에서 자동 호출되지 않는다. 상위
-        PhysicalPresenceCoordinator가 이 결과를 다른 session·presence 변경과
+        ``PhysicalPresenceWorkflow``가 이 결과를 다른 session·presence 변경과
         함께 commit해야 하며, commit 성공 뒤에만 tracking owner에 forget ACK를
         보내야 한다.
         """
@@ -291,22 +332,16 @@ class ParkingPipeline:
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
 
-        for visit in visits:
-            self._collect_reductions(
-                self._incident_reducer.terminate_zone_visit(
-                    visit.visit_id,
-                    observation=observation,
-                    observed_at=observed_at,
-                    reason=visit.termination_reason or "PHYSICAL_EXIT",
-                ),
-                incident_updates,
-                incident_transitions,
-            )
+        # visit-scope를 먼저 PHYSICAL_EXIT로 닫으면 session correlation이
+        # 있는 Incident의 종료 사유를 SESSION_EXITED로 보존할 수 없다.
+        # subject/victim 차량 기준으로 한 번만 종료해 상위 owner가
+        # 고정한 correlation 사유를 모든 관련 Incident에 적용한다.
         self._collect_reductions(
             self._incident_reducer.terminate_physical_vehicle(
                 physical_vehicle_id,
                 observation=observation,
                 observed_at=observed_at,
+                reason=incident_termination_reason,
             ),
             incident_updates,
             incident_transitions,

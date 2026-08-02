@@ -125,6 +125,20 @@ def test_first_present_creates_complete_entering_snapshot() -> None:
     assert visit.created_at == visit.updated_at == T0
 
 
+def test_restored_visit_does_not_count_process_downtime() -> None:
+    original = make_tracker(entry=3.0)
+    checkpoint = feed(original, PresenceSignal.PRESENT, 0)
+    restored = make_tracker(entry=3.0)
+    restored.restore_active((checkpoint,))
+
+    resumed = feed(restored, PresenceSignal.PRESENT, 100)
+    entered = feed(restored, PresenceSignal.PRESENT, 103)
+
+    assert resumed.entry_trusted_seconds == 0.0
+    assert entered.state is ZoneVisitState.INSIDE
+    assert entered.entry_trusted_seconds == 3.0
+
+
 def test_present_for_confirmation_duration_becomes_inside() -> None:
     tracker = make_tracker(entry=3.0)
     first = feed(tracker, PresenceSignal.PRESENT, 0)

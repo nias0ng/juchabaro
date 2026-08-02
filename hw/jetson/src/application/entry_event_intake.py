@@ -161,12 +161,16 @@ def _authoritative_context(
 
 
 def _canonical_request_payload(entry_context: EntryContext) -> bytes:
-    """Parsed legacy DTO를 idempotency 비교용 canonical bytes로 만든다."""
+    """Parsed legacy decision을 idempotency 비교용 canonical bytes로 만든다.
+
+    ``duplicateRequest``는 Backend가 같은 decision을 이미 처리했는지
+    알리는 transport metadata이다. 재전송에서 값이 바뀌어도 decision과
+    authoritative context는 같으므로 durable payload conflict로 보지 않는다.
+    """
 
     return json.dumps(
         {
             "accessDecision": entry_context.access_decision,
-            "duplicateRequest": entry_context.duplicate_request,
             "entryTime": entry_context.entry_time.isoformat(timespec="microseconds"),
             "isDisabledVehicle": entry_context.is_disabled_vehicle,
             "isElectric": entry_context.is_electric,

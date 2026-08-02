@@ -94,11 +94,29 @@ JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기�
 
 `DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
 Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을
-공유하지 않고 각자 열어 사용한다. 현재 storage 기반은
-aggregate와 immutable outbox row를 같은 SQLite transaction에 저장할 수 있게
-한다. `ParkingPipelineResult`를 실제 transaction consumer에 연결하고
-outbox publisher를 기동하는 application wiring은 후속 리팩터링 범위다.
-Backend endpoint·DTO·Idempotency-Key 형식은 후속 연동 계약이 확정한다.
+공유하지 않고 각자 열어 사용한다. `FrameObservationWorkflow`는
+tracking·session·parking aggregate·physical departure·immutable outbox row를
+같은 SQLite transaction에 저장한다. `MonitoringPipeline`은 commit된
+PhysicalVehicle 종료만 tracking에 ACK한다. correlation 전에 확정된
+PARKED·Incident는 pending marker로 보존하고, 늦은 authoritative
+correlation이 오면 원래 occurredAt·revision 순서로 outbox를 만든다.
+`build_monitoring_pipeline()`은 이 owner들을 하나의 frame Unit of Work로
+조립하지만, 임시 Backend serializer나 장치 설정을 발명하지 않고
+배포 계층에서 명시적으로 주입받는다.
+
+재시작은 active observation을 `UNKNOWN / PROCESS_RESTARTED`로 끊고
+downtime을 trusted timer에 더하지 않는다. 현재 기본
+`PassthroughEntityResolver`는 process 간 재식별을 지원하지 않으므로,
+복원한 차량이 있는데 detection이 남아 있으면 신규 scope 생성과
+부재 확정을 멈춘다. 정상 전체 영역이 빈 관측에서만
+보수적 종료를 재개한다. process 간 재식별 adapter는
+`RestartAwareEntityResolver`를 구현해 복구 후보를 인계받을 수 있지만,
+실제 재식별 근거와 구현은 후속 범위다.
+
+Backend endpoint·DTO·Idempotency-Key를 exact bytes로 만드는 adapter와 outbox publisher,
+실제 camera worker 기동은 후속 연동 계약·실행 wiring 범위다.
+현재 FastAPI `main.py`는 API-only로 실행되어 camera·model owner를
+암묵적으로 복제하지 않는다.
 
 `EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,

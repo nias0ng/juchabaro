@@ -7,11 +7,17 @@ from uuid import UUID
 import pytest
 
 from src.camera.models import CapturedFrame
-from src.domain.models import ObservationReason, ObservationState
+from src.domain.models import (
+    ObservationReason,
+    ObservationState,
+    ObservationStatus,
+)
 from src.tracking.models import (
     BoundingBox,
     MotionSignal,
+    PhysicalVehicle,
     PhysicalVehicleId,
+    PhysicalVehicleState,
     TrackerFrameResult,
     TrackObservation,
 )
@@ -52,6 +58,41 @@ class FakeDetector:
 
     def close(self) -> None:
         self.closed = True
+
+
+class RestartAwareSingleVehicleResolver:
+    """재시작 후보 한 대를 다음 segment에 재연결하는 테스트 resolver."""
+
+    def __init__(self) -> None:
+        self.restored_vehicles: tuple[PhysicalVehicle, ...] = ()
+        self._physical_vehicle_id: PhysicalVehicleId | None = None
+
+    def restore_active_physical_vehicles(
+        self,
+        vehicles: tuple[PhysicalVehicle, ...],
+    ) -> None:
+        if len(vehicles) != 1:
+            raise ValueError("test resolver expects exactly one vehicle")
+        self.restored_vehicles = vehicles
+        self._physical_vehicle_id = vehicles[0].physical_vehicle_id
+
+    def resolve(self, _observation: TrackObservation) -> PhysicalVehicleId:
+        if self._physical_vehicle_id is None:
+            raise RuntimeError("restart candidates were not restored")
+        return self._physical_vehicle_id
+
+    def end_track_segments(self, _ended_track_segment_ids) -> None:
+        return None
+
+    def forget_physical_vehicle(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> None:
+        if self._physical_vehicle_id == physical_vehicle_id:
+            self._physical_vehicle_id = None
+
+    def reset_track_segments(self) -> None:
+        return None
 
 
 class SpyMotionEstimator(MotionEstimator):
@@ -109,12 +150,18 @@ def _result(
     )
 
 
-def _pipeline(detector: FakeDetector, *, absence_seconds: float = 2.0) -> TrackingPipeline:
+def _pipeline(
+    detector: FakeDetector,
+    *,
+    absence_seconds: float = 2.0,
+    entity_resolver=None,
+) -> TrackingPipeline:
     return _FullAreaTestTrackingPipeline(
         camera_id="cam-1",
         detector=detector,
         absence_confirmation_seconds=absence_seconds,
         trusted_sample_max_gap_seconds=1.0,
+        entity_resolver=entity_resolver,
     )
 
 
@@ -421,6 +468,93 @@ def test_restore_absence_checkpoint_continues_from_durable_lower_bound():
     assert after_restart.not_present_confirmed_vehicle_ids == ()
     assert confirmed.absence_progress[0].trusted_seconds == 2.0
     assert confirmed.not_present_confirmed_vehicle_ids == (vehicle_id,)
+
+
+def test_restart_with_visible_detection_pauses_identity_and_absence_until_empty():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(
+        _observation(1, seconds=100)
+    )
+    detector.results_by_frame_id[5] = _result(
+        _observation(1, seconds=104)
+    )
+    pipeline = _pipeline(detector, absence_seconds=2.0)
+    vehicle_id = PhysicalVehicleId(UUID(int=700))
+    pipeline.restore_active_checkpoints(
+        (
+            PhysicalVehicle(
+                physical_vehicle_id=vehicle_id,
+                state=PhysicalVehicleState.ACTIVE,
+                observation=ObservationStatus(
+                    state=ObservationState.UNKNOWN,
+                    reason=ObservationReason.PROCESS_RESTARTED,
+                    last_reliable_observed_at=BASE_TIME,
+                ),
+                absence_trusted_seconds=0.0,
+                absence_confirmation_seconds=2.0,
+                trusted_sample_max_gap_seconds=1.0,
+                record_version=2,
+                created_at=BASE_TIME,
+                updated_at=BASE_TIME,
+            ),
+        )
+    )
+
+    uncertain = pipeline.process(_make_frame(1, seconds=100))
+    first_empty = pipeline.process(_make_frame(2, seconds=101))
+    pipeline.process(_make_frame(3, seconds=102))
+    confirmed = pipeline.process(_make_frame(4, seconds=103))
+
+    assert uncertain.vehicles == ()
+    assert uncertain.observation.state is ObservationState.UNKNOWN
+    assert (
+        uncertain.observation.reason
+        is ObservationReason.REIDENTIFICATION_UNCERTAIN
+    )
+    assert uncertain.all_detections_tracked is False
+    assert uncertain.absence_progress[0].trusted_seconds == 0.0
+    assert first_empty.not_present_confirmed_vehicle_ids == ()
+    assert confirmed.not_present_confirmed_vehicle_ids == (vehicle_id,)
+
+    pipeline.forget_physical_vehicle(vehicle_id)
+    after_ack = pipeline.process(_make_frame(5, seconds=104))
+    assert len(after_ack.vehicles) == 1
+    assert after_ack.vehicles[0].physical_vehicle_id != vehicle_id
+
+
+def test_restart_aware_resolver_reuses_durable_identity_without_empty_wait():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(
+        _observation(1, seconds=100)
+    )
+    resolver = RestartAwareSingleVehicleResolver()
+    pipeline = _pipeline(detector, entity_resolver=resolver)
+    vehicle = PhysicalVehicle(
+        physical_vehicle_id=PhysicalVehicleId(UUID(int=701)),
+        state=PhysicalVehicleState.ACTIVE,
+        observation=ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=ObservationReason.PROCESS_RESTARTED,
+            last_reliable_observed_at=BASE_TIME,
+        ),
+        absence_trusted_seconds=0.0,
+        absence_confirmation_seconds=2.0,
+        trusted_sample_max_gap_seconds=1.0,
+        record_version=2,
+        created_at=BASE_TIME,
+        updated_at=BASE_TIME,
+    )
+
+    pipeline.restore_active_checkpoints((vehicle,))
+    recovered = pipeline.process(_make_frame(1, seconds=100))
+
+    assert resolver.restored_vehicles == (vehicle,)
+    assert [snapshot.physical_vehicle_id for snapshot in recovered.vehicles] == [
+        vehicle.physical_vehicle_id
+    ]
+    assert recovered.observation.state is ObservationState.OBSERVED
+    assert recovered.all_detections_tracked is True
+    assert recovered.unobserved_physical_vehicle_ids == ()
 
 
 def test_restore_uses_vehicle_policy_snapshot_instead_of_current_default():

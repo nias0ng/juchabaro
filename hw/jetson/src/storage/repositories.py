@@ -1,4 +1,4 @@
-"""durable input·EntryMatchAttempt·transactional outbox repository."""
+"""durable input·pending handoff·session·transactional outbox repository."""
 
 from __future__ import annotations
 
@@ -48,6 +48,8 @@ from .codecs import (
 from .models import (
     AcceptedInputRecord,
     OutboxRecord,
+    PendingHandoffRecord,
+    PendingHandoffState,
     PublicationApplicationStatus,
 )
 from .unit_of_work import require_write_transaction
@@ -69,6 +71,14 @@ class OutboxAlreadyDeliveredError(RuntimeError):
 
 class OutboxStateError(RuntimeError):
     """outbox delivery state가 요청한 명시적 전이를 허용하지 않는다."""
+
+
+class PendingHandoffConflictError(RuntimeError):
+    """pending handoff identity가 다른 local fact에 재사용됐다."""
+
+
+class PendingHandoffStateError(RuntimeError):
+    """pending handoff state·disposition·delivery 조합이 계약을 어겼다."""
 
 
 class EntryMatchAttemptConflictError(RuntimeError):
@@ -100,6 +110,12 @@ class AcceptanceResult:
 @dataclass(frozen=True)
 class OutboxEnqueueResult:
     record: OutboxRecord
+    created: bool
+
+
+@dataclass(frozen=True)
+class PendingHandoffEnsureResult:
+    record: PendingHandoffRecord
     created: bool
 
 
@@ -172,6 +188,60 @@ def _outbox_from_row(row: sqlite3.Row) -> OutboxRecord:
         ),
         record_version=int(row["record_version"]),
     )
+
+
+def _pending_handoff_from_row(row: sqlite3.Row) -> PendingHandoffRecord:
+    record = PendingHandoffRecord(
+        handoff_id=str(row["handoff_id"]),
+        aggregate_type=str(row["aggregate_type"]),
+        aggregate_id=str(row["aggregate_id"]),
+        transition_type=str(row["transition_type"]),
+        original_occurred_at_us=int(row["original_occurred_at_us"]),
+        workflow_state=PendingHandoffState(str(row["workflow_state"])),
+        disposition_reason=(
+            str(row["disposition_reason"])
+            if row["disposition_reason"] is not None
+            else None
+        ),
+        materialized_delivery_id=(
+            str(row["materialized_delivery_id"])
+            if row["materialized_delivery_id"] is not None
+            else None
+        ),
+        expires_at_us=int(row["expires_at_us"]),
+        record_version=int(row["record_version"]),
+        created_at_us=int(row["created_at_us"]),
+        updated_at_us=int(row["updated_at_us"]),
+    )
+    _validate_pending_handoff_state(record)
+    return record
+
+
+def _validate_pending_handoff_state(record: PendingHandoffRecord) -> None:
+    """DB CHECK가 표현하지 못한 nullable field 조합을 검증한다."""
+
+    if record.workflow_state is PendingHandoffState.WAITING_CORRELATION:
+        if (
+            record.disposition_reason is not None
+            or record.materialized_delivery_id is not None
+        ):
+            raise PendingHandoffStateError(
+                "WAITING_CORRELATION handoff cannot have a disposition or delivery"
+            )
+        return
+    if record.workflow_state is PendingHandoffState.MATERIALIZED:
+        if (
+            not record.materialized_delivery_id
+            or record.disposition_reason is not None
+        ):
+            raise PendingHandoffStateError(
+                "MATERIALIZED handoff requires only materialized_delivery_id"
+            )
+        return
+    if not record.disposition_reason or record.materialized_delivery_id is not None:
+        raise PendingHandoffStateError(
+            "EXPIRED handoff requires only disposition_reason"
+        )
 
 
 def _session_context_to_payload(context: SessionContext) -> bytes:
@@ -517,6 +587,320 @@ class AcceptedInputRepository:
         return AcceptanceResult(record=record, created=True)
 
 
+class PendingHandoffRepository:
+    """correlation 전 local fact의 publication eligibility marker를 저장한다.
+
+    aggregate snapshot과 outbox를 같은 transaction에서 바꾸는 application
+    workflow가 이 repository의 외부 ``UnitOfWork``를 소유한다. marker는
+    ``WAITING_CORRELATION``으로만 생성하고 한 번 소비되거나
+    만료되면 다시 waiting으로 되돌리지 않는다.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, handoff_id: str) -> PendingHandoffRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM pending_handoffs WHERE handoff_id = ?",
+            (handoff_id,),
+        ).fetchone()
+        return _pending_handoff_from_row(row) if row is not None else None
+
+    def get_by_identity(
+        self,
+        *,
+        aggregate_type: str,
+        aggregate_id: str,
+        transition_type: str,
+        original_occurred_at_us: int,
+    ) -> PendingHandoffRecord | None:
+        """local fact의 immutable composite identity로 marker를 조회한다."""
+
+        row = self._connection.execute(
+            """
+            SELECT * FROM pending_handoffs
+            WHERE aggregate_type = ? AND aggregate_id = ?
+              AND transition_type = ? AND original_occurred_at_us = ?
+            """,
+            (
+                aggregate_type,
+                aggregate_id,
+                transition_type,
+                original_occurred_at_us,
+            ),
+        ).fetchone()
+        return _pending_handoff_from_row(row) if row is not None else None
+
+    def list_waiting(self) -> tuple[PendingHandoffRecord, ...]:
+        """materialize 대상을 원래 occurredAt 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM pending_handoffs
+            WHERE workflow_state = 'WAITING_CORRELATION'
+            ORDER BY original_occurred_at_us, created_at_us, handoff_id
+            """
+        ).fetchall()
+        return tuple(_pending_handoff_from_row(row) for row in rows)
+
+    def list_waiting_for_aggregate(
+        self,
+        *,
+        aggregate_type: str,
+        aggregate_id: str,
+    ) -> tuple[PendingHandoffRecord, ...]:
+        """aggregate 하나의 누락 publication을 원래 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM pending_handoffs
+            WHERE workflow_state = 'WAITING_CORRELATION'
+              AND aggregate_type = ? AND aggregate_id = ?
+            ORDER BY original_occurred_at_us, created_at_us, handoff_id
+            """,
+            (aggregate_type, aggregate_id),
+        ).fetchall()
+        return tuple(_pending_handoff_from_row(row) for row in rows)
+
+    def list_due(self, *, now_us: int) -> tuple[PendingHandoffRecord, ...]:
+        """application이 terminal·correlation 조건을 추가 판정할 만료 후보다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM pending_handoffs
+            WHERE workflow_state = 'WAITING_CORRELATION'
+              AND expires_at_us <= ?
+            ORDER BY expires_at_us, original_occurred_at_us, handoff_id
+            """,
+            (now_us,),
+        ).fetchall()
+        return tuple(_pending_handoff_from_row(row) for row in rows)
+
+    def ensure_waiting(
+        self,
+        record: PendingHandoffRecord,
+    ) -> PendingHandoffEnsureResult:
+        """local fact marker를 한 번만 삽입하고 같은 retry를 합친다.
+
+        composite identity와 handoffId가 모두 같으면 이미 terminal인
+        marker도 그대로 반환한다. 이로써 frame retry가 MATERIALIZED
+        또는 EXPIRED marker를 다시 열지 않는다.
+        """
+
+        require_write_transaction(self._connection)
+        self._validate_new_waiting(record)
+
+        existing_by_identity = self.get_by_identity(
+            aggregate_type=record.aggregate_type,
+            aggregate_id=record.aggregate_id,
+            transition_type=record.transition_type,
+            original_occurred_at_us=record.original_occurred_at_us,
+        )
+        if existing_by_identity is not None:
+            if existing_by_identity.handoff_id != record.handoff_id:
+                raise PendingHandoffConflictError(
+                    "pending handoff fact identity was reused with another handoff_id"
+                )
+            return PendingHandoffEnsureResult(
+                record=existing_by_identity,
+                created=False,
+            )
+
+        existing_by_id = self.get(record.handoff_id)
+        if existing_by_id is not None:
+            raise PendingHandoffConflictError(
+                "handoff_id was reused for another pending handoff fact"
+            )
+
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO pending_handoffs(
+                    handoff_id, aggregate_type, aggregate_id, transition_type,
+                    original_occurred_at_us, workflow_state,
+                    disposition_reason, materialized_delivery_id,
+                    expires_at_us, record_version, created_at_us, updated_at_us
+                ) VALUES (?, ?, ?, ?, ?, 'WAITING_CORRELATION', NULL, NULL,
+                          ?, 1, ?, ?)
+                """,
+                (
+                    record.handoff_id,
+                    record.aggregate_type,
+                    record.aggregate_id,
+                    record.transition_type,
+                    record.original_occurred_at_us,
+                    record.expires_at_us,
+                    record.created_at_us,
+                    record.updated_at_us,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise PendingHandoffConflictError(
+                "pending handoff identity conflicts with an existing durable record"
+            ) from error
+
+        persisted = self.get(record.handoff_id)
+        if persisted is None:  # pragma: no cover - protects a broken SQLite connection.
+            raise RuntimeError("pending handoff disappeared during its transaction")
+        return PendingHandoffEnsureResult(record=persisted, created=True)
+
+    def mark_materialized(
+        self,
+        handoff_id: str,
+        *,
+        expected_record_version: int,
+        delivery_id: str,
+        updated_at_us: int,
+    ) -> PendingHandoffRecord:
+        """immutable outbox row와 연결한 marker를 MATERIALIZED로 만든다."""
+
+        require_write_transaction(self._connection)
+        if not delivery_id:
+            raise ValueError("delivery_id must not be empty")
+        record = self._require_waiting(
+            handoff_id,
+            expected_record_version=expected_record_version,
+        )
+        self._require_monotonic_update_time(record, updated_at_us)
+        return self._update_waiting(
+            record,
+            changes={
+                "workflow_state": PendingHandoffState.MATERIALIZED.value,
+                "materialized_delivery_id": delivery_id,
+                "disposition_reason": None,
+                "updated_at_us": updated_at_us,
+            },
+        )
+
+    def extend_expiry(
+        self,
+        handoff_id: str,
+        *,
+        expected_record_version: int,
+        expires_at_us: int,
+        updated_at_us: int,
+    ) -> PendingHandoffRecord:
+        """terminal 시각을 반영해 waiting retention을 단조 연장한다."""
+
+        require_write_transaction(self._connection)
+        record = self._require_waiting(
+            handoff_id,
+            expected_record_version=expected_record_version,
+        )
+        self._require_monotonic_update_time(record, updated_at_us)
+        if expires_at_us < record.expires_at_us:
+            raise ValueError("pending handoff expiry cannot move backward")
+        if expires_at_us == record.expires_at_us:
+            return record
+        return self._update_waiting(
+            record,
+            changes={
+                "expires_at_us": expires_at_us,
+                "updated_at_us": updated_at_us,
+            },
+        )
+
+    def mark_expired(
+        self,
+        handoff_id: str,
+        *,
+        expected_record_version: int,
+        disposition_reason: str,
+        updated_at_us: int,
+    ) -> PendingHandoffRecord:
+        """publication 불가 disposition을 기록하되 domain은 바꾸지 않는다."""
+
+        require_write_transaction(self._connection)
+        if not disposition_reason:
+            raise ValueError("disposition_reason must not be empty")
+        record = self._require_waiting(
+            handoff_id,
+            expected_record_version=expected_record_version,
+        )
+        self._require_monotonic_update_time(record, updated_at_us)
+        if updated_at_us < record.expires_at_us:
+            raise ValueError("pending handoff cannot expire before expires_at_us")
+        return self._update_waiting(
+            record,
+            changes={
+                "workflow_state": PendingHandoffState.EXPIRED.value,
+                "disposition_reason": disposition_reason,
+                "materialized_delivery_id": None,
+                "updated_at_us": updated_at_us,
+            },
+        )
+
+    def _validate_new_waiting(self, record: PendingHandoffRecord) -> None:
+        for name in (
+            "handoff_id",
+            "aggregate_type",
+            "aggregate_id",
+            "transition_type",
+        ):
+            if not getattr(record, name):
+                raise ValueError(f"{name} must not be empty")
+        if record.workflow_state is not PendingHandoffState.WAITING_CORRELATION:
+            raise PendingHandoffStateError(
+                "new pending handoff must be WAITING_CORRELATION"
+            )
+        _validate_pending_handoff_state(record)
+        if record.record_version != 1:
+            raise ValueError("new pending handoff record_version must be 1")
+        if record.updated_at_us != record.created_at_us:
+            raise ValueError(
+                "new pending handoff updated_at_us must equal created_at_us"
+            )
+        if record.expires_at_us <= record.original_occurred_at_us:
+            raise ValueError(
+                "pending handoff expiry must be later than original occurredAt"
+            )
+
+    def _require_waiting(
+        self,
+        handoff_id: str,
+        *,
+        expected_record_version: int,
+    ) -> PendingHandoffRecord:
+        record = self.get(handoff_id)
+        if record is None or record.record_version != expected_record_version:
+            raise OptimisticConcurrencyError(
+                f"pending handoff is missing or stale: {handoff_id}"
+            )
+        if record.workflow_state is not PendingHandoffState.WAITING_CORRELATION:
+            raise PendingHandoffStateError(
+                "pending handoff transition requires WAITING_CORRELATION, "
+                f"got {record.workflow_state.value}"
+            )
+        return record
+
+    @staticmethod
+    def _require_monotonic_update_time(
+        record: PendingHandoffRecord,
+        updated_at_us: int,
+    ) -> None:
+        if updated_at_us < record.updated_at_us:
+            raise ValueError("pending handoff updated_at_us cannot move backward")
+
+    def _update_waiting(
+        self,
+        record: PendingHandoffRecord,
+        *,
+        changes: Mapping[str, Any],
+    ) -> PendingHandoffRecord:
+        optimistic_update(
+            self._connection,
+            table="pending_handoffs",
+            key_column="handoff_id",
+            key_value=record.handoff_id,
+            expected_record_version=record.record_version,
+            changes=changes,
+        )
+        updated = self.get(record.handoff_id)
+        if updated is None:  # pragma: no cover - protects a broken SQLite connection.
+            raise RuntimeError("updated pending handoff disappeared")
+        return updated
+
+
 class PhysicalVehicleRepository:
     """PhysicalVehicle identity와 관측·absence checkpoint를 저장한다.
 
@@ -772,6 +1156,32 @@ class EntryMatchAttemptRepository:
             PhysicalVehicleId(uuid_from_text(str(row[0]))) for row in rows
         )
 
+    def get_matched_by_physical_vehicle_id(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> EntryMatchAttempt | None:
+        """PhysicalVehicle가 소비한 단일 입차 시도를 반환한다.
+
+        ACTIVE PhysicalVehicle는 새 입차 시도에 재매칭되지 않는다.
+        DB에 중복 이력이 있다면 임의로 하나를 고르지 않고 domain
+        cardinality 훼손으로 보고한다.
+        """
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM entry_match_attempts
+            WHERE match_state = 'MATCHED'
+              AND physical_vehicle_id = ?
+            ORDER BY match_terminated_at_us, entry_attempt_id
+            """,
+            (uuid_to_text(physical_vehicle_id),),
+        ).fetchall()
+        if len(rows) > 1:
+            raise EntryMatchAttemptConflictError(
+                "PhysicalVehicle is matched to multiple entry attempts"
+            )
+        return _entry_match_attempt_from_row(rows[0]) if rows else None
+
     def add(self, attempt: EntryMatchAttempt) -> None:
         """새 attempt snapshot을 추가한다. 중복 identity는 conflict다."""
 
@@ -903,6 +1313,40 @@ class ParkingSessionMirrorRepository:
             (int(parking_session_id),),
         ).fetchone()
         return _parking_session_mirror_from_row(row) if row is not None else None
+
+    def get_exit_enabled_by_physical_vehicle_id(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> ParkingSessionMirror | None:
+        """PhysicalVehicle의 아직 사용 가능한 출차 correlation을 반환한다.
+
+        행정적으로 CLOSED된 mirror도 실제 출차 전까지 correlation을 보존한다.
+        이미 EXITED이거나 conflict 처리로 출차 correlation이 비활성화된 mirror는
+        새 SessionExit의 대상이 아니므로 반환하지 않는다.
+        """
+
+        row = self._connection.execute(
+            """
+            SELECT * FROM parking_session_mirrors
+            WHERE physical_vehicle_id = ?
+              AND exit_correlation_enabled = 1
+              AND physical_presence_state <> 'EXITED'
+            """,
+            (uuid_to_text(physical_vehicle_id),),
+        ).fetchone()
+        return _parking_session_mirror_from_row(row) if row is not None else None
+
+    def list_inside(self) -> tuple[ParkingSessionMirror, ...]:
+        """재시작 시 observation을 끊어야 하는 현장 재석 mirror를 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM parking_session_mirrors
+            WHERE physical_presence_state = 'INSIDE'
+            ORDER BY created_at_us, session_id
+            """
+        ).fetchall()
+        return tuple(_parking_session_mirror_from_row(row) for row in rows)
 
     def add(self, mirror: ParkingSessionMirror) -> None:
         """새 session mirror를 추가하며 identity·FK 충돌을 번역한다."""
@@ -1092,6 +1536,21 @@ class ContextBindingRepository:
         row = self._connection.execute(
             "SELECT * FROM context_bindings WHERE entry_attempt_id = ?",
             (uuid_to_text(entry_attempt_id),),
+        ).fetchone()
+        return _context_binding_from_row(row) if row is not None else None
+
+    def get_active_by_physical_vehicle_id(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> ContextBinding | None:
+        """PhysicalVehicle의 authoritative active binding을 반환한다."""
+
+        row = self._connection.execute(
+            """
+            SELECT * FROM context_bindings
+            WHERE physical_vehicle_id = ? AND domain_state = 'BOUND'
+            """,
+            (uuid_to_text(physical_vehicle_id),),
         ).fetchone()
         return _context_binding_from_row(row) if row is not None else None
 

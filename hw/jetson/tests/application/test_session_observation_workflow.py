@@ -241,13 +241,15 @@ def test_authoritative_match_is_committed_with_vehicle_mirror_and_binding(
     try:
         _add_attempt(connection, attempt)
 
-        contexts = _workflow(coordinator).process(
-            _batch(
-                _snapshot(vehicle_id, track_id=10, observed_at=observed_at),
-                observed_at=observed_at,
-            ),
-            connection=connection,
-        )
+        with UnitOfWork(connection):
+            result = _workflow(coordinator).apply(
+                _batch(
+                    _snapshot(vehicle_id, track_id=10, observed_at=observed_at),
+                    observed_at=observed_at,
+                ),
+                connection=connection,
+            )
+        contexts = result.session_contexts
 
         persisted_attempt = EntryMatchAttemptRepository(connection).get(
             attempt.entry_attempt_id
@@ -267,6 +269,9 @@ def test_authoritative_match_is_committed_with_vehicle_mirror_and_binding(
         assert binding.entry_attempt_id == attempt.entry_attempt_id
         assert binding.physical_vehicle_id == vehicle_id
         assert contexts == {vehicle_id: _context(55)}
+        assert result.entry_attempt_ids == {
+            vehicle_id: attempt.entry_attempt_id
+        }
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -1263,21 +1268,26 @@ def test_not_present_confirmation_blocks_late_review_allow_binding(
             reason=ObservationReason.PARTIAL_FRAME,
             last_reliable_observed_at=departed_at,
         )
-        workflow.process(
-            replace(
-                _batch(
-                    observed_at=departed_at + timedelta(seconds=1),
-                    unobserved_physical_vehicle_ids=(vehicle_id,),
-                    not_present_confirmed_vehicle_ids=(vehicle_id,),
-                    not_present_confirmed_at=departed_at,
+        with UnitOfWork(connection):
+            result = workflow.apply(
+                replace(
+                    _batch(
+                        observed_at=departed_at + timedelta(seconds=1),
+                        unobserved_physical_vehicle_ids=(vehicle_id,),
+                        not_present_confirmed_vehicle_ids=(vehicle_id,),
+                        not_present_confirmed_at=departed_at,
+                    ),
+                    observation=degraded_observation,
+                    full_area_observed=False,
                 ),
-                observation=degraded_observation,
-                full_area_observed=False,
-            ),
-            connection=connection,
-        )
+                connection=connection,
+            )
 
         assert ContextBindingRepository(connection).list_active() == ()
+        assert result.historical_attempts == (resolved,)
+        assert result.entry_attempt_ids == {
+            vehicle_id: review.entry_attempt_id
+        }
         assert (
             ParkingSessionMirrorRepository(connection).get(ParkingSessionId(108))
             is None

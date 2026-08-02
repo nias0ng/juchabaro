@@ -2,9 +2,8 @@
 
 `hw/raspberry-pi/src/communication/jetson_client.py`(`JetsonClient.ENTRY_PATH`)가
 이 경로로 `X-Internal-API-Key`·`Idempotency-Key` 헤더와 함께 payload를
-보낸다. `X-Internal-API-Key`는 데이터흐름.md §7이 명시한 api 계층의 책임
-("인증 헤더 확인")이라 여기서 검증한다 — 라즈베리파이 클라이언트는 이미 이
-헤더를 보내도록 구현돼 있다(`test_clients.py`가 고정).
+보낸다. `X-Internal-API-Key`는 api 계층이 검증하며,
+라즈베리파이 클라이언트와 같은 헤더 이름을 유지한다.
 
 현행 wire 호환을 위해 `Idempotency-Key` 헤더를 요구한다. durable
 재전송 identity는 후속 API 계약의 `entryAttemptId + decisionRevision`이며,
@@ -17,6 +16,7 @@ domain 변환과 durable transaction은
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -75,14 +75,17 @@ class EntryEventPayload(BaseModel):
 
 
 def get_entry_event_intake(request: Request) -> EntryEventIntake:
-    """`main.py`가 기동 시 `app.state.entry_event_intake`에 심어 둔 싱글턴을 반환한다."""
+    """`main.py`가 기동 시 app state에 심은 intake를 반환한다."""
 
     return request.app.state.entry_event_intake
 
 
 def verify_internal_api_key(x_internal_api_key: str = Header(alias="X-Internal-API-Key")) -> None:
     if x_internal_api_key != get_settings().internal_api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Internal-API-Key가 올바르지 않습니다.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="X-Internal-API-Key가 올바르지 않습니다.",
+        )
 
 
 @router.post("/entry-events", status_code=202, dependencies=[Depends(verify_internal_api_key)])
@@ -95,28 +98,34 @@ def receive_entry_event(
     # sync yield dependency와 endpoint가 서로 다른 worker thread에서
     # 실행될 수 있다. SQLite connection을 실제 사용하는
     # endpoint 안에서 열고 닫아 check_same_thread 계약을 지킨다.
-    connection = request.app.state.database_connection_factory()
+    connection: sqlite3.Connection | None = None
     try:
-        try:
-            accepted = intake.receive(
-                payload.to_entry_context(),
-                idempotency_key=idempotency_key,
-                connection=connection,
-            )
-        except (
-            AcceptedInputConflictError,
-            EntryMatchAttemptConflictError,
-            ParkingSessionMirrorConflictError,
-        ) as error:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(error),
-            ) from error
-        except ValueError as error:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=str(error),
-            ) from error
+        connection = request.app.state.database_connection_factory()
+        accepted = intake.receive(
+            payload.to_entry_context(),
+            idempotency_key=idempotency_key,
+            connection=connection,
+        )
+    except (
+        AcceptedInputConflictError,
+        EntryMatchAttemptConflictError,
+        ParkingSessionMirrorConflictError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    except sqlite3.OperationalError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+        ) from error
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     return {"accepted": accepted}

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 import math
@@ -81,6 +82,21 @@ class ZoneVisitTracker(Protocol):
 
         ...
 
+    def checkpoint_state(self) -> object:
+        """application transaction 전 rollback checkpoint를 반환한다."""
+
+        ...
+
+    def restore_state(self, checkpoint: object) -> None:
+        """commit 실패 전 runtime state로 복구한다."""
+
+        ...
+
+    def restore_active(self, visits: tuple[ZoneVisit, ...]) -> None:
+        """restart 시 durable nonterminal visit을 끊은 timer chain으로 복원한다."""
+
+        ...
+
 
 @dataclass
 class _VisitSlot:
@@ -134,6 +150,39 @@ class InMemoryZoneVisitTracker:
         self._exit_confirm_seconds = exit_confirm_seconds
         self._trusted_sample_max_gap_seconds = trusted_sample_max_gap_seconds
         self._slots: dict[tuple[PhysicalVehicleId, ZoneId], _VisitSlot] = {}
+
+    def checkpoint_state(self) -> object:
+        """mutable slot을 transaction rollback용으로 복사한다."""
+
+        return deepcopy(self._slots)
+
+    def restore_state(self, checkpoint: object) -> None:
+        """``checkpoint_state``가 생성한 slot snapshot을 복구한다."""
+
+        if not isinstance(checkpoint, dict):
+            raise TypeError("invalid ZoneVisitTracker checkpoint")
+        self._slots = deepcopy(checkpoint)
+
+    def restore_active(self, visits: tuple[ZoneVisit, ...]) -> None:
+        """SQLite active snapshot을 wall-clock 보충 없이 복원한다."""
+
+        restored: dict[tuple[PhysicalVehicleId, ZoneId], _VisitSlot] = {}
+        for visit in visits:
+            if visit.state not in _NON_TERMINAL_STATES:
+                raise ValueError("only nonterminal ZoneVisit may be restored")
+            if visit.zone_definition_version != self._zone_definition_version:
+                raise ValueError(
+                    "active ZoneVisit uses another zone definition version"
+                )
+            key = (visit.physical_vehicle_id, visit.zone_id)
+            if key in restored:
+                raise ValueError("duplicate active ZoneVisit restore key")
+            restored[key] = _VisitSlot(
+                visit=visit,
+                # process downtime을 trusted duration으로 더하지 않는다.
+                trusted_anchor_at=None,
+            )
+        self._slots = restored
 
     def update(
         self,

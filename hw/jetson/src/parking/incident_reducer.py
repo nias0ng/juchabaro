@@ -7,6 +7,7 @@ UNKNOWN과 일시 미관측은 상태를 끝내지 않고 현재 timer sample ch
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable, Protocol
@@ -112,6 +113,21 @@ class IncidentReducer(Protocol):
 
         ...
 
+    def checkpoint_state(self) -> object:
+        """application transaction 전 rollback checkpoint를 반환한다."""
+
+        ...
+
+    def restore_state(self, checkpoint: object) -> None:
+        """commit 실패 전 runtime state로 복구한다."""
+
+        ...
+
+    def restore_active(self, incidents: tuple[Incident, ...]) -> None:
+        """restart 시 durable nonterminal Incident index를 복원한다."""
+
+        ...
+
 
 class InMemoryIncidentReducer:
     """process 내부 저장소를 사용하는 IncidentReducer 구현.
@@ -147,6 +163,54 @@ class InMemoryIncidentReducer:
         self._latest_id_by_key: dict[IncidentKey, IncidentId] = {}
         self._active_id_by_key: dict[IncidentKey, IncidentId] = {}
         self._last_sample_by_id: dict[IncidentId, _LastSample] = {}
+
+    def checkpoint_state(self) -> object:
+        """Incident index와 trusted sample chain을 함께 복사한다."""
+
+        return deepcopy(
+            (
+                self._records,
+                self._latest_id_by_key,
+                self._active_id_by_key,
+                self._last_sample_by_id,
+            )
+        )
+
+    def restore_state(self, checkpoint: object) -> None:
+        """``checkpoint_state``가 생성한 reducer snapshot을 복구한다."""
+
+        if not isinstance(checkpoint, tuple) or len(checkpoint) != 4:
+            raise TypeError("invalid IncidentReducer checkpoint")
+        restored = deepcopy(checkpoint)
+        (
+            self._records,
+            self._latest_id_by_key,
+            self._active_id_by_key,
+            self._last_sample_by_id,
+        ) = restored
+
+    def restore_active(self, incidents: tuple[Incident, ...]) -> None:
+        """SQLite active snapshot을 trusted sample 연속성 없이 복원한다."""
+
+        records: dict[IncidentId, Incident] = {}
+        latest_by_key: dict[IncidentKey, IncidentId] = {}
+        active_by_key: dict[IncidentKey, IncidentId] = {}
+        for incident in incidents:
+            if incident.state in {
+                IncidentState.RESOLVED,
+                IncidentState.CANCELED,
+            }:
+                raise ValueError("only nonterminal Incident may be restored")
+            if incident.incident_id in records or incident.key in active_by_key:
+                raise ValueError("duplicate active Incident restore identity")
+            records[incident.incident_id] = incident
+            latest_by_key[incident.key] = incident.incident_id
+            active_by_key[incident.key] = incident.incident_id
+        self._records = records
+        self._latest_id_by_key = latest_by_key
+        self._active_id_by_key = active_by_key
+        # restart 전 sample과 재시작 후 sample을 연결하지 않는다.
+        self._last_sample_by_id = {}
 
     def reduce(
         self,

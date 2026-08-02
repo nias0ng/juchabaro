@@ -11,8 +11,9 @@ SQLite UnitOfWork로 commit한다. TrackSegment 종료와 일시적 미관측은
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 import sqlite3
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 from src.domain.models import (
@@ -28,6 +29,7 @@ from src.session.context_binding_coordinator import (
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.session.models import (
     ContextBinding,
+    EntryAttemptId,
     EntryDecisionState,
     EntryMatchAttempt,
     ParkingSessionMirror,
@@ -41,7 +43,7 @@ from src.storage.repositories import (
     ParkingSessionMirrorRepository,
     PhysicalVehicleRepository,
 )
-from src.storage.unit_of_work import UnitOfWork
+from src.storage.unit_of_work import UnitOfWork, require_write_transaction
 from src.tracking.models import (
     PhysicalVehicle,
     PhysicalVehicleId,
@@ -58,6 +60,15 @@ _BINDABLE_DECISIONS = frozenset(
 # 04 durable-state 계약의 [제안값]. frame별 FULL-sync를 피하되
 # crash 시 잃는 trusted checkpoint를 최대 10초로 제한한다.
 _DIRTY_CHECKPOINT_INTERVAL = timedelta(seconds=10)
+
+
+@dataclass(frozen=True)
+class SessionObservationResult:
+    """주차 판정에 제공할 durable correlation projection."""
+
+    session_contexts: dict[PhysicalVehicleId, SessionContext]
+    entry_attempt_ids: dict[PhysicalVehicleId, EntryAttemptId]
+    historical_attempts: tuple[EntryMatchAttempt, ...] = ()
 
 
 class SessionObservationWorkflow:
@@ -105,6 +116,15 @@ class SessionObservationWorkflow:
         같은 batch에서 확정한 대상을 새 binding으로 되살리지는 않는다.
         """
 
+        if not connection.in_transaction:
+            checkpoint = self.checkpoint_state()
+            try:
+                with UnitOfWork(connection):
+                    return self.process(batch, connection=connection)
+            except Exception:
+                self.restore_state(checkpoint)
+                raise
+
         attempt_repository = EntryMatchAttemptRepository(connection)
         vehicle_repository = PhysicalVehicleRepository(connection)
         mirror_repository = ParkingSessionMirrorRepository(connection)
@@ -112,7 +132,10 @@ class SessionObservationWorkflow:
 
         observed_snapshots = _unique_observed_snapshots(batch)
 
-        with UnitOfWork(connection):
+        # 독립 호출은 자체 transaction을 소유하고, frame workflow
+        # 내부 호출은 이미 열린 동일 transaction에 참여한다.
+        transaction = nullcontext()
+        with transaction:
             pending_attempts = list(attempt_repository.list_pending())
             expired_attempts = self._entry_match_coordinator.expire_due(
                 pending_attempts,
@@ -237,6 +260,82 @@ class SessionObservationWorkflow:
 
         return contexts
 
+    def apply(
+        self,
+        batch: TrackingBatch,
+        *,
+        connection: sqlite3.Connection,
+    ) -> SessionObservationResult:
+        """상위 frame UnitOfWork 안에서 session 관측과 correlation을 반영한다.
+
+        이 메서드는 transaction을 commit하지 않는다. 반환한
+        ``entry_attempt_ids``는 session이 없는 DENY·REVIEW 차량의
+        Incident correlation까지 포함한다.
+        """
+
+        require_write_transaction(connection)
+        contexts = self.process(batch, connection=connection)
+        attempt_repository = EntryMatchAttemptRepository(connection)
+        binding_repository = ContextBindingRepository(connection)
+        entry_attempt_ids: dict[PhysicalVehicleId, EntryAttemptId] = {}
+        for snapshot in _unique_observed_snapshots(batch):
+            binding = binding_repository.get_active_by_physical_vehicle_id(
+                snapshot.physical_vehicle_id
+            )
+            if binding is not None:
+                entry_attempt_ids[snapshot.physical_vehicle_id] = (
+                    binding.entry_attempt_id
+                )
+                continue
+            attempt = attempt_repository.get_matched_by_physical_vehicle_id(
+                snapshot.physical_vehicle_id
+            )
+            if attempt is not None:
+                entry_attempt_ids[snapshot.physical_vehicle_id] = (
+                    attempt.entry_attempt_id
+                )
+        departed_physical_vehicle_ids = set(
+            batch.not_present_confirmed_vehicle_ids
+        )
+        vehicle_repository = PhysicalVehicleRepository(connection)
+        mirror_repository = ParkingSessionMirrorRepository(connection)
+        historical_attempts = tuple(
+            attempt
+            for attempt in attempt_repository.list_unbound_authoritative_matches()
+            if self._requires_historical_correlation(
+                attempt,
+                departed_physical_vehicle_ids=departed_physical_vehicle_ids,
+                vehicle_repository=vehicle_repository,
+                mirror_repository=mirror_repository,
+            )
+        )
+        for attempt in historical_attempts:
+            physical_vehicle_id = attempt.matched_physical_vehicle_id
+            if physical_vehicle_id is not None:
+                entry_attempt_ids[physical_vehicle_id] = (
+                    attempt.entry_attempt_id
+                )
+        return SessionObservationResult(
+            session_contexts=contexts,
+            entry_attempt_ids=entry_attempt_ids,
+            historical_attempts=historical_attempts,
+        )
+
+    def checkpoint_state(
+        self,
+    ) -> dict[PhysicalVehicleId, datetime | None]:
+        """DB rollback과 함께 되돌릴 runtime observation cache를 복사한다."""
+
+        return dict(self._latest_reliable_observed_at_by_vehicle)
+
+    def restore_state(
+        self,
+        checkpoint: dict[PhysicalVehicleId, datetime | None],
+    ) -> None:
+        """commit 실패 전 runtime observation cache로 복구한다."""
+
+        self._latest_reliable_observed_at_by_vehicle = dict(checkpoint)
+
     def _bind_existing_authoritative_matches(
         self,
         *,
@@ -302,6 +401,35 @@ class SessionObservationWorkflow:
             mirror.administrative_state is SessionAdministrativeState.ACTIVE
             and mirror.physical_presence_state is not PhysicalPresenceState.EXITED
             and mirror.exit_correlation_enabled
+        )
+
+    def _requires_historical_correlation(
+        self,
+        attempt: EntryMatchAttempt,
+        *,
+        departed_physical_vehicle_ids: set[PhysicalVehicleId],
+        vehicle_repository: PhysicalVehicleRepository,
+        mirror_repository: ParkingSessionMirrorRepository,
+    ) -> bool:
+        """active binding으로 되돌리지 않을 correlation을 분리한다."""
+
+        physical_vehicle_id = attempt.matched_physical_vehicle_id
+        session_id = attempt.authoritative_session_id
+        if physical_vehicle_id is None or session_id is None:
+            raise RuntimeError(
+                "authoritative historical match lost correlation identity"
+            )
+        if physical_vehicle_id in departed_physical_vehicle_ids:
+            return True
+        vehicle = vehicle_repository.get(physical_vehicle_id)
+        if vehicle is None:
+            raise RuntimeError(
+                "authoritative historical match references a missing PhysicalVehicle"
+            )
+        if vehicle.state is not PhysicalVehicleState.ACTIVE:
+            return True
+        return not self._allows_active_binding(
+            mirror_repository.get(session_id)
         )
 
     def _ensure_observed_vehicle(

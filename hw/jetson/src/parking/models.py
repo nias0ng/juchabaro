@@ -560,7 +560,7 @@ class IncidentReduction:
 
 @dataclass(frozen=True)
 class ParkingPipelineResult:
-    """후속 application 리팩터링을 위한 한 처리 cycle의 ephemeral 결과."""
+    """한 frame Unit of Work가 영속 snapshot·publication으로 반영할 결과."""
 
     zone_visit_updates: tuple[ZoneVisit, ...]
     parking_episode_updates: tuple[ParkingEpisode, ...]

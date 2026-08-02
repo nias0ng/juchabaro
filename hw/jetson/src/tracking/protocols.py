@@ -7,10 +7,11 @@ camera 계층의 FrameSourceError와 같은 역할이다.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from src.camera.models import CapturedFrame
 from src.tracking.models import (
+    PhysicalVehicle,
     PhysicalVehicleId,
     TrackerFrameResult,
     TrackObservation,
@@ -74,3 +75,14 @@ class EntityResolver(Protocol):
 
     def reset_track_segments(self) -> None:
         """Tracker runtime reset 후 기존 segment 연결을 모두 폐기한다."""
+
+
+@runtime_checkable
+class RestartAwareEntityResolver(EntityResolver, Protocol):
+    """재시작 뒤 durable active identity를 재식별할 수 있는 resolver."""
+
+    def restore_active_physical_vehicles(
+        self,
+        vehicles: tuple[PhysicalVehicle, ...],
+    ) -> None:
+        """후속 ``resolve()``가 복구 identity를 반환하도록 후보를 복원한다."""

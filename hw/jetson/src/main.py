@@ -1,3 +1,10 @@
+"""Jetson inbound API process를 조립한다.
+
+이 process는 durable 입차 접수와 health를 소유한다. Camera·model owner는
+Backend publication wire와 배포 설정이 확정된 뒤
+``application.monitoring_factory``를 사용하는 단일 worker로 기동한다.
+"""
+
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path

@@ -131,6 +131,45 @@ def test_confirm_timer_opens_once_after_consecutive_trusted_samples() -> None:
     assert repeated.transitions == ()
 
 
+def test_restored_incident_does_not_count_process_downtime() -> None:
+    original = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    key = vehicle_key()
+    checkpoint = reduce(
+        original,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+    ).incident
+    restored = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=5,
+    )
+    restored.restore_active((checkpoint,))
+
+    resumed = reduce(
+        restored,
+        key,
+        IncidentSignalValue.MATCHED,
+        100,
+        confirmable=True,
+    )
+    opened = reduce(
+        restored,
+        key,
+        IncidentSignalValue.MATCHED,
+        105,
+        confirmable=True,
+    )
+
+    assert resumed.incident.confirm_trusted_seconds == 0.0
+    assert opened.incident.state is IncidentState.OPEN
+    assert opened.incident.confirm_trusted_seconds == 5.0
+
+
 def test_confirm_timer_does_not_count_a_sample_gap_above_the_limit() -> None:
     reducer = InMemoryIncidentReducer(
         trusted_sample_max_gap_seconds=2,

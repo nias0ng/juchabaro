@@ -157,6 +157,20 @@ def test_moving_unknown_or_degraded_without_episode_returns_none() -> None:
     ) is None
 
 
+def test_restored_episode_does_not_count_process_downtime() -> None:
+    original = make_tracker(parking=3.0)
+    checkpoint = feed(original, MotionSignal.STATIONARY, 0)
+    restored = make_tracker(parking=3.0)
+    restored.restore_active((checkpoint,))
+
+    resumed = feed(restored, MotionSignal.STATIONARY, 100)
+    parked = feed(restored, MotionSignal.STATIONARY, 103)
+
+    assert resumed.stationary_trusted_seconds == 0.0
+    assert parked.state is ParkingState.PARKED
+    assert parked.stationary_trusted_seconds == 3.0
+
+
 def test_first_stationary_creates_complete_stop_pending_snapshot() -> None:
     episode = feed(make_tracker(parking=4, movement=5), MotionSignal.STATIONARY, 0)
 
@@ -339,6 +353,38 @@ def test_late_session_binding_publishes_already_parked_episode() -> None:
     assert published.publication_revision == 1
 
 
+def test_parked_assignment_is_frozen_for_late_publication() -> None:
+    tracker = make_tracker(parking=1, movement=3)
+    parked = park(tracker, confirmed=1, session=None)
+
+    still_parked = feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        2,
+        session=None,
+        assignment=parking_assignment(2, zone_id=OTHER_ZONE),
+    )
+    feed(
+        tracker,
+        MotionSignal.MOVING,
+        3,
+        session=None,
+        assignment=parking_assignment(3, zone_id=OTHER_ZONE),
+    )
+    returned = feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        4,
+        session=SESSION,
+        assignment=parking_assignment(4, zone_id=OTHER_ZONE),
+    )
+
+    assert still_parked.assignment == parked.assignment
+    assert returned.assignment == parked.assignment
+    assert returned.parking_session_id == SESSION
+    assert returned.publication_revision == 1
+
+
 def test_late_session_binding_during_move_pending_publishes_parked_fact() -> None:
     tracker = make_tracker(parking=1, movement=3)
     park(tracker, confirmed=1, session=None)
@@ -481,7 +527,7 @@ def test_new_episode_after_movement_end_gets_new_id() -> None:
     assert second.episode_id != first.episode_id
 
 
-def test_reliable_stationary_sample_refreshes_assignment_in_same_episode() -> None:
+def test_reliable_stationary_sample_does_not_rewrite_parked_assignment() -> None:
     tracker = make_tracker(parking=1)
     parked = park(tracker, confirmed=1)
     reassigned = parking_assignment(2, zone_id=OTHER_ZONE)
@@ -493,7 +539,7 @@ def test_reliable_stationary_sample_refreshes_assignment_in_same_episode() -> No
     )
 
     assert updated.episode_id == parked.episode_id
-    assert updated.assignment == reassigned
+    assert updated.assignment == parked.assignment
 
 
 def test_physical_exit_cancels_stop_pending() -> None:

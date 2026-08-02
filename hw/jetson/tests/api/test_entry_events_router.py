@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from uuid import UUID
 
@@ -126,7 +127,7 @@ def test_accepts_payload_only_after_attempt_and_session_mirror_are_durable(
     assert mirror.physical_presence_state is PhysicalPresenceState.UNCONFIRMED
 
 
-def test_same_domain_identity_and_payload_is_retry_with_a_new_transport_key(
+def test_same_domain_decision_is_retry_with_new_transport_key_and_duplicate_marker(
     tmp_path,
 ) -> None:
     client, _database_path = make_client(tmp_path)
@@ -136,10 +137,12 @@ def test_same_domain_identity_and_payload_is_retry_with_a_new_transport_key(
     )
     second = client.post(
         "/internal/entry-events",
-        json=make_payload(),
+        json=make_payload(duplicateRequest=True),
         headers={**VALID_HEADERS, "Idempotency-Key": "req-2"},
     )
 
+    assert first.status_code == 202
+    assert second.status_code == 202
     assert first.json() == {"accepted": True}
     assert second.json() == {"accepted": False}
 
@@ -247,3 +250,23 @@ def test_wrong_internal_api_key_is_unauthorized(tmp_path) -> None:
     )
 
     assert response.status_code == 401
+
+
+def test_storage_connection_failure_is_service_unavailable(tmp_path) -> None:
+    client, _database_path = make_client(tmp_path)
+
+    def unavailable_connection() -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is unavailable")
+
+    client.app.state.database_connection_factory = unavailable_connection
+
+    response = client.post(
+        "/internal/entry-events",
+        json=make_payload(),
+        headers=VALID_HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Jetson durable storage를 일시적으로 사용할 수 없습니다."
+    }
