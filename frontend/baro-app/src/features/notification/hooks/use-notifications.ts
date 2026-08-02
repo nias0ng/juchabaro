@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
+import { useAuthenticatedQuery } from '@/hooks/use-authenticated-query';
 import { getNotifications } from '@/features/notification/api/notification-api';
 import type { NotificationSummary } from '@/features/notification/api/types';
-import { useAuth } from '@/providers/auth-provider';
 
 export type NotificationTab = 'all' | 'moveRequest';
 
@@ -10,41 +10,18 @@ export type NotificationTab = 'all' | 'moveRequest';
 // 전체 목록을 한 번만 받아 이 타입들로 클라이언트에서 걸러낸다.
 const MOVE_REQUEST_TAB_TYPES = new Set(['MOVE_REQUEST', 'REMINDER']);
 
+async function fetchNotifications(accessToken: string): Promise<NotificationSummary[]> {
+  const result = await getNotifications(accessToken);
+  return result.notifications;
+}
+
 export function useNotifications() {
-  const { accessToken, status } = useAuth();
-  const [notifications, setNotifications] = useState<NotificationSummary[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
   const [tab, setTab] = useState<NotificationTab>('all');
-
-  useEffect(() => {
-    if (status !== 'authenticated' || !accessToken) {
-      setNotifications([]);
-      setIsLoading(false);
-      return;
-    }
-
-    let isMounted = true;
-    setIsLoading(true);
-    setError(null);
-
-    getNotifications(accessToken)
-      .then((result) => {
-        if (isMounted) setNotifications(result.notifications);
-      })
-      .catch((requestError: unknown) => {
-        if (!isMounted) return;
-        setNotifications([]);
-        setError(requestError instanceof Error ? requestError : new Error('알림을 불러오지 못했습니다.'));
-      })
-      .finally(() => {
-        if (isMounted) setIsLoading(false);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [status, accessToken]);
+  const {
+    data: notifications,
+    isLoading,
+    error,
+  } = useAuthenticatedQuery<NotificationSummary[]>(fetchNotifications, [], '알림을 불러오지 못했습니다.');
 
   const filteredNotifications = useMemo(
     () =>

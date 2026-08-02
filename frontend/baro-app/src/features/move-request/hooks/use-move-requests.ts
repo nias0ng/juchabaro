@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react';
-
+import { useAuthenticatedQuery } from '@/hooks/use-authenticated-query';
 import { getMoveRequestDetail, getMoveRequests } from '@/features/move-request/api/move-request-api';
 import type {
   MoveRequestListItem,
   MoveRequestScope,
   MoveRequestSummary,
 } from '@/features/move-request/api/types';
-import { useAuth } from '@/providers/auth-provider';
 
 // 목록 API에 없는 구역/응답시간/완료시각은 카드마다 상세 조회를 한 번씩 더 불러서 채운다.
 // 목록 API 자체가 이 필드들을 내려주게 되면(zoneNumber/estimatedMinutes/resolvedAt) 이 부분은 지운다.
@@ -29,45 +27,22 @@ async function enrichWithDetail(summary: MoveRequestSummary, accessToken: string
   }
 }
 
+async function fetchMoveRequestListItems(scope: MoveRequestScope, accessToken: string): Promise<MoveRequestListItem[]> {
+  const result = await getMoveRequests(scope, accessToken);
+  return Promise.all(result.moveRequests.map((summary) => enrichWithDetail(summary, accessToken)));
+}
+
 export function useMoveRequests(scope: MoveRequestScope) {
-  const { accessToken, status } = useAuth();
-  const [moveRequests, setMoveRequests] = useState<MoveRequestListItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
-    if (status !== 'authenticated' || !accessToken) {
-      setMoveRequests([]);
-      setIsLoading(false);
-      return;
-    }
-
-    let isMounted = true;
-    setIsLoading(true);
-    setError(null);
-
-    getMoveRequests(scope, accessToken)
-      .then(async (result) => {
-        const items = await Promise.all(
-          result.moveRequests.map((summary) => enrichWithDetail(summary, accessToken)),
-        );
-        if (isMounted) setMoveRequests(items);
-      })
-      .catch((requestError: unknown) => {
-        if (!isMounted) return;
-        setMoveRequests([]);
-        setError(
-          requestError instanceof Error ? requestError : new Error('이동 요청 내역을 불러오지 못했습니다.'),
-        );
-      })
-      .finally(() => {
-        if (isMounted) setIsLoading(false);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [scope, status, accessToken]);
+  const {
+    data: moveRequests,
+    isLoading,
+    error,
+  } = useAuthenticatedQuery<MoveRequestListItem[]>(
+    (accessToken) => fetchMoveRequestListItems(scope, accessToken),
+    [],
+    '이동 요청 내역을 불러오지 못했습니다.',
+    [scope],
+  );
 
   return { moveRequests, isLoading, error };
 }
