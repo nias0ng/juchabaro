@@ -181,3 +181,28 @@ http://localhost:8000/docs
 http://<JETSON_IP>:8000/health
 http://<JETSON_IP>:8000/docs
 ```
+
+## 파일럿 영상 리플레이
+
+§4.7 임계값(`zone_entry_confirm_seconds`, `movement_epsilon`)을 산출하거나
+회귀를 확인할 때는 녹화된 파일럿 영상을 새 파이프라인에 그대로 흘려보낼 수
+있다.
+
+```bash
+python -m scripts.replay_pilot_video \
+    --video ../../docs/video/video1.mp4 \
+    --zones-file ../../ai/tracking/zones_pilot.json \
+    --calibration ../../ai/tracking/camera_calibration.json \
+    --model-path ../../ai/training/yolo26n.pt \
+    --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
+    --out-events out/video1_events.jsonl \
+    --out-zone-visits out/video1_zone_visits.jsonl
+```
+
+`--out-events`는 확정된 사건 전이(프로덕션 outbox와 같은 포맷)만 담는다.
+파일럿 영상 리플레이에는 백엔드 입차 이벤트가 없어 `restricted_zone` 규칙이
+항상 미확정(`confirmable=False`)으로 남으므로, 임계값 측정에는
+`--out-zone-visits`(ZoneVisit의 ENTERING→INSIDE 전이 로그)를 쓴다.
+
+`ai/tracking/replay_pilot_video.py`는 옛 baseline(`jetson_vehicle_tracking_baseline.py`)
+전용이며 이 스크립트가 대체하지 않는다 — 그쪽의 폐기는 별도 티켓(T-23) 범위다.
