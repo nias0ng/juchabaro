@@ -42,25 +42,4 @@ export const styles = StyleSheet.create({
     gap: Spacing.base,
     ...Shadows.card,
   },
-
-  legendRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    columnGap: Spacing.md,
-    rowGap: Spacing.xs,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 3,
-  },
-  legendText: {
-    fontSize: 10.5,
-    color: Palette.gray500,
-  },
 });

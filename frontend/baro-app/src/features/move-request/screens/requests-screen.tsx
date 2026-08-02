@@ -1,8 +1,14 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
+import {
+  AsyncStateView,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  SegmentedControl,
+  Stack,
+} from '@/components/ui';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestListItemDisplay } from '@/features/move-request/utils/move-request';
 import { Spacing } from '@/styles';
@@ -46,11 +52,7 @@ export default function RequestsScreen() {
         <Stack gap={Spacing.md}>
           <SegmentedControl options={scopeOptions} value={scope} onChange={setScope} />
 
-          {statusMessage ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>{statusMessage}</Text>
-            </View>
-          ) : (
+          <AsyncStateView message={statusMessage}>
             <Stack gap={Spacing.base}>
               {items.map((item) => (
                 <RequestListCard
@@ -61,7 +63,7 @@ export default function RequestsScreen() {
                 />
               ))}
             </Stack>
-          )}
+          </AsyncStateView>
         </Stack>
       </ResponsiveContainer>
     </GradientScreenBackground>

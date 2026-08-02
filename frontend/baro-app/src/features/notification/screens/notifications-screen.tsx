@@ -1,13 +1,17 @@
 import { router } from 'expo-router';
-import { Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
+import {
+  AsyncStateView,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  SegmentedControl,
+  Stack,
+} from '@/components/ui';
 import { NotificationCard } from '@/features/notification/components/list/notification-card';
 import type { NotificationSummary } from '@/features/notification/api/types';
 import { useNotifications, type NotificationTab } from '@/features/notification/hooks/use-notifications';
 import { Spacing } from '@/styles';
-
-import { styles } from './notifications-screen.styles';
 
 const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
   { key: 'all', label: '전체' },
@@ -43,11 +47,7 @@ export default function NotificationsScreen() {
         <Stack gap={Spacing.md} fill>
           <SegmentedControl options={TAB_OPTIONS} value={tab} onChange={setTab} />
 
-          {statusMessage ? (
-            <View style={styles.statusContainer}>
-              <Text style={styles.statusText}>{statusMessage}</Text>
-            </View>
-          ) : (
+          <AsyncStateView message={statusMessage}>
             <Stack gap={Spacing.base}>
               {notifications.map((notification) => (
                 <NotificationCard
@@ -57,7 +57,7 @@ export default function NotificationsScreen() {
                 />
               ))}
             </Stack>
-          )}
+          </AsyncStateView>
         </Stack>
       </ResponsiveContainer>
     </GradientScreenBackground>

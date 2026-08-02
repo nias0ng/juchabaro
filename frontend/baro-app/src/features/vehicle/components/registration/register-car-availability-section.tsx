@@ -1,7 +1,6 @@
-import { Stack } from '@/components/ui';
+import { FormSectionLabel, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
-import { RegisterCarSectionLabel } from './register-car-section-label';
 import { RegisterCarToggleRow } from './register-car-toggle-row';
 
 type RegisterCarAvailabilitySectionProps = {
@@ -25,7 +24,7 @@ export function RegisterCarAvailabilitySection({
 }: RegisterCarAvailabilitySectionProps) {
   return (
     <Stack gap={Spacing.xs}>
-      <RegisterCarSectionLabel>{title}</RegisterCarSectionLabel>
+      <FormSectionLabel label={title} variant="muted" />
       <Stack gap={Spacing.sm}>
         <RegisterCarToggleRow
           label="전기차 여부"

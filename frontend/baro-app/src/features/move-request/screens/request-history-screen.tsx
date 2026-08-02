@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
-import { Text, View } from 'react-native';
 
-import { Screen, ScreenHeader, Stack } from '@/components/ui';
+import { AsyncStateView, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
@@ -24,11 +23,7 @@ export default function RequestHistoryScreen() {
     <Screen scroll edges={['top', 'right', 'left']}>
       <ScreenHeader title="요청 내역" style={styles.header} />
 
-      {statusMessage ? (
-        <View style={styles.statusContainer}>
-          <Text style={styles.statusText}>{statusMessage}</Text>
-        </View>
-      ) : (
+      <AsyncStateView message={statusMessage} fill={false} style={styles.statusContainer}>
         <Stack gap={Spacing.base} style={styles.content}>
           {moveRequests.map((summary) => (
             <RequestHistoryCard
@@ -44,7 +39,7 @@ export default function RequestHistoryScreen() {
             />
           ))}
         </Stack>
-      )}
+      </AsyncStateView>
     </Screen>
   );
 }

@@ -4,8 +4,19 @@ import { FontWeight, Palette } from '@/styles';
 
 export const styles = StyleSheet.create({
   label: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: FontWeight.bold,
+    color: Palette.gray975,
+  },
+  labelMuted: {
+    fontSize: 12,
     color: Palette.gray600,
+  },
+  suffix: {
+    fontWeight: FontWeight.regular,
+    color: Palette.gray400,
+  },
+  suffixMuted: {
+    fontSize: 12,
   },
 });
