@@ -53,8 +53,9 @@ def _insert_vehicle(connection: sqlite3.Connection, vehicle_id: str) -> None:
             physical_vehicle_id, domain_state, observation_state,
             last_reliable_observed_at_us,
             absence_trusted_duration_us, absence_confirmation_duration_us,
+            trusted_sample_max_gap_duration_us,
             record_version, created_at_us, updated_at_us
-        ) VALUES (?, 'ACTIVE', 'OBSERVED', 1, 0, 1, 1, 1, 1)
+        ) VALUES (?, 'ACTIVE', 'OBSERVED', 1, 0, 1, 1, 1, 1, 1)
         """,
         (vehicle_id,),
     )
@@ -103,6 +104,8 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
         "physical_vehicles": {
             "absence_trusted_duration_us",
             "absence_confirmation_duration_us",
+            "trusted_sample_max_gap_duration_us",
+            "absence_confirmed_at_us",
             "terminated_at_us",
         },
         "parking_session_mirrors": {
@@ -225,6 +228,58 @@ def test_allow_input_requires_authoritative_context_in_schema(tmp_path: Path) ->
                         decision_revision, session_id, record_version,
                         created_at_us, updated_at_us
                     ) VALUES ('entry-1', 'PENDING', 'ALLOW', 1, 10, 1, 1, 1)
+                    """
+                )
+    finally:
+        connection.close()
+
+
+def test_tracking_session_migration_enforces_new_lifecycle_invariants(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            with UnitOfWork(connection):
+                connection.execute(
+                    """
+                    INSERT INTO physical_vehicles(
+                        physical_vehicle_id, domain_state, observation_state,
+                        absence_trusted_duration_us,
+                        absence_confirmation_duration_us,
+                        trusted_sample_max_gap_duration_us,
+                        record_version, created_at_us, updated_at_us
+                    ) VALUES ('confirmed-without-time', 'ACTIVE', 'UNKNOWN',
+                              1, 1, 1, 1, 1, 1)
+                    """
+                )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            with UnitOfWork(connection):
+                connection.execute(
+                    """
+                    INSERT INTO entry_match_attempts(
+                        entry_attempt_id, match_state, decision_state,
+                        decision_revision, record_version,
+                        created_at_us, updated_at_us
+                    ) VALUES ('missing-deadline', 'PENDING', 'DENY', 0, 1, 1, 1)
+                    """
+                )
+
+        with UnitOfWork(connection):
+            _insert_vehicle(connection, "vehicle-for-invalid-mirror")
+        with pytest.raises(sqlite3.IntegrityError):
+            with UnitOfWork(connection):
+                connection.execute(
+                    """
+                    INSERT INTO parking_session_mirrors(
+                        session_id, physical_vehicle_id,
+                        administrative_state, physical_presence_state,
+                        physical_observation_state, context_revision,
+                        record_version, publication_revision,
+                        created_at_us, updated_at_us
+                    ) VALUES (1, 'vehicle-for-invalid-mirror', 'ACTIVE',
+                              'UNCONFIRMED', 'UNKNOWN', 0, 1, 0, 1, 1)
                     """
                 )
     finally:

@@ -12,6 +12,7 @@ from src.storage.migration_runner import (
     MigrationApplyError,
     MigrationChecksumMismatch,
     MigrationRunner,
+    default_migrations_directory,
 )
 
 
@@ -32,14 +33,62 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1,)
+        assert runner.apply() == (1, 2)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
         ).fetchall()
         assert [(row["version"], row["name"]) for row in history] == [
-            (1, "0001_initial")
+            (1, "0001_initial"),
+            (2, "0002_tracking_session_lifecycle"),
         ]
+    finally:
+        connection.close()
+
+
+def test_tracking_session_migration_upgrades_an_applied_initial_schema(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "0001_initial.sql").write_text(
+        (source / "0001_initial.sql").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == (1,)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO physical_vehicles(
+                physical_vehicle_id, domain_state, observation_state,
+                last_reliable_observed_at_us, absence_trusted_duration_us,
+                absence_confirmation_duration_us, record_version,
+                created_at_us, updated_at_us
+            ) VALUES ('legacy-vehicle', 'ACTIVE', 'UNKNOWN', NULL,
+                      5000000, 5000000, 1, 1, 123)
+            """
+        )
+        connection.commit()
+
+        (migrations / "0002_tracking_session_lifecycle.sql").write_text(
+            (source / "0002_tracking_session_lifecycle.sql").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+
+        assert MigrationRunner(connection, migrations).apply() == (2,)
+        row = connection.execute(
+            """
+            SELECT trusted_sample_max_gap_duration_us, absence_confirmed_at_us
+            FROM physical_vehicles
+            WHERE physical_vehicle_id = 'legacy-vehicle'
+            """
+        ).fetchone()
+        assert tuple(row) == (1_000_000, 123)
     finally:
         connection.close()
 

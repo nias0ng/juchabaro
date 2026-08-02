@@ -98,7 +98,7 @@ class EntryMatchAttempt:
     record_version: int
     created_at: datetime
     updated_at: datetime
-    match_deadline_at: datetime | None = None
+    match_deadline_at: datetime
     matched_physical_vehicle_id: PhysicalVehicleId | None = None
     authoritative_session_id: ParkingSessionId | None = None
     authoritative_context: SessionContext | None = None
@@ -110,6 +110,8 @@ class EntryMatchAttempt:
         require_positive(self.record_version, "record_version")
         for name in ("created_at", "updated_at", "match_deadline_at", "match_terminated_at"):
             require_aware(getattr(self, name), name)
+        if self.match_deadline_at < self.created_at:
+            raise ValueError("match_deadline_at must not precede created_at")
 
         if (self.match_state is EntryMatchState.MATCHED) != (
             self.matched_physical_vehicle_id is not None
@@ -215,8 +217,13 @@ class ParkingSessionMirror:
             raise ValueError("EXITED mirror requires origin, evidence, and exited_at")
         if not is_exited and any(value is not None for value in exit_fields):
             raise ValueError("non-EXITED mirror must not carry physical exit metadata")
-        if self.physical_presence_state is not PhysicalPresenceState.UNCONFIRMED:
-            if self.physical_vehicle_id is None:
-                raise ValueError("confirmed physical presence must reference a PhysicalVehicle")
+        is_unconfirmed = (
+            self.physical_presence_state is PhysicalPresenceState.UNCONFIRMED
+        )
+        if is_unconfirmed != (self.physical_vehicle_id is None):
+            raise ValueError(
+                "UNCONFIRMED presence must not reference a PhysicalVehicle; "
+                "confirmed presence must reference one"
+            )
         if (self.terminated_at is None) != (self.termination_reason is None):
             raise ValueError("mirror storage termination timestamp and reason must appear together")

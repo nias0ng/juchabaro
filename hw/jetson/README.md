@@ -92,6 +92,14 @@ cp .env.example .env
 `config/zone_definition.pilot.json`이다. 구역 정보는 SQLite가 아니라 이 정적
 JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
 
+`DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
+Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을
+공유하지 않고 각자 열어 사용한다. `ABSENCE_CONFIRMATION_SECONDS`는
+ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을
+`NOT_PRESENT_CONFIRMED`로 올리는 별도 시간 기준이다.
+`TRUSTED_SAMPLE_MAX_GAP_SECONDS`를 넘는 frame 공백은 camera·pipeline
+stall로 보고 그 wall-clock을 부재 확정에 더하지 않는다.
+
 ## PC 개발 환경에서 실행
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.

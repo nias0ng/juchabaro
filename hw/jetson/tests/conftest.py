@@ -12,9 +12,12 @@ ValidationError가 난다. 순수 로직 테스트가 환경 파일 존재에 �
 import pytest
 
 REQUIRED_ENV = {
+    "DATABASE_PATH": ":memory:",
     "ZONE_DEFINITION_PATH": "config/zone_definition.pilot.json",
     "ZONE_ENTRY_CONFIRM_SECONDS": "3.0",
     "ZONE_EXIT_CONFIRM_SECONDS": "3.0",
+    "ABSENCE_CONFIRMATION_SECONDS": "5.0",
+    "TRUSTED_SAMPLE_MAX_GAP_SECONDS": "1.0",
     "PARKING_CONFIRM_SECONDS": "600.0",
     "PARKING_MOVE_CONFIRM_SECONDS": "3.0",
 }

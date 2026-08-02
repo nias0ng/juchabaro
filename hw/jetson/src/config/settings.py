@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     hw_api_key: str = ""
     internal_api_key: str = ""
 
+    # Jetson local durable state. 요청 thread와 tracking worker는 각자
+    # connection을 열고 SQLite file만 공유한다.
+    database_path: Path
+
     # 한 배포의 versioned ZoneDefinition JSON. 실행 중 hot replacement는 하지
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path
@@ -26,6 +30,14 @@ class Settings(BaseSettings):
     # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
     # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
     entry_match_window_seconds: float = 10.0
+
+    # Tracker timeout과 분리된 PhysicalVehicle 부재 확정 시간(초).
+    # 정상 전체 구역 관측만 누적하며, 시연값도 배포별로 명시한다.
+    absence_confirmation_seconds: float
+
+    # 연속 trusted sample로 인정할 최대 프레임 간격. 이를 넘는
+    # capture·inference stall은 부재 확정 시간으로 보충하지 않는다.
+    trusted_sample_max_gap_seconds: float
 
     # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
     # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다 —

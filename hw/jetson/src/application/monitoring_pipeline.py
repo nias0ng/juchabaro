@@ -1,22 +1,22 @@
-"""카메라·추적·주차 판정·전송 계층을 조립하는 애플리케이션 파이프라인(440).
+"""카메라·추적·주차 판정·전송 계층을 조립하는 애플리케이션 파이프라인.
 
-관통 1단계 조립만 담당한다 — 실행 순서와 오류 경계는 여기서 관리하지만,
-bbox 거리 계산이나 위반 조건 판단은 하지 않는다(데이터흐름.md §6
-"application은 조립 담당이지 판정 담당이 아니다").
+실행 순서와 오류 경계만 관리하며 bbox 기하 계산이나
+위반 조건 판단은 각 domain 계층에 맡긴다.
 
-`TrackingPipeline`이 이미 `ContextMatcher`(T-16)로 `context`를 채워서
-돌려준다(데이터흐름.md §2 — "입차 세션과 물리 차량 연결"은 tracking 자신의
-책임) — 여기서는 그 배치를 그대로 parking에 넘긴다.
+`TrackingPipeline`은 임시 TrackSegment, PhysicalVehicle 관측과 부재 신호만
+만든다. SessionContext 매칭과 ContextBinding은 session coordinator가 소유하며
+tracking snapshot에 복사하지 않는다. 현재 이 조립기에 session transaction을
+연결하는 것은 후속 wiring 범위다.
 
-카메라 장애(source_available=False 처리)는 아직 다루지 않는다 — 실카메라
-입력(웹캠 티켓)과 함께 결정할 사안이라 지금은 `FrameSourceError`를 그대로
-전파한다. `EndOfVideo`(영상 리플레이 정상 종료)만 `run()`에서 조용히 멈추는
-신호로 다룬다 — `ai/tracking/replay_pilot_video.py`의 기존 루프와 같은 패턴이다.
+프레임 캡처나 추론이 실패하면 부재 누적 연속성을 먼저 끊고
+원래 예외를 전파한다. 그렇지 않으면 다음 정상 frame이 장애 구간의
+wall-clock을 NOT_PRESENT 확정 시간에 포함한다. `EndOfVideo`는 리플레이
+정상 종료이므로 `run()`에서만 조용히 멈춘다.
 """
 
 from __future__ import annotations
 
-from src.camera.frame_source import EndOfVideo, FrameSource
+from src.camera.frame_source import EndOfVideo, FrameSource, FrameSourceError
 from src.communication.outbox import JsonlOutbox
 from src.parking.models import ParkingPipelineResult
 from src.parking.pipeline import ParkingPipeline
@@ -33,11 +33,15 @@ class MonitoringPipeline:
         tracking_pipeline: TrackingPipeline,
         parking_pipeline: ParkingPipeline,
         outbox: JsonlOutbox,
+        calibration_reference: str,
     ) -> None:
+        if not calibration_reference:
+            raise ValueError("calibration_reference must not be empty")
         self._frame_source = frame_source
         self._tracking_pipeline = tracking_pipeline
         self._parking_pipeline = parking_pipeline
         self._outbox = outbox
+        self._calibration_reference = calibration_reference
 
     def open(self) -> None:
         """프레임 소스와 추적 모델을 초기화한다."""
@@ -53,8 +57,23 @@ class MonitoringPipeline:
         판단할 문제다.
         """
 
-        frame = self._frame_source.capture()
-        tracking_batch = self._tracking_pipeline.process(frame)
+        try:
+            frame = self._frame_source.capture()
+        except EndOfVideo:
+            raise
+        except FrameSourceError:
+            self._tracking_pipeline.pause_absence_confirmation()
+            raise
+
+        tracking_batch = self._tracking_pipeline.process(
+            frame,
+            # 현재 고정 camera 파일럿은 FrameSource가 full frame을
+            # 생성한다는 전제에서 calibration 좌표계를 최종
+            # 인증한다. crop·camera health 검증은 기동 계층의 책임이다.
+            full_area_observed=(
+                frame.calibration_id == self._calibration_reference
+            ),
+        )
         result = self._parking_pipeline.process(tracking_batch)
         for transition in result.incident_transitions:
             self._outbox.append(transition)

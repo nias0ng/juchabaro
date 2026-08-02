@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 from src.camera.models import CapturedFrame
+from src.tracking.adapters import ultralytics_bytetrack as adapter_module
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
+from src.tracking.models import TrackSegmentId
 from src.tracking.protocols import TrackingError
 
 
@@ -21,14 +23,31 @@ class _FakeImage:
         self.shape = shape
 
 
-def _make_frame(image) -> CapturedFrame:
+class _FakeCv2:
+    """테스트가 로컬 OpenCV 설치 여부에 의존하지 않게 한다."""
+
+    COLOR_RGB2BGR = object()
+
+    @staticmethod
+    def cvtColor(image, _conversion):
+        return image
+
+
+@pytest.fixture(autouse=True)
+def _stub_cv2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapter_module, "_import_cv2", lambda: _FakeCv2)
+
+
+def _make_frame(image, *, width: int = 100, height: int = 100) -> CapturedFrame:
     return CapturedFrame(
         camera_id="cam-1",
         frame_id=1,
         captured_at=datetime.now(timezone.utc),
         image=image,
-        width=0,
-        height=0,
+        # CapturedFrame metadata는 양수여야 하지만 adapter는 실제
+        # ndarray shape를 별도로 검증한다.
+        width=width,
+        height=height,
         calibration_id=None,
     )
 
@@ -48,6 +67,24 @@ def test_rejects_zero_sized_frame():
 
     with pytest.raises(TrackingError):
         tracker.track(_make_frame(_FakeImage((0, 0, 3))))
+
+
+def test_rejects_frame_metadata_that_does_not_match_image_shape():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    tracker._model = object()
+
+    with pytest.raises(TrackingError, match="metadata"):
+        tracker.track(
+            _make_frame(
+                _FakeImage((80, 120, 3)),
+                width=100,
+                height=100,
+            )
+        )
 
 
 def test_model_info_reflects_configured_paths_before_open():
@@ -90,6 +127,30 @@ def test_wraps_inference_exception_as_tracking_error():
     assert excinfo.value.__cause__ is not None  # 원인 예외가 체이닝돼 있어야 디버깅 가능
 
 
+def test_wraps_color_conversion_exception_as_tracking_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _RaisingCv2:
+        COLOR_RGB2BGR = object()
+
+        @staticmethod
+        def cvtColor(_image, _conversion):
+            raise RuntimeError("color conversion failed")
+
+    monkeypatch.setattr(adapter_module, "_import_cv2", lambda: _RaisingCv2)
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    tracker._model = _SuccessfulModel(track_ids=())
+
+    with pytest.raises(TrackingError) as excinfo:
+        tracker.track(_make_frame(_FakeImage((100, 100, 3))))
+
+    assert excinfo.value.__cause__ is not None
+
+
 def test_close_releases_model_reference_after_being_set():
     """close() 뒤에는 모델 참조가 실제로 해제돼야 한다 — 참조가 남아있으면
     close() 이후에도 track()이 '초기화 안 됨' 대신 조용히 계속 동작할 위험이 있다."""
@@ -100,3 +161,219 @@ def test_close_releases_model_reference_after_being_set():
 
     with pytest.raises(TrackingError):
         tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+
+class _Boxes:
+    def __init__(self, *, track_ids=(), detection_count: int | None = None) -> None:
+        if detection_count is None:
+            detection_count = len(track_ids)
+        if detection_count < len(track_ids):
+            raise ValueError("detection_count cannot be smaller than tracked ID count")
+        self.id = np.asarray(track_ids, dtype=float) if track_ids else None
+        self.xyxy = np.asarray(
+            [[10.0, 20.0, 30.0, 40.0] for _ in range(detection_count)],
+            dtype=float,
+        )
+        self.conf = np.asarray([0.9 for _ in range(detection_count)], dtype=float)
+
+
+class _Result:
+    def __init__(self, *, track_ids=(), detection_count: int | None = None) -> None:
+        self.boxes = _Boxes(
+            track_ids=track_ids,
+            detection_count=detection_count,
+        )
+
+
+class _RemovedTrack:
+    def __init__(self, track_id: int) -> None:
+        self.track_id = track_id
+
+
+class _ByteTrackerState:
+    def __init__(self) -> None:
+        self.removed_stracks: list[_RemovedTrack] = []
+
+
+class _Predictor:
+    def __init__(self, byte_tracker: _ByteTrackerState) -> None:
+        self.trackers = [byte_tracker]
+
+
+class _SuccessfulModel:
+    def __init__(self, *, track_ids=(), detection_count: int | None = None) -> None:
+        self.track_ids = track_ids
+        self.detection_count = (
+            len(track_ids) if detection_count is None else detection_count
+        )
+        self.byte_tracker = _ByteTrackerState()
+        self.predictor = _Predictor(self.byte_tracker)
+        self._postprocess_callbacks = []
+
+    def add_callback(self, event: str, callback) -> None:
+        if event == "on_predict_postprocess_end":
+            self._postprocess_callbacks.append(callback)
+
+    def track(self, **kwargs):
+        raw_result = _Result(track_ids=(), detection_count=self.detection_count)
+        callback_predictor = type(
+            "CallbackPredictor",
+            (),
+            {"results": [raw_result]},
+        )()
+        for callback in self._postprocess_callbacks:
+            callback(callback_predictor)
+        return [_Result(track_ids=self.track_ids)]
+
+
+class _ModelWithoutTrackerInternals(_SuccessfulModel):
+    def __init__(self) -> None:
+        super().__init__(track_ids=())
+        del self.predictor
+
+
+def _attach_model(
+    tracker: UltralyticsVehicleTracker,
+    model,
+) -> None:
+    tracker._model = model
+    model.add_callback(
+        "on_predict_postprocess_end",
+        tracker._capture_pretrack_detection_count,
+    )
+
+
+def test_visible_result_is_normalized_without_inventing_segment_end():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _SuccessfulModel(track_ids=(7,)))
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert len(result.observations) == 1
+    assert result.observations[0].track_segment_id == TrackSegmentId(7)
+    assert result.all_detections_tracked is True
+    assert result.ended_track_segment_ids == ()
+
+
+def test_empty_visible_result_without_bytetrack_removal_is_not_segment_end():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _SuccessfulModel(track_ids=()))
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert result.observations == ()
+    assert result.all_detections_tracked is True
+    assert result.ended_track_segment_ids == ()
+
+
+def test_tentative_detection_without_track_id_marks_frame_untrusted():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(
+        tracker,
+        _SuccessfulModel(track_ids=(7,), detection_count=2),
+    )
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert tuple(
+        observation.track_segment_id for observation in result.observations
+    ) == (TrackSegmentId(7),)
+    assert result.all_detections_tracked is False
+    assert result.ended_track_segment_ids == ()
+
+
+def test_non_detect_result_shape_marks_frame_untrusted():
+    class _ModelWithMissingBoxes(_SuccessfulModel):
+        def track(self, **kwargs):
+            callback_predictor = type(
+                "CallbackPredictor",
+                (),
+                {"results": [object()]},
+            )()
+            for callback in self._postprocess_callbacks:
+                callback(callback_predictor)
+            return [_Result(track_ids=())]
+
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _ModelWithMissingBoxes(track_ids=()))
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert result.observations == ()
+    assert result.all_detections_tracked is False
+
+
+def test_unprojectable_tracked_box_marks_frame_untrusted():
+    class _OutOfFrameModel(_SuccessfulModel):
+        def track(self, **kwargs):
+            results = super().track(**kwargs)
+            result = results[0]
+            result.boxes.xyxy = np.asarray(
+                [[110.0, 20.0, 130.0, 40.0]],
+                dtype=float,
+            )
+            return results
+
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _OutOfFrameModel(track_ids=(7,)))
+
+    result = tracker.track(
+        _make_frame(np.zeros((100, 100, 3), dtype=np.uint8))
+    )
+
+    assert result.observations == ()
+    assert result.all_detections_tracked is False
+
+
+def test_missing_bytetrack_internal_state_falls_back_to_no_segment_end():
+    """내부 API를 읽을 수 없어도 frame 차집합으로 종료를 발명하지 않는다."""
+
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _ModelWithoutTrackerInternals())
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert result.observations == ()
+    assert result.ended_track_segment_ids == ()
+
+
+def test_bytetrack_removed_segment_is_reported_once():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    model = _SuccessfulModel(track_ids=())
+    model.byte_tracker.removed_stracks.append(_RemovedTrack(7))
+    _attach_model(tracker, model)
+    frame = _make_frame(np.zeros((100, 100, 3), dtype=np.uint8))
+
+    first = tracker.track(frame)
+    second = tracker.track(frame)
+
+    assert first.ended_track_segment_ids == (TrackSegmentId(7),)
+    assert second.ended_track_segment_ids == ()

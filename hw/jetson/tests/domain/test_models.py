@@ -60,6 +60,7 @@ from src.session.models import (
 from src.tracking.models import (
     ParkingSessionId,
     MotionSignal,
+    PhysicalVehicleAbsenceProgress,
     PhysicalVehicleId,
     TrackSegmentId,
     TrackingBatch,
@@ -88,7 +89,7 @@ def test_observation_state_is_not_a_domain_terminal_state() -> None:
         ObservationStatus(state=ObservationState.OBSERVED)
 
 
-def test_tracking_loss_hint_cannot_be_reported_as_confirmed_absence() -> None:
+def test_tracking_loss_and_confirmed_absence_are_separate_signals() -> None:
     vehicle_id = PhysicalVehicleId(uuid4())
     batch = TrackingBatch(
         camera_id="camera-1",
@@ -97,10 +98,15 @@ def test_tracking_loss_hint_cannot_be_reported_as_confirmed_absence() -> None:
         vehicles=(),
         ended_track_segment_ids=(TrackSegmentId(9),),
         unobserved_physical_vehicle_ids=(vehicle_id,),
+        absence_progress=(
+            PhysicalVehicleAbsenceProgress(vehicle_id, trusted_seconds=0.0),
+        ),
         observation=ObservationStatus(
             state=ObservationState.UNKNOWN,
             reason=ObservationReason.CAMERA_UNAVAILABLE,
         ),
+        full_area_observed=False,
+        all_detections_tracked=True,
     )
 
     assert batch.ended_track_segment_ids == (TrackSegmentId(9),)
@@ -108,33 +114,46 @@ def test_tracking_loss_hint_cannot_be_reported_as_confirmed_absence() -> None:
     assert batch.not_present_confirmed_vehicle_ids == ()
     assert batch.observation.state is ObservationState.UNKNOWN
 
-    with pytest.raises(ValueError, match="NOT_PRESENT_CONFIRMED"):
-        TrackingBatch(
-            camera_id="camera-1",
-            frame_id=2,
-            observed_at=NOW,
-            vehicles=(),
-            ended_track_segment_ids=(),
-            unobserved_physical_vehicle_ids=(),
-            observation=OBSERVED,
-            full_area_observed=False,
-            not_present_confirmed_vehicle_ids=(vehicle_id,),
-        )
+    replayed_confirmation = TrackingBatch(
+        camera_id="camera-1",
+        frame_id=2,
+        observed_at=NOW,
+        vehicles=(),
+        ended_track_segment_ids=(),
+        unobserved_physical_vehicle_ids=(vehicle_id,),
+        absence_progress=(
+            PhysicalVehicleAbsenceProgress(
+                vehicle_id,
+                trusted_seconds=5.0,
+                confirmed_at=NOW,
+            ),
+        ),
+        observation=ObservationStatus(
+            state=ObservationState.DEGRADED,
+            reason=ObservationReason.PARTIAL_FRAME,
+            last_reliable_observed_at=NOW,
+        ),
+        full_area_observed=False,
+        all_detections_tracked=True,
+        not_present_confirmed_vehicle_ids=(vehicle_id,),
+    )
 
-    with pytest.raises(ValueError, match="OBSERVED full-area"):
+    # 확정은 과거 정상 전체 관측에서만 만들어지지만, commit ack 전까지
+    # 이어지는 degraded sample에도 같은 사실을 반복할 수 있다.
+    assert replayed_confirmation.not_present_confirmed_vehicle_ids == (vehicle_id,)
+
+    with pytest.raises(ValueError, match="unobserved PhysicalVehicle"):
         TrackingBatch(
             camera_id="camera-1",
             frame_id=3,
             observed_at=NOW,
             vehicles=(),
             ended_track_segment_ids=(),
-            unobserved_physical_vehicle_ids=(vehicle_id,),
-            observation=ObservationStatus(
-                state=ObservationState.DEGRADED,
-                reason=ObservationReason.PARTIAL_FRAME,
-                last_reliable_observed_at=NOW,
-            ),
+            unobserved_physical_vehicle_ids=(),
+            absence_progress=(),
+            observation=OBSERVED,
             full_area_observed=True,
+            all_detections_tracked=True,
             not_present_confirmed_vehicle_ids=(vehicle_id,),
         )
 
@@ -332,6 +351,7 @@ def test_allow_requires_authoritative_session_context() -> None:
             record_version=1,
             created_at=NOW,
             updated_at=NOW,
+            match_deadline_at=NOW,
             authoritative_session_id=ParkingSessionId(10),
         )
 
@@ -349,6 +369,7 @@ def test_allow_requires_authoritative_session_context() -> None:
         record_version=1,
         created_at=NOW,
         updated_at=NOW,
+        match_deadline_at=NOW,
         authoritative_session_id=ParkingSessionId(10),
         authoritative_context=context,
     )
@@ -371,6 +392,22 @@ def test_non_exited_mirror_rejects_partial_exit_metadata() -> None:
             physical_vehicle_id=PhysicalVehicleId(uuid4()),
             physical_termination_origin=PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED,
             physical_exit_evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+        )
+
+
+def test_unconfirmed_mirror_cannot_prebind_a_physical_vehicle() -> None:
+    with pytest.raises(ValueError, match="UNCONFIRMED"):
+        ParkingSessionMirror(
+            parking_session_id=ParkingSessionId(12),
+            administrative_state=SessionAdministrativeState.ACTIVE,
+            physical_presence_state=PhysicalPresenceState.UNCONFIRMED,
+            physical_observation=OBSERVED,
+            context_revision=0,
+            record_version=1,
+            publication_revision=0,
+            created_at=NOW,
+            updated_at=NOW,
+            physical_vehicle_id=PhysicalVehicleId(uuid4()),
         )
 
 

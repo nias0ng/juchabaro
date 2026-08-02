@@ -44,6 +44,13 @@ class ZoneType(str, Enum):
     ENTRY_EXIT = "ENTRY_EXIT"
 
 
+class EntryExitRole(str, Enum):
+    """ENTRY_EXIT 구역이 입차와 출차 중 어느 경계인지 구분한다."""
+
+    ENTRY = "ENTRY"
+    EXIT = "EXIT"
+
+
 class PresenceSignal(str, Enum):
     """구역 기하 계산이 ZoneVisitTracker에 전달하는 삼상태 관측."""
 
@@ -132,6 +139,7 @@ class ZoneDefinition:
     polygon: NormalizedPolygon
     zone_definition_version: ZoneDefinitionVersion
     calibration_reference: str
+    entry_exit_role: EntryExitRole | None = None
     allowed_duration_seconds: float | None = None
     charger_class: str | None = None
     egress_zone_ids: tuple[ZoneId, ...] = ()
@@ -145,6 +153,12 @@ class ZoneDefinition:
         for point in self.polygon:
             if len(point) != 2 or not all(0.0 <= coordinate <= 1.0 for coordinate in point):
                 raise ValueError("zone polygon coordinates must be normalized to [0, 1]")
+
+        is_entry_exit = self.zone_type is ZoneType.ENTRY_EXIT
+        if is_entry_exit != (self.entry_exit_role is not None):
+            raise ValueError(
+                "ENTRY_EXIT requires entry_exit_role; other zone types must not carry it"
+            )
 
         ev_only_values_present = self.allowed_duration_seconds is not None or self.charger_class is not None
         if ev_only_values_present and self.zone_type is not ZoneType.EV_CHARGING:

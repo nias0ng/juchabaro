@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import math
 
 
 class ObservationState(str, Enum):
@@ -65,15 +66,15 @@ def require_aware(value: datetime | None, field_name: str) -> None:
 def require_non_negative(value: int | float, field_name: str) -> None:
     """누적 시간·revision처럼 음수가 될 수 없는 값을 확인한다."""
 
-    if value < 0:
-        raise ValueError(f"{field_name} must be non-negative")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{field_name} must be finite and non-negative")
 
 
 def require_positive(value: int | float, field_name: str) -> None:
     """확인 임계값·record version처럼 양수여야 하는 값을 확인한다."""
 
-    if value <= 0:
-        raise ValueError(f"{field_name} must be positive")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{field_name} must be finite and positive")
 
 
 @dataclass(frozen=True, kw_only=True)

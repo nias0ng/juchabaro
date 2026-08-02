@@ -8,7 +8,13 @@ from typing import Any
 
 import pytest
 
-from src.parking.models import ZoneDefinition, ZoneDefinitionVersion, ZoneId, ZoneType
+from src.parking.models import (
+    EntryExitRole,
+    ZoneDefinition,
+    ZoneDefinitionVersion,
+    ZoneId,
+    ZoneType,
+)
 from src.parking.zone_registry import (
     EV_ZONE_TYPES,
     RESTRICTED_ZONE_TYPES,
@@ -27,7 +33,10 @@ def zone(
     zone_type: str = "GENERAL",
     **optional: Any,
 ) -> dict[str, Any]:
-    return {"zoneId": zone_id, "zoneType": zone_type, "polygon": SQUARE, **optional}
+    payload = {"zoneId": zone_id, "zoneType": zone_type, "polygon": SQUARE, **optional}
+    if zone_type == "ENTRY_EXIT" and "entryExitRole" not in payload:
+        payload["entryExitRole"] = "ENTRY"
+    return payload
 
 
 def write_snapshot(
@@ -56,6 +65,7 @@ def definition(
     version: int = 7,
     calibration_reference: str = "camera-1:v2",
     egress_zone_ids: tuple[ZoneId, ...] = (),
+    entry_exit_role: EntryExitRole | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
@@ -64,6 +74,7 @@ def definition(
         zone_definition_version=ZoneDefinitionVersion(version),
         calibration_reference=calibration_reference,
         egress_zone_ids=egress_zone_ids,
+        entry_exit_role=entry_exit_role,
     )
 
 
@@ -99,14 +110,16 @@ def test_loads_tracked_pilot_deployment_snapshot() -> None:
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(2)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(3)
     assert len(registry.all()) == 9
     assert registry.get(1).zone_type is ZoneType.EV_CHARGING
     assert registry.get(1).allowed_duration_seconds == 7200.0
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)
     assert registry.get(7).zone_type is ZoneType.AISLE
     assert registry.get(8).zone_type is ZoneType.ENTRY_EXIT
+    assert registry.get(8).entry_exit_role is EntryExitRole.ENTRY
     assert registry.get(9).zone_type is ZoneType.ENTRY_EXIT
+    assert registry.get(9).entry_exit_role is EntryExitRole.EXIT
 
 
 def test_accepts_all_canonical_zone_types(tmp_path: Path) -> None:
@@ -158,6 +171,32 @@ def test_rejects_legacy_or_unknown_fields(tmp_path: Path) -> None:
 def test_rejects_legacy_ev_fast_type(tmp_path: Path) -> None:
     with pytest.raises(ZoneRegistryError, match="zoneType"):
         ZoneRegistry.from_file(write_snapshot(tmp_path, [zone(1, "EV_FAST")]))
+
+
+def test_entry_exit_zone_requires_entry_or_exit_role(tmp_path: Path) -> None:
+    missing_role = zone(1, "ENTRY_EXIT")
+    del missing_role["entryExitRole"]
+
+    with pytest.raises(ZoneRegistryError, match="entryExitRole"):
+        ZoneRegistry.from_file(write_snapshot(tmp_path, [missing_role]))
+
+    with pytest.raises(ZoneRegistryError, match="entryExitRole"):
+        ZoneRegistry.from_file(
+            write_snapshot(
+                tmp_path,
+                [zone(1, "ENTRY_EXIT", entryExitRole="BOTH")],
+            )
+        )
+
+
+def test_non_entry_exit_zone_rejects_entry_exit_role(tmp_path: Path) -> None:
+    with pytest.raises(ZoneRegistryError, match="entryExitRole"):
+        ZoneRegistry.from_file(
+            write_snapshot(
+                tmp_path,
+                [zone(1, "GENERAL", entryExitRole="ENTRY")],
+            )
+        )
 
 
 def test_rejects_empty_or_non_array_zones(tmp_path: Path) -> None:

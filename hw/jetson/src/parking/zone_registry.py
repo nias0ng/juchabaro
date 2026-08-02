@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.parking.models import (
+    EntryExitRole,
     NormalizedPolygon,
     ZoneDefinition,
     ZoneDefinitionVersion,
@@ -30,7 +31,7 @@ IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
 _SNAPSHOT_FIELDS = frozenset({"zoneDefinitionVersion", "calibrationReference", "zones"})
 _ZONE_REQUIRED_FIELDS = frozenset({"zoneId", "zoneType", "polygon"})
 _ZONE_OPTIONAL_FIELDS = frozenset(
-    {"allowedDurationSeconds", "chargerClass", "egressZoneIds"}
+    {"entryExitRole", "allowedDurationSeconds", "chargerClass", "egressZoneIds"}
 )
 
 
@@ -141,7 +142,24 @@ class ZoneRegistry:
                 f"{context}.zoneType은 다음 중 하나여야 합니다: {allowed}"
             ) from exc
 
+        has_entry_exit_role = "entryExitRole" in item
+        if zone_type is ZoneType.ENTRY_EXIT and not has_entry_exit_role:
+            raise ZoneRegistryError(
+                f"{context}.entryExitRole은 ENTRY_EXIT 구역에 반드시 필요합니다"
+            )
+        if zone_type is not ZoneType.ENTRY_EXIT and has_entry_exit_role:
+            raise ZoneRegistryError(
+                f"{context}.entryExitRole은 ENTRY_EXIT 구역에만 사용할 수 있습니다"
+            )
+
         polygon = _parse_polygon(item["polygon"], field_name=f"{context}.polygon")
+        entry_exit_role = (
+            _parse_entry_exit_role(
+                item["entryExitRole"], field_name=f"{context}.entryExitRole"
+            )
+            if zone_type is ZoneType.ENTRY_EXIT
+            else None
+        )
         allowed_duration_seconds = _parse_optional_positive_number(
             item.get("allowedDurationSeconds"),
             field_name=f"{context}.allowedDurationSeconds",
@@ -160,6 +178,7 @@ class ZoneRegistry:
                 polygon=polygon,
                 zone_definition_version=version,
                 calibration_reference=calibration_reference,
+                entry_exit_role=entry_exit_role,
                 allowed_duration_seconds=allowed_duration_seconds,
                 charger_class=charger_class,
                 egress_zone_ids=egress_zone_ids,
@@ -275,6 +294,20 @@ def _parse_optional_non_empty_string(value: Any, *, field_name: str) -> str | No
     if value is None:
         return None
     return _parse_non_empty_string(value, field_name=field_name)
+
+
+def _parse_entry_exit_role(
+    value: Any,
+    *,
+    field_name: str,
+) -> EntryExitRole:
+    try:
+        return EntryExitRole(value)
+    except (TypeError, ValueError) as exc:
+        allowed = ", ".join(role.value for role in EntryExitRole)
+        raise ZoneRegistryError(
+            f"{field_name}은 다음 중 하나여야 합니다: {allowed}"
+        ) from exc
 
 
 def _parse_optional_positive_number(value: Any, *, field_name: str) -> float | None:

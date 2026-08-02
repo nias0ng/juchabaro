@@ -143,9 +143,10 @@ def test_durable_incident_transition_and_outbox_roll_back_atomically(
                     physical_vehicle_id, domain_state, observation_state,
                     last_reliable_observed_at_us,
                     absence_trusted_duration_us, absence_confirmation_duration_us,
+                    trusted_sample_max_gap_duration_us,
                     record_version, created_at_us, updated_at_us
                 ) VALUES ('vehicle-incident', 'ACTIVE', 'OBSERVED', 1, 0, 1,
-                          1, 1, 1)
+                          1, 1, 1, 1)
                 """
             )
             connection.execute(
@@ -261,8 +262,9 @@ def test_optimistic_update_increments_version_and_rejects_stale_writer(
                     physical_vehicle_id, domain_state, observation_state,
                     last_reliable_observed_at_us,
                     absence_trusted_duration_us, absence_confirmation_duration_us,
+                    trusted_sample_max_gap_duration_us,
                     record_version, created_at_us, updated_at_us
-                ) VALUES ('vehicle-1', 'CANDIDATE', 'OBSERVED', 1, 0, 1, 1, 1, 1)
+                ) VALUES ('vehicle-1', 'CANDIDATE', 'OBSERVED', 1, 0, 1, 1, 1, 1, 1)
                 """
             )
 

@@ -78,6 +78,7 @@ Observation reason이나 지속 시간 자체는 termination reason이 아니다
 4. `absenceConfirmationDurationSeconds` 동안 대상이나 재식별 후보가 관측되지 않는다.
 
 이 조건을 만족한 결과는 단순 `TRACK_LOST`가 아니라 `NOT_PRESENT_CONFIRMED`다. 현재 모형은 camera 한 대가 전체 구역을 관측한다는 전제를 사용한다. 이 전제가 깨지는 실제 주차장이나 다중 camera 구성은 별도 설계가 필요하다.
+한번 확정한 NOT_PRESENT 사실은 상위 consistency boundary가 종료 transaction을 commit하고 ack할 때까지 반복 전달한다. 최초 threshold 충족 시각을 immutable `occurredAt`으로 보존하며, 재전달이나 재시작 때문에 현재 시각으로 바꾸지 않는다. 후속 sample이 DEGRADED·UNKNOWN이면 새 부재 시간은 누적하지 않지만, 이미 확정한 사실을 취소하지는 않는다. 차량이 다시 관측되면 종료 commit 전 accumulator를 reset한다.
 
 현재 모형에서는 NOT_PRESENT_CONFIRMED를 물리 차량 departure 근거로 사용한다. active ContextBinding 또는 행정 종료 뒤 보존한 session–vehicle correlation이 있으면 Session EXIT의 `FULL_AREA_ABSENCE` evidence가 될 수 있고, 어느 session과도 연결되지 않으면 local child와 Incident를 정리하는 `PHYSICAL_VEHICLE_LEFT` 입력이 된다.
 
@@ -132,6 +133,7 @@ CANDIDATE → CANCELED
 
 - 새 track이 기존 PhysicalVehicle과 동일하다는 근거가 없을 때 Candidate를 만든다.
 - identity confirmation 뒤 ACTIVE가 된다.
+- 현재 adapter는 ByteTrack이 ID를 확정한 track만 domain snapshot으로 낸다. 따라서 첫 snapshot에서 Candidate→ACTIVE를 적용하고 durable snapshot은 ACTIVE로 시작한다. ID가 없는 tentative detection은 aggregate를 만들지 않고 그 sample의 부재 timer와 entry identity 매칭을 모두 멈춘다.
 - segment가 모두 소실되면 ACTIVE를 유지하고 observation을 DEGRADED 또는 UNKNOWN으로 둔다.
 - 재식별되면 새 segment를 같은 PhysicalVehicle에 연결한다.
 
@@ -239,6 +241,8 @@ ENTERING → INSIDE → EXITING → ENDED
 UNKNOWN에서는 현재 state와 timer 하한을 유지한다. `EXITING → ENDED`에는 정상 전체 관측에서 zone 외부 또는 `NOT_PRESENT_CONFIRMED`가 필요하다.
 
 활성 visit은 `zoneId + zoneDefinitionVersion`을 참조한다. 설정 조회 실패는 zone 삭제가 아니므로 `UNKNOWN / DEPENDENCY_UNAVAILABLE`로 둔다. 실행 중 ZoneDefinition hot replacement는 지원하지 않는다. 새 version은 active scope가 없는 통제된 기동에서 적용하며, active scope를 복구해야 하는 기동에는 기존 version을 함께 제공해야 한다.
+
+`ENTRY_EXIT` ZoneDefinition은 `entryExitRole = ENTRY | EXIT`를 반드시 갖는다. EntryMatchCoordinator는 `ENTRY`에서만 입차 attempt를 매칭하며, 같은 sample의 ENTRY 후보가 두 대 이상이면 detector 순서로 임의 매칭하지 않고 보류한다.
 
 `(physicalVehicleId, zoneId)`당 non-terminal ZoneVisit은 하나만 허용한다.
 
@@ -403,6 +407,7 @@ UNKNOWN
 |---|---|---|
 | `parkingConfirmationDurationSeconds` | `[결정] 600` | PARKED 확정에 필요한 trusted stationary 시간 |
 | `absenceConfirmationDurationSeconds` | `[제안값] TBD` | 정상 전체 관측에서 물리 부재 확인 시간 |
+| `trustedSampleMaxGapSeconds` | `[제안값] TBD` | 연속 trusted frame으로 인정할 최대 sample 간격 |
 | `movementConfirmationDurationSeconds` | `[제안값] TBD` | PARKED 뒤 이동 확정 시간 |
 | zone entry/exit confirmation | `[제안값] TBD` | ZoneVisit 진입·이탈 debounce |
 | incident confirm/clear duration | `[제안값] rule별 TBD` | Incident OPEN·RESOLVE debounce |
@@ -410,6 +415,8 @@ UNKNOWN
 | EV allowed duration·clock | `[후속 계약] 법령 근거 필요` | EV_OVERSTAY 값과 UNKNOWN 중 wall-clock 처리 |
 
 설정값을 profile 객체로 감싸지 않는다. 해당 값이 진행 중 판단에 영향을 주면 scope 생성 시 실제 scalar 값을 snapshot한다.
+
+PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `trustedSampleMaxGapSeconds`를 함께 snapshot한다. 배포 설정 변경 뒤에도 기존 차량의 진행 중 부재 판단은 그 값을 사용하고, 새 PhysicalVehicle부터 새 scalar를 적용한다.
 
 `[결정]` 일반 배포의 `parkingConfirmationDurationSeconds`는 600이다. 시연에서는 같은 scalar를 명시적으로 override할 수 있으며 시연 뒤 600으로 복귀한다. 이를 위해 별도 profile 상태를 만들지 않는다.
 
