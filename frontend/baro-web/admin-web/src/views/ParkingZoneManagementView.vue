@@ -481,10 +481,12 @@ const STATS = computed(() => [
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   background: none;
   padding: var(--spacing-sm) var(--spacing-base);
+  white-space: nowrap;
   cursor: pointer;
   color: inherit;
 }
@@ -646,6 +648,7 @@ td {
   font-size: 12px;
   font-weight: 500;
   color: var(--panel-muted-foreground);
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -740,6 +743,7 @@ td {
   font-size: 12px;
   font-weight: 500;
   color: var(--panel-muted-foreground);
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -767,10 +771,12 @@ td {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-sm);
+  flex-shrink: 0;
   border-radius: var(--radius-md);
   padding: var(--spacing-sm) var(--spacing-md);
   font-size: var(--font-size-sm);
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
