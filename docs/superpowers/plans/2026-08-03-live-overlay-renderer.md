@@ -415,8 +415,8 @@ _ZONE_VISIT_COLORS: dict[ZoneVisitState, tuple[int, int, int]] = {
     ZoneVisitState.ENTERING: (0, 220, 220),
     ZoneVisitState.INSIDE: (0, 255, 0),
     ZoneVisitState.EXITING: (0, 165, 255),
-    ZoneVisitState.ENDED: _NEUTRAL_COLOR,
-    ZoneVisitState.CANCELED: _NEUTRAL_COLOR,
+    ZoneVisitState.ENDED: (100, 100, 180),
+    ZoneVisitState.CANCELED: (100, 180, 180),
 }
 _ZONE_VISIT_PRIORITY: tuple[ZoneVisitState, ...] = (
     ZoneVisitState.INSIDE,
@@ -549,7 +549,7 @@ Expected: 3개 모두 FAIL — `_vehicle_status`가 아직 `episode_by_vehicle`�
 _PARKING_EPISODE_COLORS: dict[ParkingState, tuple[int, int, int]] = {
     ParkingState.STOP_PENDING: (0, 255, 255),
     ParkingState.PARKED: (0, 0, 255),
-    ParkingState.MOVE_PENDING: (0, 255, 255),
+    ParkingState.MOVE_PENDING: (255, 0, 255),
 }
 _ACTIVE_PARKING_STATES = frozenset(_PARKING_EPISODE_COLORS)
 ```
