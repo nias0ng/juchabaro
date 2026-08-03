@@ -6,8 +6,8 @@ import jakarta.validation.constraints.NotNull;
 import java.time.OffsetDateTime;
 
 public record HwEntryRequest(
-        @NotBlank String trackingId,
+        @NotBlank String entryAttemptId,
         @NotBlank String recognizedPlateNumber,
-        Double ocrConfidence,                 // Pi가 보냄(참고용), 현재 판정엔 미사용
+        Double ocrConfidence,
         @NotNull OffsetDateTime entryTime
 ) {}

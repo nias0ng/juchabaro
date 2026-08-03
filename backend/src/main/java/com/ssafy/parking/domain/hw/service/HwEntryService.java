@@ -36,7 +36,7 @@ public class HwEntryService {
         if (existing.isPresent()) {
             ParkingSession s = existing.get();
             return HwEntryResponse.matched(AccessDecision.ALLOW, s.getVehicle(),
-                    request.trackingId(), s.getId(), true);
+                    request.entryAttemptId(), s.getId(), true);
         }
 
         // 편집거리 매칭 (등록 ACTIVE 차량 중 최소 거리)
@@ -55,7 +55,7 @@ public class HwEntryService {
 
         // 판정
         if (best == null || bestDist > reviewDistance) {
-            return HwEntryResponse.denied(request.trackingId());        // DENY
+            return HwEntryResponse.denied(request.entryAttemptId());        // DENY
         }
         if (bestDist == 0) {
             LocalDateTime entryKst = request.entryTime()
@@ -63,15 +63,15 @@ public class HwEntryService {
             ParkingSession session = ParkingSession.builder()
                     .vehicle(best)
                     .recognizedPlateNumber(normalized)
-                    .trackingId(request.trackingId())
+                    .entryAttemptId(request.entryAttemptId())
                     .idempotencyKey(idempotencyKey)
                     .entryTime(entryKst)
                     .build();
             parkingSessionRepository.save(session);
             return HwEntryResponse.matched(AccessDecision.ALLOW, best,
-                    request.trackingId(), session.getId(), false);     // ALLOW
+                    request.entryAttemptId(), session.getId(), false);     // ALLOW
         }
         return HwEntryResponse.matched(AccessDecision.REVIEW, best,
-                request.trackingId(), null, false);                    // REVIEW (1글자 차이)
+                request.entryAttemptId(), null, false);                    // REVIEW (1글자 차이)
     }
 }
