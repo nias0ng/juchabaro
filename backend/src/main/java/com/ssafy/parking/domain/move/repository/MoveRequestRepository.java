@@ -11,6 +11,7 @@ import org.springframework.data.repository.query.Param;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> {
 
@@ -72,4 +73,7 @@ public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> 
     List<MoveRequest> findEscalationTargets(
             @Param("escalateThreshold") LocalDateTime escalateThreshold,
             @Param("terminal") java.util.Collection<MoveRequestStatus> terminal);
+
+    Optional<MoveRequest> findByEvent_Id(Long eventId);
+    List<MoveRequest> findByEvent_IdIn(Collection<Long> eventIds);
 }

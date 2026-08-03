@@ -4,6 +4,7 @@ import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.domain.hw.dto.HwIncidentTransitionRequest;
 import com.ssafy.parking.domain.hw.dto.HwPublicationAck;
+import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import com.ssafy.parking.domain.parking.entity.ParkingEvent;
 import com.ssafy.parking.domain.parking.entity.ParkingEventStatus;
@@ -75,7 +76,7 @@ public class HwIncidentService {
         if ("EV_OVERSTAY".equals(req.ruleCode())) {
             notificationDispatcher.dispatch(
                     session.getVehicle().getUser(),
-                    com.ssafy.parking.domain.notification.entity.NotificationType.EV_OVERSTAY,
+                    NotificationType.EV_OVERSTAY,
                     "전기차 충전구역 초과",
                     "충전구역 허용 시간을 초과했습니다. 차량 이동을 부탁드립니다.",
                     event, null, toKst(req.occurredAt()));
