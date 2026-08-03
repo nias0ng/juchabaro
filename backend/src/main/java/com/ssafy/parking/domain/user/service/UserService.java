@@ -13,6 +13,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -71,5 +75,48 @@ public class UserService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
         return MeResponse.from(user);
+    }
+
+    @Transactional
+    public MeResponse updateMe(Long userId, UpdateMeRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+
+        boolean hasName = request.name() != null && !request.name().isBlank();
+        boolean hasNewPassword = request.newPassword() != null && !request.newPassword().isBlank();
+
+        if (!hasName && !hasNewPassword) {
+            throw new BusinessException(ErrorCode.USER_UPDATE_INVALID);
+        }
+
+        if (hasName) {
+            user.changeName(request.name());
+        }
+
+        if (hasNewPassword) {
+            if (request.currentPassword() == null
+                    || !passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+                throw new BusinessException(ErrorCode.CURRENT_PASSWORD_MISMATCH);
+            }
+            user.changePassword(passwordEncoder.encode(request.newPassword()));
+        }
+
+        return MeResponse.from(user);
+    }
+
+    @Transactional
+    public WithdrawalResponse withdraw(Long userId, WithdrawalRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+
+        if (request.currentPassword() == null
+                || !passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.CURRENT_PASSWORD_MISMATCH);
+        }
+
+        user.withdraw(); // status = DELETED
+        OffsetDateTime withdrawnAt = LocalDateTime.now()
+                .atZone(ZoneId.of("Asia/Seoul")).toOffsetDateTime();
+        return new WithdrawalResponse(user.getId(), user.getStatus().name(), withdrawnAt);
     }
 }
