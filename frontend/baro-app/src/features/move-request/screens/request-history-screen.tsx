@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 
-import { AsyncStateView, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { AsyncStateView, GradientScreenBackground, ScreenHeader, Stack } from '@/components/ui';
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
@@ -20,7 +20,7 @@ export default function RequestHistoryScreen() {
         : undefined;
 
   return (
-    <Screen scroll edges={['top', 'right', 'left']}>
+    <GradientScreenBackground edges={['top', 'right', 'left']}>
       <ScreenHeader title="요청 내역" style={styles.header} />
 
       <AsyncStateView message={statusMessage} fill={false} style={styles.statusContainer}>
@@ -40,6 +40,6 @@ export default function RequestHistoryScreen() {
           ))}
         </Stack>
       </AsyncStateView>
-    </Screen>
+    </GradientScreenBackground>
   );
 }
