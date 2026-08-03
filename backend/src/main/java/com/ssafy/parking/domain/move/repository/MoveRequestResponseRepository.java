@@ -7,4 +7,5 @@ import java.util.List;
 
 public interface MoveRequestResponseRepository extends JpaRepository<MoveRequestResponse, Long> {
     List<MoveRequestResponse> findByRequest_IdOrderByRespondedAtAsc(Long requestId);
+    List<MoveRequestResponse> findByRequest_IdInOrderByRespondedAtAsc(java.util.Collection<Long> requestIds);
 }

@@ -25,9 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -142,7 +140,15 @@ public class MoveRequestService {
             case SENT -> moveRequestRepository.findSent(userId, status, pageable);
             case ALL -> moveRequestRepository.findAllScoped(userId, status, pageable);
         };
-        return MoveRequestListResponse.from(result);
+
+        List<Long> requestIds = result.getContent().stream().map(MoveRequest::getId).toList();
+        Map<Long, Integer> estimatedMinutesMap = new HashMap<>();
+        if (!requestIds.isEmpty()) {
+            for (MoveRequestResponse r : moveRequestResponseRepository.findByRequest_IdInOrderByRespondedAtAsc(requestIds)) {
+                estimatedMinutesMap.put(r.getRequest().getId(), r.getEstimatedMinutes()); // asc라 최신 응답이 덮어씀
+            }
+        }
+        return MoveRequestListResponse.from(result, estimatedMinutesMap);
     }
 
     @Transactional(readOnly = true)
@@ -210,6 +216,23 @@ public class MoveRequestService {
         } else {
             mr.markNeedAdmin();
             event.changeStatus(ParkingEventStatus.NEED_ADMIN);
+        }
+
+        // 신고자(요청자)에게 응답 도착 알림 (자동요청이면 requester가 없어 생략)
+        if (mr.getRequester() != null) {
+            String body = (type == MoveResponseType.WILL_MOVE)
+                    ? "차주가 약 " + minutes + "분 후 이동 예정으로 응답했습니다."
+                    : "차주가 지금은 이동이 어렵다고 응답했습니다.";
+            Notification notification = Notification.builder()
+                    .user(mr.getRequester())
+                    .event(event)
+                    .request(mr)
+                    .notificationType(NotificationType.MOVE_RESPONSE)
+                    .title("이동 요청 응답 도착")
+                    .body(body)
+                    .sentAt(now)
+                    .build();
+            notificationRepository.save(notification);
         }
 
         return MoveResponseCreateResponse.from(response, mr, event);
