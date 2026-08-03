@@ -46,6 +46,9 @@ public class SecurityConfig {
                                 "/images/**",
                                 "/hw/**"
                         ).permitAll()
+                        .requestMatchers("/admin/**").hasRole("ADMIN")
+                        .requestMatchers(org.springframework.http.HttpMethod.PATCH, "/zones/**").hasRole("ADMIN")
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/zones/import").hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(hwApiKeyFilter, UsernamePasswordAuthenticationFilter.class)
