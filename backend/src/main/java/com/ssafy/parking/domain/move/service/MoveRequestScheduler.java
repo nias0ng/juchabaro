@@ -3,9 +3,9 @@ package com.ssafy.parking.domain.move.service;
 import com.ssafy.parking.domain.move.entity.MoveRequest;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
 import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
-import com.ssafy.parking.domain.notification.entity.Notification;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.repository.NotificationRepository;
+import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -23,7 +23,7 @@ public class MoveRequestScheduler {
             MoveRequestStatus.COMPLETED, MoveRequestStatus.CANCELLED, MoveRequestStatus.NEED_ADMIN);
 
     private final MoveRequestRepository moveRequestRepository;
-    private final NotificationRepository notificationRepository;
+    private final NotificationDispatcher notificationDispatcher;
 
     @Scheduled(fixedDelay = 60_000) // 1분 주기
     @Transactional
@@ -40,15 +40,12 @@ public class MoveRequestScheduler {
                 MoveRequestStatus.SENT, MoveRequestStatus.RESPONDED, sentThreshold, now);
         for (MoveRequest mr : targets) {
             mr.markReminderSent(now);
-            notificationRepository.save(Notification.builder()
-                    .user(mr.getTargetVehicle().getUser())
-                    .event(mr.getEvent())
-                    .request(mr)
-                    .notificationType(NotificationType.REMINDER)
-                    .title("차량 이동 재요청")
-                    .body("아직 이동이 확인되지 않았습니다. 차량 이동을 다시 요청드립니다.")
-                    .sentAt(now)
-                    .build());
+            notificationDispatcher.dispatch(
+                    mr.getTargetVehicle().getUser(),
+                    NotificationType.REMINDER,
+                    "차량 이동 재요청",
+                    "아직 이동이 확인되지 않았습니다. 차량 이동을 다시 요청드립니다.",
+                    mr.getEvent(), mr, now);
         }
     }
 

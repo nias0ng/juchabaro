@@ -6,6 +6,10 @@ app:
     api-key: ${HW_API_KEY:local-dev-hw-key-change-me}
   plate:
     review-distance: 1
+  push:
+    provider: log
+    expo:
+      url: https://exp.host/--/api/v2/push/send
 
 server:
   port: ${SERVER_PORT:8080}

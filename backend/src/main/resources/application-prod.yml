@@ -18,3 +18,7 @@ management:
   endpoint:
     health:
       show-details: never
+
+app:
+  push:
+    provider: expo
