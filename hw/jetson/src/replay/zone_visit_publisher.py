@@ -1,11 +1,15 @@
 """ZoneVisit 상태 전이를 JSON Lines 파일로 발행한다(465/T-17).
 
-`restricted_zone`은 `VehicleContext`가 없으면 항상 `confirmable=False`라
-(`rules/restricted_zone.py`), 파일럿 영상만으로 리플레이하면 백엔드 입차
-이벤트가 없어 사건이 outbox까지 확정되지 않는다. §4.7 임계값 산출은 확정된
-사건이 아니라 ZoneVisit의 ENTERING→INSIDE 오탐 횟수를 사람이 라벨링한
-정답과 비교해 측정하므로, VehicleContext 유무와 무관하게 모든 방문 전이를
-그대로 기록해야 한다.
+파일럿 영상만으로 리플레이하면 백엔드 입차 이벤트가 없어 `ParkingSession`이
+하나도 만들어지지 않고, 그러면 어떤 전이도 outbox까지 확정되지 않는다
+(`scripts/replay_pilot_video.py` 모듈 docstring에 세 전이별 차단 지점을
+정리해 두었다. 실측: `tests/replay/test_zone_visit_determinism.py::
+test_events_file_stays_empty_without_backend_session`). 반면 ZoneVisit은
+session correlation과 무관하게 기하·시간만으로 진행하므로 항상 채워진다.
+
+§4.7 임계값 산출은 확정된 사건이 아니라 ZoneVisit의 ENTERING→INSIDE 오탐
+횟수를 사람이 라벨링한 정답과 비교해 측정하므로, 세션 유무와 무관하게 모든
+방문 전이를 그대로 기록해야 한다.
 """
 
 from __future__ import annotations

@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from src.domain.models import ObservationState, ObservationStatus
 from src.parking.models import ZoneVisit, ZoneVisitState
 from src.replay.zone_visit_publisher import (
     DedupingZoneVisitPublisher,
@@ -18,11 +19,26 @@ from src.replay.zone_visit_publisher import (
 )
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
+# tests/storage/test_parking_aggregate_repositories.py의 `_visit()`과 같은
+# 형태로 필수 필드를 모두 채운다 — 464가 ZoneVisit에 versioning·observation·
+# trusted timer 필드를 추가하면서 최소 생성자가 사라졌다.
 VISIT = ZoneVisit(
     visit_id=UUID(int=1),
     physical_vehicle_id=UUID(int=2),
     zone_id=1,
+    zone_definition_version=3,
     state=ZoneVisitState.INSIDE,
+    observation=ObservationStatus(
+        state=ObservationState.OBSERVED, last_reliable_observed_at=T0
+    ),
+    entry_trusted_seconds=1.0,
+    exit_trusted_seconds=0.0,
+    entry_confirmation_seconds=1.0,
+    exit_confirmation_seconds=1.0,
+    trusted_sample_max_gap_seconds=1.0,
+    record_version=1,
+    created_at=T0,
+    updated_at=T0,
     entered_candidate_at=T0,
     entered_at=T0,
 )
@@ -40,7 +56,8 @@ def test_zone_visit_to_jsonable_uses_camel_case_wire_format():
         "enteredCandidateAt": T0.isoformat(),
         "enteredAt": T0.isoformat(),
         "exitCandidateAt": None,
-        "exitedAt": None,
+        "endedAt": None,
+        "terminationReason": None,
     }
 
 
