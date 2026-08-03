@@ -11,6 +11,7 @@ import pytest
 from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.live.live_stream_loop import (
     LatestFrameBuffer,
+    LiveStreamLoop,
     _placeholder_jpeg,
     _throttle_sleep_seconds,
     _PLACEHOLDER_HEIGHT,
@@ -45,7 +46,7 @@ def test_throttle_sleep_seconds_returns_zero_when_slower_than_target() -> None:
 
 
 def test_placeholder_jpeg_returns_decodable_bytes() -> None:
-    jpeg_bytes = _placeholder_jpeg("카메라 연결 끊김")
+    jpeg_bytes = _placeholder_jpeg("CAMERA DISCONNECTED")
 
     assert isinstance(jpeg_bytes, bytes)
     assert len(jpeg_bytes) > 0
@@ -86,15 +87,23 @@ class _FramePipeline:
 
 
 def test_live_stream_loop_requires_zones_or_render() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
-
     with pytest.raises(ValueError, match="zones.*render|render.*zones"):
         LiveStreamLoop(_FramePipeline())
 
 
-def test_live_stream_loop_publishes_rendered_frames_and_stops_cleanly() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
+def test_live_stream_loop_rejects_non_positive_target_fps() -> None:
+    with pytest.raises(ValueError, match="target_fps"):
+        LiveStreamLoop(_FramePipeline(), render=lambda *args: b"jpeg", target_fps=0)
 
+
+def test_live_stream_loop_rejects_negative_reconnect_backoff_seconds() -> None:
+    with pytest.raises(ValueError, match="reconnect_backoff_seconds"):
+        LiveStreamLoop(
+            _FramePipeline(), render=lambda *args: b"jpeg", reconnect_backoff_seconds=-1.0
+        )
+
+
+def test_live_stream_loop_publishes_rendered_frames_and_stops_cleanly() -> None:
     pipeline = _FramePipeline()
     rendered = []
 
@@ -117,8 +126,6 @@ def test_live_stream_loop_publishes_rendered_frames_and_stops_cleanly() -> None:
 
 
 def test_live_stream_loop_falls_back_to_placeholder_when_render_fails() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
-
     pipeline = _FramePipeline()
 
     def failing_render(frame, tracking_batch, result) -> bytes:
@@ -138,8 +145,6 @@ def test_live_stream_loop_falls_back_to_placeholder_when_render_fails() -> None:
 
 
 def test_live_stream_loop_reconnects_after_frame_source_error() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
-
     pipeline = _FramePipeline(fail_times=1)
     recovered = Event()
     original_process = pipeline.process_next_frame
@@ -168,53 +173,24 @@ def test_live_stream_loop_reconnects_after_frame_source_error() -> None:
     assert pipeline.close_count == 2  # 재연결 close + 최종 close
 
 
-def test_live_stream_loop_reopens_for_replay_on_end_of_video_by_default() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
-
-    pipeline = _FramePipeline(eov_times=1)
-    resumed = Event()
-    original_process = pipeline.process_next_frame
-
-    def process_next_frame(*, frame_observer=None):
-        result = original_process(frame_observer=frame_observer)
-        if pipeline.calls == pipeline._eov_times + 1:
-            resumed.set()
-        return result
-
-    pipeline.process_next_frame = process_next_frame  # type: ignore[method-assign]
-
-    loop = LiveStreamLoop(pipeline, render=lambda *args: b"rendered-jpeg", target_fps=1000.0)
-
-    loop.start()
-    assert resumed.wait(timeout=1.0)
-    loop.stop()
-
-    assert loop.failure is None
-    assert pipeline.open_count == 2  # 최초 open + 반복재생을 위한 reopen
-    assert pipeline.close_count == 2  # reopen close + 최종 close
-
-
-def test_live_stream_loop_halts_on_end_of_video_when_looping_disabled() -> None:
-    from src.live.live_stream_loop import LiveStreamLoop
-
+def test_live_stream_loop_halts_on_end_of_video() -> None:
     pipeline = _FramePipeline(eov_times=1)
     loop = LiveStreamLoop(
         pipeline,
         render=lambda *args: b"rendered-jpeg",
-        loop_on_end_of_video=False,
         target_fps=1000.0,
     )
 
     loop.start()
-    # loop_on_end_of_video=False이면 _loop()가 스스로 return해 스레드가 끝나고,
-    # _run()의 finally가 pipeline.close()를 호출한다 — 이 close 호출을 기다려야
+    # EndOfVideo가 나면 _loop()가 스스로 return해 스레드가 끝나고, _run()의
+    # finally가 pipeline.close()를 호출한다 — 이 close 호출을 기다려야
     # "스레드가 이미 끝났는지"를 뒤이은 stop()과 경쟁 조건 없이 확인할 수 있다.
     assert pipeline.closed.wait(timeout=1.0)
     loop.stop()
 
     assert loop.failure is None
     assert loop.is_running is False
-    assert pipeline.open_count == 1  # reopen 없음
+    assert pipeline.open_count == 1  # reopen 없음(반복재생 없음)
     assert pipeline.calls == 1
     jpeg_bytes = loop.latest_jpeg()
     assert jpeg_bytes is not None

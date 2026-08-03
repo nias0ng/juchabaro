@@ -1,9 +1,11 @@
 """MonitoringPipeline을 백그라운드 스레드에서 돌리며 오버레이 JPEG를 게시한다.
 
 `MonitoringWorker`(`src/application/monitoring_worker.py`)를 재사용하지 않는다 —
-카메라 재연결 백오프, 리허설 영상 반복재생, 프레임레이트 캡 같은 데모 전용
-정책이 있어 `scripts/replay_pilot_video.py`처럼
+카메라 재연결 백오프, 프레임레이트 캡 같은 데모 전용 정책이 있어
+`scripts/replay_pilot_video.py`처럼
 `MonitoringPipeline.process_next_frame()`을 직접 호출하는 자체 루프가 필요하다.
+리허설 영상이 끝나면(`EndOfVideo`) 반복재생하지 않고 정지 안내 프레임을 게시한
+채 루프가 스스로 끝난다.
 """
 
 from __future__ import annotations
@@ -63,7 +65,11 @@ def _throttle_sleep_seconds(elapsed_seconds: float, *, target_fps: float = _TARG
 
 
 def _placeholder_jpeg(message: str) -> bytes:
-    """카메라 재연결 대기·리허설 종료 등 판정 프레임이 없을 때 보여줄 안내 프레임."""
+    """카메라 재연결 대기·리허설 종료 등 판정 프레임이 없을 때 보여줄 안내 프레임.
+
+    `cv2.putText`는 OpenCV Hershey 폰트를 사용해 ASCII만 그릴 수 있다 — 반드시
+    영문 메시지만 넘겨야 한다.
+    """
 
     canvas = np.zeros((_PLACEHOLDER_HEIGHT, _PLACEHOLDER_WIDTH, 3), dtype=np.uint8)
     cv2.putText(
@@ -87,15 +93,17 @@ class LiveStreamLoop:
         *,
         zones: ZoneRegistry | None = None,
         jpeg_quality: int = 80,
-        loop_on_end_of_video: bool = True,
         reconnect_backoff_seconds: float = _RECONNECT_BACKOFF_SECONDS,
         target_fps: float = _TARGET_FPS,
         render: RenderFn | None = None,
     ) -> None:
         if render is None and zones is None:
             raise ValueError("zones 또는 render 중 하나는 반드시 지정해야 합니다")
+        if target_fps <= 0:
+            raise ValueError("target_fps는 0보다 커야 합니다")
+        if reconnect_backoff_seconds < 0:
+            raise ValueError("reconnect_backoff_seconds는 음수일 수 없습니다")
         self._pipeline = pipeline
-        self._loop_on_end_of_video = loop_on_end_of_video
         self._reconnect_backoff_seconds = reconnect_backoff_seconds
         self._target_fps = target_fps
         self._render: RenderFn = render or (
@@ -107,6 +115,9 @@ class LiveStreamLoop:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
+        self._reconnecting_placeholder_jpeg = _placeholder_jpeg("CAMERA DISCONNECTED - RECONNECTING")
+        self._video_ended_placeholder_jpeg = _placeholder_jpeg("VIDEO ENDED")
+        self._render_error_placeholder_jpeg = _placeholder_jpeg("RENDER ERROR")
 
     @property
     def failure(self) -> Exception | None:
@@ -165,20 +176,31 @@ class LiveStreamLoop:
         while not self._stop_requested.is_set():
             started_at = time.monotonic()
             try:
-                self._pipeline.process_next_frame(frame_observer=self._on_frame)
-            except EndOfVideo:
-                if not self._reopen_for_replay():
+                if not self._process_one_frame():
                     return
-                continue
-            except FrameSourceError as error:
-                LOGGER.warning("카메라 연결이 끊겼습니다: %s", error)
-                self._buffer.publish(_placeholder_jpeg("카메라 연결 끊김 - 재연결 시도 중"))
-                self._reconnect()
-                continue
-            elapsed = time.monotonic() - started_at
-            wait_seconds = _throttle_sleep_seconds(elapsed, target_fps=self._target_fps)
-            if wait_seconds > 0.0:
-                self._stop_requested.wait(wait_seconds)
+            finally:
+                elapsed = time.monotonic() - started_at
+                wait_seconds = _throttle_sleep_seconds(elapsed, target_fps=self._target_fps)
+                if wait_seconds > 0.0:
+                    self._stop_requested.wait(wait_seconds)
+
+    def _process_one_frame(self) -> bool:
+        """한 프레임을 처리한다.
+
+        Returns: 루프를 계속해야 하면 True, 끝내야 하면 False(리허설 영상 종료).
+        """
+
+        try:
+            self._pipeline.process_next_frame(frame_observer=self._on_frame)
+        except EndOfVideo:
+            LOGGER.info("리허설 영상이 끝나 루프를 종료합니다.")
+            self._buffer.publish(self._video_ended_placeholder_jpeg)
+            return False
+        except FrameSourceError as error:
+            LOGGER.warning("카메라 연결이 끊겼습니다: %s", error)
+            self._buffer.publish(self._reconnecting_placeholder_jpeg)
+            self._reconnect()
+        return True
 
     def _reconnect(self) -> None:
         """`stop()`이 호출되거나 재연결에 성공할 때까지 백오프하며 재시도한다."""
@@ -191,21 +213,8 @@ class LiveStreamLoop:
                 self._pipeline.close()
                 self._pipeline.open()
                 return
-            except FrameSourceError as error:
+            except Exception as error:
                 LOGGER.warning("재연결 실패, 다시 시도합니다: %s", error)
-
-    def _reopen_for_replay(self) -> bool:
-        """리허설 영상이 끝났을 때 반복재생하거나 정지 안내를 게시한다.
-
-        Returns: 반복재생을 위해 다시 열었으면 True, 루프를 끝내야 하면 False.
-        """
-
-        if not self._loop_on_end_of_video:
-            self._buffer.publish(_placeholder_jpeg("리허설 영상 종료"))
-            return False
-        self._pipeline.close()
-        self._pipeline.open()
-        return True
 
     def _on_frame(
         self,
@@ -217,5 +226,5 @@ class LiveStreamLoop:
             jpeg_bytes = self._render(frame, tracking_batch, result)
         except Exception:
             LOGGER.exception("오버레이 렌더링에 실패해 placeholder로 대체합니다.")
-            jpeg_bytes = _placeholder_jpeg("렌더링 오류")
+            jpeg_bytes = self._render_error_placeholder_jpeg
         self._buffer.publish(jpeg_bytes)
