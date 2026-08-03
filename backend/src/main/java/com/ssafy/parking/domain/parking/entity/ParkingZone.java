@@ -45,6 +45,13 @@ public class ParkingZone extends BaseEntity {
     @Column(name = "status", length = 20)
     private ParkingZoneStatus status;
 
+    @Column(name = "hw_zone_id", unique = true)
+    private Integer hwZoneId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "entry_exit_role", length = 10)
+    private EntryExitRole entryExitRole;
+
     @Builder
     private ParkingZone(
             String zoneNumber,
@@ -52,7 +59,9 @@ public class ParkingZone extends BaseEntity {
             String floor,
             String geometryData,
             Integer allowedMinutes,
-            ParkingZoneStatus status
+            ParkingZoneStatus status,
+            Integer hwZoneId,
+            EntryExitRole entryExitRole
     ) {
         this.zoneNumber = zoneNumber;
         this.zoneType = zoneType;
@@ -60,5 +69,23 @@ public class ParkingZone extends BaseEntity {
         this.geometryData = geometryData;
         this.allowedMinutes = allowedMinutes;
         this.status = status;
+        this.hwZoneId = hwZoneId;
+        this.entryExitRole = entryExitRole;
+    }
+
+    public void updateDefinition(
+            ParkingZoneType zoneType,
+            Integer hwZoneId,
+            EntryExitRole entryExitRole,
+            Integer allowedMinutes,
+            String geometryData,
+            String floor
+    ) {
+        this.zoneType = zoneType;
+        this.hwZoneId = hwZoneId;
+        this.entryExitRole = entryExitRole;
+        this.allowedMinutes = allowedMinutes;
+        this.geometryData = geometryData;
+        this.floor = floor;
     }
 }

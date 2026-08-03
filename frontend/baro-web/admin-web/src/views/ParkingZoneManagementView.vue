@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Accessibility, Car, ChevronDown, LayoutGrid, Pencil, Plug, Search } from '@lucide/vue'
 
+import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -59,24 +60,10 @@ const floor = ref<FloorKey>('B1')
 const typeFilter = ref<SpotType | null>(null)
 const statusFilter = ref<'OCCUPIED' | 'EMPTY' | 'VIOLATION' | null>(null)
 const codeQuery = ref('')
-const openDropdown = ref<DropdownName | null>(null)
 const selectedCode = ref<string | null>(null)
 const editDraft = ref<EditDraft | null>(null)
 
-const filterBarRef = ref<HTMLElement | null>(null)
-
-function handleClickOutside(event: MouseEvent) {
-  if (filterBarRef.value && !filterBarRef.value.contains(event.target as Node)) {
-    openDropdown.value = null
-  }
-}
-
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
-
-function toggleDropdown(name: DropdownName) {
-  openDropdown.value = openDropdown.value === name ? null : name
-}
+const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
 const realSpots = computed(() => spots.value.filter((s): s is ParkingSpot => s !== null))
 const zoneStats = computed(() => computeZoneStats(realSpots.value))

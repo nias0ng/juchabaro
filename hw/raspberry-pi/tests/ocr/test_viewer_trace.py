@@ -227,6 +227,7 @@ class FakeAggregator:
             valid_frames=len(candidate_tuple),
             vote_count=len(candidate_tuple),
             vote_ratio=1.0,
+            winner_rec_score=0.9,
         )
 
 
@@ -380,6 +381,7 @@ class ViewerTraceTest(unittest.TestCase):
         self.assertIsInstance(run.result, PlateReadResult)
         self.assertEqual(run.result.status, ReadStatus.SUCCESS)
         self.assertEqual(run.result.plate_number, PLATE_NUMBER)
+        self.assertEqual(run.result.rec_score, 0.9)
 
         pipeline_call = run.trace.pipeline_call
         self.assertIsNotNone(pipeline_call)

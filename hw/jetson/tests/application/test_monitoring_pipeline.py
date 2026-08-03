@@ -377,3 +377,72 @@ def test_actuator_planner_and_port_must_be_injected_together() -> None:
             _FrameWorkflow(),
             actuator_command_planner=_ActuatorPlanner(),
         )
+
+
+def test_process_next_frame_calls_frame_observer_after_commit() -> None:
+    frame = SimpleNamespace(calibration_id="pilot-v1")
+    frame_source = _FrameSource([frame])
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(frame_source, tracking, workflow)
+    observed: list[tuple] = []
+
+    result = pipeline.process_next_frame(
+        frame_observer=lambda f, batch, r: observed.append((f, batch, r))
+    )
+
+    assert len(observed) == 1
+    observed_frame, observed_batch, observed_result = observed[0]
+    assert observed_frame is frame
+    assert observed_batch in workflow.batches
+    assert observed_result is result
+    assert observed_result is workflow.results[0]
+
+
+def test_process_next_frame_skips_observer_when_capture_fails() -> None:
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(_FailingFrameSource([]), tracking, workflow)
+    observed: list[tuple] = []
+
+    with pytest.raises(FrameSourceError, match="camera unavailable"):
+        pipeline.process_next_frame(
+            frame_observer=lambda f, batch, r: observed.append((f, batch, r))
+        )
+
+    assert observed == []
+
+
+def test_process_next_frame_skips_observer_when_tracking_fails() -> None:
+    frame = SimpleNamespace(calibration_id="pilot-v1", captured_at=OBSERVED_AT)
+    tracking = _TrackingPipeline(process_error=TrackingError("inference failed"))
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(_FrameSource([frame]), tracking, workflow)
+    observed: list[tuple] = []
+
+    with pytest.raises(TrackingError, match="inference failed"):
+        pipeline.process_next_frame(
+            frame_observer=lambda f, batch, r: observed.append((f, batch, r))
+        )
+
+    assert observed == []
+
+
+def test_run_threads_frame_observer_into_every_frame() -> None:
+    frames = [
+        SimpleNamespace(calibration_id="pilot-v1"),
+        SimpleNamespace(calibration_id="other"),
+    ]
+    frame_source = _FrameSource(frames)
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(frame_source, tracking, workflow)
+    observed: list[tuple] = []
+
+    frame_count = pipeline.run(
+        frame_observer=lambda f, batch, r: observed.append((f, batch, r))
+    )
+
+    assert frame_count == 2
+    assert [entry[0] for entry in observed] == frames
+    assert [entry[2] for entry in observed] == workflow.results

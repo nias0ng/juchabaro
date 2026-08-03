@@ -20,25 +20,34 @@ commit 실패 시 DB rollback과 함께 runtime owner도 복구해야 한다.
 메모리에 보존하지 않는다. 04 계약의 pending handoff workflow가 durable terminal
 snapshot을 조회해 PARKED·UNPARKED를 materialize해야 한다.
 
-BlockingRelation tracker는 아직 이 조립기 범위가 아니다. 따라서 현재
-RuleContext와 결과의 relation tuple은 명시적으로 비어 있다.
+BlockingRelation 후보는 PARKED 차량의 assignment가 참조하는 egress AISLE
+zone과 다른 차량 bbox의 overlap으로 계산한다(§11). 이미 non-terminal인
+관계는 새 후보 계산과 무관하게 매 frame 계속 재평가해 이동만으로 조용히
+멈추지 않게 한다. durable 복원(``restore_active``)은 아직 BlockingRelation
+repository가 없어 빈 tuple만 받는다 — restart 뒤 진행 중이던 관계는
+geometry가 다시 confirm될 때까지 새 CANDIDATE로 재시작한다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 import math
 
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking import assignment_resolver
+from src.parking.blocking_relation_tracker import BlockingRelationTracker
 from src.parking.geometry import overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
+    BlockingRelation,
+    BlockingRelationState,
     Incident,
     IncidentKeyScope,
     IncidentReduction,
     IncidentTransition,
+    ParkingAssignment,
     ParkingEpisode,
     ParkingPipelineResult,
     ParkingState,
@@ -69,6 +78,22 @@ from src.tracking.models import (
 )
 
 
+_BlockingCandidateKey = tuple[PhysicalVehicleId, PhysicalVehicleId, ZoneId]
+
+
+@dataclass
+class _VehicleFrame:
+    """pass 1이 모은, pass 3의 규칙 평가에 필요한 차량별 중간 결과."""
+
+    vehicle: PhysicalVehicleSnapshot
+    context: SessionContext | None
+    entry_attempt_id: EntryAttemptId | None
+    observation: ObservationStatus
+    assignment: ParkingAssignment | None
+    active_visits: tuple[ZoneVisit, ...]
+    episode: ParkingEpisode | None
+
+
 _RULE_EVALUATORS = (
     restricted_zone.evaluate,
     ev_overstay.evaluate,
@@ -87,6 +112,7 @@ class ParkingPipeline:
         zone_visit_tracker: ZoneVisitTracker,
         parking_episode_tracker: ParkingEpisodeTracker,
         incident_reducer: IncidentReducer,
+        blocking_relation_tracker: BlockingRelationTracker,
         min_overlap_ratio: float,
         assignment_min_overlap_ratio: float,
         assignment_ambiguous_margin: float,
@@ -104,31 +130,34 @@ class ParkingPipeline:
         self._zone_visit_tracker = zone_visit_tracker
         self._parking_episode_tracker = parking_episode_tracker
         self._incident_reducer = incident_reducer
+        self._blocking_relation_tracker = blocking_relation_tracker
         self._min_overlap_ratio = min_overlap_ratio
         self._assignment_min_overlap_ratio = assignment_min_overlap_ratio
         self._assignment_ambiguous_margin = assignment_ambiguous_margin
 
-    def checkpoint_state(self) -> tuple[object, object, object]:
+    def checkpoint_state(self) -> tuple[object, object, object, object]:
         """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
 
         return (
             self._zone_visit_tracker.checkpoint_state(),
             self._parking_episode_tracker.checkpoint_state(),
             self._incident_reducer.checkpoint_state(),
+            self._blocking_relation_tracker.checkpoint_state(),
         )
 
     def restore_state(
         self,
-        checkpoint: tuple[object, object, object],
+        checkpoint: tuple[object, object, object, object],
     ) -> None:
-        """DB rollback과 함께 세 owner를 같은 frame 전 시점으로 되돌린다."""
+        """DB rollback과 함께 네 owner를 같은 frame 전 시점으로 되돌린다."""
 
-        if len(checkpoint) != 3:
+        if len(checkpoint) != 4:
             raise ValueError("invalid ParkingPipeline checkpoint")
-        visit_state, episode_state, incident_state = checkpoint
+        visit_state, episode_state, incident_state, relation_state = checkpoint
         self._zone_visit_tracker.restore_state(visit_state)
         self._parking_episode_tracker.restore_state(episode_state)
         self._incident_reducer.restore_state(incident_state)
+        self._blocking_relation_tracker.restore_state(relation_state)
 
     def restore_active(
         self,
@@ -136,12 +165,19 @@ class ParkingPipeline:
         zone_visits: tuple[ZoneVisit, ...],
         parking_episodes: tuple[ParkingEpisode, ...],
         incidents: tuple[Incident, ...],
+        blocking_relations: tuple[BlockingRelation, ...] = (),
     ) -> None:
-        """durable active aggregate를 끊은 timer chain으로 기동 복원한다."""
+        """durable active aggregate를 끊은 timer chain으로 기동 복원한다.
+
+        ``blocking_relations``는 durable BlockingRelation repository가 아직
+        없어 기본값이 빈 tuple이다. restart 뒤 진행 중이던 관계는 새
+        CANDIDATE로 재시작한다.
+        """
 
         self._zone_visit_tracker.restore_active(zone_visits)
         self._parking_episode_tracker.restore_active(parking_episodes)
         self._incident_reducer.restore_active(incidents)
+        self._blocking_relation_tracker.restore_active(blocking_relations)
 
     def process(
         self,
@@ -168,7 +204,10 @@ class ParkingPipeline:
         parking_transitions: list[ParkingTransition] = []
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
+        frames: dict[PhysicalVehicleId, _VehicleFrame] = {}
 
+        # pass 1: 차량별 geometry·scope 갱신. BlockingRelation 후보는 모든
+        # 차량의 assignment를 알아야 계산할 수 있어 규칙 평가보다 뒤로 미룬다.
         for vehicle in batch.vehicles:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
@@ -240,22 +279,45 @@ class ParkingPipeline:
                     vehicle.physical_vehicle_id
                 )
             )
-            rule_context = RuleContext(
+            frames[vehicle.physical_vehicle_id] = _VehicleFrame(
                 vehicle=vehicle,
+                context=context,
+                entry_attempt_id=entry_attempt_id,
+                observation=observation,
+                assignment=assignment,
+                active_visits=active_visits,
+                episode=current_episode,
+            )
+
+        # pass 2: 이번 frame의 BlockingRelation 후보와 이미 non-terminal인
+        # 관계를 함께 재평가한다.
+        blocking_relation_updates = self._process_blocking_relations(
+            batch,
+            frames,
+            incident_updates=incident_updates,
+            incident_transitions=incident_transitions,
+        )
+
+        # pass 3: 이제 이번 frame의 BlockingRelation snapshot이 확정됐으니
+        # 차량별 규칙을 평가한다.
+        for vehicle_id, frame in frames.items():
+            rule_context = RuleContext(
+                vehicle=frame.vehicle,
                 observation=batch.observation,
-                session_context=context,
-                active_zone_visits=active_visits,
-                parking_episode=current_episode,
-                parking_assignment=assignment,
-                # BlockingRelation tracker는 후속 범위다.
-                blocking_relations=(),
+                session_context=frame.context,
+                active_zone_visits=frame.active_visits,
+                parking_episode=frame.episode,
+                parking_assignment=frame.assignment,
+                blocking_relations=self._blocking_relation_tracker.active_relations(
+                    vehicle_id
+                ),
                 zones=self._zones,
-                observed_at=vehicle.observed_at,
+                observed_at=frame.vehicle.observed_at,
             )
             self._evaluate_rules(
                 rule_context,
-                observation=observation,
-                entry_attempt_id=entry_attempt_id,
+                observation=frame.observation,
+                entry_attempt_id=frame.entry_attempt_id,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
             )
@@ -299,8 +361,112 @@ class ParkingPipeline:
             parking_transitions=tuple(parking_transitions),
             incident_updates=tuple(incident_updates),
             incident_transitions=tuple(incident_transitions),
-            blocking_relation_updates=(),
+            blocking_relation_updates=blocking_relation_updates,
         )
+
+    def _process_blocking_relations(
+        self,
+        batch: TrackingBatch,
+        frames: Mapping[PhysicalVehicleId, _VehicleFrame],
+        *,
+        incident_updates: list[Incident],
+        incident_transitions: list[IncidentTransition],
+    ) -> tuple[BlockingRelation, ...]:
+        """PARKED 차량의 egress 후보와 기존 non-terminal 관계를 함께 갱신한다.
+
+        이미 열린 관계는 victim이 더 이상 이번 frame의 새 후보 조건(PARKED +
+        egress 설정)을 만족하지 않아도 계속 재평가한다. 그러지 않으면
+        이동만으로 관계가 조용히 멈춰 있는 채로 남는, 이전에 잡았던
+        STOP_PENDING 누수와 같은 종류의 결함이 생긴다.
+        """
+
+        existing_keys: set[_BlockingCandidateKey] = {
+            (
+                relation.subject_physical_vehicle_id,
+                relation.victim_physical_vehicle_id,
+                relation.egress_zone_id,
+            )
+            for relation in self._blocking_relation_tracker.all_active_relations()
+        }
+
+        candidate_keys: set[_BlockingCandidateKey] = set()
+        for victim_id, victim_frame in frames.items():
+            if (
+                victim_frame.episode is None
+                or victim_frame.episode.state is not ParkingState.PARKED
+                or victim_frame.assignment is None
+                or victim_frame.assignment.zone_id is None
+            ):
+                continue
+            zone_definition = self._zones.get(victim_frame.assignment.zone_id)
+            for egress_zone_id in zone_definition.egress_zone_ids:
+                for subject_id in frames:
+                    if subject_id == victim_id:
+                        continue
+                    candidate_keys.add((subject_id, victim_id, egress_zone_id))
+
+        updates: list[BlockingRelation] = []
+        # replay 재현성을 위해 집합 순서가 아니라 key로 정렬해 처리한다.
+        ordered_keys = sorted(
+            existing_keys | candidate_keys,
+            key=lambda key: (str(key[0]), str(key[1]), key[2]),
+        )
+        for subject_id, victim_id, egress_zone_id in ordered_keys:
+            subject_frame = frames.get(subject_id)
+            victim_frame = frames.get(victim_id)
+            # 관계는 subject·victim 둘 중 하나라도 이번 frame에 없거나 관측이
+            # 불확실하면 유지만 하고 timer를 멈춘다(§7 "한쪽 관측 UNKNOWN이면
+            # lifecycle 유지"). subject_frame이 있어야만 geometry를 잰다.
+            if subject_frame is None or victim_frame is None:
+                observation = _unobserved_observation(batch.observation)
+                signal = PresenceSignal.UNKNOWN
+            else:
+                observation = _less_reliable_observation(
+                    subject_frame.observation, victim_frame.observation
+                )
+                if observation.state is not ObservationState.OBSERVED:
+                    signal = PresenceSignal.UNKNOWN
+                else:
+                    egress_zone = self._zones.get(egress_zone_id)
+                    ratio = overlap_ratio(
+                        egress_zone.polygon, subject_frame.vehicle.bbox
+                    )
+                    signal = (
+                        PresenceSignal.PRESENT
+                        if ratio >= self._min_overlap_ratio
+                        else PresenceSignal.ABSENT
+                    )
+
+            relation = self._blocking_relation_tracker.update(
+                subject_physical_vehicle_id=subject_id,
+                victim_physical_vehicle_id=victim_id,
+                egress_zone_id=egress_zone_id,
+                signal=signal,
+                observation=observation,
+                observed_at=batch.observed_at,
+            )
+            if relation is None:
+                continue
+            updates.append(relation)
+            if relation.state in {
+                BlockingRelationState.RESOLVED,
+                BlockingRelationState.CANCELED,
+            }:
+                self._collect_reductions(
+                    self._incident_reducer.terminate_blocking_relation(
+                        relation.blocking_relation_id,
+                        observation=relation.observation,
+                        observed_at=batch.observed_at,
+                        reason=(
+                            relation.termination_reason
+                            or "BLOCKING_RELATION_RESOLVED"
+                        ),
+                    ),
+                    incident_updates,
+                    incident_transitions,
+                )
+
+        return tuple(updates)
 
     def physical_exit(
         self,
@@ -329,6 +495,10 @@ class ParkingPipeline:
             physical_vehicle_id=physical_vehicle_id,
             observed_at=observed_at,
         )
+        blocking_relations = self._blocking_relation_tracker.physical_exit(
+            physical_vehicle_id=physical_vehicle_id,
+            observed_at=observed_at,
+        )
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
 
@@ -336,6 +506,9 @@ class ParkingPipeline:
         # 있는 Incident의 종료 사유를 SESSION_EXITED로 보존할 수 없다.
         # subject/victim 차량 기준으로 한 번만 종료해 상위 owner가
         # 고정한 correlation 사유를 모든 관련 Incident에 적용한다.
+        # terminate_physical_vehicle은 subject/victim 기준으로 이미
+        # DOUBLE_PARKING Incident도 함께 끝내므로, BlockingRelation scope로
+        # 다시 끝낼 필요가 없다 — 아래는 관계 자체의 상태만 갱신한다.
         self._collect_reductions(
             self._incident_reducer.terminate_physical_vehicle(
                 physical_vehicle_id,
@@ -352,7 +525,7 @@ class ParkingPipeline:
             parking_episode_updates=() if episode is None else (episode,),
             incident_updates=tuple(incident_updates),
             incident_transitions=tuple(incident_transitions),
-            blocking_relation_updates=(),
+            blocking_relation_updates=blocking_relations,
         )
 
     def _presence_signal(
@@ -382,6 +555,10 @@ class ParkingPipeline:
         zone_id_by_visit_id = {
             visit.visit_id: visit.zone_id for visit in context.active_zone_visits
         }
+        victim_id_by_relation_id = {
+            relation.blocking_relation_id: relation.victim_physical_vehicle_id
+            for relation in context.blocking_relations
+        }
         parking_session_id = (
             None
             if context.session_context is None
@@ -390,8 +567,13 @@ class ParkingPipeline:
         for evaluate in _RULE_EVALUATORS:
             for signal in evaluate(context):
                 zone_id: ZoneId | None = None
+                victim_physical_vehicle_id: PhysicalVehicleId | None = None
                 if signal.key.scope_type is IncidentKeyScope.ZONE_VISIT:
                     zone_id = zone_id_by_visit_id.get(signal.key.scope_id)
+                elif signal.key.scope_type is IncidentKeyScope.BLOCKING_RELATION:
+                    victim_physical_vehicle_id = victim_id_by_relation_id.get(
+                        signal.key.scope_id
+                    )
                 reduction = self._incident_reducer.reduce(
                     signal,
                     physical_vehicle_id=context.vehicle.physical_vehicle_id,
@@ -399,6 +581,7 @@ class ParkingPipeline:
                     entry_attempt_id=entry_attempt_id,
                     parking_session_id=parking_session_id,
                     zone_id=zone_id,
+                    victim_physical_vehicle_id=victim_physical_vehicle_id,
                 )
                 if reduction is not None:
                     self._collect_reductions(
@@ -440,6 +623,23 @@ def _unobserved_observation(
             reason=ObservationReason.TRACK_LOST,
         )
     return batch_observation
+
+
+_OBSERVATION_SEVERITY = {
+    ObservationState.OBSERVED: 0,
+    ObservationState.DEGRADED: 1,
+    ObservationState.UNKNOWN: 2,
+}
+
+
+def _less_reliable_observation(
+    first: ObservationStatus, second: ObservationStatus
+) -> ObservationStatus:
+    """둘 중 더 신뢰할 수 없는 쪽을 반환한다(동률이면 첫 번째)."""
+
+    if _OBSERVATION_SEVERITY[second.state] > _OBSERVATION_SEVERITY[first.state]:
+        return second
+    return first
 
 
 def _parking_transitions(

@@ -26,11 +26,14 @@ from src.application.frame_observation_workflow import (
     FrameObservationWorkflow,
 )
 from src.camera.frame_source import EndOfVideo, FrameSource, FrameSourceError
+from src.camera.models import CapturedFrame
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.models import Incident
 from src.tracking.models import TrackingBatch
 from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import TrackingError
+
+FrameObserver = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], None]
 
 
 class MonitoringPipeline:
@@ -105,12 +108,20 @@ class MonitoringPipeline:
             self._frame_source.close()
             raise
 
-    def process_next_frame(self) -> FrameObservationResult:
+    def process_next_frame(
+        self, *, frame_observer: FrameObserver | None = None
+    ) -> FrameObservationResult:
         """프레임 한 장을 캡처·추적하고 durable commit 결과를 반환한다.
 
         프레임 소진 시 `EndOfVideo`가, 그 외 캡처·추적 실패 시 각 계층의
         오류(`FrameSourceError`/`TrackingError`)가 그대로 전파된다 — 호출부가
         판단할 문제다.
+
+        `frame_observer`는 commit이 성공한 뒤에만 `(frame, tracking_batch,
+        result)`로 호출되는 선택적 telemetry·overlay 훅이다(`result_consumer`와
+        같은 정책 — 예외를 숨기지 않고, durable 저장 책임을 갖지 않는다).
+        `_commit_interruption` 경로(카메라·추적 장애)는 신뢰할 수 있는
+        frame/tracking_batch가 없으므로 호출하지 않는다.
         """
 
         try:
@@ -144,7 +155,10 @@ class MonitoringPipeline:
             )
             raise
 
-        return self._commit_batch(tracking_batch)
+        result = self._commit_batch(tracking_batch)
+        if frame_observer is not None:
+            frame_observer(frame, tracking_batch, result)
+        return result
 
     def _commit_interruption(
         self,
@@ -205,6 +219,7 @@ class MonitoringPipeline:
         self,
         *,
         result_consumer: Callable[[FrameObservationResult], None] | None = None,
+        frame_observer: FrameObserver | None = None,
         stop_requested: Callable[[], bool] | None = None,
     ) -> int:
         """durable frame을 소스 소진 또는 종료 요청까지 처리한다.
@@ -213,13 +228,17 @@ class MonitoringPipeline:
         저장 책임을 갖지 않는다. consumer 예외는 숨기지 않는다.
         종료 요청은 frame 경계에서만 확인해 capture·model을 다른
         thread에서 동시에 close하지 않는다.
+
+        `frame_observer`는 매 `process_next_frame()` 호출에 그대로
+        전달된다 — `process_next_frame`의 `frame_observer` docstring과
+        같은 정책(정상 커밋 후에만 호출, 예외 비은닉)을 따른다.
         """
 
         frames = 0
         should_stop = stop_requested or (lambda: False)
         while not should_stop():
             try:
-                result = self.process_next_frame()
+                result = self.process_next_frame(frame_observer=frame_observer)
             except EndOfVideo:
                 break
             if result_consumer is not None:

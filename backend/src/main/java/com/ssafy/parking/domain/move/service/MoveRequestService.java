@@ -24,10 +24,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -49,6 +48,10 @@ public class MoveRequestService {
     private final MoveRequestResponseRepository moveRequestResponseRepository;
 
     private static final Set<Integer> ALLOWED_MINUTES = Set.of(10, 30, 60, 120);
+
+    private static final Set<MoveRequestStatus> UNRESOLVED_STATUSES = Set.of(
+            MoveRequestStatus.SENT, MoveRequestStatus.RESPONDED,
+            MoveRequestStatus.REMINDER_SENT, MoveRequestStatus.NEED_ADMIN);
 
     @Transactional
     public MoveRequestCreateResponse create(
@@ -142,7 +145,15 @@ public class MoveRequestService {
             case SENT -> moveRequestRepository.findSent(userId, status, pageable);
             case ALL -> moveRequestRepository.findAllScoped(userId, status, pageable);
         };
-        return MoveRequestListResponse.from(result);
+
+        List<Long> requestIds = result.getContent().stream().map(MoveRequest::getId).toList();
+        Map<Long, Integer> estimatedMinutesMap = new HashMap<>();
+        if (!requestIds.isEmpty()) {
+            for (MoveRequestResponse r : moveRequestResponseRepository.findByRequest_IdInOrderByRespondedAtAsc(requestIds)) {
+                estimatedMinutesMap.put(r.getRequest().getId(), r.getEstimatedMinutes()); // asc라 최신 응답이 덮어씀
+            }
+        }
+        return MoveRequestListResponse.from(result, estimatedMinutesMap);
     }
 
     @Transactional(readOnly = true)
@@ -212,6 +223,44 @@ public class MoveRequestService {
             event.changeStatus(ParkingEventStatus.NEED_ADMIN);
         }
 
+        // 신고자(요청자)에게 응답 도착 알림 (자동요청이면 requester가 없어 생략)
+        if (mr.getRequester() != null) {
+            String body = (type == MoveResponseType.WILL_MOVE)
+                    ? "차주가 약 " + minutes + "분 후 이동 예정으로 응답했습니다."
+                    : "차주가 지금은 이동이 어렵다고 응답했습니다.";
+            Notification notification = Notification.builder()
+                    .user(mr.getRequester())
+                    .event(event)
+                    .request(mr)
+                    .notificationType(NotificationType.MOVE_RESPONSE)
+                    .title("이동 요청 응답 도착")
+                    .body(body)
+                    .sentAt(now)
+                    .build();
+            notificationRepository.save(notification);
+        }
+
         return MoveResponseCreateResponse.from(response, mr, event);
+    }
+
+    @Transactional(readOnly = true)
+    public MoveRequestStatsResponse getStats(Long userId) {
+        LocalDateTime since = LocalDateTime.now().minusDays(90);
+
+        long total = moveRequestRepository
+                .countByTargetVehicle_User_IdAndRequestedAtAfter(userId, since);
+        long unresolved = moveRequestRepository
+                .countByTargetVehicle_User_IdAndRequestStatusInAndRequestedAtAfter(
+                        userId, UNRESOLVED_STATUSES, since);
+
+        List<Object[]> timings =
+                moveRequestResponseRepository.findResponseTimingsByResponder(userId, since);
+        int avg = timings.isEmpty() ? 0 : (int) Math.round(
+                timings.stream()
+                        .mapToLong(r -> Duration.between(
+                                (LocalDateTime) r[0], (LocalDateTime) r[1]).toMinutes())
+                        .average().orElse(0));
+
+        return new MoveRequestStatsResponse((int) total, (int) unresolved, avg);
     }
 }

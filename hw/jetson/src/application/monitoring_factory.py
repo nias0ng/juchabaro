@@ -22,6 +22,7 @@ from src.application.session_observation_workflow import (
     SessionObservationWorkflow,
 )
 from src.camera.frame_source import FrameSource
+from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
@@ -29,6 +30,7 @@ from src.parking.zone_registry import ZoneRegistry
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
+from src.tracking.motion_estimator import MotionEstimator
 from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import Detector, EntityResolver
 
@@ -53,6 +55,8 @@ class MonitoringPolicy:
     zone_presence_min_overlap_ratio: float
     assignment_min_overlap_ratio: float
     assignment_ambiguous_margin: float
+    blocking_relation_confirm_seconds: float
+    blocking_relation_clear_seconds: float
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -65,6 +69,10 @@ class MonitoringDependencies:
     publication_preparer: PublicationPreparer
     connection_factory: Callable[[], sqlite3.Connection]
     entity_resolver: EntityResolver | None = None
+    # 리플레이 검증 CLI가 movement_epsilon을 실측으로 바꿔가며 돌릴 수 있게
+    # 열어 둔 자리다(465/T-17). 생략하면 TrackingPipeline이 자기 기본
+    # MotionEstimator를 쓴다 — 배포 경로의 동작은 달라지지 않는다.
+    motion_estimator: MotionEstimator | None = None
     actuator_command_planner: ActuatorCommandPlanner | None = None
     actuator_port: ActuatorPort | None = None
 
@@ -116,6 +124,13 @@ def build_monitoring_pipeline(
             confirm_duration_seconds=policy.incident_confirm_seconds,
             clear_duration_seconds=policy.incident_clear_seconds,
         ),
+        blocking_relation_tracker=InMemoryBlockingRelationTracker(
+            confirm_duration_seconds=policy.blocking_relation_confirm_seconds,
+            clear_duration_seconds=policy.blocking_relation_clear_seconds,
+            trusted_sample_max_gap_seconds=(
+                policy.trusted_sample_max_gap_seconds
+            ),
+        ),
         min_overlap_ratio=policy.zone_presence_min_overlap_ratio,
         assignment_min_overlap_ratio=(
             policy.assignment_min_overlap_ratio
@@ -134,6 +149,7 @@ def build_monitoring_pipeline(
         camera_id=dependencies.camera_id,
         detector=dependencies.detector,
         entity_resolver=dependencies.entity_resolver,
+        motion_estimator=dependencies.motion_estimator,
         absence_confirmation_seconds=policy.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=(
             policy.trusted_sample_max_gap_seconds

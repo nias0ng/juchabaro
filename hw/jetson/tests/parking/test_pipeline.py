@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
+    BlockingRelationState,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
@@ -24,6 +26,7 @@ from src.parking.parking_episode_tracker import (
 )
 from src.parking.pipeline import ParkingPipeline
 from src.parking.rules.bad_parking import BAD_PARKING
+from src.parking.rules.double_parking import DOUBLE_PARKING
 from src.parking.rules.ev_overstay import EV_OVERSTAY
 from src.parking.rules.restricted_zone import (
     DISABLED_ZONE_UNAUTHORIZED,
@@ -47,6 +50,7 @@ from src.tracking.models import (
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
 CAR = PhysicalVehicleId(UUID(int=1))
+OTHER_CAR = PhysicalVehicleId(UUID(int=2))
 VERSION = ZoneDefinitionVersion(7)
 CALIBRATION = "cam-1-v1"
 SESSION = ParkingSessionId(101)
@@ -72,6 +76,7 @@ def zone(
     polygon=SQUARE,
     *,
     allowed_duration_seconds: float | None = None,
+    egress_zone_ids: tuple[ZoneId, ...] = (),
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
@@ -81,6 +86,7 @@ def zone(
         calibration_reference=CALIBRATION,
         allowed_duration_seconds=allowed_duration_seconds,
         charger_class="FAST" if zone_type is ZoneType.EV_CHARGING else None,
+        egress_zone_ids=egress_zone_ids,
     )
 
 
@@ -120,22 +126,32 @@ def observed(seconds: float) -> ObservationStatus:
     )
 
 
+def degraded(*, last_reliable: float) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.DEGRADED,
+        reason=ObservationReason.PARTIAL_FRAME,
+        last_reliable_observed_at=at(last_reliable),
+    )
+
+
 def snapshot(
     seconds: float,
     *,
+    vehicle: PhysicalVehicleId = CAR,
     bbox: BoundingBox = INSIDE,
     motion: MotionSignal = MotionSignal.STATIONARY,
     segment: int = 1,
+    observation: ObservationStatus | None = None,
 ) -> PhysicalVehicleSnapshot:
     return PhysicalVehicleSnapshot(
-        physical_vehicle_id=CAR,
+        physical_vehicle_id=vehicle,
         track_segment_id=TrackSegmentId(segment),
         bbox=bbox,
         confidence=0.9,
         motion_signal=motion,
         observed_at=at(seconds),
         camera_id="cam-1",
-        observation=observed(seconds),
+        observation=observation or observed(seconds),
     )
 
 
@@ -184,6 +200,8 @@ def make_pipeline(
     zone_overlap_ratio: float = 0.5,
     assignment_overlap_ratio: float = 0.5,
     ambiguous_margin: float = 0.05,
+    blocking_confirm_seconds: float = 0.0,
+    blocking_clear_seconds: float = 0.0,
 ):
     registry = ZoneRegistry(zones)
     visit_tracker = InMemoryZoneVisitTracker(
@@ -202,16 +220,22 @@ def make_pipeline(
         confirm_duration_seconds=incident_confirm_seconds,
         clear_duration_seconds=incident_clear_seconds,
     )
+    relation_tracker = InMemoryBlockingRelationTracker(
+        confirm_duration_seconds=blocking_confirm_seconds,
+        clear_duration_seconds=blocking_clear_seconds,
+        trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
+    )
     pipeline = ParkingPipeline(
         zones=registry,
         zone_visit_tracker=visit_tracker,
         parking_episode_tracker=episode_tracker,
         incident_reducer=reducer,
+        blocking_relation_tracker=relation_tracker,
         min_overlap_ratio=zone_overlap_ratio,
         assignment_min_overlap_ratio=assignment_overlap_ratio,
         assignment_ambiguous_margin=ambiguous_margin,
     )
-    return pipeline, visit_tracker, episode_tracker, reducer
+    return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
 
 
 def transitions_for(result, rule_code: str):
@@ -231,7 +255,7 @@ def updates_for(result, rule_code: str):
 
 
 def test_runtime_checkpoint_restores_all_parking_owners() -> None:
-    pipeline, visit_tracker, episode_tracker, reducer = make_pipeline(
+    pipeline, visit_tracker, episode_tracker, reducer, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
     )
@@ -253,7 +277,7 @@ def test_runtime_checkpoint_restores_all_parking_owners() -> None:
 
 
 def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident() -> None:
-    pipeline, _, _, _ = make_pipeline((DISABLED_ZONE,))
+    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,))
     contexts = {CAR: UNAUTHORIZED}
 
     entering = pipeline.process(batch(0, snapshot(0)), session_contexts=contexts)
@@ -289,7 +313,7 @@ def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident(
 def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
     """종료된 visit은 한 번만 해소되고 재진입은 새 continuity를 만든다."""
 
-    pipeline, _, _, reducer = make_pipeline(
+    pipeline, _, _, reducer, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
         exit_seconds=0.0,
@@ -329,7 +353,7 @@ def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
 
 
 def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
-    pipeline, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
 
     without_context = pipeline.process(batch(0, snapshot(0)))
     assert transitions_for(without_context, DISABLED_ZONE_UNAUTHORIZED) == ()
@@ -345,7 +369,7 @@ def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
 
 
 def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
-    pipeline, _, _, _ = make_pipeline(
+    pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A, GENERAL_B),
         entry_seconds=0.0,
         parking_seconds=1.0,
@@ -369,7 +393,7 @@ def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
 
 
 def test_qualified_vehicle_does_not_open_restricted_incident() -> None:
-    pipeline, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
 
     for second in (0.0, 1.0):
         result = pipeline.process(
@@ -380,7 +404,7 @@ def test_qualified_vehicle_does_not_open_restricted_incident() -> None:
 
 
 def test_ev_charging_restricted_and_overstay_rules_are_both_wired() -> None:
-    unauthorized_pipeline, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
+    unauthorized_pipeline, _, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
     unauthorized = unauthorized_pipeline.process(
         batch(0, snapshot(0)),
         session_contexts={CAR: UNAUTHORIZED},
@@ -390,7 +414,7 @@ def test_ev_charging_restricted_and_overstay_rules_are_both_wired() -> None:
         for item in transitions_for(unauthorized, EV_ZONE_UNAUTHORIZED)
     ] == [IncidentTransitionType.OPEN]
 
-    electric_pipeline, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
+    electric_pipeline, _, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
     electric_pipeline.process(batch(0, snapshot(0)), session_contexts={CAR: ELECTRIC})
     before_limit = electric_pipeline.process(
         batch(59, snapshot(59)),
@@ -409,7 +433,7 @@ def test_ev_charging_restricted_and_overstay_rules_are_both_wired() -> None:
 
 
 def test_ended_track_segment_and_track_loss_pause_without_terminal_transition() -> None:
-    pipeline, visit_tracker, episode_tracker, _ = make_pipeline(
+    pipeline, visit_tracker, episode_tracker, _, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
     )
@@ -455,7 +479,7 @@ def test_unobserved_vehicle_preserves_unreliable_batch_observation_reason() -> N
         (ObservationState.DEGRADED, ObservationReason.PARTIAL_FRAME),
         (ObservationState.UNKNOWN, ObservationReason.PIPELINE_STALLED),
     ):
-        pipeline, _, _, _ = make_pipeline(
+        pipeline, _, _, _, _ = make_pipeline(
             (DISABLED_ZONE,),
             entry_seconds=0.0,
         )
@@ -485,7 +509,7 @@ def test_unobserved_vehicle_preserves_unreliable_batch_observation_reason() -> N
 
 
 def test_unobserved_gap_does_not_add_wall_clock_to_parking_timer() -> None:
-    pipeline, _, _, _ = make_pipeline(
+    pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A,),
         entry_seconds=0.0,
         parking_seconds=5.0,
@@ -503,7 +527,7 @@ def test_unobserved_gap_does_not_add_wall_clock_to_parking_timer() -> None:
 
 
 def test_confirmed_absence_requires_explicit_physical_exit() -> None:
-    pipeline, visit_tracker, episode_tracker, _ = make_pipeline(
+    pipeline, visit_tracker, episode_tracker, _, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
         parking_seconds=1.0,
@@ -544,7 +568,7 @@ def test_confirmed_absence_requires_explicit_physical_exit() -> None:
 
 
 def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> None:
-    pipeline, _, _, _ = make_pipeline(
+    pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A, GENERAL_B),
         entry_seconds=0.0,
         exit_seconds=0.0,
@@ -601,7 +625,7 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
 
 
 def test_late_binding_on_movement_confirmation_materializes_both_revisions() -> None:
-    pipeline, _, _, _ = make_pipeline(
+    pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A,),
         entry_seconds=0.0,
         parking_seconds=1.0,
@@ -637,7 +661,7 @@ def test_local_only_incident_update_is_returned_without_publication() -> None:
         ZoneType.EV_CHARGING,
         allowed_duration_seconds=10.0,
     )
-    pipeline, _, _, _ = make_pipeline((local_ev,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline((local_ev,), entry_seconds=0.0)
     pipeline.process(batch(0, snapshot(0)))
 
     local_open = pipeline.process(batch(10, snapshot(10)))
@@ -656,17 +680,187 @@ def test_local_only_incident_update_is_returned_without_publication() -> None:
     assert published[0].incident.publication_revision == 1
 
 
-def test_blocking_relation_output_is_explicitly_empty() -> None:
-    pipeline, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=0.0)
+def test_single_vehicle_batch_yields_no_blocking_relations() -> None:
+    """subject·victim 후보 쌍이 없으면 관계는 계산되지 않는다."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=0.0)
 
     result = pipeline.process(batch(0, snapshot(0)))
 
     assert result.blocking_relation_updates == ()
 
 
+AISLE_POLYGON = ((0.30, 0.0), (0.70, 0.0), (0.70, 1.0), (0.30, 1.0))
+AISLE_BLOCKING_BBOX = BoundingBox(0.35, 0.40, 0.55, 0.60)
+
+
+def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
+    """victim이 PARKED되고 subject가 egress AISLE을 막으면 BlockingRelation이
+    실제로 만들어지고, double_parking 규칙이 그 신호로 Incident를 열고 닫는다."""
+
+    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
+    spot_with_egress = zone(
+        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
+    )
+    pipeline, _, _, _, relation_tracker = make_pipeline(
+        (spot_with_egress, aisle),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+        blocking_clear_seconds=0.0,
+    )
+
+    def two_car_batch(seconds: float, *, subject_bbox: BoundingBox) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(seconds, vehicle=CAR, bbox=ASSIGNED_FIRST),
+            snapshot(seconds, vehicle=OTHER_CAR, bbox=subject_bbox),
+        )
+
+    # entry_attempt_id로 OTHER_CAR(subject)를 상관시켜야 publish 가능한
+    # Incident가 된다 — session/entry-attempt 없는 local-only CANDIDATE는
+    # 다른 규칙(BAD_PARKING 등)과 동일하게 publication_revision이 0으로 남는다.
+    subject_attempts = {OTHER_CAR: ATTEMPT}
+    pipeline.process(
+        two_car_batch(0, subject_bbox=AISLE_BLOCKING_BBOX),
+        entry_attempt_ids=subject_attempts,
+    )
+    parked = pipeline.process(
+        two_car_batch(1, subject_bbox=AISLE_BLOCKING_BBOX),
+        entry_attempt_ids=subject_attempts,
+    )
+
+    assert parked.parking_episode_updates[0].state is ParkingState.PARKED
+    assert [
+        relation.state for relation in parked.blocking_relation_updates
+    ] == [BlockingRelationState.BLOCKING]
+    relation = parked.blocking_relation_updates[0]
+    assert relation.subject_physical_vehicle_id == OTHER_CAR
+    assert relation.victim_physical_vehicle_id == CAR
+    assert relation.egress_zone_id == aisle.zone_id
+    assert relation_tracker.active_relations(OTHER_CAR) == (relation,)
+
+    opened = transitions_for(parked, DOUBLE_PARKING)
+    assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
+    assert opened[0].incident.physical_vehicle_id == OTHER_CAR
+    assert opened[0].incident.victim_physical_vehicle_id == CAR
+
+    cleared = pipeline.process(
+        two_car_batch(2, subject_bbox=OUTSIDE),
+        entry_attempt_ids=subject_attempts,
+    )
+
+    resolved_relations = [
+        r
+        for r in cleared.blocking_relation_updates
+        if r.state is BlockingRelationState.RESOLVED
+    ]
+    assert len(resolved_relations) == 1
+    assert resolved_relations[0].blocking_relation_id == relation.blocking_relation_id
+    resolved = transitions_for(cleared, DOUBLE_PARKING)
+    assert [item.transition_type for item in resolved] == [
+        IncidentTransitionType.RESOLVE
+    ]
+    assert resolved[0].incident.incident_id == opened[0].incident.incident_id
+    assert relation_tracker.active_relations(OTHER_CAR) == ()
+
+
+def test_blocking_relation_ends_when_victim_physically_exits() -> None:
+    """victim의 확정 출차는 관계와 double_parking Incident를 함께 끝낸다."""
+
+    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
+    spot_with_egress = zone(
+        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
+    )
+    pipeline, _, _, _, relation_tracker = make_pipeline(
+        (spot_with_egress, aisle),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+        blocking_clear_seconds=0.0,
+    )
+
+    def two_car_batch(seconds: float) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(seconds, vehicle=CAR, bbox=ASSIGNED_FIRST),
+            snapshot(seconds, vehicle=OTHER_CAR, bbox=AISLE_BLOCKING_BBOX),
+        )
+
+    subject_attempts = {OTHER_CAR: ATTEMPT}
+    pipeline.process(two_car_batch(0), entry_attempt_ids=subject_attempts)
+    parked = pipeline.process(two_car_batch(1), entry_attempt_ids=subject_attempts)
+    opened = transitions_for(parked, DOUBLE_PARKING)
+    assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
+
+    exit_plan = pipeline.physical_exit(
+        physical_vehicle_id=CAR,
+        observed_at=at(2),
+    )
+
+    assert [
+        relation.state for relation in exit_plan.blocking_relation_updates
+    ] == [BlockingRelationState.RESOLVED]
+    resolved = transitions_for(exit_plan, DOUBLE_PARKING)
+    assert [item.transition_type for item in resolved] == [
+        IncidentTransitionType.RESOLVE
+    ]
+    assert resolved[0].incident.incident_id == opened[0].incident.incident_id
+    assert relation_tracker.active_relations(OTHER_CAR) == ()
+
+
+def test_blocking_relation_holds_when_victim_observation_is_unreliable() -> None:
+    """§7 "한쪽 관측 UNKNOWN이면 lifecycle 유지, timer 정지" — subject가
+    계속 aisle에 있어도 victim 관측이 흔들리면 관계는 clear로 넘어가지
+    않고 BLOCKING을 유지한다."""
+
+    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
+    spot_with_egress = zone(
+        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
+    )
+    pipeline, _, _, _, relation_tracker = make_pipeline(
+        (spot_with_egress, aisle),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+        blocking_clear_seconds=5.0,
+    )
+
+    def two_car_batch(seconds: float, *, victim_observation=None) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(
+                seconds,
+                vehicle=CAR,
+                bbox=ASSIGNED_FIRST,
+                observation=victim_observation,
+            ),
+            snapshot(seconds, vehicle=OTHER_CAR, bbox=AISLE_BLOCKING_BBOX),
+        )
+
+    pipeline.process(two_car_batch(0))
+    parked = pipeline.process(two_car_batch(1))
+    relation = parked.blocking_relation_updates[0]
+    assert relation.state is BlockingRelationState.BLOCKING
+
+    degraded_victim = pipeline.process(
+        two_car_batch(2, victim_observation=degraded(last_reliable=1))
+    )
+
+    assert [
+        r.state for r in degraded_victim.blocking_relation_updates
+    ] == [BlockingRelationState.BLOCKING]
+    held = degraded_victim.blocking_relation_updates[0]
+    assert held.blocking_relation_id == relation.blocking_relation_id
+    assert held.clear_trusted_seconds == 0.0
+    assert held.confirm_trusted_seconds == relation.confirm_trusted_seconds
+    assert held.observation.state is ObservationState.DEGRADED
+    assert relation_tracker.active_relations(OTHER_CAR) == (held,)
+
+
 def test_zone_presence_and_assignment_thresholds_are_independent() -> None:
     half_overlap = BoundingBox(0.0, 0.12, 0.20, 0.28)
-    pipeline, visit_tracker, _, _ = make_pipeline(
+    pipeline, visit_tracker, _, _, _ = make_pipeline(
         (GENERAL_A,),
         parking_seconds=1.0,
         zone_overlap_ratio=0.75,

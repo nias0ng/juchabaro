@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   Bell,
   CalendarCheck,
@@ -11,6 +11,7 @@ import {
   Settings,
 } from '@lucide/vue'
 
+import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -77,29 +78,16 @@ type DropdownName = 'date' | 'type'
 
 const dateRange = ref({ start: MOCK_TODAY, end: MOCK_TODAY })
 const typeFilter = ref<string | null>(null)
-const openDropdown = ref<DropdownName | null>(null)
 const query = ref('')
 const page = ref(1)
 
-const filterBarRef = ref<HTMLElement | null>(null)
 const parkingEventStore = useParkingEventStore()
+
+const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
 // 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘(MOCK_TODAY) 하루치 전체를
 // 최신순으로 보여주고 넘치는 만큼은 스크롤로 본다(history는 이미 최신 항목이 앞에 온다).
 const todayTimeline = computed(() => parkingEventStore.history.filter((entry) => rowDate(entry) === MOCK_TODAY))
-
-function handleClickOutside(event: MouseEvent) {
-  if (filterBarRef.value && !filterBarRef.value.contains(event.target as Node)) {
-    openDropdown.value = null
-  }
-}
-
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
-
-function toggleDropdown(name: DropdownName) {
-  openDropdown.value = openDropdown.value === name ? null : name
-}
 
 const filteredRows = computed(() => {
   const q = query.value.trim().replaceAll(' ', '').toUpperCase()
