@@ -2,6 +2,3 @@
 
 # pythonpath 옵션이 pytest 7.0에서 도입됐다 — pyproject.toml 설정이 이 하한에 의존한다.
 pytest>=7.0
-
-# FastAPI TestClient(entry_events_router 테스트, T-16)가 내부적으로 필요로 한다.
-httpx

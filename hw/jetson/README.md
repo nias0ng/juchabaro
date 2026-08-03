@@ -101,8 +101,12 @@ PhysicalVehicle 종료만 tracking에 ACK한다. correlation 전에 확정된
 PARKED·Incident는 pending marker로 보존하고, 늦은 authoritative
 correlation이 오면 원래 occurredAt·revision 순서로 outbox를 만든다.
 `build_monitoring_pipeline()`은 이 owner들을 하나의 frame Unit of Work로
-조립하지만, 임시 Backend serializer나 장치 설정을 발명하지 않고
-배포 계층에서 명시적으로 주입받는다.
+조립하고, `RuntimeContext`가 제공하는 `BackendPublicationPreparer`를 배포
+계층에서 명시적으로 주입받는다. 이 adapter는 API 6(PARKED·UNPARKED),
+API 7(Incident OPEN·RESOLVE), API 10(SessionExit)의 exact JSON과
+Idempotency-Key를 outbox 저장 전에 한 번만 확정한다. Incident 전송 시
+`EV_ZONE_UNAUTHORIZED`와 `AISLE_BLOCK`은 현재 Backend enum 계약에 맞춰
+wire `ruleCode=ETC`로 축약하되 local Incident의 ruleCode는 바꾸지 않는다.
 
 재시작은 active observation을 `UNKNOWN / PROCESS_RESTARTED`로 끊고
 downtime을 trusted timer에 더하지 않는다. 현재 기본
@@ -113,14 +117,17 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 `RestartAwareEntityResolver`를 구현해 복구 후보를 인계받을 수 있지만,
 실제 재식별 근거와 구현은 후속 범위다.
 
-`main.py`는 migration, ZoneDefinition 검증, inbound application 조립과
-단일 monitoring thread의 시작·정상 종료 생명주기를 소유한다.
-Backend endpoint·DTO·Idempotency-Key를 exact bytes로 만드는 adapter와
-outbox publisher는 후속 연동 계약 범위이다. 따라서 module-level
-FastAPI `app`은 아직 API-only이며, 그 계약을 구현한 배포 entrypoint가
-`MonitoringPipelineFactory`를 명시적으로 주입했을 때만 camera·model owner를
-하나 기동한다. 계약 확정 전 임시 serializer나 no-op publisher는
-사용하지 않는다.
+`main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
+outbox publisher와 단일 monitoring thread의 시작·정상 종료 생명주기를
+소유한다. `HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
+값이 있으면 `BACKEND_BASE_URL`의 API 6·7·10 endpoint로 exact outbox bytes를
+전송한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
+충돌은 `FAILED_TERMINAL`로 격리한다. `APPLIED`와 `ALREADY_APPLIED` ACK는
+payload hash까지 검증한 뒤 14일 delivery receipt로 보존한다.
+
+camera·model owner는 배포 entrypoint가 `MonitoringPipelineFactory`를
+명시적으로 주입했을 때만 하나 기동한다. Monitoring recovery가 끝난 뒤
+outbox publisher를 시작하므로 복구 중인 aggregate와 동시에 전송하지 않는다.
 
 `EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,

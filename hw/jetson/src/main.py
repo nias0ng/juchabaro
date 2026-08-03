@@ -28,8 +28,16 @@ from src.application.entry_review_resolution_intake import (
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
 from src.application.move_verification_intake import MoveVerificationIntake
+from src.application.outbox_publisher import (
+    OutboxPublisher,
+    OutboxPublisherWorker,
+)
 from src.application.session_context_update_intake import (
     SessionContextUpdateIntake,
+)
+from src.communication.backend_client import BackendClient
+from src.communication.backend_publication_preparer import (
+    BackendPublicationPreparer,
 )
 from src.config.settings import Settings, get_settings
 from src.parking.zone_registry import ZoneRegistry
@@ -43,11 +51,12 @@ DatabaseConnectionFactory = Callable[[], sqlite3.Connection]
 
 @dataclass(frozen=True)
 class RuntimeContext:
-    """확정된 기동 설정·구역·DB connection 경계."""
+    """확정된 기동 설정·구역·DB·outbound wire adapter 경계."""
 
     settings: Settings
     zones: ZoneRegistry
     connection_factory: DatabaseConnectionFactory
+    publication_preparer: BackendPublicationPreparer
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
@@ -69,9 +78,9 @@ def create_app(
 ) -> FastAPI:
     """FastAPI app을 만들고 process-local 자원 생명주기를 소유한다.
 
-    module-level app은 inbound API만 조립한다. 후속 Backend·hardware
-    계약을 구현한 배포 entrypoint는 factory를 주입해 같은 process에서
-    monitoring을 단 하나만 실행한다.
+    module-level app은 inbound API와 설정된 Backend outbox publisher를 조립한다.
+    camera·model 배포 entrypoint는 factory를 주입해 같은 process에서 monitoring을
+    단 하나만 실행한다.
     """
 
     resolved_settings = settings or get_settings()
@@ -108,6 +117,8 @@ def create_app(
         )
         application.state.move_verification_intake = MoveVerificationIntake()
         application.state.database_connection_factory = connection_factory
+        publication_preparer = BackendPublicationPreparer()
+        application.state.publication_preparer = publication_preparer
 
         monitoring_worker: MonitoringWorker | None = None
         if monitoring_pipeline_factory is not None:
@@ -116,14 +127,35 @@ def create_app(
                     settings=resolved_settings,
                     zones=zones,
                     connection_factory=connection_factory,
+                    publication_preparer=publication_preparer,
                 )
             )
             monitoring_worker = MonitoringWorker(pipeline)
-            monitoring_worker.start()
         application.state.monitoring_worker = monitoring_worker
+
+        outbox_publisher_worker: OutboxPublisherWorker | None = None
+        if resolved_settings.hw_api_key.strip():
+            outbox_publisher_worker = OutboxPublisherWorker(
+                OutboxPublisher(
+                    connection_factory=connection_factory,
+                    client=BackendClient(
+                        base_url=resolved_settings.backend_base_url,
+                        hw_api_key=resolved_settings.hw_api_key,
+                    ),
+                )
+            )
+        application.state.outbox_publisher_worker = outbox_publisher_worker
         try:
+            # MonitoringPipeline.open()이 durable recovery를 끝낸 뒤 기존·신규
+            # publication을 보내기 시작한다.
+            if monitoring_worker is not None:
+                monitoring_worker.start()
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.start()
             yield
         finally:
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.stop()
             if monitoring_worker is not None:
                 monitoring_worker.stop()
 
