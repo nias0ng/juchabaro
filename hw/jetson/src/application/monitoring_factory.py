@@ -22,6 +22,7 @@ from src.application.session_observation_workflow import (
     SessionObservationWorkflow,
 )
 from src.camera.frame_source import FrameSource
+from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
@@ -53,6 +54,8 @@ class MonitoringPolicy:
     zone_presence_min_overlap_ratio: float
     assignment_min_overlap_ratio: float
     assignment_ambiguous_margin: float
+    blocking_relation_confirm_seconds: float
+    blocking_relation_clear_seconds: float
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -115,6 +118,13 @@ def build_monitoring_pipeline(
             ),
             confirm_duration_seconds=policy.incident_confirm_seconds,
             clear_duration_seconds=policy.incident_clear_seconds,
+        ),
+        blocking_relation_tracker=InMemoryBlockingRelationTracker(
+            confirm_duration_seconds=policy.blocking_relation_confirm_seconds,
+            clear_duration_seconds=policy.blocking_relation_clear_seconds,
+            trusted_sample_max_gap_seconds=(
+                policy.trusted_sample_max_gap_seconds
+            ),
         ),
         min_overlap_ratio=policy.zone_presence_min_overlap_ratio,
         assignment_min_overlap_ratio=(
