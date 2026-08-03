@@ -27,7 +27,7 @@ export function toVehicleStatusDisplay(session: ParkingSession): VehicleStatusDi
     statusLabel: session.status === 'VIOLATION' ? '위반 중' : '정상 주차 중',
     statusTime: `${formatTime(session.enteredAt)} 입차`,
     plateNumber: session.plateNumber,
-    location: `${session.zoneName} · ${session.spotCode}`,
+    location: `${session.floor} · ${session.zoneNumber}`,
   };
 }
 

@@ -7,29 +7,33 @@ export type ParkingSession = {
   plateNumber: string;
   status: ParkingSessionStatus;
   zoneId: number;
-  zoneName: string;
-  spotCode: string;
+  zoneNumber: string;
+  floor: string;
   enteredAt: string; // ISO 8601
 };
 
 export type CongestionLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
-export type SpotType = 'GENERAL' | 'DISABLED' | 'EV_CHARGING';
-export type SpotStatus = 'EMPTY' | 'OCCUPIED' | 'VIOLATION';
+export type ParkingZoneType = 'GENERAL' | 'DISABLED' | 'EV_CHARGING';
+export type ParkingOccupancyStatus = 'EMPTY' | 'OCCUPIED' | 'VIOLATION';
 
-export type ParkingSpot = {
-  spotCode: string;
-  spotType: SpotType;
-  status: SpotStatus;
+// parking_zones 한 행(주차면 한 칸)의 지도 표시용 요약 정보.
+export type ParkingSpotSummary = {
+  zoneId: number;
+  zoneNumber: string;
+  zoneType: ParkingZoneType;
+  geometryData: string | null;
+  occupancyStatus: ParkingOccupancyStatus;
 };
 
 // GET /api/parking-zones/summary 응답의 result.
 export type ParkingZoneSummary = {
+  floor: string;
   totalSpots: number;
   occupiedSpots: number;
   availableSpots: number;
   violationCount: number;
   congestionRate: number; // 0~100, 서버가 반올림해서 계산
   congestionLevel: CongestionLevel;
-  spots: ParkingSpot[];
+  spots: ParkingSpotSummary[];
 };

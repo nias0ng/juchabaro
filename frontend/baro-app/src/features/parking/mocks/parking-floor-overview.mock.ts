@@ -1,11 +1,11 @@
-import type { ParkingSession, SpotType } from '../api/types';
+import type { ParkingSession, ParkingZoneType } from '../api/types';
 
 export type MockSpotStatus = 'OCCUPIED' | 'EMPTY' | 'VIOLATION' | 'MINE';
 
 export type MockParkingSpot = {
   spotCode: string;
   status: MockSpotStatus;
-  spotType: SpotType;
+  spotType: ParkingZoneType;
 };
 
 export type ParkingFloorKey = 'b1' | 'b2' | 'b3';
@@ -27,7 +27,11 @@ export type MockMyVehicleLocation = {
   description: string;
 };
 
-function spot(spotCode: string, status: MockSpotStatus, spotType: SpotType = 'GENERAL'): MockParkingSpot {
+function spot(
+  spotCode: string,
+  status: MockSpotStatus,
+  spotType: ParkingZoneType = 'GENERAL',
+): MockParkingSpot {
   return { spotCode, status, spotType };
 }
 
@@ -155,12 +159,12 @@ export function getMyVehicleLocation(
   const session = sessions.find(({ status }) => status === 'PARKED');
   if (!session) return null;
 
-  const floorKey = session.zoneName.trim().toLowerCase();
+  const floorKey = session.floor.trim().toLowerCase();
   if (!MOCK_PARKING_FLOORS.some(({ key }) => key === floorKey)) return null;
 
   return {
     floorKey: floorKey as ParkingFloorKey,
-    title: `내 차량 · ${session.spotCode}`,
-    description: `${session.zoneName} · ${session.plateNumber}`,
+    title: `내 차량 · ${session.zoneNumber}`,
+    description: `${session.floor} · ${session.plateNumber}`,
   };
 }
