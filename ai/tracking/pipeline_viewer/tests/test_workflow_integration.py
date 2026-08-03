@@ -116,6 +116,7 @@ def _policy() -> MonitoringPolicy:
         zone_presence_min_overlap_ratio=0.5,
         assignment_min_overlap_ratio=0.5,
         assignment_ambiguous_margin=0.05,
+        bad_parking_min_primary_overlap_ratio=0.75,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
     )

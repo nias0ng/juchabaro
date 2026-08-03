@@ -89,6 +89,7 @@ class ViewerPolicy:
     zone_presence_min_overlap_ratio: float = 0.40
     assignment_min_overlap_ratio: float = 0.50
     assignment_ambiguous_margin: float = 0.05
+    bad_parking_min_primary_overlap_ratio: float = 0.75
     blocking_relation_confirm_seconds: float = 1.0
     blocking_relation_clear_seconds: float = 1.0
     entry_match_window_seconds: float = 10.0
@@ -111,6 +112,9 @@ class ViewerPolicy:
             zone_presence_min_overlap_ratio=self.zone_presence_min_overlap_ratio,
             assignment_min_overlap_ratio=self.assignment_min_overlap_ratio,
             assignment_ambiguous_margin=self.assignment_ambiguous_margin,
+            bad_parking_min_primary_overlap_ratio=(
+                self.bad_parking_min_primary_overlap_ratio
+            ),
             blocking_relation_confirm_seconds=(
                 self.blocking_relation_confirm_seconds
             ),

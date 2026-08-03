@@ -106,27 +106,36 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
 
         columns = st.columns(4)
-        blocking_confirm = columns[0].number_input(
+        bad_parking_overlap = columns[0].number_input(
+            "Bad parking min spot overlap", min_value=0.0, max_value=1.0,
+            value=defaults.bad_parking_min_primary_overlap_ratio,
+            help=(
+                "1위 주차면에 포함된 차량 bbox 비율이 이 값 미만이면 "
+                "ASSIGNED 상태여도 BAD_PARKING으로 판정합니다."
+            ),
+        )
+        blocking_confirm = columns[1].number_input(
             "Blocking confirm (s)", min_value=0.0, value=defaults.blocking_relation_confirm_seconds
         )
-        blocking_clear = columns[1].number_input(
+        blocking_clear = columns[2].number_input(
             "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
         )
-        match_window = columns[2].number_input(
+        match_window = columns[3].number_input(
             "Entry match window (s)", min_value=0.001, value=defaults.entry_match_window_seconds
-        )
-        movement_epsilon = columns[3].number_input(
-            "Movement epsilon", min_value=0.0, value=defaults.movement_epsilon, format="%.4f"
         )
 
         columns = st.columns(4)
-        confidence = columns[0].number_input(
+        movement_epsilon = columns[0].number_input(
+            "Movement epsilon", min_value=0.0, value=defaults.movement_epsilon, format="%.4f"
+        )
+
+        confidence = columns[1].number_input(
             "YOLO confidence", min_value=0.0, max_value=1.0, value=defaults.confidence
         )
-        remap_balance = columns[1].number_input(
+        remap_balance = columns[2].number_input(
             "Remap balance", min_value=0.0, max_value=1.0, value=defaults.remap_balance
         )
-        tracker_config = columns[2].text_input(
+        tracker_config = columns[3].text_input(
             "Tracker config", value=defaults.tracker_config
         )
 
@@ -143,6 +152,7 @@ def _render_policy_inputs() -> ViewerPolicy:
         zone_presence_min_overlap_ratio=zone_overlap,
         assignment_min_overlap_ratio=assignment_overlap,
         assignment_ambiguous_margin=ambiguous_margin,
+        bad_parking_min_primary_overlap_ratio=bad_parking_overlap,
         blocking_relation_confirm_seconds=blocking_confirm,
         blocking_relation_clear_seconds=blocking_clear,
         entry_match_window_seconds=match_window,

@@ -7,6 +7,7 @@ import pytest
 from pipeline_viewer.service import (
     EPOCH,
     ViewerInputError,
+    ViewerPolicy,
     build_allow_example,
     default_idempotency_key,
     default_paths,
@@ -17,6 +18,16 @@ from pipeline_viewer.service import (
 def test_default_model_path_uses_jetson_model_directory() -> None:
     assert default_paths().model.as_posix().endswith(
         "hw/jetson/model/yolov8s.pt"
+    )
+
+
+def test_bad_parking_overlap_default_is_forwarded_to_monitoring_policy() -> None:
+    viewer_policy = ViewerPolicy()
+
+    assert viewer_policy.bad_parking_min_primary_overlap_ratio == 0.75
+    assert (
+        viewer_policy.to_monitoring_policy().bad_parking_min_primary_overlap_ratio
+        == 0.75
     )
 
 
