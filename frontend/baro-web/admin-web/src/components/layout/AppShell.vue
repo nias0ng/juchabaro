@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { Bell, Car, ChevronDown, Gauge, History, LogOut, Settings, SquareDot, User } from '@lucide/vue';
+import { Car, ChevronDown, Gauge, History, LogOut, Settings, SquareDot, User } from '@lucide/vue';
 
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -69,10 +69,6 @@ function handleLogout() {
           <p class="breadcrumb">{{ breadcrumb }}</p>
         </div>
         <div class="topbar-right">
-          <button type="button" class="icon-btn">
-            <Bell :size="20" />
-            <span class="badge">2</span>
-          </button>
           <button type="button" class="user-btn">
             <span class="avatar">
               <User :size="16" />
@@ -256,37 +252,6 @@ function handleLogout() {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
-}
-
-.icon-btn {
-  position: relative;
-  border: none;
-  background: none;
-  border-radius: var(--radius-full);
-  padding: var(--spacing-sm);
-  color: var(--panel-muted-foreground);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.icon-btn:hover {
-  background: var(--panel-muted);
-}
-
-.badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-full);
-  background: var(--panel-primary);
-  color: var(--panel-on-primary);
-  font-size: 11px;
-  font-weight: 600;
 }
 
 .user-btn {
