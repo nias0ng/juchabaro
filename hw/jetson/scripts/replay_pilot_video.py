@@ -224,7 +224,12 @@ def verify_zone_calibration(args: argparse.Namespace) -> None:
 
     expected = calibration_fingerprint(args.calibration, args.remap_balance)["calibrationSha256"]
     recorded = zones.calibration_reference
-    if recorded.lower() != expected.lower():
+    # 대소문자를 정규화하지 않는다 — 런타임 권위(MonitoringPipeline의
+    # `frame.calibration_id == calibration_reference`, monitoring_pipeline.py)가
+    # 대소문자 구분 정확 일치이므로, 여기서 `.lower()`로 느슨하게 비교하면
+    # zones 파일에 대문자 hex가 섞여 있을 때 이 guard는 통과하고 런타임에서만
+    # 조용히 실패해(모든 프레임이 부분 관측으로 격하) 이 함수의 존재 이유를 무력화한다.
+    if recorded != expected:
         raise ReplayArgumentError(
             f"zones 파일의 좌표계가 현재 보정 설정과 다릅니다. zones-file의 "
             f"calibrationReference={recorded}, 현재 --calibration에서 계산한 값={expected}. "
