@@ -43,8 +43,8 @@ export async function getNotificationsMock(): Promise<NotificationListResult> {
       eventId: 103,
       requestId: null,
       notificationType: 'EV_OVERSTAY' as const,
-      title: '충전구역 이용 시간이 곧 종료됩니다',
-      body: '15분 뒤부터 초과 주차로 기록됩니다.',
+      title: '충전구역 이용 시간이 종료되었습니다',
+      body: '충전구역 이용 시간이 종료되어 차량 이동이 필요합니다.',
       sentAt: minutesAgo(10),
     },
     {
