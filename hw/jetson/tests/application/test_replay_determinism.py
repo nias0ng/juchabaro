@@ -108,6 +108,8 @@ def _policy() -> MonitoringPolicy:
         zone_presence_min_overlap_ratio=0.5,
         assignment_min_overlap_ratio=0.5,
         assignment_ambiguous_margin=0.05,
+        blocking_relation_confirm_seconds=1.0,
+        blocking_relation_clear_seconds=1.0,
     )
 
 

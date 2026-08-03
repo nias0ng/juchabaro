@@ -31,6 +31,8 @@ REQUIRED_THRESHOLD_ARGS = [
     "--trusted-sample-max-gap-seconds", "1.0",
     "--assignment-min-overlap-ratio", "0.5",
     "--assignment-ambiguous-margin", "0.05",
+    "--blocking-relation-confirm-seconds", "3.0",
+    "--blocking-relation-clear-seconds", "3.0",
 ]
 
 
@@ -102,7 +104,7 @@ def test_defaults_reuse_existing_codebase_values_only():
 
 
 def test_build_policy_passes_every_cli_value_through_unchanged():
-    """CLI가 MonitoringPolicy의 12개 값을 모두 채운다(숨은 기본값 없음)."""
+    """CLI가 MonitoringPolicy의 14개 값을 모두 채운다(숨은 기본값 없음)."""
 
     args = _parse("--min-overlap-ratio", "0.6")
     policy = build_policy(args)
@@ -119,6 +121,8 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.parking_confirm_seconds == 600.0
     assert policy.incident_confirm_seconds == 0.0
     assert policy.incident_clear_seconds == 0.0
+    assert policy.blocking_relation_confirm_seconds == 3.0
+    assert policy.blocking_relation_clear_seconds == 3.0
 
 
 def test_missing_calibration_is_rejected(tmp_path):
@@ -163,6 +167,8 @@ def test_valid_args_pass_validation(tmp_path):
         "--trusted-sample-max-gap-seconds",
         "--assignment-min-overlap-ratio",
         "--assignment-ambiguous-margin",
+        "--blocking-relation-confirm-seconds",
+        "--blocking-relation-clear-seconds",
     ],
 )
 def test_each_threshold_flag_is_required(flag):
