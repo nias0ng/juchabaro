@@ -35,8 +35,8 @@ _ZONE_VISIT_COLORS: dict[ZoneVisitState, tuple[int, int, int]] = {
     ZoneVisitState.ENTERING: (0, 220, 220),
     ZoneVisitState.INSIDE: (0, 255, 0),
     ZoneVisitState.EXITING: (0, 165, 255),
-    ZoneVisitState.ENDED: _NEUTRAL_COLOR,
-    ZoneVisitState.CANCELED: _NEUTRAL_COLOR,
+    ZoneVisitState.ENDED: (100, 100, 180),
+    ZoneVisitState.CANCELED: (100, 180, 180),
 }
 _ZONE_VISIT_PRIORITY: tuple[ZoneVisitState, ...] = (
     ZoneVisitState.INSIDE,
@@ -48,7 +48,7 @@ _ZONE_VISIT_PRIORITY: tuple[ZoneVisitState, ...] = (
 _PARKING_EPISODE_COLORS: dict[ParkingState, tuple[int, int, int]] = {
     ParkingState.STOP_PENDING: (0, 255, 255),
     ParkingState.PARKED: (0, 0, 255),
-    ParkingState.MOVE_PENDING: (0, 255, 255),
+    ParkingState.MOVE_PENDING: (255, 0, 255),
 }
 _ACTIVE_PARKING_STATES = frozenset(_PARKING_EPISODE_COLORS)
 
@@ -66,7 +66,7 @@ def draw_overlay(
     재사용하므로 그리기 전에 복사해 다음 프레임에 낙서가 남는 것을 막는다.
     """
 
-    canvas = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR).copy()
+    canvas = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
     _draw_zones(canvas, zones)
     _draw_vehicles(canvas, tracking_batch, result)
     return canvas

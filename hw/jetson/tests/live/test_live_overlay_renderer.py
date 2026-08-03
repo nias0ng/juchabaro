@@ -7,7 +7,6 @@ from uuid import UUID
 
 import cv2
 import numpy as np
-import pytest
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.camera.models import CapturedFrame
@@ -190,6 +189,19 @@ def test_draw_overlay_prefers_inside_zone_visit_over_entering_when_both_present(
     canvas = draw_overlay(_frame(), _tracking_batch((vehicle,)), result, zones=_zone_registry())
 
     assert _row_has_color(canvas, 20, INSIDE_COLOR)
+
+
+def test_draw_overlay_paints_vehicle_bbox_with_ended_zone_visit_distinct_from_neutral() -> None:
+    """Terminal zone visit (ENDED) must be visually distinct from having no zone visit at all."""
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+    result = _result(zone_visits=(_zone_visit(ZoneVisitState.ENDED),))
+
+    canvas = draw_overlay(_frame(), _tracking_batch((vehicle,)), result, zones=_zone_registry())
+
+    # Terminal zone visit should render with (100, 100, 180), not NEUTRAL_COLOR (160, 160, 160)
+    ended_color = (100, 100, 180)
+    assert _row_has_color(canvas, 20, ended_color)
+    assert not _row_has_color(canvas, 20, NEUTRAL_COLOR)
 
 
 def _assignment() -> ParkingAssignment:
