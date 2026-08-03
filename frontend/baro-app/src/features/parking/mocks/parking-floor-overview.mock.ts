@@ -38,7 +38,7 @@ export const MOCK_PARKING_FLOORS: MockParkingFloor[] = [
     label: '지하 1층',
     spots: [
       spot('B1-01', 'OCCUPIED'),
-      spot('B1-02', 'VIOLATION'),
+      spot('B1-02', 'OCCUPIED'),
       spot('B1-03', 'OCCUPIED'),
       spot('B1-04', 'OCCUPIED'),
       spot('B1-05', 'OCCUPIED'),
@@ -56,7 +56,7 @@ export const MOCK_PARKING_FLOORS: MockParkingFloor[] = [
       spot('B1-EV1', 'OCCUPIED', 'EV_CHARGING'),
       spot('B1-EV2', 'OCCUPIED', 'EV_CHARGING'),
       spot('B1-17', 'EMPTY'),
-      spot('B1-18', 'VIOLATION'),
+      spot('B1-18', 'OCCUPIED'),
       spot('B1-D1', 'OCCUPIED', 'DISABLED'),
       spot('B1-D2', 'OCCUPIED', 'DISABLED'),
       spot('B1-19', 'OCCUPIED'),
@@ -103,8 +103,8 @@ export const MOCK_PARKING_FLOORS: MockParkingFloor[] = [
     sideSpots: [
       spot('B2-S1', 'OCCUPIED'),
       spot('B2-S2', 'OCCUPIED'),
-      spot('B2-S3', 'VIOLATION'),
-      spot('B2-S4', 'VIOLATION'),
+      spot('B2-S3', 'OCCUPIED'),
+      spot('B2-S4', 'OCCUPIED'),
       spot('B2-S5', 'EMPTY'),
       spot('B2-S6', 'OCCUPIED'),
     ],

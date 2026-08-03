@@ -8,10 +8,7 @@ const LEGEND_ROWS = [
     { key: 'occupied', label: '주차 중' },
     { key: 'empty', label: '비어 있음' },
     { key: 'ev', label: '충전구역' },
-  ],
-  [
     { key: 'disabled', label: '장애인구역' },
-    { key: 'violation', label: '위반' },
   ],
 ] as const;
 
