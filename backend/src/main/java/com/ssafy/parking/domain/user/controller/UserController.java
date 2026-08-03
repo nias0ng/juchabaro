@@ -2,6 +2,8 @@ package com.ssafy.parking.domain.user.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
 import com.ssafy.parking.domain.user.dto.MeResponse;
+import com.ssafy.parking.domain.user.dto.WithdrawalRequest;
+import com.ssafy.parking.domain.user.dto.WithdrawalResponse;
 import com.ssafy.parking.domain.user.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -64,18 +66,21 @@ public class UserController {
                 ApiResponse.success(HttpStatus.OK, "회원 정보가 수정되었습니다.", result));
     }
 
-    @Operation(summary = "회원 탈퇴", description = "계정을 탈퇴(비활성화) 처리합니다.")
+    @Operation(summary = "회원 탈퇴", description = "현재 비밀번호 확인 후 계정을 탈퇴(비활성화) 처리합니다.")
     @SecurityRequirement(name = "bearerAuth")
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "탈퇴 성공"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "현재 비밀번호 불일치"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401", description = "인증 정보가 유효하지 않음"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "사용자 정보를 찾을 수 없음")
     })
     @PostMapping("/me/withdrawal")
-    public ResponseEntity<ApiResponse<Void>> withdraw(
-            @Parameter(hidden = true) @AuthenticationPrincipal Long userId
+    public ResponseEntity<ApiResponse<WithdrawalResponse>> withdraw(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @RequestBody WithdrawalRequest request
     ) {
-        userService.withdraw(userId);
-        return ResponseEntity.ok(ApiResponse.successWithoutData());
+        WithdrawalResponse result = userService.withdraw(userId, request);
+        return ResponseEntity.ok(
+                ApiResponse.success(HttpStatus.OK, "회원 탈퇴가 완료되었습니다.", result));
     }
 }
