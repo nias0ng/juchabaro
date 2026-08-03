@@ -19,6 +19,15 @@ TRIGGER_PIN: Final[int] = 23  # BCM GPIO23 -> 물리 핀 16
 ECHO_PIN: Final[int] = 24  # BCM GPIO24 -> 물리 핀 18
 
 
+# [LED 설정]
+
+GREEN_LED_PIN: Final[int] = 17  # BCM GPIO17 -> 물리 핀 11
+GREEN_LED_ACTIVE_HIGH: Final[bool] = True
+
+# 프로토타입 입차 흐름 검증 후 실제 운영 환경에 맞게 재조정
+GREEN_LED_DURATION_SECONDS: Final[float] = 3.0
+
+
 # [초음파 센서 측정 설정]
 
 TRIGGER_PULSE_SECONDS: Final[float] = 0.00001
