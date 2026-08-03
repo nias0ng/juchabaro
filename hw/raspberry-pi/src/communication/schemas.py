@@ -146,7 +146,7 @@ class BackendEntryRequest:
         return {
             "entryAttemptId": self.entry_attempt_id,
             "recognizedPlateNumber": self.recognized_plate_number,
-            "confidence": float(self.confidence),
+            "ocrConfidence": float(self.confidence),
             "entryTime": _to_iso8601(self.entry_time, "entry_time"),
         }
 

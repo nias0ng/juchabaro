@@ -136,7 +136,7 @@ def test_backend_client_posts_api_1_and_parses_allow_result() -> None:
     assert json.loads(sent_request.data) == {
         "entryAttemptId": ENTRY_ATTEMPT_ID,
         "recognizedPlateNumber": "12가3456",
-        "confidence": 0.98,
+        "ocrConfidence": 0.98,
         "entryTime": "2026-08-01T10:00:00+09:00",
     }
     assert mocked_urlopen.call_args.kwargs["timeout"] == 3.0
