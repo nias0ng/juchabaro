@@ -213,11 +213,19 @@ def process_entry_event(
             "OCR 성공 결과에는 확정된 번호판이 필요합니다."
         )
 
+    rec_score = result.rec_score
+
+    if rec_score is None:
+        raise RuntimeError(
+            "OCR 성공 결과에는 대표 rec_score가 필요합니다."
+        )
+
     log_ocr_result(result, logger)
 
     request = BackendEntryRequest(
         entry_attempt_id=event.entry_attempt_id,
         recognized_plate_number=plate_number,
+        confidence=rec_score,
         entry_time=event.entry_time,
     )
 

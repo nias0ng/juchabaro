@@ -45,6 +45,7 @@ from src.communication.schemas import (
     AccessDecision,
     BackendEntryRequest,
     BackendEntryResult,
+    SessionContext,
 )
 from src.entry.entry_controller import EntrySignal
 from src.entry.entry_event import EntryEvent
@@ -75,6 +76,7 @@ ENTRY_TIME = datetime(
     tzinfo=timezone(ENTRY_TIME_OFFSET),
 )
 PLATE_NUMBER = "12가3456"
+OCR_CONFIDENCE = 0.97
 FRAMES = tuple(object() for _ in range(main_module.CAPTURE_FRAME_COUNT))
 
 
@@ -87,15 +89,22 @@ def make_backend_result(
     entry_attempt_id: str = ENTRY_ATTEMPT_ID,
     duplicate_request: bool = False,
 ) -> BackendEntryResult:
+    session_context = (
+        SessionContext(
+            session_id=55,
+            vehicle_id=10,
+            is_disabled_vehicle=False,
+            is_electric=False,
+        )
+        if access_decision is AccessDecision.ALLOW
+        else None
+    )
+
     return BackendEntryResult(
-        access_decision=access_decision,
-        registered=True,
-        vehicle_id=10,
-        is_disabled_vehicle=False,
-        is_electric=False,
-        vehicle_status="ACTIVE",
         entry_attempt_id=entry_attempt_id,
-        session_id=55,
+        decision_revision=1,
+        access_decision=access_decision,
+        session_context=session_context,
         duplicate_request=duplicate_request,
     )
 
@@ -144,6 +153,7 @@ def harness(
     pipeline.read_plate.return_value = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
     sensor.measure.return_value = 20.0
     camera.capture_sequence.return_value = FRAMES
@@ -608,9 +618,10 @@ def test_log_backend_entry_result_rejects_unknown_decision() -> None:
     logger = MagicMock(spec=logging.Logger)
     unknown_decision = MagicMock()
     unknown_decision.value = "UNKNOWN"
-    result = make_backend_result(
-        access_decision=unknown_decision,  # type: ignore[arg-type]
-    )
+    result = MagicMock(spec=BackendEntryResult)
+    result.entry_attempt_id = ENTRY_ATTEMPT_ID
+    result.access_decision = unknown_decision
+    result.duplicate_request = False
 
     with pytest.raises(RuntimeError):
         main_module.log_backend_entry_result(result, logger)
@@ -635,6 +646,7 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     ocr_result = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
     backend_result = make_backend_result()
 
@@ -674,7 +686,7 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     assert request.entry_attempt_id == event.entry_attempt_id
     assert request.recognized_plate_number == PLATE_NUMBER
     assert request.entry_time is event.entry_time
-    assert request.ocr_confidence is None
+    assert request.confidence == OCR_CONFIDENCE
     assert backend_call.kwargs == {
         "idempotency_key": event.idempotency_key,
     }
@@ -840,15 +852,22 @@ def test_process_entry_event_rejects_success_without_plate_number() -> None:
     result = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=None,
+        rec_score=OCR_CONFIDENCE,
     )
 
     camera.capture_sequence.return_value = FRAMES
     pipeline.read_plate.return_value = result
 
-    with patch.object(
-        main_module,
-        "log_ocr_result",
-    ) as log_ocr_result:
+    with (
+        patch.object(
+            main_module,
+            "log_ocr_result",
+        ) as log_ocr_result,
+        patch.object(
+            main_module,
+            "log_backend_entry_result",
+        ) as log_backend_entry_result,
+    ):
         with pytest.raises(RuntimeError):
             main_module.process_entry_event(
                 event,
@@ -860,6 +879,50 @@ def test_process_entry_event_rejects_success_without_plate_number() -> None:
 
     log_ocr_result.assert_not_called()
     backend_client.request_entry.assert_not_called()
+    log_backend_entry_result.assert_not_called()
+
+
+def test_process_entry_event_rejects_success_without_rec_score() -> None:
+    event = EntryEvent(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        idempotency_key=IDEMPOTENCY_KEY,
+        entry_time=ENTRY_TIME,
+    )
+    camera = MagicMock(spec=main_module.EntryCamera)
+    pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
+    backend_client = MagicMock(spec=main_module.BackendClient)
+    logger = MagicMock(spec=logging.Logger)
+    result = PlateReadResult(
+        status=ReadStatus.SUCCESS,
+        plate_number=PLATE_NUMBER,
+        rec_score=None,
+    )
+
+    camera.capture_sequence.return_value = FRAMES
+    pipeline.read_plate.return_value = result
+
+    with (
+        patch.object(
+            main_module,
+            "log_ocr_result",
+        ) as log_ocr_result,
+        patch.object(
+            main_module,
+            "log_backend_entry_result",
+        ) as log_backend_entry_result,
+    ):
+        with pytest.raises(RuntimeError, match="rec_score"):
+            main_module.process_entry_event(
+                event,
+                camera=camera,
+                ocr_pipeline=pipeline,
+                backend_client=backend_client,
+                logger=logger,
+            )
+
+    log_ocr_result.assert_not_called()
+    backend_client.request_entry.assert_not_called()
+    log_backend_entry_result.assert_not_called()
 
 
 def test_process_entry_event_handles_backend_client_error() -> None:
@@ -875,6 +938,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
     result = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
     backend_error = BackendClientError("request failed")
 
@@ -933,6 +997,7 @@ def test_process_entry_event_propagates_unexpected_backend_error(
     pipeline.read_plate.return_value = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
     backend_client.request_entry.side_effect = unexpected_error
 
@@ -963,6 +1028,7 @@ def test_process_entry_event_rejects_mismatched_response_id() -> None:
     pipeline.read_plate.return_value = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
     backend_client.request_entry.return_value = make_backend_result(
         entry_attempt_id=SECOND_ENTRY_ATTEMPT_ID,
@@ -1287,6 +1353,7 @@ def test_main_continues_after_known_ocr_runtime_error(
     successful_result = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
     )
 
     harness.sensor.measure.side_effect = [5.0, 5.0]
