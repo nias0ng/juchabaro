@@ -24,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -47,6 +48,10 @@ public class MoveRequestService {
     private final MoveRequestResponseRepository moveRequestResponseRepository;
 
     private static final Set<Integer> ALLOWED_MINUTES = Set.of(10, 30, 60, 120);
+
+    private static final Set<MoveRequestStatus> UNRESOLVED_STATUSES = Set.of(
+            MoveRequestStatus.SENT, MoveRequestStatus.RESPONDED,
+            MoveRequestStatus.REMINDER_SENT, MoveRequestStatus.NEED_ADMIN);
 
     @Transactional
     public MoveRequestCreateResponse create(
@@ -236,5 +241,26 @@ public class MoveRequestService {
         }
 
         return MoveResponseCreateResponse.from(response, mr, event);
+    }
+
+    @Transactional(readOnly = true)
+    public MoveRequestStatsResponse getStats(Long userId) {
+        LocalDateTime since = LocalDateTime.now().minusDays(90);
+
+        long total = moveRequestRepository
+                .countByTargetVehicle_User_IdAndRequestedAtAfter(userId, since);
+        long unresolved = moveRequestRepository
+                .countByTargetVehicle_User_IdAndRequestStatusInAndRequestedAtAfter(
+                        userId, UNRESOLVED_STATUSES, since);
+
+        List<Object[]> timings =
+                moveRequestResponseRepository.findResponseTimingsByResponder(userId, since);
+        int avg = timings.isEmpty() ? 0 : (int) Math.round(
+                timings.stream()
+                        .mapToLong(r -> Duration.between(
+                                (LocalDateTime) r[0], (LocalDateTime) r[1]).toMinutes())
+                        .average().orElse(0));
+
+        return new MoveRequestStatsResponse((int) total, (int) unresolved, avg);
     }
 }

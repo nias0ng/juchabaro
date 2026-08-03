@@ -2,18 +2,24 @@ package com.ssafy.parking.domain.move.repository;
 
 import com.ssafy.parking.domain.move.entity.MoveRequest;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
- import com.ssafy.parking.domain.move.entity.MoveRequest;
- import org.springframework.data.domain.Page;
- import org.springframework.data.domain.Pageable;
- import org.springframework.data.jpa.repository.Query;
- import org.springframework.data.repository.query.Param;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 
 public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> {
+
     boolean existsByTargetVehicle_IdAndRequestStatusIn(
             Long targetVehicleId, Collection<MoveRequestStatus> statuses);
+
+    long countByTargetVehicle_User_IdAndRequestedAtAfter(Long userId, LocalDateTime since);
+
+    long countByTargetVehicle_User_IdAndRequestStatusInAndRequestedAtAfter(
+            Long userId, Collection<MoveRequestStatus> statuses, LocalDateTime since);
 
     @Query("""
         select mr from MoveRequest mr

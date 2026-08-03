@@ -78,12 +78,14 @@ public class ParkingZone extends BaseEntity {
             Integer hwZoneId,
             EntryExitRole entryExitRole,
             Integer allowedMinutes,
-            String geometryData
+            String geometryData,
+            String floor
     ) {
         this.zoneType = zoneType;
         this.hwZoneId = hwZoneId;
         this.entryExitRole = entryExitRole;
         this.allowedMinutes = allowedMinutes;
         this.geometryData = geometryData;
+        this.floor = floor;
     }
 }

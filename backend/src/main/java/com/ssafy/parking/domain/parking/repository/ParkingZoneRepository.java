@@ -10,4 +10,8 @@ public interface ParkingZoneRepository extends JpaRepository<ParkingZone, Long> 
     Optional<ParkingZone> findByZoneNumber(String zoneNumber);
     List<ParkingZone> findAllByOrderByHwZoneIdAsc();
     Optional<ParkingZone> findByHwZoneId(Integer hwZoneId);
+
+    List<ParkingZone> findByZoneTypeInAndStatusOrderByHwZoneIdAsc(
+            java.util.Collection<com.ssafy.parking.domain.parking.entity.ParkingZoneType> zoneTypes,
+            com.ssafy.parking.domain.parking.entity.ParkingZoneStatus status);
 }
