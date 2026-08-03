@@ -51,7 +51,7 @@ public class ZoneService {
             if (existing != null) {
                 existing.updateDefinition(
                         item.zoneType(), item.zoneId(), item.entryExitRole(),
-                        allowedMinutes, geometry);
+                        allowedMinutes, geometry, request.floor());
                 updated++;
             } else {
                 String zoneNumber = generateZoneNumber(
@@ -63,6 +63,7 @@ public class ZoneService {
                         .entryExitRole(item.entryExitRole())
                         .allowedMinutes(allowedMinutes)
                         .geometryData(geometry)
+                        .floor(request.floor())
                         .status(ParkingZoneStatus.ACTIVE)
                         .build();
                 parkingZoneRepository.save(zone);
