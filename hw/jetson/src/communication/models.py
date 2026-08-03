@@ -30,6 +30,14 @@ class EntryAccessDecision(str, Enum):
     DENY = "DENY"
 
 
+class EntryReviewResolution(str, Enum):
+    """Backend가 REVIEW_PENDING 입차 시도에 내린 후속 판정."""
+
+    REVIEW_ALLOW = "REVIEW_ALLOW"
+    REVIEW_DENY = "REVIEW_DENY"
+    REVIEW_EXPIRED = "REVIEW_EXPIRED"
+
+
 def _require_positive_int(value: object, field_name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field_name} must be a positive integer")
@@ -76,6 +84,103 @@ class EntryDecisionInput:
             raise ValueError(
                 "REVIEW or DENY EntryDecision must not carry session_context"
             )
+
+
+@dataclass(frozen=True)
+class EntryReviewResolutionInput:
+    """API 4에서 기존 REVIEW_PENDING attempt에 적용할 후속 판정."""
+
+    entry_attempt_id: UUID
+    decision_revision: int
+    resolution: EntryReviewResolution
+    resolved_at: datetime
+    session_context: EntrySessionContextInput | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry_attempt_id, UUID):
+            raise ValueError("entry_attempt_id must be UUID")
+        _require_positive_int(self.decision_revision, "decision_revision")
+        if not isinstance(self.resolution, EntryReviewResolution):
+            raise ValueError("resolution must be EntryReviewResolution")
+        require_aware(self.resolved_at, "resolved_at")
+        if self.resolution is EntryReviewResolution.REVIEW_ALLOW:
+            if self.session_context is None:
+                raise ValueError("REVIEW_ALLOW requires session_context")
+        elif self.session_context is not None:
+            raise ValueError(
+                "REVIEW_DENY or REVIEW_EXPIRED must not carry session_context"
+            )
+
+
+@dataclass(frozen=True)
+class SessionContextUpdateContextInput:
+    """API 5가 전달하는 Backend authoritative 자격 snapshot."""
+
+    vehicle_id: int
+    is_disabled_vehicle: bool
+    is_electric: bool
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.vehicle_id, "vehicle_id")
+        for name in ("is_disabled_vehicle", "is_electric"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be boolean")
+
+
+@dataclass(frozen=True)
+class SessionContextUpdateInput:
+    """API 5에서 session mirror와 active binding에 적용할 변경."""
+
+    session_id: int
+    entry_attempt_id: UUID
+    context_revision: int
+    administrative_state: str
+    updated_at: datetime
+    session_context: SessionContextUpdateContextInput
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.session_id, "session_id")
+        if not isinstance(self.entry_attempt_id, UUID):
+            raise ValueError("entry_attempt_id must be UUID")
+        _require_positive_int(self.context_revision, "context_revision")
+        if self.administrative_state not in {"ACTIVE", "CLOSED"}:
+            raise ValueError("administrative_state must be ACTIVE or CLOSED")
+        require_aware(self.updated_at, "updated_at")
+        if not isinstance(
+            self.session_context,
+            SessionContextUpdateContextInput,
+        ):
+            raise ValueError(
+                "session_context must be SessionContextUpdateContextInput"
+            )
+
+
+@dataclass(frozen=True)
+class MoveVerificationCommandInput:
+    """API 11에서 하나 이상의 Incident 재확인을 요청하는 command."""
+
+    request_id: int
+    verification_attempt: int
+    target_incident_ids: tuple[UUID, ...]
+    requested_at: datetime
+    deadline_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.request_id, "request_id")
+        _require_positive_int(self.verification_attempt, "verification_attempt")
+        if not self.target_incident_ids:
+            raise ValueError("target_incident_ids must not be empty")
+        if any(
+            not isinstance(incident_id, UUID)
+            for incident_id in self.target_incident_ids
+        ):
+            raise ValueError("target_incident_ids must contain UUID values")
+        if len(set(self.target_incident_ids)) != len(self.target_incident_ids):
+            raise ValueError("target_incident_ids must be unique")
+        require_aware(self.requested_at, "requested_at")
+        require_aware(self.deadline_at, "deadline_at")
+        if self.deadline_at < self.requested_at:
+            raise ValueError("deadline_at must not precede requested_at")
 
 
 class MoveVerificationState(str, Enum):

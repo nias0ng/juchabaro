@@ -20,11 +20,20 @@ from fastapi import FastAPI
 
 from src.api.entry_events_router import router as entry_events_router
 from src.api.health_router import router as health_router
+from src.api.internal_commands_router import router as internal_commands_router
 from src.application.entry_event_intake import EntryEventIntake
+from src.application.entry_review_resolution_intake import (
+    EntryReviewResolutionIntake,
+)
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
+from src.application.move_verification_intake import MoveVerificationIntake
+from src.application.session_context_update_intake import (
+    SessionContextUpdateIntake,
+)
 from src.config.settings import Settings, get_settings
 from src.parking.zone_registry import ZoneRegistry
+from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
 
@@ -91,6 +100,13 @@ def create_app(
                 resolved_settings.entry_match_window_seconds
             ),
         )
+        application.state.entry_review_resolution_intake = (
+            EntryReviewResolutionIntake(entry_match_coordinator)
+        )
+        application.state.session_context_update_intake = (
+            SessionContextUpdateIntake(ContextBindingCoordinator())
+        )
+        application.state.move_verification_intake = MoveVerificationIntake()
         application.state.database_connection_factory = connection_factory
 
         monitoring_worker: MonitoringWorker | None = None
@@ -120,6 +136,7 @@ def create_app(
 
     application.include_router(health_router)
     application.include_router(entry_events_router)
+    application.include_router(internal_commands_router)
 
     return application
 
