@@ -8,15 +8,16 @@ import java.util.List;
 public record ZoneImportRequest(
         Integer zoneDefinitionVersion,
         String calibrationReference,
+        String floor,
         List<ZoneItem> zones
 ) {
     public record ZoneItem(
-            Integer zoneId,                  // → hw_zone_id
+            Integer zoneId,
             ParkingZoneType zoneType,
-            EntryExitRole entryExitRole,     // nullable
-            Integer allowedDurationSeconds,  // nullable
+            EntryExitRole entryExitRole,
+            Integer allowedDurationSeconds,
             List<List<Double>> polygon,
-            String chargerClass,             // nullable
-            List<Integer> egressZoneIds      // nullable
+            String chargerClass,
+            List<Integer> egressZoneIds
     ) {}
 }
