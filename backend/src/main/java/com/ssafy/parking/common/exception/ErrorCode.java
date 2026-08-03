@@ -164,6 +164,10 @@ public enum ErrorCode {
     HW_EVIDENCE_CHECKSUM_MISMATCH(
             HttpStatus.UNPROCESSABLE_ENTITY, "증거 이미지 체크섬이 일치하지 않습니다."),
 
+    HW_ENTRY_CONFLICT(
+            HttpStatus.CONFLICT,
+            "동일한 Idempotency-Key로 다른 입차 요청이 이미 처리되었습니다."),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
