@@ -64,14 +64,14 @@ export default function HomeScreen() {
   const primarySession = pickPrimarySession(sessions);
   const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
   const additionalSessionCount = Math.max(sessions.length - 1, 0);
-  const mySpotCodes = sessions.map((session) => session.spotCode);
+  const myZoneNumbers = sessions.map((session) => session.zoneNumber);
 
   const {
     summary,
     isLoading: isSummaryLoading,
     error: summaryError,
   } = useParkingZoneSummary();
-  const parkingStatus = summary ? toParkingStatusDisplay(summary, mySpotCodes) : null;
+  const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers) : null;
 
   return (
     <LinearGradient

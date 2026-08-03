@@ -2,12 +2,6 @@ import { Platform } from 'react-native';
 
 import { getJson, postForm, postJson } from '@/services/http-client';
 
-import {
-  getMoveRequestDetailMock,
-  getMoveRequestsMock,
-  postMoveRequestMock,
-  postMoveRequestResponseMock,
-} from './move-request-api.mock';
 import type {
   MoveRequestCreateParams,
   MoveRequestCreateResult,
@@ -18,21 +12,11 @@ import type {
   MoveResponseResult,
 } from './types';
 
-const useMockMoveRequest = process.env.EXPO_PUBLIC_USE_MOCK_MOVE_REQUEST === 'true';
-
 export function getMoveRequestDetail(requestId: number, accessToken: string): Promise<MoveRequestDetail> {
-  if (useMockMoveRequest) {
-    return getMoveRequestDetailMock(requestId);
-  }
-
   return getJson<MoveRequestDetail>(`/api/move-requests/${requestId}`, accessToken);
 }
 
 export function getMoveRequests(scope: MoveRequestScope, accessToken: string): Promise<MoveRequestListResult> {
-  if (useMockMoveRequest) {
-    return getMoveRequestsMock(scope);
-  }
-
   return getJson<MoveRequestListResult>(`/api/move-requests?scope=${scope}&size=50`, accessToken);
 }
 
@@ -41,10 +25,6 @@ export function postMoveRequestResponse(
   request: MoveResponseRequest,
   accessToken: string,
 ): Promise<MoveResponseResult> {
-  if (useMockMoveRequest) {
-    return postMoveRequestResponseMock(requestId, request);
-  }
-
   return postJson<MoveResponseResult>(`/api/move-requests/${requestId}/responses`, request, accessToken);
 }
 
@@ -73,10 +53,6 @@ export async function postMoveRequest(
   params: MoveRequestCreateParams,
   accessToken: string,
 ): Promise<MoveRequestCreateResult> {
-  if (useMockMoveRequest) {
-    return postMoveRequestMock(params);
-  }
-
   const query = new URLSearchParams({
     targetPlateNumber: params.targetPlateNumber,
     eventType: params.eventType,
