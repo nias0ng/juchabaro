@@ -71,4 +71,16 @@ public class User extends BaseEntity {
         this.role = role;
         this.status = status;
     }
+
+    public void changeName(String name) {
+        this.name = name;
+    }
+
+    public void changePassword(String passwordHash) {
+        this.passwordHash = passwordHash;
+    }
+
+    public void withdraw() {
+        this.status = UserStatus.DELETED;
+    }
 }
