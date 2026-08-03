@@ -191,21 +191,38 @@ http://<JETSON_IP>:8000/docs
 ```bash
 python -m scripts.replay_pilot_video \
     --video ../../docs/video/video1.mp4 \
-    --zones-file ../../ai/tracking/zones_pilot.json \
+    --zones-file config/zone_definition.pilot.json \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
+    --parking-move-confirm-seconds 3.0 \
+    --absence-confirmation-seconds 5.0 \
+    --trusted-sample-max-gap-seconds 1.0 \
+    --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \
     --movement-epsilon 0.01 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```
 
+임계값 플래그에 임의 기본값을 두지 않는 것은 `config/settings.py`와 같은
+이유다(§4.7) — 이 스크립트가 그 실측 도구라 숨은 숫자가 있으면 측정값 자체가
+오염된다. 코드에 이미 확립된 기본값이 있는 값(`--entry-zone-min-overlap-ratio`,
+`--incident-confirm-seconds`, `--incident-clear-seconds`,
+`--parking-confirm-seconds`)만 그 값을 재사용한다.
+
+`--zones-file`은 464의 새 구역 정의 snapshot 포맷이어야 한다
+(`zoneDefinitionVersion`/`calibrationReference`/`zones`). `calibrationReference`가
+`--calibration` 파일의 지문과 다르면 실행 전에 거부한다 — 런타임에서 그
+문자열이 프레임의 `calibration_id`와 비교되어 전체 관측 여부를 가르므로,
+어긋난 채 돌리면 모든 프레임이 조용히 부분 관측으로 격하된다.
+
 `--out-events`는 확정된 사건 전이(프로덕션 outbox와 같은 포맷)만 담는다.
-파일럿 영상 리플레이에는 백엔드 입차 이벤트가 없어 `restricted_zone` 규칙이
-항상 미확정(`confirmable=False`)으로 남으므로, 임계값 측정에는
+파일럿 영상 리플레이에는 백엔드 입차 이벤트가 없어 `ParkingSession`이 하나도
+없고, 세 종류 전이(PARKED/UNPARKED, 사건 OPEN/RESOLVE, 세션 EXIT)가 모두
+session correlation을 요구하므로 이 파일은 비어 있다. 따라서 임계값 측정에는
 `--out-zone-visits`(ZoneVisit의 ENTERING→INSIDE 전이 로그)를 쓴다. 각 레코드의
 `observedAt`은 상태별로 의미가 맞는 시각(ENTERING은 진입 후보 시각, INSIDE는
-진입 확정 시각, EXITING은 이탈 후보 시각, OUTSIDE는 이탈 확정 시각)을 골라
+진입 확정 시각, EXITING은 이탈 후보 시각, ENDED/CANCELED는 종료 시각)을 골라
 담은 필드라, 상태를 가리지 않고 이 필드 하나로 정렬·비교할 수 있다.
 
 `ai/tracking/replay_pilot_video.py`는 옛 baseline(`jetson_vehicle_tracking_baseline.py`)
