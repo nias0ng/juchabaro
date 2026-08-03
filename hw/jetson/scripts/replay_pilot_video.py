@@ -53,6 +53,7 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --absence-confirmation-seconds 5.0 \\
         --trusted-sample-max-gap-seconds 1.0 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
+        --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
 
@@ -149,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--assignment-ambiguous-margin", type=float, required=True,
         help="배정 모호 판정 여유값. 코드·설정 어디에도 확립된 기본값이 없어 필수다.",
+    )
+    parser.add_argument(
+        "--blocking-relation-confirm-seconds", type=float, required=True,
+        help="이중주차 차단 관계 확정 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
+    )
+    parser.add_argument(
+        "--blocking-relation-clear-seconds", type=float, required=True,
+        help="이중주차 차단 관계 해소 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
     )
     parser.add_argument(
         "--parking-confirm-seconds", type=float, default=600.0,
@@ -254,6 +263,8 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         zone_presence_min_overlap_ratio=args.min_overlap_ratio,
         assignment_min_overlap_ratio=args.assignment_min_overlap_ratio,
         assignment_ambiguous_margin=args.assignment_ambiguous_margin,
+        blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
+        blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
     )
 
 
