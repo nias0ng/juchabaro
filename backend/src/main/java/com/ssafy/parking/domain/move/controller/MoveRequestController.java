@@ -1,8 +1,7 @@
 package com.ssafy.parking.domain.move.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
-import com.ssafy.parking.domain.move.dto.MoveRequestCreateResponse;
-import com.ssafy.parking.domain.move.dto.MoveRequestListResponse;
+import com.ssafy.parking.domain.move.dto.*;
 import com.ssafy.parking.domain.move.entity.MoveRequestScope;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
 import com.ssafy.parking.domain.move.service.MoveRequestService;
@@ -19,10 +18,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
-import com.ssafy.parking.domain.move.dto.MoveRequestDetailResponse;
-import com.ssafy.parking.domain.move.dto.MoveResponseCreateRequest;
-import com.ssafy.parking.domain.move.dto.MoveResponseCreateResponse;
 
 import java.util.List;
 
@@ -116,5 +111,16 @@ public class MoveRequestController {
         MoveResponseCreateResponse result = moveRequestService.respond(userId, requestId, request);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(HttpStatus.CREATED, "이동 요청 응답이 등록되었습니다.", result));
+    }
+
+    @Operation(summary = "위반 이력 통계", description = "최근 90일 기준 누적/미해결 건수와 평균 응답 시간(분)을 반환합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @GetMapping("/stats")
+    public ResponseEntity<ApiResponse<MoveRequestStatsResponse>> getStats(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId
+    ) {
+        return ResponseEntity.ok(ApiResponse.success(
+                HttpStatus.OK, "위반 이력 통계 조회에 성공했습니다.",
+                moveRequestService.getStats(userId)));
     }
 }
