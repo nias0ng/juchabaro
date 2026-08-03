@@ -6,7 +6,11 @@ entry_confirm_seconds<=0/exit_confirm_seconds<=0 경로), 임의의 문턱값에
 "이 방문이 그 문턱값에서도 확정됐을까"를 dwellSeconds >= threshold로 계산할 수 있다.
 
 측정 대상은 zone_entry_confirm_seconds/zone_exit_confirm_seconds뿐이다. movement_epsilon은
-현재 파이프라인에서 관측 가능한 효과가 없어 범위 밖이다(설계 문서 참고).
+측정 당시 파이프라인에서 관측 가능한 효과가 없어 범위 밖이었다(설계 문서 참고) — 464가
+ParkingEpisodeTracker를 배선해 지금은 효과가 관측되지만, 그 재측정은 이 티켓 범위가 아니다.
+
+**입력 포맷은 464 기준이다.** 방문 종료 상태는 ENDED(옛 OUTSIDE), 종료 시각 필드는
+endedAt(옛 exitedAt)이다.
 """
 
 from __future__ import annotations
@@ -29,22 +33,29 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def load_completed_visits(zone_visits_path: Path) -> list[dict[str, Any]]:
-    """`--out-zone-visits` JSONL에서 전용구역으로 향한, 완결된(OUTSIDE) 방문만 남긴다."""
+    """`--out-zone-visits` JSONL에서 전용구역으로 향한, 완결된(ENDED) 방문만 남긴다.
+
+    464에서 종료 상태가 OUTSIDE 하나에서 ENDED/CANCELED 둘로 갈렸다. 여기서
+    보는 것은 ENDED뿐이다 — CANCELED는 진입이 확정되기 전에 사라진 방문이라
+    `enteredAt`이 없어 체류시간 자체가 없다. 이 측정이 요구하는 raw-pass
+    설정(`--zone-entry-confirm-seconds 0`)에서는 모든 방문이 첫 관측에서 곧바로
+    INSIDE로 승격되므로 CANCELED가 아예 나오지 않는다.
+    """
 
     return [
         record
         for record in _read_jsonl(zone_visits_path)
-        if record["zoneId"] in RESTRICTED_ZONE_IDS and record["state"] == "OUTSIDE"
+        if record["zoneId"] in RESTRICTED_ZONE_IDS and record["state"] == "ENDED"
     ]
 
 
 def compute_dwell_seconds(record: dict[str, Any]) -> float | None:
-    """`enteredAt`~`exitedAt` 체류시간(초). 둘 중 하나라도 없으면 미완결 방문이라 None."""
+    """`enteredAt`~`endedAt` 체류시간(초). 둘 중 하나라도 없으면 미완결 방문이라 None."""
 
-    entered_at, exited_at = record.get("enteredAt"), record.get("exitedAt")
-    if entered_at is None or exited_at is None:
+    entered_at, ended_at = record.get("enteredAt"), record.get("endedAt")
+    if entered_at is None or ended_at is None:
         return None
-    return (datetime.fromisoformat(exited_at) - datetime.fromisoformat(entered_at)).total_seconds()
+    return (datetime.fromisoformat(ended_at) - datetime.fromisoformat(entered_at)).total_seconds()
 
 
 def build_candidates(video: str, zone_visits_path: Path) -> list[dict[str, Any]]:
@@ -60,7 +71,7 @@ def build_candidates(video: str, zone_visits_path: Path) -> list[dict[str, Any]]
             "visitId": record["zoneVisitId"],
             "zoneId": record["zoneId"],
             "enteredAt": record["enteredAt"],
-            "exitedAt": record["exitedAt"],
+            "endedAt": record["endedAt"],
             "dwellSeconds": dwell,
         })
     return candidates
@@ -191,6 +202,9 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
     첫 관측에서 곧바로 INSIDE로 승격해 반환한다 — 따라서 재진입 후보는 INSIDE
     상태로 기록에 남는다. `enteredCandidateAt`은 같은 `_open_candidate` 호출에서
     채워지므로 ENTERING이었다면 가졌을 값과 동일하다.
+
+    닫힌 방문은 464 기준 ENDED다(옛 OUTSIDE). CANCELED는 raw-pass에서 나오지
+    않으므로 여기서도 보지 않는다 — `load_completed_visits` 참고.
     """
 
     records = _read_jsonl(zone_visits_path)
@@ -198,7 +212,7 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
     entries_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
         key = (record["physicalVehicleId"], record["zoneId"])
-        if record["state"] == "OUTSIDE":
+        if record["state"] == "ENDED":
             exits_by_key.setdefault(key, []).append(record)
         elif record["state"] == "INSIDE":
             entries_by_key.setdefault(key, []).append(record)
@@ -207,7 +221,7 @@ def build_flicker_gaps(video: str, zone_visits_path: Path) -> list[dict[str, Any
     for key, exits in exits_by_key.items():
         entries = entries_by_key.get(key, [])
         for exit_record in exits:
-            exited_at = datetime.fromisoformat(exit_record["exitedAt"])
+            exited_at = datetime.fromisoformat(exit_record["endedAt"])
             later_entries = [
                 entry for entry in entries
                 if entry["zoneVisitId"] != exit_record["zoneVisitId"]

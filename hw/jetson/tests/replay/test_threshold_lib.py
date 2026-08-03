@@ -34,14 +34,14 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 def test_load_completed_visits_filters_by_zone_and_state(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
-        {"zoneId": 1, "state": "OUTSIDE", "zoneVisitId": "v2",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 1, "state": "ENDED", "zoneVisitId": "v2",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
         {"zoneId": 7, "state": "ENTERING", "zoneVisitId": "v3",
-         "enteredAt": None, "exitedAt": None},
-        {"zoneId": 7, "state": "OUTSIDE", "zoneVisitId": "v4",
-         "enteredAt": "1970-01-01T00:00:10+00:00", "exitedAt": "1970-01-01T00:00:12+00:00"},
+         "enteredAt": None, "endedAt": None},
+        {"zoneId": 7, "state": "ENDED", "zoneVisitId": "v4",
+         "enteredAt": "1970-01-01T00:00:10+00:00", "endedAt": "1970-01-01T00:00:12+00:00"},
     ])
 
     records = load_completed_visits(path)
@@ -50,26 +50,26 @@ def test_load_completed_visits_filters_by_zone_and_state(tmp_path):
 
 
 def test_compute_dwell_seconds():
-    record = {"enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08.500000+00:00"}
+    record = {"enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08.500000+00:00"}
 
     assert compute_dwell_seconds(record) == pytest.approx(3.5)
 
 
 def test_compute_dwell_seconds_returns_none_for_incomplete_visit():
-    assert compute_dwell_seconds({"enteredAt": None, "exitedAt": "1970-01-01T00:00:08+00:00"}) is None
+    assert compute_dwell_seconds({"enteredAt": None, "endedAt": "1970-01-01T00:00:08+00:00"}) is None
 
 
 def test_compute_dwell_seconds_returns_none_for_missing_exit_time():
-    assert compute_dwell_seconds({"enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": None}) is None
+    assert compute_dwell_seconds({"enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": None}) is None
 
 
 def test_build_candidates_skips_incomplete_and_computes_dwell(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v2",
-         "enteredAt": None, "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v2",
+         "enteredAt": None, "endedAt": "1970-01-01T00:00:08+00:00"},
     ])
 
     candidates = build_candidates("video1", path)
@@ -86,9 +86,9 @@ def test_ts_to_video_seconds():
 
 
 CANDIDATES = [
-    {"video": "video1", "visitId": "v1", "zoneId": 3, "enteredAt": "", "exitedAt": "", "dwellSeconds": 0.5},
-    {"video": "video1", "visitId": "v2", "zoneId": 3, "enteredAt": "", "exitedAt": "", "dwellSeconds": 4.0},
-    {"video": "video2", "visitId": "v3", "zoneId": 7, "enteredAt": "", "exitedAt": "", "dwellSeconds": 1.5},
+    {"video": "video1", "visitId": "v1", "zoneId": 3, "enteredAt": "", "endedAt": "", "dwellSeconds": 0.5},
+    {"video": "video1", "visitId": "v2", "zoneId": 3, "enteredAt": "", "endedAt": "", "dwellSeconds": 4.0},
+    {"video": "video2", "visitId": "v3", "zoneId": 7, "enteredAt": "", "endedAt": "", "dwellSeconds": 1.5},
 ]
 LABELS = {
     "v1": {"violation": False, "ambiguous": False, "note": "인접 칸 후진 주차 중 스침"},
@@ -134,7 +134,7 @@ def test_recommend_threshold_picks_smallest_zero_false_positive():
 
 
 def test_recommend_threshold_falls_back_when_zero_fp_impossible_in_grid():
-    candidates = [{"visitId": "x1", "zoneId": 3, "video": "v", "enteredAt": "", "exitedAt": "", "dwellSeconds": 100.0}]
+    candidates = [{"visitId": "x1", "zoneId": 3, "video": "v", "enteredAt": "", "endedAt": "", "dwellSeconds": 100.0}]
     labels = {"x1": {"violation": False, "ambiguous": False, "note": "그리드 범위 내에서 항상 확정되는 예시"}}
     results = sweep_thresholds(candidates, labels, [1.0, 5.0, 10.0])
 
@@ -167,8 +167,8 @@ def test_extract_frames_for_candidate_returns_expected_count(tmp_path):
 def test_build_flicker_gaps_pairs_same_vehicle_reentry(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
         # raw-pass(--zone-entry-confirm-seconds 0)에서는 새 방문이 ENTERING을 거치지
         # 않고 첫 관측에서 곧바로 INSIDE로 승격되어 기록된다(zone_visit_tracker.py의
         # _open_candidate 참고) — 그래서 픽스처도 INSIDE로 둔다.
@@ -190,13 +190,13 @@ def test_build_flicker_gaps_ignores_visits_with_no_later_reentry(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
         # v1 자신의 INSIDE 전이 — 같은 (physicalVehicleId, zoneId) 키로 entries_by_key에
-        # 들어가지만 자기 자신의 exitedAt과 짝지어질 수 있는 후보다. zoneVisitId가
+        # 들어가지만 자기 자신의 endedAt과 짝지어질 수 있는 후보다. zoneVisitId가
         # exit_record와 같으므로 자기 자신과의 짝짓기 가드로 걸러져야 한다(시각상으로도
-        # exitedAt보다 이전이라 이중으로 걸러진다).
+        # endedAt보다 이전이라 이중으로 걸러진다).
         {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
          "enteredCandidateAt": "1970-01-01T00:00:02+00:00"},
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
     ])
 
     assert build_flicker_gaps("video1", path) == []
@@ -205,9 +205,9 @@ def test_build_flicker_gaps_ignores_visits_with_no_later_reentry(tmp_path):
 def test_build_flicker_gaps_ignores_reentry_from_different_vehicle(tmp_path):
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
-        # 시각상으로는 exitedAt 직후라 재진입처럼 보이지만 physicalVehicleId가 다르다 —
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
+        # 시각상으로는 endedAt 직후라 재진입처럼 보이지만 physicalVehicleId가 다르다 —
         # 시각 비교만으로는 걸러지지 않고 키(physicalVehicleId, zoneId) 매칭이 걸러내야 한다.
         {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v2", "physicalVehicleId": "pv-2",
          "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
@@ -217,19 +217,19 @@ def test_build_flicker_gaps_ignores_reentry_from_different_vehicle(tmp_path):
 
 
 def test_build_flicker_gaps_excludes_self_pairing_with_own_zone_visit_id(tmp_path):
-    # 방문 하나의 생애주기 전부(INSIDE 진입 -> OUTSIDE 종료)가 같은 zoneVisitId를
-    # 공유한다. enteredCandidateAt이 exitedAt보다 뒤(재기록/시계 오차 등으로 실제
+    # 방문 하나의 생애주기 전부(INSIDE 진입 -> ENDED 종료)가 같은 zoneVisitId를
+    # 공유한다. enteredCandidateAt이 endedAt보다 뒤(재기록/시계 오차 등으로 실제
     # 발생할 수 있는 값)라 시각 비교만으로는 걸러지지 않는다 —
     # test_build_flicker_gaps_pairs_same_vehicle_reentry와 구조가 같지만
     # zoneVisitId가 같다는 점만 다르다. zoneVisitId 배제 가드가 없으면 이 INSIDE
-    # 레코드가 자기 자신의 OUTSIDE와 재진입으로 잘못 짝지어져 가짜 플리커 간격을
+    # 레코드가 자기 자신의 ENDED와 재진입으로 잘못 짝지어져 가짜 플리커 간격을
     # 만들어낸다.
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
         {"zoneId": 3, "state": "INSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
          "enteredCandidateAt": "1970-01-01T00:00:08.400000+00:00"},
-        {"zoneId": 3, "state": "OUTSIDE", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
-         "enteredAt": "1970-01-01T00:00:05+00:00", "exitedAt": "1970-01-01T00:00:08+00:00"},
+        {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v1", "physicalVehicleId": "pv-1",
+         "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
     ])
 
     assert build_flicker_gaps("video1", path) == []
