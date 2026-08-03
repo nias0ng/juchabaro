@@ -121,8 +121,8 @@ class PlateOcrPipeline:
         연속적인 BGR uint8 프레임.
 
     출력:
-        정상 판독 상태와 성공 시 전체 번호판만 포함한
-        ``PlateReadResult``.
+        정상 판독 상태와 성공 시 전체 번호판 및 winner의 대표
+        PaddleOCR ``rec_score``를 포함한 ``PlateReadResult``.
 
     실패:
         잘못된 burst는 ``InvalidBurstError``, 알려진 component 오류는
@@ -169,7 +169,8 @@ class PlateOcrPipeline:
             CapturedFrame 시퀀스.
 
         출력:
-            성공 번호 또는 정상적인 판독 실패 상태를 담은 PlateReadResult.
+            성공 번호와 대표 ``rec_score`` 또는 정상적인 판독 실패 상태를
+            담은 PlateReadResult.
 
         실패:
             burst 계약 위반은 InvalidBurstError, 알려진 모델·adapter·
@@ -576,4 +577,5 @@ class PlateOcrPipeline:
         return PlateReadResult(
             status=decision.status,
             plate_number=decision.plate_number,
+            rec_score=decision.winner_rec_score,
         )

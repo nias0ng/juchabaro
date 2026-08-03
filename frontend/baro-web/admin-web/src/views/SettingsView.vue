@@ -14,6 +14,7 @@ const DEFAULT_STANDARDS = {
 }
 const DEFAULT_TOGGLES = {
   disabledZoneWarningEnabled: true,
+  evZoneWarningEnabled: true,
   pushNotificationEnabled: true,
   speakerAnnouncementEnabled: true,
   ledWarningEnabled: true,
@@ -26,6 +27,7 @@ const intrusionThresholdPercent = ref(DEFAULT_STANDARDS.intrusionThresholdPercen
 const recheckIntervalSeconds = ref(DEFAULT_STANDARDS.recheckIntervalSeconds)
 
 const disabledZoneWarningEnabled = ref(DEFAULT_TOGGLES.disabledZoneWarningEnabled)
+const evZoneWarningEnabled = ref(DEFAULT_TOGGLES.evZoneWarningEnabled)
 // 전기차 충전 구역 허용 시간은 정책상 고정값이라 편집 UI가 없다.
 const EV_FAST_CHARGE_HOURS = 1
 const EV_SLOW_CHARGE_HOURS = 14
@@ -40,6 +42,7 @@ function resetToDefaults() {
   intrusionThresholdPercent.value = DEFAULT_STANDARDS.intrusionThresholdPercent
   recheckIntervalSeconds.value = DEFAULT_STANDARDS.recheckIntervalSeconds
   disabledZoneWarningEnabled.value = DEFAULT_TOGGLES.disabledZoneWarningEnabled
+  evZoneWarningEnabled.value = DEFAULT_TOGGLES.evZoneWarningEnabled
   pushNotificationEnabled.value = DEFAULT_TOGGLES.pushNotificationEnabled
   speakerAnnouncementEnabled.value = DEFAULT_TOGGLES.speakerAnnouncementEnabled
   ledWarningEnabled.value = DEFAULT_TOGGLES.ledWarningEnabled
@@ -70,8 +73,8 @@ const APPLIED = computed(() => [
     group: '전용 구역',
     items: [
       ['장애인 구역 경고 사용', onOffLabel(disabledZoneWarningEnabled.value)],
-      ['전기차 충전 구역 허용 시간(급속)', `${EV_FAST_CHARGE_HOURS}시간`],
-      ['전기차 충전 구역 허용 시간(완속)', `${EV_SLOW_CHARGE_HOURS}시간`],
+      ['전기차 구역 경고 사용', onOffLabel(evZoneWarningEnabled.value)],
+      ['전기차 충전 구역 허용 시간', `${EV_SLOW_CHARGE_HOURS}시간`],
     ],
   },
   {
@@ -188,14 +191,29 @@ const APPLIED = computed(() => [
                 <span class="toggle-knob" />
               </button>
             </div>
+            <div class="toggle-field">
+              <span class="field-label">
+                전기차 구역 경고 사용
+                <InfoTooltip text="전기차 전용 구역에 일반 차량이 주차하면 경고를 표시할지 설정합니다." />
+              </span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: evZoneWarningEnabled }"
+                role="switch"
+                :aria-checked="evZoneWarningEnabled"
+                aria-label="전기차 구역 경고 사용"
+                @click="evZoneWarningEnabled = !evZoneWarningEnabled"
+              >
+                <span class="toggle-knob" />
+              </button>
+            </div>
             <div class="ev-time-row">
               <span class="field-label">
                 전기차 충전 구역 허용 시간
-                <InfoTooltip text="전기차 충전 구역에서 충전 방식별로 허용되는 최대 주차 시간입니다. 급속·완속 모두 고정값입니다." />
+                <InfoTooltip text="전기차 충전 구역에서 법적으로 허용되는 충전 최대 시간입니다. 이 값은 고정값입니다." />
               </span>
-              <span class="ev-sub">급속</span>
-              <span class="ev-value">{{ EV_FAST_CHARGE_HOURS }}시간</span>
-              <span class="ev-sub">완속</span>
+              <span class="ev-sub">충전 최대 시간</span>
               <span class="ev-value">{{ EV_SLOW_CHARGE_HOURS }}시간</span>
             </div>
           </div>

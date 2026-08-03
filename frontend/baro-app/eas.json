@@ -15,11 +15,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://i15e202.p.ssafy.io",
-        "EXPO_PUBLIC_USE_MOCK_AUTH": "false",
-        "EXPO_PUBLIC_USE_MOCK_PARKING": "true",
-        "EXPO_PUBLIC_USE_MOCK_MOVE_REQUEST": "true",
-        "EXPO_PUBLIC_USE_MOCK_VEHICLES": "true"
+        "EXPO_PUBLIC_API_BASE_URL": "https://i15e202.p.ssafy.io"
       }
     },
     "production": {

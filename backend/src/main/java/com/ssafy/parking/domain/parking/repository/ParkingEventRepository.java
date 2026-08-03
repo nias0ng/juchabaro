@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
+import java.util.Optional;
 import java.util.Set;
 
 public interface ParkingEventRepository extends JpaRepository<ParkingEvent, Long> {
@@ -16,4 +17,6 @@ public interface ParkingEventRepository extends JpaRepository<ParkingEvent, Long
         where e.eventStatus in :statuses and e.session.exitTime is null
         """)
     Set<Long> findActiveViolationSessionIds(@Param("statuses") Collection<ParkingEventStatus> statuses);
+
+    Optional<ParkingEvent> findByIncidentId(String incidentId);
 }

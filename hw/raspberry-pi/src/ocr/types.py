@@ -162,22 +162,32 @@ class OcrCandidate:
 
 @dataclass(frozen=True, slots=True)
 class PlateDecision:
-    """후처리 집계기가 내린 번호판 판정."""
+    """후처리 집계기가 내린 번호판 판정.
+
+    ``winner_rec_score``는 성공한 winner 문자열에 투표한 후보 중 가장
+    높은 PaddleOCR ``rec_score``다. 판정이 성공하지 않으면 ``None``이다.
+    """
 
     status: ReadStatus
     plate_number: str | None
     valid_frames: int
     vote_count: int
     vote_ratio: float
+    winner_rec_score: float | None = None
     error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PlateReadResult:
-    """상위 입차 서비스에 반환하는 최소 OCR 판독 결과."""
+    """상위 입차 서비스에 반환하는 최소 OCR 판독 결과.
+
+    성공 시 ``rec_score``는 최종 번호판 winner의 대표 PaddleOCR 점수이며,
+    외부 API의 ``confidence``로 전달할 수 있다.
+    """
 
     status: ReadStatus
     plate_number: str | None
+    rec_score: float | None = None
 
     @property
     def succeeded(self) -> bool:

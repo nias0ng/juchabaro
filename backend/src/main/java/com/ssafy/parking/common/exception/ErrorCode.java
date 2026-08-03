@@ -140,6 +140,30 @@ public enum ErrorCode {
             HttpStatus.BAD_REQUEST,
             "현재 비밀번호가 일치하지 않습니다."),
 
+    PARKING_SESSION_NOT_FOUND(
+            HttpStatus.NOT_FOUND, "주차 세션을 찾을 수 없습니다."),
+
+    HW_ZONE_NOT_FOUND(
+            HttpStatus.NOT_FOUND, "해당 zoneId의 주차 구역을 찾을 수 없습니다."),
+
+    HW_TRANSITION_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY, "지원하지 않는 전이 타입입니다."),
+
+    HW_INCIDENT_NOT_FOUND(
+            HttpStatus.NOT_FOUND, "해당 사건을 찾을 수 없습니다."),
+
+    HW_INCIDENT_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY, "사건 전이 요청이 올바르지 않습니다."),
+
+    HW_EVIDENCE_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY, "증거 이미지 요청이 올바르지 않습니다."),
+
+    HW_EVIDENCE_TOO_LARGE(
+            HttpStatus.PAYLOAD_TOO_LARGE, "증거 이미지 용량이 허용 범위를 초과했습니다."),
+
+    HW_EVIDENCE_CHECKSUM_MISMATCH(
+            HttpStatus.UNPROCESSABLE_ENTITY, "증거 이미지 체크섬이 일치하지 않습니다."),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."

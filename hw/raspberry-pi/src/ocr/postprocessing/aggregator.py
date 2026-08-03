@@ -227,6 +227,7 @@ class _VoteTally:
     valid_frames: int
     vote_count: int
     vote_ratio: float
+    winner_rec_score: float
     second_vote_count: int
 
     @property
@@ -250,6 +251,11 @@ def _tally_votes(
     # confidence는 순위를 바꾸지 않으며 최상위 동률은 아래 정책에서 거절한다.
     ranked = counts.most_common(2)
     winner, vote_count = ranked[0]
+    winner_rec_score = max(
+        candidate.rec_score
+        for candidate in candidates
+        if candidate.normalized_text == winner
+    )
     valid_frames = len(candidates)
     second_vote_count = (
         ranked[1][1]
@@ -259,6 +265,7 @@ def _tally_votes(
 
     return _VoteTally(
         winner=winner,
+        winner_rec_score=winner_rec_score,
         valid_frames=valid_frames,
         vote_count=vote_count,
         vote_ratio=vote_count / valid_frames,
@@ -284,6 +291,11 @@ def _voted_decision(
         valid_frames=tally.valid_frames,
         vote_count=tally.vote_count,
         vote_ratio=tally.vote_ratio,
+        winner_rec_score=(
+            tally.winner_rec_score
+            if status is ReadStatus.SUCCESS
+            else None
+        ),
         error_message=error_message,
     )
 

@@ -10,21 +10,21 @@ public record HwEntryResponse(
         @JsonProperty("isDisabledVehicle") Boolean isDisabledVehicle,
         @JsonProperty("isElectric") Boolean isElectric,
         String vehicleStatus,
-        String trackingId,
+        String entryAttemptId,
         Long sessionId,
         boolean duplicateRequest
 ) {
     public static HwEntryResponse matched(AccessDecision decision, Vehicle v,
-                                          String trackingId, Long sessionId, boolean duplicate) {
+                                          String entryAttemptId, Long sessionId, boolean duplicate) {
         return new HwEntryResponse(
                 decision.name(), true, v.getId(),
                 v.isDisabledVehicle(), v.isElectric(), v.getStatus().name(),
-                trackingId, sessionId, duplicate);
+                entryAttemptId, sessionId, duplicate);
     }
 
-    public static HwEntryResponse denied(String trackingId) {
+    public static HwEntryResponse denied(String entryAttemptId) {
         return new HwEntryResponse(
                 AccessDecision.DENY.name(), false, null, null, null, null,
-                trackingId, null, false);
+                entryAttemptId, null, false);
     }
 }

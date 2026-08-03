@@ -1,4 +1,9 @@
-import type { CongestionLevel, ParkingSpot, ParkingZoneSummary, SpotType } from '../api/types';
+import type {
+  CongestionLevel,
+  ParkingSpotSummary,
+  ParkingZoneSummary,
+  ParkingZoneType,
+} from '../api/types';
 
 const CONGESTION_LEVEL_LABEL: Record<CongestionLevel, string> = {
   LOW: '여유',
@@ -6,13 +11,13 @@ const CONGESTION_LEVEL_LABEL: Record<CongestionLevel, string> = {
   HIGH: '혼잡',
 };
 
-// 지도 미리보기 칸 하나의 렌더링용 상태. '내 차'는 spotCode 비교로 프론트에서 판단한다.
+// 지도 컴포넌트 내부에서는 주차면 번호를 spotCode로 표현한다.
 export type SpotCellKind = 'empty' | 'occupied' | 'violation' | 'mine';
 
 export type SpotCell = {
   spotCode: string;
   kind: SpotCellKind;
-  spotType: SpotType;
+  spotType: ParkingZoneType;
 };
 
 export type ParkingStatusDisplay = {
@@ -24,19 +29,19 @@ export type ParkingStatusDisplay = {
   cells: SpotCell[];
 };
 
-function toSpotCellKind(spot: ParkingSpot, mySpotCodes: ReadonlySet<string>): SpotCellKind {
-  if (spot.status === 'VIOLATION') return 'violation';
-  if (mySpotCodes.has(spot.spotCode)) return 'mine';
-  if (spot.status === 'OCCUPIED') return 'occupied';
+function toSpotCellKind(spot: ParkingSpotSummary, myZoneNumbers: ReadonlySet<string>): SpotCellKind {
+  if (spot.occupancyStatus === 'VIOLATION') return 'violation';
+  if (myZoneNumbers.has(spot.zoneNumber)) return 'mine';
+  if (spot.occupancyStatus === 'OCCUPIED') return 'occupied';
   return 'empty';
 }
 
 // 화면에서 표시할 문자열/칸 상태로 변환
 export function toParkingStatusDisplay(
   summary: ParkingZoneSummary,
-  mySpotCodes: readonly string[],
+  myZoneNumbers: readonly string[],
 ): ParkingStatusDisplay {
-  const mySpotCodeSet = new Set(mySpotCodes);
+  const myZoneNumberSet = new Set(myZoneNumbers);
 
   return {
     congestionLevel: summary.congestionLevel,
@@ -45,9 +50,9 @@ export function toParkingStatusDisplay(
     availableLabel: `비어 있음 ${summary.availableSpots}`,
     violationLabel: `위반 ${summary.violationCount}`,
     cells: summary.spots.map((spot) => ({
-      spotCode: spot.spotCode,
-      kind: toSpotCellKind(spot, mySpotCodeSet),
-      spotType: spot.spotType,
+      spotCode: spot.zoneNumber,
+      kind: toSpotCellKind(spot, myZoneNumberSet),
+      spotType: spot.zoneType,
     })),
   };
 }

@@ -7,6 +7,6 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingBottom: Spacing.xl,
+    paddingBottom: Spacing.xxxl,
   },
 });
