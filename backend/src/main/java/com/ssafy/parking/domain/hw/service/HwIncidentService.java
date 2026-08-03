@@ -30,6 +30,8 @@ public class HwIncidentService {
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingZoneRepository parkingZoneRepository;
 
+    private final com.ssafy.parking.domain.notification.repository.NotificationRepository notificationRepository;
+
     @Transactional
     public HwPublicationAck handle(HwIncidentTransitionRequest req) {
         if ("OPEN".equals(req.transitionType())) {
@@ -68,6 +70,19 @@ public class HwIncidentService {
                 .entryAttemptId(req.entryAttemptId())
                 .build();
         parkingEventRepository.save(event);
+
+        if ("EV_OVERSTAY".equals(req.ruleCode())) {
+            notificationRepository.save(com.ssafy.parking.domain.notification.entity.Notification.builder()
+                    .user(session.getVehicle().getUser())
+                    .event(event)
+                    .request(null)
+                    .notificationType(com.ssafy.parking.domain.notification.entity.NotificationType.EV_OVERSTAY)
+                    .title("전기차 충전구역 초과")
+                    .body("충전구역 허용 시간을 초과했습니다. 차량 이동을 부탁드립니다.")
+                    .sentAt(toKst(req.occurredAt()))
+                    .build());
+        }
+
         return ack(req, event, "APPLIED");
     }
 
