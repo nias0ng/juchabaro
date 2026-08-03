@@ -1,7 +1,8 @@
-"""Legacy EntryContext의 durable EntryMatchAttempt 접수 계약."""
+"""RPi EntryDecision의 durable EntryMatchAttempt 접수 계약."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
@@ -9,7 +10,11 @@ from uuid import UUID
 import pytest
 
 from src.application.entry_event_intake import EntryEventIntake
-from src.communication.models import EntryContext
+from src.communication.models import (
+    EntryAccessDecision,
+    EntryDecisionInput,
+    EntrySessionContextInput,
+)
 from src.domain.models import ObservationState
 from src.parking.models import (
     EntryExitRole,
@@ -40,7 +45,8 @@ from src.tracking.models import ParkingSessionId, VehicleId
 
 
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
-TRACKING_ID = "11111111-1111-4111-8111-111111111111"
+ENTRY_ATTEMPT_ID = UUID("11111111-1111-4111-8111-111111111111")
+DECISION_REVISION = 1
 
 
 def _intake() -> EntryEventIntake:
@@ -58,58 +64,64 @@ def _intake() -> EntryEventIntake:
     )
 
 
-def _entry_context(**overrides: object) -> EntryContext:
+def _session_context() -> EntrySessionContextInput:
+    return EntrySessionContextInput(
+        session_id=55,
+        vehicle_id=10,
+        is_disabled_vehicle=False,
+        is_electric=True,
+    )
+
+
+def _entry_decision(**overrides: object) -> EntryDecisionInput:
     fields: dict[str, object] = {
-        "tracking_id": TRACKING_ID,
-        "recognized_plate_number": "12가3456",
+        "entry_attempt_id": ENTRY_ATTEMPT_ID,
+        "decision_revision": DECISION_REVISION,
         "entry_time": NOW,
-        "access_decision": "ALLOW",
-        "registered": True,
-        "vehicle_id": 10,
-        "is_disabled_vehicle": False,
-        "is_electric": True,
-        "vehicle_status": "ACTIVE",
-        "session_id": 55,
-        "duplicate_request": False,
+        "access_decision": EntryAccessDecision.ALLOW,
+        "session_context": _session_context(),
     }
     fields.update(overrides)
-    return EntryContext(**fields)  # type: ignore[arg-type]
+    return EntryDecisionInput(**fields)  # type: ignore[arg-type]
 
 
-def test_allow_is_stored_as_legacy_revision_zero_in_one_uow(tmp_path: Path) -> None:
+def test_allow_is_stored_with_wire_revision_in_one_uow(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "jetson.db")
     intake = _intake()
     try:
-        accepted = intake.receive(
-            _entry_context(),
+        acceptance = intake.receive(
+            _entry_decision(),
             idempotency_key="rpi-request-1",
             connection=connection,
         )
 
-        assert accepted is True
+        assert acceptance.created is True
+        assert acceptance.entry_attempt_id == EntryAttemptId(ENTRY_ATTEMPT_ID)
+        assert acceptance.decision_revision == DECISION_REVISION
+        assert acceptance.accepted_at.tzinfo is not None
+        assert acceptance.match_deadline_at == NOW + timedelta(seconds=10)
+
         attempt = EntryMatchAttemptRepository(connection).get(
-            EntryAttemptId(UUID(TRACKING_ID))
+            EntryAttemptId(ENTRY_ATTEMPT_ID)
         )
         assert attempt is not None
         assert attempt.match_state is EntryMatchState.PENDING
         assert attempt.decision_state is EntryDecisionState.ALLOW
-        assert attempt.decision_revision == 0
+        assert attempt.decision_revision == DECISION_REVISION
         assert attempt.match_deadline_at == NOW + timedelta(seconds=10)
         assert attempt.authoritative_session_id == ParkingSessionId(55)
         assert attempt.authoritative_context is not None
         assert attempt.authoritative_context.vehicle_id == VehicleId(10)
+
         mirror = ParkingSessionMirrorRepository(connection).get(ParkingSessionId(55))
         assert mirror is not None
-        assert mirror.entry_attempt_id == EntryAttemptId(UUID(TRACKING_ID))
+        assert mirror.entry_attempt_id == EntryAttemptId(ENTRY_ATTEMPT_ID)
+        assert mirror.context_revision == DECISION_REVISION
         assert mirror.administrative_state is SessionAdministrativeState.ACTIVE
         assert mirror.physical_presence_state is PhysicalPresenceState.UNCONFIRMED
         assert mirror.physical_vehicle_id is None
         assert mirror.physical_observation.state is ObservationState.UNKNOWN
         assert mirror.last_context == attempt.authoritative_context
-        assert (
-            connection.execute("SELECT COUNT(*) FROM accepted_inputs").fetchone()[0]
-            == 1
-        )
         assert not hasattr(intake, "_connection")
     finally:
         connection.close()
@@ -118,44 +130,37 @@ def test_allow_is_stored_as_legacy_revision_zero_in_one_uow(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("wire_decision", "domain_decision"),
     [
-        ("DENY", EntryDecisionState.DENY),
-        ("REVIEW", EntryDecisionState.REVIEW_PENDING),
+        (EntryAccessDecision.DENY, EntryDecisionState.DENY),
+        (EntryAccessDecision.REVIEW, EntryDecisionState.REVIEW_PENDING),
     ],
 )
-def test_non_allow_decisions_are_mapped_without_authoritative_context(
+def test_non_allow_decisions_are_stored_without_authoritative_context(
     tmp_path: Path,
-    wire_decision: str,
+    wire_decision: EntryAccessDecision,
     domain_decision: EntryDecisionState,
 ) -> None:
-    connection = open_database(tmp_path / f"{wire_decision.lower()}.db")
+    connection = open_database(tmp_path / f"{wire_decision.value.lower()}.db")
     try:
-        assert _intake().receive(
-            _entry_context(
+        acceptance = _intake().receive(
+            _entry_decision(
                 access_decision=wire_decision,
-                registered=False,
-                vehicle_id=None,
-                is_disabled_vehicle=None,
-                is_electric=None,
-                vehicle_status=None,
-                session_id=None,
+                session_context=None,
             ),
-            idempotency_key=f"request-{wire_decision.lower()}",
+            idempotency_key=f"request-{wire_decision.value.lower()}",
             connection=connection,
         )
 
+        assert acceptance.created is True
         attempt = EntryMatchAttemptRepository(connection).get(
-            EntryAttemptId(UUID(TRACKING_ID))
+            EntryAttemptId(ENTRY_ATTEMPT_ID)
         )
         assert attempt is not None
         assert attempt.decision_state is domain_decision
         assert attempt.authoritative_session_id is None
         assert attempt.authoritative_context is None
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM parking_session_mirrors"
-            ).fetchone()[0]
-            == 0
-        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM parking_session_mirrors"
+        ).fetchone()[0] == 0
     finally:
         connection.close()
 
@@ -165,69 +170,71 @@ def test_domain_identity_controls_retry_independently_of_transport_key(
 ) -> None:
     connection = open_database(tmp_path / "jetson.db")
     intake = _intake()
-    original = _entry_context()
+    original = _entry_decision()
     try:
-        assert intake.receive(
-            original, idempotency_key="same-key", connection=connection
-        ) is True
-        assert intake.receive(
-            original, idempotency_key="same-key", connection=connection
-        ) is False
-        assert intake.receive(
+        first = intake.receive(
+            original,
+            idempotency_key="same-key",
+            connection=connection,
+        )
+        same_key_retry = intake.receive(
+            original,
+            idempotency_key="same-key",
+            connection=connection,
+        )
+        new_key_retry = intake.receive(
             original,
             idempotency_key="different-transport-key",
             connection=connection,
-        ) is False
+        )
+
+        assert first.created is True
+        assert same_key_retry.created is False
+        assert new_key_retry.created is False
+        assert same_key_retry.accepted_at == first.accepted_at
+        assert new_key_retry.match_deadline_at == first.match_deadline_at
 
         with pytest.raises(AcceptedInputConflictError):
             intake.receive(
-                _entry_context(recognized_plate_number="99나9999"),
+                replace(original, entry_time=NOW + timedelta(seconds=1)),
                 idempotency_key="same-key",
                 connection=connection,
             )
 
-        assert (
-            connection.execute("SELECT COUNT(*) FROM accepted_inputs").fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM entry_match_attempts"
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM parking_session_mirrors"
-            ).fetchone()[0]
-            == 1
-        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM accepted_inputs"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM entry_match_attempts"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM parking_session_mirrors"
+        ).fetchone()[0] == 1
     finally:
         connection.close()
 
 
-def test_upstream_duplicate_marker_does_not_change_durable_decision(
-    tmp_path: Path,
-) -> None:
+def test_receipt_uses_new_entry_decision_payload(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "jetson.db")
-    intake = _intake()
     try:
-        assert intake.receive(
-            _entry_context(duplicate_request=False),
-            idempotency_key="backend-request-1",
+        _intake().receive(
+            _entry_decision(),
+            idempotency_key="rpi-request-1",
             connection=connection,
-        ) is True
-        assert intake.receive(
-            _entry_context(duplicate_request=True),
-            idempotency_key="backend-request-1",
-            connection=connection,
-        ) is False
+        )
 
         receipt = AcceptedInputRepository(connection).get(
-            "EntryDecision", TRACKING_ID, 0
+            "EntryDecision",
+            str(ENTRY_ATTEMPT_ID),
+            DECISION_REVISION,
         )
         assert receipt is not None
+        assert b'"entryAttemptId"' in receipt.request_payload
+        assert b'"decisionRevision":1' in receipt.request_payload
+        assert b'"sessionContext"' in receipt.request_payload
+        assert b'"trackingId"' not in receipt.request_payload
         assert b'"duplicateRequest"' not in receipt.request_payload
+        assert b'"recognizedPlateNumber"' not in receipt.request_payload
     finally:
         connection.close()
 
@@ -236,26 +243,25 @@ def test_receipt_rolls_back_when_attempt_insert_conflicts(tmp_path: Path) -> Non
     connection = open_database(tmp_path / "jetson.db")
     intake = _intake()
     try:
-        assert intake.receive(
-            _entry_context(), idempotency_key="first-key", connection=connection
+        intake.receive(
+            _entry_decision(),
+            idempotency_key="first-key",
+            connection=connection,
         )
-        # attempt만 이미 있고 receipt가 없는 부분 실패 상황을
-        # 만들어, 새 receipt가 attempt conflict와 함께 rollback되는지 본다.
         connection.execute("DELETE FROM accepted_inputs")
 
         with pytest.raises(EntryMatchAttemptConflictError):
             intake.receive(
-                _entry_context(), idempotency_key="second-key", connection=connection
+                _entry_decision(),
+                idempotency_key="second-key",
+                connection=connection,
             )
 
-        assert (
-            AcceptedInputRepository(connection).get("EntryDecision", TRACKING_ID, 0)
-            is None
-        )
-        assert (
-            connection.execute("SELECT COUNT(*) FROM accepted_inputs").fetchone()[0]
-            == 0
-        )
+        assert AcceptedInputRepository(connection).get(
+            "EntryDecision",
+            str(ENTRY_ATTEMPT_ID),
+            DECISION_REVISION,
+        ) is None
     finally:
         connection.close()
 
@@ -276,69 +282,41 @@ def test_receipt_and_attempt_roll_back_when_initial_mirror_insert_conflicts(
     try:
         with pytest.raises(ParkingSessionMirrorConflictError):
             _intake().receive(
-                _entry_context(),
+                _entry_decision(),
                 idempotency_key="mirror-conflict",
                 connection=connection,
             )
 
-        assert (
-            AcceptedInputRepository(connection).get(
-                "EntryDecision", TRACKING_ID, 0
-            )
-            is None
-        )
-        assert (
-            EntryMatchAttemptRepository(connection).get(
-                EntryAttemptId(UUID(TRACKING_ID))
-            )
-            is None
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM parking_session_mirrors"
-            ).fetchone()[0]
-            == 0
-        )
+        assert AcceptedInputRepository(connection).get(
+            "EntryDecision",
+            str(ENTRY_ATTEMPT_ID),
+            DECISION_REVISION,
+        ) is None
+        assert EntryMatchAttemptRepository(connection).get(
+            EntryAttemptId(ENTRY_ATTEMPT_ID)
+        ) is None
+        assert connection.execute(
+            "SELECT COUNT(*) FROM parking_session_mirrors"
+        ).fetchone()[0] == 0
     finally:
         connection.close()
 
 
-@pytest.mark.parametrize(
-    "entry_context",
-    [
-        _entry_context(tracking_id="not-a-uuid"),
-        _entry_context(access_decision="REVIEW_ALLOW"),
-        _entry_context(session_id=None),
-    ],
-)
-def test_invalid_legacy_values_fail_before_any_write(
-    tmp_path: Path,
-    entry_context: EntryContext,
-) -> None:
+def test_empty_idempotency_key_fails_before_any_write(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "jetson.db")
     try:
         with pytest.raises(ValueError):
             _intake().receive(
-                entry_context,
-                idempotency_key="invalid-key",
+                _entry_decision(),
+                idempotency_key="   ",
                 connection=connection,
             )
 
-        assert (
-            connection.execute("SELECT COUNT(*) FROM accepted_inputs").fetchone()[0]
-            == 0
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM entry_match_attempts"
-            ).fetchone()[0]
-            == 0
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM parking_session_mirrors"
-            ).fetchone()[0]
-            == 0
-        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM accepted_inputs"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM entry_match_attempts"
+        ).fetchone()[0] == 0
     finally:
         connection.close()

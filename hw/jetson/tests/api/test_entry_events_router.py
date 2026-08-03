@@ -1,8 +1,9 @@
-"""POST /internal/entry-events의 legacy wire·durable intake 경계 테스트."""
+"""RPi API 2 EntryDecision 접수와 API 3 EntryMatchOutcome 조회 테스트."""
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -10,8 +11,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.api.entry_events_router import router
+from src.api.entry_events_router import (
+    get_entry_match_query,
+    router,
+)
 from src.application.entry_event_intake import EntryEventIntake
+from src.application.entry_match_query import EntryMatchOutcome
+from src.communication.models import EntryAccessDecision
 from src.parking.models import (
     EntryExitRole,
     ZoneDefinition,
@@ -24,6 +30,7 @@ from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.session.models import (
     EntryAttemptId,
     EntryDecisionState,
+    EntryMatchState,
     PhysicalPresenceState,
 )
 from src.storage.database import connect_database, open_database
@@ -31,11 +38,16 @@ from src.storage.repositories import (
     EntryMatchAttemptRepository,
     ParkingSessionMirrorRepository,
 )
-from src.tracking.models import ParkingSessionId
+from src.tracking.models import ParkingSessionId, PhysicalVehicleId
 
 
 TEST_INTERNAL_API_KEY = "test-internal-key"
 ENTRY_ATTEMPT_ID = UUID("d290f1ee-6c54-4b01-90e6-d701748f0851")
+PHYSICAL_VEHICLE_ID = PhysicalVehicleId(
+    UUID("b3a857d1-58ce-47d0-8899-33dc175aa201")
+)
+ENTRY_TIME = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+MATCH_DEADLINE_AT = ENTRY_TIME + timedelta(seconds=10)
 VALID_HEADERS = {
     "Idempotency-Key": "req-1",
     "X-Internal-API-Key": TEST_INTERNAL_API_KEY,
@@ -77,26 +89,31 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     return TestClient(app), database_path
 
 
-def make_payload(**overrides) -> dict:
-    payload = {
-        "trackingId": str(ENTRY_ATTEMPT_ID),
-        "recognizedPlateNumber": "12가3456",
-        "entryTime": "2026-07-31T12:00:00+00:00",
+def make_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "entryAttemptId": str(ENTRY_ATTEMPT_ID),
+        "decisionRevision": 1,
         "accessDecision": "ALLOW",
-        "registered": True,
-        "vehicleId": 10,
-        "isDisabledVehicle": False,
-        "isElectric": True,
-        "vehicleStatus": "ACTIVE",
-        "sessionId": 55,
-        "duplicateRequest": False,
+        "entryTime": ENTRY_TIME.isoformat(),
+        "sessionContext": {
+            "sessionId": 55,
+            "vehicleId": 10,
+            "isDisabledVehicle": False,
+            "isElectric": True,
+        },
     }
     payload.update(overrides)
     return payload
 
 
-def test_accepts_payload_only_after_attempt_and_session_mirror_are_durable(
-    tmp_path,
+def result_of(response) -> dict[str, object]:
+    body = response.json()
+    assert body["isSuccess"] is True
+    return body["result"]
+
+
+def test_api_2_accepts_only_after_attempt_and_session_mirror_are_durable(
+    tmp_path: Path,
 ) -> None:
     client, database_path = make_client(tmp_path)
 
@@ -107,7 +124,17 @@ def test_accepts_payload_only_after_attempt_and_session_mirror_are_durable(
     )
 
     assert response.status_code == 202
-    assert response.json() == {"accepted": True}
+    assert response.json()["httpStatus"] == "ACCEPTED"
+    assert response.json()["code"] == 202
+    assert result_of(response) == {
+        "entryAttemptId": str(ENTRY_ATTEMPT_ID),
+        "decisionRevision": 1,
+        "acceptanceStatus": "ACCEPTED",
+        "matchState": "PENDING",
+        "acceptedAt": result_of(response)["acceptedAt"],
+        "matchDeadlineAt": MATCH_DEADLINE_AT.isoformat(),
+    }
+
     connection = connect_database(database_path)
     try:
         attempt = EntryMatchAttemptRepository(connection).get(
@@ -120,71 +147,74 @@ def test_accepts_payload_only_after_attempt_and_session_mirror_are_durable(
         connection.close()
     assert attempt is not None
     assert attempt.decision_state is EntryDecisionState.ALLOW
+    assert attempt.decision_revision == 1
     assert attempt.authoritative_context is not None
     assert attempt.authoritative_context.vehicle_id == 10
     assert mirror is not None
     assert mirror.entry_attempt_id == EntryAttemptId(ENTRY_ATTEMPT_ID)
+    assert mirror.context_revision == 1
     assert mirror.physical_presence_state is PhysicalPresenceState.UNCONFIRMED
 
 
-def test_same_domain_decision_is_retry_with_new_transport_key_and_duplicate_marker(
-    tmp_path,
-) -> None:
+def test_api_2_same_domain_input_returns_already_accepted(tmp_path: Path) -> None:
     client, _database_path = make_client(tmp_path)
 
     first = client.post(
-        "/internal/entry-events", json=make_payload(), headers=VALID_HEADERS
+        "/internal/entry-events",
+        json=make_payload(),
+        headers=VALID_HEADERS,
     )
     second = client.post(
         "/internal/entry-events",
-        json=make_payload(duplicateRequest=True),
+        json=make_payload(),
         headers={**VALID_HEADERS, "Idempotency-Key": "req-2"},
     )
 
     assert first.status_code == 202
     assert second.status_code == 202
-    assert first.json() == {"accepted": True}
-    assert second.json() == {"accepted": False}
+    assert result_of(first)["acceptanceStatus"] == "ACCEPTED"
+    assert result_of(second)["acceptanceStatus"] == "ALREADY_ACCEPTED"
+    assert result_of(second)["acceptedAt"] == result_of(first)["acceptedAt"]
 
 
-def test_same_domain_identity_with_different_payload_is_conflict(tmp_path) -> None:
+def test_api_2_same_identity_and_revision_with_different_payload_conflicts(
+    tmp_path: Path,
+) -> None:
     client, _database_path = make_client(tmp_path)
-    client.post("/internal/entry-events", json=make_payload(), headers=VALID_HEADERS)
+    client.post(
+        "/internal/entry-events",
+        json=make_payload(),
+        headers=VALID_HEADERS,
+    )
 
     response = client.post(
         "/internal/entry-events",
-        json=make_payload(recognizedPlateNumber="99나9999"),
+        json=make_payload(entryTime=(ENTRY_TIME + timedelta(seconds=1)).isoformat()),
         headers={**VALID_HEADERS, "Idempotency-Key": "req-2"},
     )
 
     assert response.status_code == 409
 
 
-def test_deny_and_review_are_accepted_without_authoritative_session(tmp_path) -> None:
+def test_api_2_deny_and_review_are_accepted_without_session_context(
+    tmp_path: Path,
+) -> None:
     client, _database_path = make_client(tmp_path)
     deny = make_payload(
-        trackingId="d290f1ee-6c54-4b01-90e6-d701748f0852",
+        entryAttemptId="d290f1ee-6c54-4b01-90e6-d701748f0852",
         accessDecision="DENY",
-        registered=False,
-        vehicleId=None,
-        isDisabledVehicle=None,
-        isElectric=None,
-        vehicleStatus=None,
-        sessionId=None,
+        sessionContext=None,
     )
     review = make_payload(
-        trackingId="d290f1ee-6c54-4b01-90e6-d701748f0853",
+        entryAttemptId="d290f1ee-6c54-4b01-90e6-d701748f0853",
         accessDecision="REVIEW",
-        registered=False,
-        vehicleId=None,
-        isDisabledVehicle=None,
-        isElectric=None,
-        vehicleStatus=None,
-        sessionId=None,
+        sessionContext=None,
     )
 
     deny_response = client.post(
-        "/internal/entry-events", json=deny, headers=VALID_HEADERS
+        "/internal/entry-events",
+        json=deny,
+        headers=VALID_HEADERS,
     )
     review_response = client.post(
         "/internal/entry-events",
@@ -199,12 +229,17 @@ def test_deny_and_review_are_accepted_without_authoritative_session(tmp_path) ->
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"trackingId": "not-a-uuid"},
+        {"entryAttemptId": "not-a-uuid"},
+        {"decisionRevision": 0},
         {"accessDecision": "UNKNOWN"},
-        {"sessionId": None},
+        {"sessionContext": None},
+        {"accessDecision": "DENY"},
     ],
 )
-def test_invalid_domain_mapping_is_unprocessable(tmp_path, overrides) -> None:
+def test_api_2_invalid_wire_contract_is_unprocessable(
+    tmp_path: Path,
+    overrides: dict[str, object],
+) -> None:
     client, _database_path = make_client(tmp_path)
 
     response = client.post(
@@ -216,7 +251,19 @@ def test_invalid_domain_mapping_is_unprocessable(tmp_path, overrides) -> None:
     assert response.status_code == 422
 
 
-def test_naive_entry_time_is_rejected_by_wire_validation(tmp_path) -> None:
+def test_api_2_rejects_legacy_extra_fields(tmp_path: Path) -> None:
+    client, _database_path = make_client(tmp_path)
+
+    response = client.post(
+        "/internal/entry-events",
+        json=make_payload(trackingId=str(ENTRY_ATTEMPT_ID)),
+        headers=VALID_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
+def test_api_2_naive_entry_time_is_rejected(tmp_path: Path) -> None:
     client, _database_path = make_client(tmp_path)
 
     response = client.post(
@@ -228,7 +275,7 @@ def test_naive_entry_time_is_rejected_by_wire_validation(tmp_path) -> None:
     assert response.status_code == 422
 
 
-def test_missing_idempotency_key_header_is_rejected(tmp_path) -> None:
+def test_api_2_missing_idempotency_key_is_rejected(tmp_path: Path) -> None:
     client, _database_path = make_client(tmp_path)
 
     response = client.post(
@@ -240,7 +287,7 @@ def test_missing_idempotency_key_header_is_rejected(tmp_path) -> None:
     assert response.status_code == 422
 
 
-def test_wrong_internal_api_key_is_unauthorized(tmp_path) -> None:
+def test_api_2_wrong_internal_api_key_is_unauthorized(tmp_path: Path) -> None:
     client, _database_path = make_client(tmp_path)
 
     response = client.post(
@@ -252,7 +299,7 @@ def test_wrong_internal_api_key_is_unauthorized(tmp_path) -> None:
     assert response.status_code == 401
 
 
-def test_storage_connection_failure_is_service_unavailable(tmp_path) -> None:
+def test_api_2_storage_failure_is_service_unavailable(tmp_path: Path) -> None:
     client, _database_path = make_client(tmp_path)
 
     def unavailable_connection() -> sqlite3.Connection:
@@ -267,6 +314,117 @@ def test_storage_connection_failure_is_service_unavailable(tmp_path) -> None:
     )
 
     assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Jetson durable storage를 일시적으로 사용할 수 없습니다."
+
+
+def test_api_3_returns_durable_pending_attempt(tmp_path: Path) -> None:
+    client, _database_path = make_client(tmp_path)
+    client.post(
+        "/internal/entry-events",
+        json=make_payload(),
+        headers=VALID_HEADERS,
+    )
+
+    response = client.get(
+        f"/internal/entry-events/{ENTRY_ATTEMPT_ID}",
+        headers={"X-Internal-API-Key": TEST_INTERNAL_API_KEY},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["httpStatus"] == "OK"
+    assert result_of(response) == {
+        "entryAttemptId": str(ENTRY_ATTEMPT_ID),
+        "decisionRevision": 1,
+        "accessDecision": "ALLOW",
+        "matchState": "PENDING",
+        "physicalVehicleId": None,
+        "matchedAt": None,
+        "terminalReason": None,
+        "matchDeadlineAt": MATCH_DEADLINE_AT.isoformat(),
     }
+
+
+class StaticEntryMatchQuery:
+    def __init__(self, outcome: EntryMatchOutcome) -> None:
+        self._outcome = outcome
+
+    def get(self, entry_attempt_id: UUID, *, connection) -> EntryMatchOutcome:
+        assert entry_attempt_id == ENTRY_ATTEMPT_ID
+        return self._outcome
+
+
+@pytest.mark.parametrize(
+    ("match_state", "physical_vehicle_id", "matched_at", "terminal_reason"),
+    [
+        (
+            EntryMatchState.MATCHED,
+            PHYSICAL_VEHICLE_ID,
+            ENTRY_TIME + timedelta(seconds=5),
+            None,
+        ),
+        (
+            EntryMatchState.EXPIRED,
+            None,
+            None,
+            "SOURCE_UNAVAILABLE",
+        ),
+    ],
+)
+def test_api_3_serializes_terminal_outcomes(
+    tmp_path: Path,
+    match_state: EntryMatchState,
+    physical_vehicle_id: PhysicalVehicleId | None,
+    matched_at: datetime | None,
+    terminal_reason: str | None,
+) -> None:
+    client, _database_path = make_client(tmp_path)
+    outcome = EntryMatchOutcome(
+        entry_attempt_id=EntryAttemptId(ENTRY_ATTEMPT_ID),
+        decision_revision=1,
+        access_decision=EntryAccessDecision.ALLOW,
+        match_state=match_state,
+        physical_vehicle_id=physical_vehicle_id,
+        matched_at=matched_at,
+        terminal_reason=terminal_reason,
+        match_deadline_at=MATCH_DEADLINE_AT,
+    )
+    client.app.dependency_overrides[get_entry_match_query] = (
+        lambda: StaticEntryMatchQuery(outcome)
+    )
+
+    response = client.get(
+        f"/internal/entry-events/{ENTRY_ATTEMPT_ID}",
+        headers={"X-Internal-API-Key": TEST_INTERNAL_API_KEY},
+    )
+
+    assert response.status_code == 200
+    result = result_of(response)
+    assert result["matchState"] == match_state.value
+    assert result["physicalVehicleId"] == (
+        None if physical_vehicle_id is None else str(physical_vehicle_id)
+    )
+    assert result["matchedAt"] == (
+        None if matched_at is None else matched_at.isoformat()
+    )
+    assert result["terminalReason"] == terminal_reason
+
+
+def test_api_3_unknown_entry_attempt_is_not_found(tmp_path: Path) -> None:
+    client, _database_path = make_client(tmp_path)
+
+    response = client.get(
+        f"/internal/entry-events/{ENTRY_ATTEMPT_ID}",
+        headers={"X-Internal-API-Key": TEST_INTERNAL_API_KEY},
+    )
+
+    assert response.status_code == 404
+
+
+def test_api_3_wrong_internal_api_key_is_unauthorized(tmp_path: Path) -> None:
+    client, _database_path = make_client(tmp_path)
+
+    response = client.get(
+        f"/internal/entry-events/{ENTRY_ATTEMPT_ID}",
+        headers={"X-Internal-API-Key": "wrong"},
+    )
+
+    assert response.status_code == 401
