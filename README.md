@@ -1,11 +1,15 @@
 # 🅿️ **스마트 주차장 서비스 [🚗 주차바로🚗]**
 
 
-[🚖 서비스 바로가기(추가예정)](https://🔺도메인)
+[🚖 서비스 번들 다운로드(추가예정)](https://🔺도메인)
 
-[🚘 팀 노션 바로가기](https://app.notion.com/p/SSAFY-2-1-396967bab5a4804faef3f3def764090a?source=copy_link🔺노션링크)
+[🚘 관리자 웹 바로가기(추가예정)](https://🔺도메인)
 
-[🚖 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/zMdVDC8rF1GC2dBgN3tDkT/%EC%8A%A4%EB%A7%88%ED%8A%B8-%EC%A3%BC%EC%B0%A8%EC%9E%A5--%EC%A3%BC%EC%B0%A8%EB%B0%94%EB%A1%9C?node-id=105-2&t=TnJJrklGIz0wNQ6p-1🔺피그마링크)
+[🚖 팀 노션 바로가기](https://app.notion.com/p/SSAFY-2-1-396967bab5a4804faef3f3def764090a?source=copy_link🔺노션링크)
+
+[🚘 앱 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/zMdVDC8rF1GC2dBgN3tDkT/%EC%8A%A4%EB%A7%88%ED%8A%B8-%EC%A3%BC%EC%B0%A8%EC%9E%A5--%EC%A3%BC%EC%B0%A8%EB%B0%94%EB%A1%9C?node-id=105-2&t=TnJJrklGIz0wNQ6p-1🔺피그마링크)
+
+[🚖 웹 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/JIJBwXRFYbwSbqxCMtgcRP/%EC%B5%9C%EC%A2%85-%EC%A0%95%EB%A6%AC-%EC%9B%B9--%EC%9B%90%EB%B3%B8-?node-id=12-2&t=tDECfuCE9eVyrjyi-1)
 
 [🚘 ERD 바로가기](https://www.erdcloud.com/d/PfvfjfKdzG5ETYMuB)
 
@@ -50,7 +54,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 ### 🗓️ 구현 기간
 
-🔺2026.07.06 - 08.14 (SUB3 중간평가 시점 : 2026.07.31)
+🔺2026.07.06 - 08.14
 
 ---
 
@@ -58,6 +62,8 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 > AI 엣지 디바이스가 아파트 주차장의 불편 주차를 자동으로 감지하고, 차주의 개인정보를 노출하지 않은 채 이동 요청부터 실제 이동 확인까지 중계하는 스마트 주차 관리 서비스
 >
+
+### 갈등 없는 주차 문제 해결, 주차바로
 
 아파트 주차장에서 반복적으로 발생하는 이중주차·주차선 침범·장애인 및 전기차 구역 무단 점유를 AI가 자동으로 감지합니다. 
 기존에는 위반 차량을 발견해도 차주에게 직접 연락하거나 관리사무소에 신고해야 했고, 이 과정에서 전화번호·세대 정보 같은 개인정보가 노출되고 실제 이동 여부를 다시 확인해야 하는 번거로움이 있었습니다. 
@@ -75,7 +81,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
     미응답·미이동 사건, 미등록 차량, 반복 위반 이력을 확인하고 AI 신뢰도가 낮은 사건을 최종 판단하는 관리 주체입니다. 
     회원가입 절차 없이 DB에 관리자 계정으로 생성되어 관리자 권한으로 서비스를 이용합니다.
 
-사용자 앱과 관리자는 별도의 웹 서비스로 나뉘어 있지 않고, 하나의 시스템에서 계정 권한(RESIDENT/ADMIN)으로 구분됩니다. 입주민은 개인정보를 노출하지 않고 위반 차량 이동을 요청할 수 있고, 관리자는 반복적인 현장 확인 업무 부담을 줄일 수 있습니다.
+입주민은 개인정보를 노출하지 않고 위반 차량 이동을 요청할 수 있고, 관리자는 반복적인 현장 확인 업무 부담을 줄일 수 있습니다.
 
 ### **1.2. 주요 기능**
 
@@ -127,10 +133,21 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 | UI | React Native StyleSheet + 커스텀 디자인 토큰 (별도 UI 라이브러리 미사용) |
 
 
-### **2.3. 관리자 (구현 예정)**
+### **2.3. 관리자 웹 (baro-web/admin-web)**
 
-별도의 관리자 전용 웹 프로젝트는 존재하지 않습니다. 
-관리자는 사용자 앱과 동일한 백엔드 API를 계정 권한(ADMIN)으로 이용하며, 관리자 전용 화면은 현재 코드베이스에 구현되어 있지 않습니다.
+| 구분 | 기술 |
+| --- | --- |
+| 프레임워크 | Vue 3.5 (Composition API, `<script setup>`) |
+| 빌드 도구 | Vite 8 |
+| 언어 | TypeScript |
+| 라우팅 | Vue Router 5 |
+| 상태 관리 | Pinia |
+| 아이콘 | @lucide/vue |
+| 네트워크 통신 | 공통 fetch 래퍼(`services/http-client.ts`) 직접 구현 (baro-app과 동일한 응답 포맷 처리) |
+| 인증 · 저장소 | Pinia 스토어(메모리) + `sessionStorage` (`services/session-storage.ts`) |
+| 린트 | ESLint, oxlint |
+
+관리자는 사용자 앱(baro-app)과 동일한 백엔드 API를 계정 권한(ADMIN)으로 이용하며, 회원가입 절차 없이 DB에 관리자 계정으로 생성되어 로그인합니다.
 
 ### **2.4. 인프라 및 배포**
 
@@ -182,7 +199,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 - **제공되는 결과**: 차량 소유자에게 개인정보 없이 이동 요청이 전달되고, 요청자는 처리 상태를 목록에서 확인할 수 있습니다.
 - **참고**: 요청에 대한 이동 예정 시간 응답, 이동 재확인, 관리자 사건 처리 화면은 `MoveRequestStatus`·`MoveResponseType` 등 데이터 모델에는 정의되어 있으나, 이를 노출하는 API·화면은 아직 구현되지 않았습니다.
 
-### **3.4. 알림 조회 (개발 진행 중)**
+### **3.4. 알림 조회 **
 
 - **사용 목적**: 이동 요청, 재알림, 전기차 구역 초과, 사건 종료 등 본인에게 필요한 알림을 확인합니다.
 - **주요 이용 흐름**: 알림 목록 조회 → 알림 상세 확인
@@ -218,9 +235,13 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 ## **5. 레이아웃 및 디자인**
 
-- 와이어프레임 (Figma)
+- 앱 와이어프레임 (Figma)
 
 ![와이어프레임](./docs/images/Wireframe.png)
+
+- 웹 와이어프레임 (Figma)
+
+![와이어프레임](./docs/images/WireframeWeb.png)
 
 
 ---
@@ -295,7 +316,15 @@ npm run web      # Web
 
 **관리자 웹 실행**
 
-별도의 관리자 웹 프로젝트가 존재하지 않습니다. 관리자는 사용자 앱과 동일한 백엔드 API를 계정 권한(ADMIN)으로 이용합니다.
+```bash
+cd frontend/baro-web/admin-web
+cp .env.example .env.local
+# .env.local에 VITE_API_BASE_URL 등 입력
+
+npm install
+npm run dev        # Vite 개발 서버
+npm run build      # 타입 체크 + 프로덕션 빌드
+```
 
 **AI / HW 서버 실행**
 
