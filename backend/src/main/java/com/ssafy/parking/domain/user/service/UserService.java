@@ -13,6 +13,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -101,9 +105,18 @@ public class UserService {
     }
 
     @Transactional
-    public void withdraw(Long userId) {
+    public WithdrawalResponse withdraw(Long userId, WithdrawalRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
-        user.withdraw(); // status = DELETED → 이후 로그인 차단
+
+        if (request.currentPassword() == null
+                || !passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.CURRENT_PASSWORD_MISMATCH);
+        }
+
+        user.withdraw(); // status = DELETED
+        OffsetDateTime withdrawnAt = LocalDateTime.now()
+                .atZone(ZoneId.of("Asia/Seoul")).toOffsetDateTime();
+        return new WithdrawalResponse(user.getId(), user.getStatus().name(), withdrawnAt);
     }
 }
