@@ -16,7 +16,7 @@ from pipeline_viewer.service import (
 
 def test_default_model_path_uses_jetson_model_directory() -> None:
     assert default_paths().model.as_posix().endswith(
-        "hw/jetson/model/yolo26n.pt"
+        "hw/jetson/model/yolov8s.pt"
     )
 
 

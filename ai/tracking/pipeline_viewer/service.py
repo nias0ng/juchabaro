@@ -56,7 +56,7 @@ from .tracing import FrameTrace, TraceCollector, parse_entry_attempt_id  # noqa:
 
 
 DEFAULT_CAMERA_ID = "PIPELINE-VIEWER"
-DEFAULT_MODEL_PATH = JETSON_ROOT / "model" / "yolo26n.pt"
+DEFAULT_MODEL_PATH = JETSON_ROOT / "model" / "yolov8s.pt"
 DEFAULT_ZONES_PATH = JETSON_ROOT / "config" / "zone_definition.pilot.json"
 DEFAULT_CALIBRATION_PATH = REPOSITORY_ROOT / "ai" / "tracking" / "camera_calibration.json"
 ALLOWED_VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv"})

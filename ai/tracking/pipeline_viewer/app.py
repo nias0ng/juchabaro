@@ -205,7 +205,7 @@ def main() -> None:
     calibration_path = Path(
         path_columns[2].text_input("Calibration", value=str(paths.calibration))
     )
-    st.caption("기본 모델 위치: hw/jetson/model/yolo26n.pt")
+    st.caption("기본 모델 위치: hw/jetson/model/yolov8s.pt")
 
     end_seconds_value = st.number_input(
         "분석 종료 시각(초, 0이면 영상 끝까지)",
