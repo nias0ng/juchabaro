@@ -112,7 +112,7 @@ public class HwEvidenceService {
             StringBuilder sb = new StringBuilder();
             for (byte b : digest) sb.append(String.format("%02x", b));
             if (!checksum.substring(7).equalsIgnoreCase(sb.toString())) {
-                throw new BusinessException(ErrorCode.HW_EVIDENCE_INVALID);
+                throw new BusinessException(ErrorCode.HW_EVIDENCE_CHECKSUM_MISMATCH);
             }
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new BusinessException(ErrorCode.HW_EVIDENCE_INVALID);

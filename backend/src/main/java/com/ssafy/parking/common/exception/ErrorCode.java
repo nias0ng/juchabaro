@@ -161,6 +161,9 @@ public enum ErrorCode {
     HW_EVIDENCE_TOO_LARGE(
             HttpStatus.PAYLOAD_TOO_LARGE, "증거 이미지 용량이 허용 범위를 초과했습니다."),
 
+    HW_EVIDENCE_CHECKSUM_MISMATCH(
+            HttpStatus.UNPROCESSABLE_ENTITY, "증거 이미지 체크섬이 일치하지 않습니다."),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
