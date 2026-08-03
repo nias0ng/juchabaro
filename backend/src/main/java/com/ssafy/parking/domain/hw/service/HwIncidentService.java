@@ -4,6 +4,7 @@ import com.ssafy.parking.common.exception.BusinessException;
 import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.domain.hw.dto.HwIncidentTransitionRequest;
 import com.ssafy.parking.domain.hw.dto.HwPublicationAck;
+import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import com.ssafy.parking.domain.parking.entity.ParkingEvent;
 import com.ssafy.parking.domain.parking.entity.ParkingEventStatus;
 import com.ssafy.parking.domain.parking.entity.ParkingSession;
@@ -30,7 +31,7 @@ public class HwIncidentService {
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingZoneRepository parkingZoneRepository;
 
-    private final com.ssafy.parking.domain.notification.repository.NotificationRepository notificationRepository;
+    private final NotificationDispatcher notificationDispatcher;
 
     @Transactional
     public HwPublicationAck handle(HwIncidentTransitionRequest req) {
@@ -72,15 +73,12 @@ public class HwIncidentService {
         parkingEventRepository.save(event);
 
         if ("EV_OVERSTAY".equals(req.ruleCode())) {
-            notificationRepository.save(com.ssafy.parking.domain.notification.entity.Notification.builder()
-                    .user(session.getVehicle().getUser())
-                    .event(event)
-                    .request(null)
-                    .notificationType(com.ssafy.parking.domain.notification.entity.NotificationType.EV_OVERSTAY)
-                    .title("전기차 충전구역 초과")
-                    .body("충전구역 허용 시간을 초과했습니다. 차량 이동을 부탁드립니다.")
-                    .sentAt(toKst(req.occurredAt()))
-                    .build());
+            notificationDispatcher.dispatch(
+                    session.getVehicle().getUser(),
+                    com.ssafy.parking.domain.notification.entity.NotificationType.EV_OVERSTAY,
+                    "전기차 충전구역 초과",
+                    "충전구역 허용 시간을 초과했습니다. 차량 이동을 부탁드립니다.",
+                    event, null, toKst(req.occurredAt()));
         }
 
         return ack(req, event, "APPLIED");
