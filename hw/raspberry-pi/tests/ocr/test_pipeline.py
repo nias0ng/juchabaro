@@ -315,7 +315,7 @@ class PlateOcrPipelineTests(unittest.TestCase):
         )
         self.assertEqual(
             tuple(field.name for field in fields(PlateReadResult)),
-            ("status", "plate_number"),
+            ("status", "plate_number", "rec_score"),
         )
         self.assertTrue(issubclass(InvalidBurstError, OcrPipelineError))
         self.assertTrue(issubclass(OcrRuntimeError, OcrPipelineError))
@@ -331,6 +331,7 @@ class PlateOcrPipelineTests(unittest.TestCase):
             PlateReadResult(
                 status=ReadStatus.SUCCESS,
                 plate_number=PLATE_NUMBER,
+                rec_score=0.9,
             ),
         )
         self.assertTrue(result.succeeded)
@@ -717,6 +718,7 @@ class PlateOcrPipelineTests(unittest.TestCase):
                     PlateReadResult(
                         status=expected_status,
                         plate_number=None,
+                        rec_score=None,
                     ),
                 )
 

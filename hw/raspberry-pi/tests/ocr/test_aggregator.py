@@ -122,6 +122,23 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
         self.assertEqual(decision.valid_frames, 2)
         self.assertEqual(decision.vote_count, 2)
         self.assertEqual(decision.vote_ratio, 1.0)
+        self.assertEqual(decision.winner_rec_score, 0.40)
+
+    def test_success_uses_highest_rec_score_from_winner_votes(
+        self,
+    ) -> None:
+        decision = PlateAggregator().aggregate(
+            (
+                _candidate(0, "12가3456", score=0.71),
+                _candidate(1, "12가3456", score=0.94),
+                _candidate(2, "12가3456", score=0.85),
+                _candidate(3, "34나5678", score=0.99),
+            )
+        )
+
+        self.assertEqual(decision.status, ReadStatus.SUCCESS)
+        self.assertEqual(decision.plate_number, "12가3456")
+        self.assertEqual(decision.winner_rec_score, 0.94)
 
     def test_candidates_below_score_boundary_return_low_score(
         self,
@@ -145,6 +162,7 @@ class PlateAggregatorDecisionTests(unittest.TestCase):
         self.assertEqual(decision.valid_frames, 1)
         self.assertEqual(decision.vote_count, 1)
         self.assertIsNone(decision.plate_number)
+        self.assertIsNone(decision.winner_rec_score)
 
     def test_tie_is_ambiguous_even_when_thresholds_allow_it(self) -> None:
         aggregator = PlateAggregator(

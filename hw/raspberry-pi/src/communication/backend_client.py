@@ -14,6 +14,17 @@ class BackendClientError(RuntimeError):
     """Backend 요청 또는 응답 처리에 실패했을 때 발생한다."""
 
 
+def _json_bytes(payload: dict[str, object]) -> bytes:
+    """재시도마다 같은 요청 bytes를 만들도록 JSON을 안정적으로 직렬화한다."""
+
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 class BackendClient:
     ENTRY_PATH = "/hw/parking/entry"
 
@@ -33,12 +44,12 @@ class BackendClient:
         *,
         idempotency_key: str,
     ) -> BackendEntryResult:
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("idempotency_key는 비어 있을 수 없습니다.")
+
         http_request = Request(
             self._entry_url,
-            data=json.dumps(
-                request.to_payload(),
-                ensure_ascii=False,
-            ).encode("utf-8"),
+            data=_json_bytes(request.to_payload()),
             headers={
                 "X-HW-API-Key": self._api_key,
                 "Content-Type": "application/json",
@@ -63,12 +74,17 @@ class BackendClient:
                 "Backend에 연결하지 못했습니다."
             ) from error
 
-        if not 200 <= status < 300:
+        if status not in (200, 201):
             raise BackendClientError(
                 f"Backend가 HTTP {status}으로 응답했습니다."
             )
 
-        return self._parse_result(body)
+        result = self._parse_result(body)
+        if result.entry_attempt_id != request.entry_attempt_id:
+            raise BackendClientError(
+                "Backend 응답의 entryAttemptId가 요청과 다릅니다."
+            )
+        return result
 
     @staticmethod
     def _parse_result(body: bytes) -> BackendEntryResult:
