@@ -37,7 +37,7 @@
 
 ## 컴포넌트
 
-1. **`MonitoringPipeline` 옵저버 훅 추가** (기존 파일 수정) — `process_next_frame()`에 선택적 `on_frame_observed` 콜백 파라미터 추가.
+1. **`MonitoringPipeline` 옵저버 훅 추가** (기존 파일 수정) — `process_next_frame()`에 선택적 `frame_observer` 콜백 파라미터 추가.
 2. **`src/live/live_overlay_renderer.py`(신규)** — `(frame, tracking_batch, result)` → 오버레이가 그려진 JPEG bytes. 순수 함수에 가깝게 만들어 카메라 없이도 유닛테스트 가능하게 한다.
 3. **`src/live/live_stream_loop.py`(신규)** — 캡처→추적→판정 루프를 백그라운드 스레드에서 실행, 렌더러 호출, 결과를 공유 버퍼에 게시. `FrameSource` 구현체를 주입받아 라이브 카메라/파일럿 영상 리허설 양쪽에 쓴다.
 4. **`src/api/live_stream_router.py`(신규)** — `GET /live/stream` MJPEG 엔드포인트. 편의를 위해 `<img>` 태그 하나짜리 정적 HTML을 `/live`에 같이 서빙한다.
@@ -47,6 +47,7 @@
 - 카메라 연결 끊김(`FrameSourceError`): 루프가 잡아 로그를 남기고, 공유 버퍼에 "연결 끊김" 플레이스홀더 프레임을 넣어 브라우저가 마지막 프레임에 멈춰 있는 것처럼 보이지 않게 한 뒤, 백오프 후 재연결을 시도한다.
 - 브라우저 탭 종료: Starlette이 해당 스트림 제너레이터를 정리한다. 캡처 루프 자체는 시청자 유무와 무관하게 계속 돈다.
 - 리플레이(영상 파일) 모드에서 `EndOfVideo`에 도달하면 루프를 반복 재생하거나(데모 리허설용) 정지 안내 프레임을 표시한다 — 실제 데모 당일에는 항상 라이브 카메라 모드로 쓰므로 이 경로는 리허설 전용이다.
+- `frame_observer` 콜백 예외: `frame_observer` 구현체(`live_overlay_renderer`, `live_stream_loop`)는 렌더링 또는 JPEG 인코딩 실패 등 자신의 모든 예외를 자체적으로 처리하고, 플레이스홀더 프레임 등으로 대체해야 한다. 예외를 `MonitoringPipeline`으로 전파시켜서는 안 된다 — `MonitoringPipeline.run()`이 던져진 예외를 그대로 올리면 `MonitoringWorker`가 이를 치명 오류로 취급해 전체 카메라·모델을 끄기 때문이다. `MonitoringPipeline`의 예외 미처리 정책(`result_consumer`와 동일)은 의도된 설계이고, 이 계약을 유지할 책임은 `frame_observer` 구현 쪽에 있다.
 
 ## 테스트
 
