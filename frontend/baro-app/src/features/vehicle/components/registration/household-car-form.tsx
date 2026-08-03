@@ -1,13 +1,12 @@
 import type { ColorValue } from 'react-native';
 
-import { Stack, TextField } from '@/components/ui';
+import { FormSectionLabel, Stack, TextField } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import type { HouseholdCarFormValues, RegisterCarType } from '../../types/register-car';
 import { isCarModelValid, isPlateNumberValid } from '../../validation/register-car';
 
 import { RegisterCarAvailabilitySection } from './register-car-availability-section';
-import { RegisterCarSectionLabel } from './register-car-section-label';
 import { RegisterCarSummaryCard } from './register-car-summary-card';
 import { RegisterCarTypeSelector } from './register-car-type-selector';
 import { VehicleNumberField } from './vehicle-number-field';
@@ -34,7 +33,7 @@ export function HouseholdCarForm({ carType, onChangeCarType, values, onChange }:
       />
 
       <Stack gap={Spacing.xs}>
-        <RegisterCarSectionLabel>차량 성격</RegisterCarSectionLabel>
+        <FormSectionLabel label="차량 성격" variant="muted" />
         <RegisterCarTypeSelector value={carType} onChange={onChangeCarType} />
       </Stack>
 

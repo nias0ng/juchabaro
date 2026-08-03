@@ -1,0 +1,27 @@
+@import '@/styles/tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  font-weight: normal;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--panel-foreground);
+  background: var(--panel-background);
+  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

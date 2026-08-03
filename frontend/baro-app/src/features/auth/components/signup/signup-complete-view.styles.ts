@@ -56,18 +56,6 @@ export const styles = StyleSheet.create({
     shadowRadius: 15,
     elevation: 3,
   },
-  profileAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  profileAvatarText: {
-    fontSize: 16,
-    fontWeight: FontWeight.bold,
-    color: Palette.white,
-  },
   profileInfo: {
     flex: 1,
     gap: 2,

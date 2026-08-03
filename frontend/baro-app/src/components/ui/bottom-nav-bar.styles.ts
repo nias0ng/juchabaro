@@ -22,6 +22,11 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Figma상 "주차 현황" 아이콘만 다른 탭보다 크게 그려진다.
+  iconContainerLarge: {
+    width: 29,
+    height: 29,
+  },
   badge: {
     position: 'absolute',
     top: -2,

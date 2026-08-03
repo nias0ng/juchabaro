@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { ControlHeight, FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   row: {
@@ -11,12 +11,9 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.white,
     borderRadius: 26,
     paddingHorizontal: Spacing.md + 2,
+    minHeight: ControlHeight.md,
     paddingVertical: Spacing.base + 2,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
-    elevation: 2,
+    ...Shadows.card,
   },
   rowPressed: {
     backgroundColor: Palette.gray50,
@@ -35,7 +32,8 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
   },
   chevron: {
-    fontSize: 12.5,
+    fontSize: 16,
+    lineHeight: 18,
     color: Palette.gray400,
   },
   badge: {

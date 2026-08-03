@@ -41,23 +41,4 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     color: Palette.gray500,
   },
-  legendRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm + 2,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xxs + 2,
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  legendText: {
-    fontSize: 10.5,
-    color: Palette.gray500,
-  },
 });

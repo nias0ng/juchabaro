@@ -57,6 +57,7 @@ wandb/
 hw/**/captures/
 hw/**/models/
 hw/**/weights/
+hw/jetson/data/
 *.pth
 *.engine
 

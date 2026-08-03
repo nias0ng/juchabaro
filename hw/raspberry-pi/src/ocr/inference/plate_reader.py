@@ -279,9 +279,8 @@ class PaddlePlateReader:
 # [모델 로더]
 
 
-_PADDLE_REQUIRED_FILES = (
-    "inference.json",
-    "inference.pdiparams",
+_ONNX_REQUIRED_FILES = (
+    "inference.onnx",
     "inference.yml",
 )
 
@@ -295,13 +294,13 @@ def load_paddle_plate_reader(
     warm_up: bool = True,
 ) -> PaddlePlateReader:
     """
-    로컬 PaddleOCR inference model을 로드해 재사용 가능한 reader를 만든다.
+    로컬 PaddleOCR ONNX model을 로드해 재사용 가능한 reader를 만든다.
 
     운영에서는 ``load_plate_ocr_pipeline()``이 서비스 시작 단계에서
     이 loader를 한 번 호출한다. 차량 이벤트마다 모델을 다시 읽지 않는다.
 
     입력:
-        model_dir는 Paddle inference 파일 세 개가 있는 디렉터리다.
+        model_dir는 ONNX 모델과 설정 파일이 있는 디렉터리다.
         model_name은 모델 구조 식별자, device와 batch_size는 추론 설정이다.
 
     출력:
@@ -320,16 +319,13 @@ def load_paddle_plate_reader(
         raise ValueError("device는 비어 있지 않은 문자열이어야 합니다.")
 
     resolved_dir = model_dir.expanduser().resolve()
-    if not resolved_dir.is_dir():
-        raise FileNotFoundError(
-            f"PaddleOCR 모델 디렉터리가 없습니다: {resolved_dir}"
-        )
 
-    for filename in _PADDLE_REQUIRED_FILES:
+    for filename in _ONNX_REQUIRED_FILES:
         artifact = resolved_dir / filename
         if not artifact.is_file():
             raise FileNotFoundError(
-                f"PaddleOCR 필수 모델 파일이 없습니다: {artifact}"
+                f"{artifact}가 없습니다.\n"
+                "먼저 python scripts/download_models.py를 실행하세요."
             )
         if artifact.stat().st_size == 0:
             raise RuntimeError(
@@ -344,6 +340,7 @@ def load_paddle_plate_reader(
             model_name=model_name,
             model_dir=str(resolved_dir),
             device=device,
+            engine="onnxruntime",
         ),
         batch_size=batch_size,
     )

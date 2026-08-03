@@ -1,8 +1,9 @@
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import type { ParkingStatusDisplay } from '../utils/parking-zone';
 import { Palette } from '@/styles';
 
+import { ParkingLegend } from './parking-legend';
 import { ParkingSpotMap } from './parking-spot-map';
 import { styles } from './parking-status-card.styles';
 
@@ -11,6 +12,8 @@ type ParkingStatusCardProps = {
   status: ParkingStatusDisplay | null;
   isLoading?: boolean;
   hasError?: boolean;
+  /** 있으면 카드 전체를 눌러서 주차 도면 전체 보기 등으로 이동할 수 있게 된다. */
+  onPress?: () => void;
 };
 
 export function ParkingStatusCard({
@@ -18,6 +21,7 @@ export function ParkingStatusCard({
   status,
   isLoading = false,
   hasError = false,
+  onPress,
 }: ParkingStatusCardProps) {
   const congestionColorStyle =
     status?.congestionLevel === 'LOW'
@@ -35,7 +39,12 @@ export function ParkingStatusCard({
         : undefined;
 
   return (
-    <View style={styles.container}>
+    <Pressable
+      style={styles.container}
+      disabled={!onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      onPress={onPress}
+    >
       <View style={styles.headerRow}>
         <Text style={styles.title}>{title}</Text>
       </View>
@@ -50,30 +59,16 @@ export function ParkingStatusCard({
 
         <ParkingSpotMap cells={status?.cells ?? []} message={mapMessage} />
 
-        <View style={styles.legendRow}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.violet300 }]} />
-            <Text style={styles.legendText}>{status ? status.occupiedLabel : '주차 중 -'}</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.gray100 }]} />
-            <Text style={styles.legendText}>{status ? status.availableLabel : '비어 있음 -'}</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.teal100 }]} />
-            <Text style={styles.legendText}>충전구역</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.sky100 }]} />
-            <Text style={styles.legendText}>장애인구역</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: Palette.peach100 }]} />
-            <Text style={styles.legendText}>{status ? status.violationLabel : '위반 -'}</Text>
-          </View>
-        </View>
+        <ParkingLegend
+          items={[
+            { label: status ? status.occupiedLabel : '주차 중 -', color: Palette.violet300 },
+            { label: status ? status.availableLabel : '비어 있음 -', color: Palette.gray100 },
+            { label: '충전구역', color: Palette.teal100 },
+            { label: '장애인구역', color: Palette.sky100 },
+            { label: status ? status.violationLabel : '위반 -', color: Palette.peach100 },
+          ]}
+        />
       </View>
-
-    </View>
+    </Pressable>
   );
 }

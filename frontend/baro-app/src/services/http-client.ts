@@ -11,7 +11,6 @@ type ApiEnvelope<T> = {
   result: T;
 };
 
-// 실제 배포가 완료되면 -> .env.local을 만들어서 서버 주소 연결
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
 // 모든 API 호출이 거치는 공통 통로. 여기 하나만 있으면
@@ -24,10 +23,12 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
     );
   }
 
+  const isFormData = init.body instanceof FormData;
+
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...init.headers,
     },
   });
@@ -51,6 +52,24 @@ export function postJson<T>(path: string, data: unknown, accessToken?: string): 
   return request<T>(path, {
     method: 'POST',
     body: JSON.stringify(data),
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  });
+}
+
+// 일부 필드만 변경하는 API에 사용한다. 전달하지 않은 필드는 서버에서 기존 값을 유지한다.
+export function patchJson<T>(path: string, data: unknown, accessToken: string): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+// 이미지 등 파일 업로드가 필요한 POST. multipart/form-data로 보낸다.
+export function postForm<T>(path: string, data: FormData, accessToken?: string): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    body: data,
     headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
   });
 }

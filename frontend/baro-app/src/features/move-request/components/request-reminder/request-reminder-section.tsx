@@ -1,10 +1,8 @@
 import { Text, View } from 'react-native';
 
-import {
-  RequestOverdueTimelineCard,
-  type RequestOverdueTimelineStep,
-} from '@/features/move-request/components/request-overdue/request-overdue-timeline-card';
+import { RequestTimelineCard } from '@/features/move-request/components/request-timeline-card';
 import { RequestStatCardRow } from '@/features/move-request/components/request-stat-card-row';
+import type { RequestTimelineStep } from '@/features/move-request/utils/move-request';
 
 import { RequestReminderCountdown } from './request-reminder-countdown';
 import { styles } from './request-reminder-section.styles';
@@ -14,7 +12,7 @@ type RequestReminderSectionProps = {
   countdownLabel: string;
   plateNumber: string;
   actionLabel: string;
-  timeline: RequestOverdueTimelineStep[];
+  timeline: RequestTimelineStep[];
   pendingStep?: { label: string; status: string };
 };
 
@@ -38,7 +36,7 @@ export function RequestReminderSection({
 
       <RequestReminderCountdown label={countdownLabel} />
       <RequestStatCardRow leftLabel="차량 번호" leftValue={plateNumber} rightLabel="조치" rightValue={actionLabel} />
-      <RequestOverdueTimelineCard timeline={timeline} pendingStep={pendingStep} />
+      <RequestTimelineCard title="진행 기록" timeline={timeline} pendingStep={pendingStep} />
     </View>
   );
 }

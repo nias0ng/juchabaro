@@ -1,15 +1,11 @@
-"""MotionEstimator 회귀 테스트 (436).
-
-핵심 검증: 앵커는 movement_epsilon을 실제로 넘겼을 때만 갱신된다 — 매
-프레임 갱신하면 미세한 흔들림이 누적돼도 계속 STATIONARY로 남는다.
-"""
+"""MotionEstimator의 차량별 3-sample rolling-window 계약."""
 
 from src.tracking.models import BoundingBox, MotionSignal
 from src.tracking.motion_estimator import MotionEstimator
 
 
-def test_first_observation_returns_moving_and_establishes_anchor():
-    """새로 나타난 차량은 비교할 앵커가 없어 MOVING을 반환한다."""
+def test_first_observation_returns_moving_and_starts_history():
+    """새로 나타난 차량은 비교할 관측이 없어 MOVING을 반환한다."""
     estimator = MotionEstimator(movement_epsilon=0.01)
 
     signal = estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.1, 0.1, 0.2, 0.2))
@@ -27,7 +23,7 @@ def test_staying_within_epsilon_returns_stationary():
     assert signal == MotionSignal.STATIONARY
 
 
-def test_moving_beyond_epsilon_returns_moving_and_updates_anchor():
+def test_moving_beyond_epsilon_returns_moving():
     estimator = MotionEstimator(movement_epsilon=0.01)
     estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.10, 0.10, 0.20, 0.20))
 
@@ -36,29 +32,43 @@ def test_moving_beyond_epsilon_returns_moving_and_updates_anchor():
     assert signal == MotionSignal.MOVING
 
 
-def test_repeated_micro_jitter_does_not_accumulate_into_moving():
-    """리뷰 반영과 동일한 이유 — 앵커를 매 프레임 갱신하면 흔들림이 누적돼
-    실제로는 안 움직였는데도 언젠가 epsilon을 넘기게 된다. 앵커가 '정차
-    시작 위치'로 고정돼야 이 누적이 없다.
-
-    매 프레임 0.003씩 같은 방향으로 흔들리는 것을 3번 반복한다 — 누적
-    이동량(0.009)은 epsilon(0.01)에 가깝지만, 앵커가 첫 위치로 고정돼
-    있으면 매 프레임 최초 앵커 대비 거리로만 판정하므로 도중에 MOVING이
-    섞이면 안 된다(누적이 아니라 절대 위치 비교라는 계약을 고정한다).
-    """
+def test_micro_drift_outside_recent_window_does_not_accumulate_into_moving():
+    """첫 위치가 아닌 최근 3개 관측만 비교한다."""
     estimator = MotionEstimator(movement_epsilon=0.01)
     estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.10, 0.10, 0.20, 0.20))
 
     signals = []
-    for i in range(1, 4):
+    for i in range(1, 9):
         bbox = BoundingBox(0.10 + 0.003 * i, 0.10, 0.20 + 0.003 * i, 0.20)
         signals.append(estimator.update(physical_vehicle_id="veh-1", bbox=bbox))
 
-    # i=1,2,3의 최초 앵커 대비 이동량은 각각 0.003/0.006/0.009로 전부 epsilon(0.01) 미만.
-    assert signals == [MotionSignal.STATIONARY, MotionSignal.STATIONARY, MotionSignal.STATIONARY]
+    assert signals == [MotionSignal.STATIONARY] * 8
 
 
-def test_different_vehicles_have_independent_anchors():
+def test_continuous_slow_motion_does_not_alternate_after_crossing_window_epsilon():
+    """단일 앵커 갱신 방식의 MOVING/STATIONARY 교대 회귀를 막는다."""
+
+    estimator = MotionEstimator(movement_epsilon=0.01)
+    estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.10, 0.10, 0.20, 0.20))
+
+    signals = [
+        estimator.update(
+            physical_vehicle_id="veh-1",
+            bbox=BoundingBox(0.10 + 0.006 * i, 0.10, 0.20 + 0.006 * i, 0.20),
+        )
+        for i in range(1, 6)
+    ]
+
+    assert signals == [
+        MotionSignal.STATIONARY,
+        MotionSignal.MOVING,
+        MotionSignal.MOVING,
+        MotionSignal.MOVING,
+        MotionSignal.MOVING,
+    ]
+
+
+def test_different_vehicles_have_independent_histories():
     estimator = MotionEstimator(movement_epsilon=0.01)
     estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.10, 0.10, 0.20, 0.20))
     estimator.update(physical_vehicle_id="veh-2", bbox=BoundingBox(0.50, 0.50, 0.60, 0.60))
@@ -71,7 +81,7 @@ def test_different_vehicles_have_independent_anchors():
     assert signal_2 == MotionSignal.MOVING
 
 
-def test_forget_removes_anchor_so_next_observation_is_treated_as_new():
+def test_forget_removes_history_so_next_observation_is_treated_as_new():
     estimator = MotionEstimator(movement_epsilon=0.01)
     estimator.update(physical_vehicle_id="veh-1", bbox=BoundingBox(0.10, 0.10, 0.20, 0.20))
 

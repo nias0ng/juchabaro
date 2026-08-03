@@ -1,59 +1,110 @@
-"""PassthroughEntityResolver 회귀 테스트 (436)."""
+"""PassthroughEntityResolver의 segment 연결과 runtime reset 계약."""
+
+from datetime import datetime, timezone
+from uuid import UUID
 
 from src.tracking.entity_resolver import PassthroughEntityResolver
+from src.tracking.models import BoundingBox, TrackObservation, TrackSegmentId
 
 
-def test_resolve_maps_track_segment_id_deterministically():
+OBSERVED_AT = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+BBOX = BoundingBox(0.1, 0.1, 0.2, 0.2)
+
+
+def _observation(track_segment_id: int) -> TrackObservation:
+    return TrackObservation(
+        track_segment_id=TrackSegmentId(track_segment_id),
+        bbox=BBOX,
+        confidence=0.9,
+        observed_at=OBSERVED_AT,
+    )
+
+
+def test_resolve_keeps_one_physical_id_while_track_segment_is_attached():
     resolver = PassthroughEntityResolver()
 
-    first = resolver.resolve(1)
-    second = resolver.resolve(1)
+    first = resolver.resolve(_observation(1))
+    second = resolver.resolve(_observation(1))
 
-    assert first == second == "track-1"
+    assert first == second
+    assert isinstance(first, UUID)
 
 
 def test_different_track_segment_ids_get_different_physical_ids():
     resolver = PassthroughEntityResolver()
 
-    assert resolver.resolve(1) != resolver.resolve(2)
+    assert resolver.resolve(_observation(1)) != resolver.resolve(_observation(2))
 
 
-def test_resolve_ended_returns_ids_no_longer_observed():
+def test_not_calling_end_for_a_missing_frame_keeps_the_same_identity():
+    """현재 frame에 없다는 사실만으로 segment 연결을 해제하지 않는다."""
+
     resolver = PassthroughEntityResolver()
-    resolver.resolve(1)
-    resolver.resolve(2)
+    first = resolver.resolve(_observation(1))
 
-    ended = resolver.resolve_ended({1})  # track 2는 이번 프레임에 더 이상 없음
+    # 중간 frame에 track 1을 resolve하지 않았더라도 adapter가 종료를
+    # 확정하지 않았으므로 연결은 그대로다.
+    again = resolver.resolve(_observation(1))
 
-    assert ended == ["track-2"]
+    assert again == first
 
 
-def test_resolve_ended_forgets_ended_ids_so_they_dont_repeat():
+def test_end_track_segments_detaches_only_explicit_ids():
     resolver = PassthroughEntityResolver()
-    resolver.resolve(1)
+    first = resolver.resolve(_observation(1))
+    second = resolver.resolve(_observation(2))
 
-    first_call = resolver.resolve_ended(set())
-    second_call = resolver.resolve_ended(set())
+    result = resolver.end_track_segments({TrackSegmentId(2)})
 
-    assert first_call == ["track-1"]
-    assert second_call == []  # 이미 종료 처리된 트랙은 다시 나오면 안 됨
+    assert result is None
+    assert resolver.resolve(_observation(1)) == first
+    assert resolver.resolve(_observation(2)) != second
 
 
-def test_resolve_ended_returns_empty_when_all_still_observed():
+def test_end_track_segments_is_idempotent_for_already_detached_id():
     resolver = PassthroughEntityResolver()
-    resolver.resolve(1)
+    previous = resolver.resolve(_observation(1))
 
-    assert resolver.resolve_ended({1}) == []
+    first_call = resolver.end_track_segments({TrackSegmentId(1)})
+    second_call = resolver.end_track_segments({TrackSegmentId(1)})
+
+    assert first_call is None
+    assert second_call is None
+    assert resolver.resolve(_observation(1)) != previous
 
 
-def test_reappearing_track_segment_id_after_being_forgotten_is_new_physical_id():
-    """ByteTrack이 트랙을 잃었다 재발급하면(§7 한계 1), 통과 구현은 재식별을
-    안 하므로 실제로는 같은 물리적 값(f"track-{id}")이 그대로 나온다 —
-    다만 그 사이에 resolve_ended로 한 번 '종료'가 보고된다는 계약을 고정한다."""
+def test_reappearing_segment_id_after_confirmed_end_gets_new_physical_id():
+    """재식별 없는 통과 구현의 명시적 한계를 고정한다."""
+
     resolver = PassthroughEntityResolver()
-    resolver.resolve(1)
-    resolver.resolve_ended(set())  # track 1 종료 보고
+    first = resolver.resolve(_observation(1))
+    resolver.end_track_segments({TrackSegmentId(1)})
 
-    again = resolver.resolve(1)
+    again = resolver.resolve(_observation(1))
 
-    assert again == "track-1"
+    assert again != first
+    assert isinstance(again, UUID)
+
+
+def test_forget_physical_vehicle_detaches_all_remaining_segments():
+    resolver = PassthroughEntityResolver()
+    first = resolver.resolve(_observation(1))
+    second = resolver.resolve(_observation(2))
+
+    result = resolver.forget_physical_vehicle(first)
+
+    assert result is None
+    assert resolver.resolve(_observation(1)) != first
+    assert resolver.resolve(_observation(2)) == second
+
+
+def test_reset_track_segments_discards_all_runtime_numeric_id_bindings():
+    resolver = PassthroughEntityResolver()
+    first = resolver.resolve(_observation(1))
+    second = resolver.resolve(_observation(2))
+
+    result = resolver.reset_track_segments()
+
+    assert result is None
+    assert resolver.resolve(_observation(1)) != first
+    assert resolver.resolve(_observation(2)) != second

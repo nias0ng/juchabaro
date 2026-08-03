@@ -10,7 +10,7 @@ import { Palette } from '@/styles';
 const RESIDENT_NAV_ITEMS: NavItem[] = [
   { key: 'index', label: '홈', icon: 'home' },
   { key: 'requests', label: '요청', icon: 'request' },
-  { key: 'notifications', label: '알림', icon: 'bell' },
+  { key: 'parking-map', label: '주차 현황', icon: 'parking' },
   { key: 'my-page', label: '내 정보', icon: 'user' },
 ];
 
@@ -45,11 +45,11 @@ function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
 
 /*
   ResidentLayout : 입주민 앱의 탭바 레이아웃
-  - 홈, 요청, 알림, 내 정보 탭으로 구성
-  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/알림/내정보/차량 등)에 들어올 수 없다.
+  - 홈, 요청, 주차 현황, 내 정보 탭으로 구성(Figma Z-02 개편 — 알림 탭은 빠지고 홈 화면 벨 아이콘으로만 진입)
+  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/주차 현황/내정보/차량 등)에 들어올 수 없다.
 */
 export default function ResidentLayout() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
 
   // 세션 복원이 끝나기 전에는 guest로 단정할 수 없으므로 로딩 상태로 대기한다.
   if (status === 'loading') {
@@ -62,6 +62,10 @@ export default function ResidentLayout() {
 
   if (status === 'guest') {
     return <Redirect href="/auth/login" />;
+  }
+
+  if (user?.role !== 'RESIDENT') {
+    return <Redirect href="/auth" />;
   }
 
   return (
@@ -85,9 +89,9 @@ export default function ResidentLayout() {
         }}
       />
       <Tabs.Screen
-        name="notifications"
+        name="parking-map"
         options={{
-          title: '알림',
+          title: '주차 현황',
         }}
       />
       <Tabs.Screen
@@ -96,18 +100,15 @@ export default function ResidentLayout() {
           title: '내 정보',
         }}
       />
-      {/* 탭바에는 없지만(Figma BottomTabBar 기준) 홈 화면의 "내 차량" 바로가기로는 계속 접근 가능해야 해서 라우트는 남기고 탭에서만 숨긴다. */}
-      <Tabs.Screen name="vehicles" options={{ href: null }} />
-      {/* 이동 요청 상세는 URL/알림에서 접근하지만 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="request-detail" options={{ href: null }} />
-      {/* F-02 응답 완료는 E-11에서 응답 후 도달하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="response-complete" options={{ href: null }} />
-      {/* I-02/I-03 내 정보 수정은 내 정보 카드를 눌러서 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="profile-edit" options={{ href: null }} />
-      {/* I-04 알림 설정은 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="notification-settings" options={{ href: null }} />
-      {/* 요청 내역도 내 정보 화면의 메뉴로 진입하는 화면이라 하단 탭 항목으로는 노출하지 않는다. */}
-      <Tabs.Screen name="request-history" options={{ href: null }} />
+      {/* 아래는 URL·다른 화면의 메뉴/바로가기로만 진입하는 화면들이라 라우트는 두고 하단 탭에서만 숨긴다(href: null). */}
+      <Tabs.Screen name="vehicles" options={{ href: null }} /> {/* 홈 화면 "내 차량" 바로가기 */}
+      <Tabs.Screen name="notifications" options={{ href: null }} /> {/* 홈 화면 알림 벨 아이콘으로 진입 */}
+      <Tabs.Screen name="request-detail" options={{ href: null }} /> {/* URL/알림에서 진입 */}
+      <Tabs.Screen name="response-complete" options={{ href: null }} /> {/* E-11 응답 후 도달 */}
+      <Tabs.Screen name="profile-edit" options={{ href: null }} /> {/* 내 정보 카드에서 진입 */}
+      <Tabs.Screen name="notification-settings" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
+      <Tabs.Screen name="request-history" options={{ href: null }} /> {/* 내 정보 메뉴에서 진입 */}
+      <Tabs.Screen name="violation-history" options={{ href: null }} /> {/* URL로 직접 진입 */}
     </Tabs>
   );
 }

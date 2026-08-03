@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
@@ -40,31 +40,6 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.xxl + 2,
     padding: Spacing.md + 1,
     gap: Spacing.base,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
-    elevation: 2,
-  },
-
-  legendRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    columnGap: Spacing.md,
-    rowGap: Spacing.xs,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 3,
-  },
-  legendText: {
-    fontSize: 10.5,
-    color: Palette.gray500,
+    ...Shadows.card,
   },
 });

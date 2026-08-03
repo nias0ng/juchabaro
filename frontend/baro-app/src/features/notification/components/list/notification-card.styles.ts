@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Radius, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   container: {
@@ -10,17 +10,8 @@ export const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: Palette.white,
     borderRadius: Radius.xl,
-    borderWidth: 1,
-    borderColor: 'transparent',
     padding: Spacing.md + 2,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 13,
-    elevation: 2,
-  },
-  containerUnread: {
-    borderColor: Palette.lavender100,
+    ...Shadows.card,
   },
   iconOuter: {
     width: 42,
@@ -38,21 +29,10 @@ export const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.xs,
   },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs + 3,
-  },
   title: {
     fontSize: 14.5,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
-  },
-  unreadDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: Palette.coral500,
   },
   body: {
     fontSize: 12.5,

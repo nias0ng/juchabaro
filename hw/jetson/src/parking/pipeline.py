@@ -1,125 +1,698 @@
-"""차량 스냅샷을 구역 방문·주차 에피소드·사건 전이로 변환하는 파이프라인.
+"""Tracking 관측을 주차 scope와 Incident 변경 계획으로 조립한다.
 
-관통 1단계(440)만 다룬다 — `restricted_zone` 규칙 하나, `ZoneVisit` 상태축
-하나만으로 프레임이 사건까지 도달하는 경로다. `ParkingEpisode`(600초 확정,
-T-09), `ev_overstay`/`bad_parking` 규칙, `assignment_resolver`(T-10)는
-범위 밖이다.
+이 모듈은 카메라 bbox를 영속 상태에 직접 저장하지 않는다. 한 frame의 정상
+관측으로 ZoneVisit과 ParkingEpisode를 갱신하고, 상태 없는 규칙의 삼상태
+신호를 IncidentReducer에 전달한다. authoritative SessionContext는 tracking
+snapshot이 아니라 호출자가 제공한 mapping에서만 조회한다.
 
-프레임 호출 순서는 `zone_visit_tracker.py`가 명시한 조립기 계약을 그대로
-따른다:
+TrackSegment 종료와 PhysicalVehicle 종료는 서로 다른 사실이다.
+``ended_track_segment_ids``와 일시 미관측은 어떤 child scope도 끝내지 않으며,
+확정된 실제 출차는 상위 ``PhysicalPresenceWorkflow``가 ``physical_exit()``으로
+별도 전달해야 한다. 공개 전이는 aggregate와 같은 transaction에서 즉시
+기록하고, 공개 전이가 없는 timer snapshot은 04 계약의 dirty checkpoint로
+합쳐 기록한다.
 
-1. 이번 프레임에 관측된 (차량, 구역) 쌍마다 `update()` (한 쌍에 한 번만)
-2. 이번 프레임에 관측된 차량마다 `active_visits()` → 규칙 평가 → `reduce()`
-3. 프레임 끝에 `prune()` 한 번. 반환된 강제 종료 방문도 규칙 평가 → `reduce()`
+현재 ``InMemory*`` owner들은 reference implementation이라 호출 중 상태를
+변경한다. application UnitOfWork는 호출 전 checkpoint를 보존하고
+commit 실패 시 DB rollback과 함께 runtime owner도 복구해야 한다.
 
-이 순서를 어기면(특히 3번을 빠뜨리거나 2번보다 먼저 부르면) 사건이 영원히
-닫히지 않는다 — `test_zone_visit_incident_flow.py`가 그 결함을 고정해 뒀다.
+이미 terminal이 된 local-only episode의 늦은 binding은 이 active pipeline이
+메모리에 보존하지 않는다. 04 계약의 pending handoff workflow가 durable terminal
+snapshot을 조회해 PARKED·UNPARKED를 materialize해야 한다.
+
+BlockingRelation 후보는 PARKED 차량의 assignment가 참조하는 egress AISLE
+zone과 다른 차량 bbox의 overlap으로 계산한다(§11). 이미 non-terminal인
+관계는 새 후보 계산과 무관하게 매 frame 계속 재평가해 이동만으로 조용히
+멈추지 않게 한다. durable 복원(``restore_active``)은 아직 BlockingRelation
+repository가 없어 빈 tuple만 받는다 — restart 뒤 진행 중이던 관계는
+geometry가 다시 confirm될 때까지 새 CANDIDATE로 재시작한다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+import math
+
+from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.parking import assignment_resolver
+from src.parking.blocking_relation_tracker import BlockingRelationTracker
 from src.parking.geometry import overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
+    BlockingRelation,
+    BlockingRelationState,
+    Incident,
+    IncidentKeyScope,
+    IncidentReduction,
     IncidentTransition,
+    ParkingAssignment,
+    ParkingEpisode,
     ParkingPipelineResult,
+    ParkingState,
+    ParkingTransition,
+    ParkingTransitionType,
     PresenceSignal,
+    ZoneDefinition,
+    ZoneId,
     ZoneVisit,
+    ZoneVisitState,
 )
-from src.parking.rules import restricted_zone
+from src.parking.parking_episode_tracker import MOVEMENT_CONFIRMED, ParkingEpisodeTracker
+from src.parking.rules import (
+    bad_parking,
+    double_parking,
+    ev_overstay,
+    restricted_zone,
+)
 from src.parking.rules.models import RuleContext
-from src.parking.zone_registry import ParkingZone, ZoneRegistry
+from src.parking.zone_registry import ZoneRegistry
 from src.parking.zone_visit_tracker import ZoneVisitTracker
-from src.tracking.models import MotionSignal, PhysicalVehicleId, PhysicalVehicleSnapshot, TrackingBatch
+from src.session.models import EntryAttemptId, SessionContext
+from src.tracking.models import (
+    MotionSignal,
+    PhysicalVehicleId,
+    PhysicalVehicleSnapshot,
+    TrackingBatch,
+)
+
+
+_BlockingCandidateKey = tuple[PhysicalVehicleId, PhysicalVehicleId, ZoneId]
+
+
+@dataclass
+class _VehicleFrame:
+    """pass 1이 모은, pass 3의 규칙 평가에 필요한 차량별 중간 결과."""
+
+    vehicle: PhysicalVehicleSnapshot
+    context: SessionContext | None
+    entry_attempt_id: EntryAttemptId | None
+    observation: ObservationStatus
+    assignment: ParkingAssignment | None
+    active_visits: tuple[ZoneVisit, ...]
+    episode: ParkingEpisode | None
+
+
+_RULE_EVALUATORS = (
+    restricted_zone.evaluate,
+    ev_overstay.evaluate,
+    bad_parking.evaluate,
+    double_parking.evaluate,
+)
 
 
 class ParkingPipeline:
-    """`ZoneVisitTracker` + `restricted_zone` 규칙 + `IncidentReducer`를 조립한다."""
+    """한 frame 안의 geometry, scope, rule, reducer 호출 순서를 소유한다."""
 
     def __init__(
         self,
         *,
         zones: ZoneRegistry,
         zone_visit_tracker: ZoneVisitTracker,
+        parking_episode_tracker: ParkingEpisodeTracker,
         incident_reducer: IncidentReducer,
+        blocking_relation_tracker: BlockingRelationTracker,
         min_overlap_ratio: float,
+        assignment_min_overlap_ratio: float,
+        assignment_ambiguous_margin: float,
     ) -> None:
+        _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
+        _validate_ratio(
+            assignment_min_overlap_ratio,
+            "assignment_min_overlap_ratio",
+        )
+        _validate_ratio(
+            assignment_ambiguous_margin,
+            "assignment_ambiguous_margin",
+        )
         self._zones = zones
         self._zone_visit_tracker = zone_visit_tracker
+        self._parking_episode_tracker = parking_episode_tracker
         self._incident_reducer = incident_reducer
+        self._blocking_relation_tracker = blocking_relation_tracker
         self._min_overlap_ratio = min_overlap_ratio
-        # 추적이 끊긴 차량은 prune()이 반환하는 방문에만 등장하고 그 프레임의
-        # TrackingBatch.vehicles에는 없다 — 규칙 평가에 필요한 RuleContext.vehicle을
-        # 채우려면 그 차량을 마지막으로 본 스냅샷을 들고 있어야 한다
-        # (test_zone_visit_incident_flow.py가 실제 조립기의 요구사항으로 명시).
-        self._last_snapshot: dict[PhysicalVehicleId, PhysicalVehicleSnapshot] = {}
+        self._assignment_min_overlap_ratio = assignment_min_overlap_ratio
+        self._assignment_ambiguous_margin = assignment_ambiguous_margin
 
-    def process(self, batch: TrackingBatch) -> ParkingPipelineResult:
-        """한 프레임의 `TrackingBatch`를 처리해 방문 갱신과 사건 전이를 반환한다."""
+    def checkpoint_state(self) -> tuple[object, object, object, object]:
+        """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
 
-        for vehicle in batch.vehicles:
-            self._last_snapshot[vehicle.physical_vehicle_id] = vehicle
+        return (
+            self._zone_visit_tracker.checkpoint_state(),
+            self._parking_episode_tracker.checkpoint_state(),
+            self._incident_reducer.checkpoint_state(),
+            self._blocking_relation_tracker.checkpoint_state(),
+        )
 
+    def restore_state(
+        self,
+        checkpoint: tuple[object, object, object, object],
+    ) -> None:
+        """DB rollback과 함께 네 owner를 같은 frame 전 시점으로 되돌린다."""
+
+        if len(checkpoint) != 4:
+            raise ValueError("invalid ParkingPipeline checkpoint")
+        visit_state, episode_state, incident_state, relation_state = checkpoint
+        self._zone_visit_tracker.restore_state(visit_state)
+        self._parking_episode_tracker.restore_state(episode_state)
+        self._incident_reducer.restore_state(incident_state)
+        self._blocking_relation_tracker.restore_state(relation_state)
+
+    def restore_active(
+        self,
+        *,
+        zone_visits: tuple[ZoneVisit, ...],
+        parking_episodes: tuple[ParkingEpisode, ...],
+        incidents: tuple[Incident, ...],
+        blocking_relations: tuple[BlockingRelation, ...] = (),
+    ) -> None:
+        """durable active aggregate를 끊은 timer chain으로 기동 복원한다.
+
+        ``blocking_relations``는 durable BlockingRelation repository가 아직
+        없어 기본값이 빈 tuple이다. restart 뒤 진행 중이던 관계는 새
+        CANDIDATE로 재시작한다.
+        """
+
+        self._zone_visit_tracker.restore_active(zone_visits)
+        self._parking_episode_tracker.restore_active(parking_episodes)
+        self._incident_reducer.restore_active(incidents)
+        self._blocking_relation_tracker.restore_active(blocking_relations)
+
+    def process(
+        self,
+        batch: TrackingBatch,
+        *,
+        session_contexts: Mapping[PhysicalVehicleId, SessionContext] | None = None,
+        entry_attempt_ids: Mapping[PhysicalVehicleId, EntryAttemptId] | None = None,
+        skip_unobserved_vehicle_ids: Collection[PhysicalVehicleId] = (),
+    ) -> ParkingPipelineResult:
+        """한 TrackingBatch를 nonterminal 주차 상태 변경 계획으로 변환한다.
+
+        ``session_contexts``는 active ContextBinding에서 조회한 authoritative
+        projection이어야 한다. ``entry_attempt_ids``는 session이 없는 REVIEW/DENY
+        차량도 local Incident를 공개할 수 있게 하는 authoritative correlation이다.
+        ``not_present_confirmed_vehicle_ids``가 포함돼도
+        이 메서드는 scope를 끝내지 않는다. 실제 출차 transaction을 소유한
+        상위 workflow가 commit 계획을 만들 때 ``physical_exit()``을 호출한다.
+        """
+
+        contexts = {} if session_contexts is None else session_contexts
+        attempts = {} if entry_attempt_ids is None else entry_attempt_ids
         zone_visit_updates: list[ZoneVisit] = []
+        parking_episode_updates: list[ParkingEpisode] = []
+        parking_transitions: list[ParkingTransition] = []
+        incident_updates: list[Incident] = []
+        incident_transitions: list[IncidentTransition] = []
+        frames: dict[PhysicalVehicleId, _VehicleFrame] = {}
+
+        # pass 1: 차량별 geometry·scope 갱신. BlockingRelation 후보는 모든
+        # 차량의 assignment를 알아야 계산할 수 있어 규칙 평가보다 뒤로 미룬다.
         for vehicle in batch.vehicles:
+            context = contexts.get(vehicle.physical_vehicle_id)
+            entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
+            observation = _effective_observation(batch, vehicle)
+            assignment = assignment_resolver.resolve(
+                vehicle,
+                self._zones,
+                min_overlap_ratio=self._assignment_min_overlap_ratio,
+                ambiguous_margin=self._assignment_ambiguous_margin,
+            )
+
+            terminal_visits: list[ZoneVisit] = []
             for zone in self._zones.all():
                 visit = self._zone_visit_tracker.update(
                     physical_vehicle_id=vehicle.physical_vehicle_id,
                     zone_id=zone.zone_id,
-                    signal=self._presence_signal(vehicle, zone),
+                    signal=self._presence_signal(vehicle, zone, observation),
+                    observation=observation,
                     observed_at=vehicle.observed_at,
                 )
-                if visit is not None:
-                    zone_visit_updates.append(visit)
+                if visit is None:
+                    continue
+                zone_visit_updates.append(visit)
+                if visit.state in {ZoneVisitState.ENDED, ZoneVisitState.CANCELED}:
+                    terminal_visits.append(visit)
 
-        incident_transitions: list[IncidentTransition] = []
-        for vehicle in batch.vehicles:
-            visits = self._zone_visit_tracker.active_visits(vehicle.physical_vehicle_id)
-            incident_transitions += self._judge(vehicle, visits)
+            previous_episode = self._parking_episode_tracker.active_episode(
+                vehicle.physical_vehicle_id
+            )
+            episode = self._parking_episode_tracker.update(
+                physical_vehicle_id=vehicle.physical_vehicle_id,
+                parking_session_id=(
+                    None if context is None else context.parking_session_id
+                ),
+                signal=(
+                    vehicle.motion_signal
+                    if observation.state is ObservationState.OBSERVED
+                    else MotionSignal.UNKNOWN
+                ),
+                observation=observation,
+                observed_at=vehicle.observed_at,
+                assignment=assignment,
+            )
+            if episode is not None:
+                parking_episode_updates.append(episode)
+                parking_transitions.extend(
+                    _parking_transitions(previous_episode, episode)
+                )
 
-        for visit in self._zone_visit_tracker.prune(batch.observed_at):
-            zone_visit_updates.append(visit)
-            snapshot = self._last_snapshot.pop(visit.physical_vehicle_id, None)
-            if snapshot is not None:
-                incident_transitions += self._judge(snapshot, (visit,))
+            for visit in terminal_visits:
+                self._collect_reductions(
+                    self._incident_reducer.terminate_zone_visit(
+                        visit.visit_id,
+                        observation=visit.observation,
+                        observed_at=vehicle.observed_at,
+                        reason=visit.termination_reason or "ZONE_VISIT_ENDED",
+                    ),
+                    incident_updates,
+                    incident_transitions,
+                )
 
-        for ended_id in batch.ended_vehicle_ids:
-            # 구역을 한 번도 밟지 않은 채 사라진 차량은 prune()이 절대 돌려주지
-            # 않는다(방문 자체가 없었으므로) — 그대로 두면 이 캐시가 차량이
-            # 지나갈 때마다 무한히 커진다. tracking 계층이 이미 "끝났다"고
-            # 확정한 신호이므로 여기서 직접 정리한다.
-            self._last_snapshot.pop(ended_id, None)
+            active_visits = self._zone_visit_tracker.active_visits(
+                vehicle.physical_vehicle_id
+            )
+            current_episode = (
+                episode
+                if episode is not None
+                else self._parking_episode_tracker.active_episode(
+                    vehicle.physical_vehicle_id
+                )
+            )
+            frames[vehicle.physical_vehicle_id] = _VehicleFrame(
+                vehicle=vehicle,
+                context=context,
+                entry_attempt_id=entry_attempt_id,
+                observation=observation,
+                assignment=assignment,
+                active_visits=active_visits,
+                episode=current_episode,
+            )
+
+        # pass 2: 이번 frame의 BlockingRelation 후보와 이미 non-terminal인
+        # 관계를 함께 재평가한다.
+        blocking_relation_updates = self._process_blocking_relations(
+            batch,
+            frames,
+            incident_updates=incident_updates,
+            incident_transitions=incident_transitions,
+        )
+
+        # pass 3: 이제 이번 frame의 BlockingRelation snapshot이 확정됐으니
+        # 차량별 규칙을 평가한다.
+        for vehicle_id, frame in frames.items():
+            rule_context = RuleContext(
+                vehicle=frame.vehicle,
+                observation=batch.observation,
+                session_context=frame.context,
+                active_zone_visits=frame.active_visits,
+                parking_episode=frame.episode,
+                parking_assignment=frame.assignment,
+                blocking_relations=self._blocking_relation_tracker.active_relations(
+                    vehicle_id
+                ),
+                zones=self._zones,
+                observed_at=frame.vehicle.observed_at,
+            )
+            self._evaluate_rules(
+                rule_context,
+                observation=frame.observation,
+                entry_attempt_id=frame.entry_attempt_id,
+                incident_updates=incident_updates,
+                incident_transitions=incident_transitions,
+            )
+
+        # TrackSegment 종료는 의도적으로 사용하지 않는다. PhysicalVehicle의
+        # 일시 미관측만 각 aggregate의 trusted sample chain을 끊는다.
+        skipped_unobserved_ids = set(skip_unobserved_vehicle_ids)
+        for physical_vehicle_id in batch.unobserved_physical_vehicle_ids:
+            if physical_vehicle_id in skipped_unobserved_ids:
+                # confirmed departure retry의 immutable occurredAt보다 느린
+                # frame 시각으로 child를 먼저 pause하지 않는다.
+                continue
+            observation = _unobserved_observation(batch.observation)
+            zone_visit_updates.extend(
+                self._zone_visit_tracker.pause_physical_vehicle(
+                    physical_vehicle_id,
+                    observation,
+                    batch.observed_at,
+                )
+            )
+            parking_episode_updates.extend(
+                self._parking_episode_tracker.pause_physical_vehicle(
+                    physical_vehicle_id,
+                    observation,
+                    batch.observed_at,
+                )
+            )
+            self._collect_reductions(
+                self._incident_reducer.pause_physical_vehicle(
+                    physical_vehicle_id,
+                    observation=observation,
+                    observed_at=batch.observed_at,
+                ),
+                incident_updates,
+                incident_transitions,
+            )
 
         return ParkingPipelineResult(
             zone_visit_updates=tuple(zone_visit_updates),
-            parking_episode_updates=(),
+            parking_episode_updates=tuple(parking_episode_updates),
+            parking_transitions=tuple(parking_transitions),
+            incident_updates=tuple(incident_updates),
             incident_transitions=tuple(incident_transitions),
+            blocking_relation_updates=blocking_relation_updates,
         )
 
-    def _presence_signal(self, vehicle: PhysicalVehicleSnapshot, zone: ParkingZone) -> PresenceSignal:
-        if vehicle.motion_signal is MotionSignal.UNKNOWN:
-            # tracking 계층의 관측 공백을 그대로 구역 방문의 관측 공백으로 전달한다.
+    def _process_blocking_relations(
+        self,
+        batch: TrackingBatch,
+        frames: Mapping[PhysicalVehicleId, _VehicleFrame],
+        *,
+        incident_updates: list[Incident],
+        incident_transitions: list[IncidentTransition],
+    ) -> tuple[BlockingRelation, ...]:
+        """PARKED 차량의 egress 후보와 기존 non-terminal 관계를 함께 갱신한다.
+
+        이미 열린 관계는 victim이 더 이상 이번 frame의 새 후보 조건(PARKED +
+        egress 설정)을 만족하지 않아도 계속 재평가한다. 그러지 않으면
+        이동만으로 관계가 조용히 멈춰 있는 채로 남는, 이전에 잡았던
+        STOP_PENDING 누수와 같은 종류의 결함이 생긴다.
+        """
+
+        existing_keys: set[_BlockingCandidateKey] = {
+            (
+                relation.subject_physical_vehicle_id,
+                relation.victim_physical_vehicle_id,
+                relation.egress_zone_id,
+            )
+            for relation in self._blocking_relation_tracker.all_active_relations()
+        }
+
+        candidate_keys: set[_BlockingCandidateKey] = set()
+        for victim_id, victim_frame in frames.items():
+            if (
+                victim_frame.episode is None
+                or victim_frame.episode.state is not ParkingState.PARKED
+                or victim_frame.assignment is None
+                or victim_frame.assignment.zone_id is None
+            ):
+                continue
+            zone_definition = self._zones.get(victim_frame.assignment.zone_id)
+            for egress_zone_id in zone_definition.egress_zone_ids:
+                for subject_id in frames:
+                    if subject_id == victim_id:
+                        continue
+                    candidate_keys.add((subject_id, victim_id, egress_zone_id))
+
+        updates: list[BlockingRelation] = []
+        # replay 재현성을 위해 집합 순서가 아니라 key로 정렬해 처리한다.
+        ordered_keys = sorted(
+            existing_keys | candidate_keys,
+            key=lambda key: (str(key[0]), str(key[1]), key[2]),
+        )
+        for subject_id, victim_id, egress_zone_id in ordered_keys:
+            subject_frame = frames.get(subject_id)
+            victim_frame = frames.get(victim_id)
+            # 관계는 subject·victim 둘 중 하나라도 이번 frame에 없거나 관측이
+            # 불확실하면 유지만 하고 timer를 멈춘다(§7 "한쪽 관측 UNKNOWN이면
+            # lifecycle 유지"). subject_frame이 있어야만 geometry를 잰다.
+            if subject_frame is None or victim_frame is None:
+                observation = _unobserved_observation(batch.observation)
+                signal = PresenceSignal.UNKNOWN
+            else:
+                observation = _less_reliable_observation(
+                    subject_frame.observation, victim_frame.observation
+                )
+                if observation.state is not ObservationState.OBSERVED:
+                    signal = PresenceSignal.UNKNOWN
+                else:
+                    egress_zone = self._zones.get(egress_zone_id)
+                    ratio = overlap_ratio(
+                        egress_zone.polygon, subject_frame.vehicle.bbox
+                    )
+                    signal = (
+                        PresenceSignal.PRESENT
+                        if ratio >= self._min_overlap_ratio
+                        else PresenceSignal.ABSENT
+                    )
+
+            relation = self._blocking_relation_tracker.update(
+                subject_physical_vehicle_id=subject_id,
+                victim_physical_vehicle_id=victim_id,
+                egress_zone_id=egress_zone_id,
+                signal=signal,
+                observation=observation,
+                observed_at=batch.observed_at,
+            )
+            if relation is None:
+                continue
+            updates.append(relation)
+            if relation.state in {
+                BlockingRelationState.RESOLVED,
+                BlockingRelationState.CANCELED,
+            }:
+                self._collect_reductions(
+                    self._incident_reducer.terminate_blocking_relation(
+                        relation.blocking_relation_id,
+                        observation=relation.observation,
+                        observed_at=batch.observed_at,
+                        reason=(
+                            relation.termination_reason
+                            or "BLOCKING_RELATION_RESOLVED"
+                        ),
+                    ),
+                    incident_updates,
+                    incident_transitions,
+                )
+
+        return tuple(updates)
+
+    def physical_exit(
+        self,
+        *,
+        physical_vehicle_id: PhysicalVehicleId,
+        observed_at: datetime,
+        incident_termination_reason: str = "PHYSICAL_VEHICLE_LEFT",
+    ) -> ParkingPipelineResult:
+        """확정된 실제 출차를 child scope 종료 계획으로 변환한다.
+
+        이 메서드는 ``process()``에서 자동 호출되지 않는다. 상위
+        ``PhysicalPresenceWorkflow``가 이 결과를 다른 session·presence 변경과
+        함께 commit해야 하며, commit 성공 뒤에만 tracking owner에 forget ACK를
+        보내야 한다.
+        """
+
+        observation = ObservationStatus(
+            state=ObservationState.OBSERVED,
+            last_reliable_observed_at=observed_at,
+        )
+        visits = self._zone_visit_tracker.physical_exit(
+            physical_vehicle_id=physical_vehicle_id,
+            observed_at=observed_at,
+        )
+        episode = self._parking_episode_tracker.physical_exit(
+            physical_vehicle_id=physical_vehicle_id,
+            observed_at=observed_at,
+        )
+        blocking_relations = self._blocking_relation_tracker.physical_exit(
+            physical_vehicle_id=physical_vehicle_id,
+            observed_at=observed_at,
+        )
+        incident_updates: list[Incident] = []
+        incident_transitions: list[IncidentTransition] = []
+
+        # visit-scope를 먼저 PHYSICAL_EXIT로 닫으면 session correlation이
+        # 있는 Incident의 종료 사유를 SESSION_EXITED로 보존할 수 없다.
+        # subject/victim 차량 기준으로 한 번만 종료해 상위 owner가
+        # 고정한 correlation 사유를 모든 관련 Incident에 적용한다.
+        # terminate_physical_vehicle은 subject/victim 기준으로 이미
+        # DOUBLE_PARKING Incident도 함께 끝내므로, BlockingRelation scope로
+        # 다시 끝낼 필요가 없다 — 아래는 관계 자체의 상태만 갱신한다.
+        self._collect_reductions(
+            self._incident_reducer.terminate_physical_vehicle(
+                physical_vehicle_id,
+                observation=observation,
+                observed_at=observed_at,
+                reason=incident_termination_reason,
+            ),
+            incident_updates,
+            incident_transitions,
+        )
+
+        return ParkingPipelineResult(
+            zone_visit_updates=visits,
+            parking_episode_updates=() if episode is None else (episode,),
+            incident_updates=tuple(incident_updates),
+            incident_transitions=tuple(incident_transitions),
+            blocking_relation_updates=blocking_relations,
+        )
+
+    def _presence_signal(
+        self,
+        vehicle: PhysicalVehicleSnapshot,
+        zone: ZoneDefinition,
+        observation: ObservationStatus,
+    ) -> PresenceSignal:
+        if observation.state is not ObservationState.OBSERVED:
             return PresenceSignal.UNKNOWN
         ratio = overlap_ratio(zone.polygon, vehicle.bbox)
-        return PresenceSignal.PRESENT if ratio >= self._min_overlap_ratio else PresenceSignal.ABSENT
-
-    def _judge(
-        self, vehicle: PhysicalVehicleSnapshot, visits: tuple[ZoneVisit, ...]
-    ) -> list[IncidentTransition]:
-        if not visits:
-            return []
-        context = RuleContext(
-            vehicle=vehicle,
-            vehicle_context=vehicle.context,
-            active_zone_visits=visits,
-            parking_episode=None,
-            parking_assignment=None,
-            zones=self._zones,
-            observed_at=vehicle.observed_at,
+        return (
+            PresenceSignal.PRESENT
+            if ratio >= self._min_overlap_ratio
+            else PresenceSignal.ABSENT
         )
-        transitions: list[IncidentTransition] = []
-        for signal in restricted_zone.evaluate(context):
-            transition = self._incident_reducer.reduce(signal)
-            if transition is not None:
-                transitions.append(transition)
-        return transitions
+
+    def _evaluate_rules(
+        self,
+        context: RuleContext,
+        *,
+        observation: ObservationStatus,
+        entry_attempt_id: EntryAttemptId | None,
+        incident_updates: list[Incident],
+        incident_transitions: list[IncidentTransition],
+    ) -> None:
+        zone_id_by_visit_id = {
+            visit.visit_id: visit.zone_id for visit in context.active_zone_visits
+        }
+        victim_id_by_relation_id = {
+            relation.blocking_relation_id: relation.victim_physical_vehicle_id
+            for relation in context.blocking_relations
+        }
+        parking_session_id = (
+            None
+            if context.session_context is None
+            else context.session_context.parking_session_id
+        )
+        for evaluate in _RULE_EVALUATORS:
+            for signal in evaluate(context):
+                zone_id: ZoneId | None = None
+                victim_physical_vehicle_id: PhysicalVehicleId | None = None
+                if signal.key.scope_type is IncidentKeyScope.ZONE_VISIT:
+                    zone_id = zone_id_by_visit_id.get(signal.key.scope_id)
+                elif signal.key.scope_type is IncidentKeyScope.BLOCKING_RELATION:
+                    victim_physical_vehicle_id = victim_id_by_relation_id.get(
+                        signal.key.scope_id
+                    )
+                reduction = self._incident_reducer.reduce(
+                    signal,
+                    physical_vehicle_id=context.vehicle.physical_vehicle_id,
+                    observation=observation,
+                    entry_attempt_id=entry_attempt_id,
+                    parking_session_id=parking_session_id,
+                    zone_id=zone_id,
+                    victim_physical_vehicle_id=victim_physical_vehicle_id,
+                )
+                if reduction is not None:
+                    self._collect_reductions(
+                        (reduction,),
+                        incident_updates,
+                        incident_transitions,
+                    )
+
+    @staticmethod
+    def _collect_reductions(
+        reductions: tuple[IncidentReduction, ...],
+        incident_updates: list[Incident],
+        incident_transitions: list[IncidentTransition],
+    ) -> None:
+        for reduction in reductions:
+            incident_updates.append(reduction.incident)
+            incident_transitions.extend(reduction.transitions)
+
+
+def _effective_observation(
+    batch: TrackingBatch,
+    vehicle: PhysicalVehicleSnapshot,
+) -> ObservationStatus:
+    """batch와 vehicle 중 하나라도 불신이면 trusted timer 입력을 막는다."""
+
+    if batch.observation.state is not ObservationState.OBSERVED:
+        return batch.observation
+    return vehicle.observation
+
+
+def _unobserved_observation(
+    batch_observation: ObservationStatus,
+) -> ObservationStatus:
+    """정상 batch의 개별 차량 미관측만 TRACK_LOST로 해석한다."""
+
+    if batch_observation.state is ObservationState.OBSERVED:
+        return ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=ObservationReason.TRACK_LOST,
+        )
+    return batch_observation
+
+
+_OBSERVATION_SEVERITY = {
+    ObservationState.OBSERVED: 0,
+    ObservationState.DEGRADED: 1,
+    ObservationState.UNKNOWN: 2,
+}
+
+
+def _less_reliable_observation(
+    first: ObservationStatus, second: ObservationStatus
+) -> ObservationStatus:
+    """둘 중 더 신뢰할 수 없는 쪽을 반환한다(동률이면 첫 번째)."""
+
+    if _OBSERVATION_SEVERITY[second.state] > _OBSERVATION_SEVERITY[first.state]:
+        return second
+    return first
+
+
+def _parking_transitions(
+    previous: ParkingEpisode | None,
+    current: ParkingEpisode,
+) -> tuple[ParkingTransition, ...]:
+    """Materialize every newly eligible parking publication in revision order."""
+
+    previous_revision = 0 if previous is None else previous.publication_revision
+    if current.publication_revision <= previous_revision:
+        return ()
+    if (
+        current.parking_session_id is None
+        or current.assignment is None
+        or current.parked_at is None
+    ):
+        raise RuntimeError("publishable ParkingEpisode requires session and assignment")
+
+    transitions: list[ParkingTransition] = []
+    if previous_revision < 1 <= current.publication_revision:
+        transitions.append(
+            ParkingTransition(
+                transition_type=ParkingTransitionType.PARKED,
+                parking_episode_id=current.episode_id,
+                physical_vehicle_id=current.physical_vehicle_id,
+                parking_session_id=current.parking_session_id,
+                publication_revision=1,
+                occurred_at=current.parked_at,
+                assignment=current.assignment,
+            )
+        )
+
+    if previous_revision < 2 <= current.publication_revision:
+        if (
+            current.state is not ParkingState.ENDED
+            or current.termination_reason != MOVEMENT_CONFIRMED
+            or current.ended_at is None
+        ):
+            raise RuntimeError("UNPARKED revision requires MOVEMENT_CONFIRMED ending")
+        transitions.append(
+            ParkingTransition(
+                transition_type=ParkingTransitionType.UNPARKED,
+                parking_episode_id=current.episode_id,
+                physical_vehicle_id=current.physical_vehicle_id,
+                parking_session_id=current.parking_session_id,
+                publication_revision=2,
+                occurred_at=current.ended_at,
+                assignment=current.assignment,
+            )
+        )
+    return tuple(transitions)
+
+
+def _validate_ratio(value: float, name: str) -> None:
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be finite and between 0 and 1")

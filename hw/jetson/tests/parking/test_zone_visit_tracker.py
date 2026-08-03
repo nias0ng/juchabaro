@@ -1,415 +1,497 @@
-"""구역 방문 상태 머신 테스트. 카메라·모델 없이 도는 순수 상태 머신이다."""
+"""카메라·저장소 없이 ZoneVisit 상태축만 검증한다."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
-from src.parking.models import PresenceSignal, ZoneId, ZoneVisitState
-from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
+from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.parking.models import PresenceSignal, ZoneDefinitionVersion, ZoneId, ZoneVisitState
+from src.parking.zone_visit_tracker import (
+    ENTRY_NOT_CONFIRMED,
+    PHYSICAL_EXIT,
+    ZONE_EXIT_CONFIRMED,
+    InMemoryZoneVisitTracker,
+)
 from src.tracking.models import PhysicalVehicleId
 
 T0 = datetime(2026, 7, 31, 10, 0, 0, tzinfo=timezone.utc)
-CAR = PhysicalVehicleId("pv-1")
-OTHER_CAR = PhysicalVehicleId("pv-2")
+CAR = PhysicalVehicleId(UUID(int=1))
+OTHER_CAR = PhysicalVehicleId(UUID(int=2))
 ZONE = ZoneId(12)
 OTHER_ZONE = ZoneId(13)
-
-
-def make_tracker(
-    entry: float = 3.0, exit_: float = 3.0, stale: float = 300.0
-) -> InMemoryZoneVisitTracker:
-    return InMemoryZoneVisitTracker(
-        entry_confirm_seconds=entry,
-        exit_confirm_seconds=exit_,
-        stale_after_seconds=stale,
-    )
+VERSION = ZoneDefinitionVersion(7)
 
 
 def at(seconds: float) -> datetime:
     return T0 + timedelta(seconds=seconds)
 
 
-def feed(tracker, signal, seconds, *, vehicle=CAR, zone=ZONE):
-    return tracker.update(
-        physical_vehicle_id=vehicle, zone_id=zone, signal=signal, observed_at=at(seconds)
+def observed(seconds: float) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.OBSERVED,
+        last_reliable_observed_at=at(seconds),
     )
 
 
-def test_absent_from_outside_returns_none() -> None:
+def unknown(*, last_reliable: float | None = None) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.UNKNOWN,
+        reason=ObservationReason.CAMERA_UNAVAILABLE,
+        last_reliable_observed_at=(
+            None if last_reliable is None else at(last_reliable)
+        ),
+    )
+
+
+def degraded(*, last_reliable: float | None = None) -> ObservationStatus:
+    return ObservationStatus(
+        state=ObservationState.DEGRADED,
+        reason=ObservationReason.PARTIAL_FRAME,
+        last_reliable_observed_at=(
+            None if last_reliable is None else at(last_reliable)
+        ),
+    )
+
+
+def make_tracker(
+    entry: float = 3.0,
+    exit_: float = 3.0,
+    max_gap: float = 10.0,
+) -> InMemoryZoneVisitTracker:
+    return InMemoryZoneVisitTracker(
+        zone_definition_version=VERSION,
+        entry_confirm_seconds=entry,
+        exit_confirm_seconds=exit_,
+        trusted_sample_max_gap_seconds=max_gap,
+    )
+
+
+def feed(
+    tracker: InMemoryZoneVisitTracker,
+    signal: PresenceSignal,
+    seconds: float,
+    *,
+    vehicle: PhysicalVehicleId = CAR,
+    zone: ZoneId = ZONE,
+    observation: ObservationStatus | None = None,
+):
+    if observation is None:
+        observation = observed(seconds)
+    return tracker.update(
+        physical_vehicle_id=vehicle,
+        zone_id=zone,
+        signal=signal,
+        observation=observation,
+        observed_at=at(seconds),
+    )
+
+
+def enter(
+    tracker: InMemoryZoneVisitTracker,
+    *,
+    start: float = 0.0,
+    confirmed: float = 3.0,
+    vehicle: PhysicalVehicleId = CAR,
+    zone: ZoneId = ZONE,
+):
+    feed(tracker, PresenceSignal.PRESENT, start, vehicle=vehicle, zone=zone)
+    return feed(tracker, PresenceSignal.PRESENT, confirmed, vehicle=vehicle, zone=zone)
+
+
+def test_absent_or_unknown_without_visit_returns_none() -> None:
     tracker = make_tracker()
     assert feed(tracker, PresenceSignal.ABSENT, 0) is None
+    assert feed(
+        tracker,
+        PresenceSignal.UNKNOWN,
+        1,
+        observation=unknown(),
+    ) is None
 
 
-def test_first_present_enters_entering_state() -> None:
-    tracker = make_tracker()
-    visit = feed(tracker, PresenceSignal.PRESENT, 0)
-    assert visit is not None
+def test_first_present_creates_complete_entering_snapshot() -> None:
+    visit = feed(make_tracker(), PresenceSignal.PRESENT, 0)
+
     assert visit.state is ZoneVisitState.ENTERING
+    assert isinstance(visit.visit_id, UUID)
+    assert visit.zone_definition_version == VERSION
     assert visit.entered_candidate_at == T0
-    assert visit.entered_at is None
+    assert visit.entry_trusted_seconds == 0.0
+    assert visit.exit_trusted_seconds == 0.0
+    assert visit.entry_confirmation_seconds == 3.0
+    assert visit.exit_confirmation_seconds == 3.0
+    assert visit.record_version == 1
+    assert visit.created_at == visit.updated_at == T0
 
 
-def test_present_for_confirm_seconds_becomes_inside() -> None:
+def test_restored_visit_does_not_count_process_downtime() -> None:
+    original = make_tracker(entry=3.0)
+    checkpoint = feed(original, PresenceSignal.PRESENT, 0)
+    restored = make_tracker(entry=3.0)
+    restored.restore_active((checkpoint,))
+
+    resumed = feed(restored, PresenceSignal.PRESENT, 100)
+    entered = feed(restored, PresenceSignal.PRESENT, 103)
+
+    assert resumed.entry_trusted_seconds == 0.0
+    assert entered.state is ZoneVisitState.INSIDE
+    assert entered.entry_trusted_seconds == 3.0
+
+
+def test_present_for_confirmation_duration_becomes_inside() -> None:
     tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
+    first = feed(tracker, PresenceSignal.PRESENT, 0)
     assert feed(tracker, PresenceSignal.PRESENT, 2.9).state is ZoneVisitState.ENTERING
     visit = feed(tracker, PresenceSignal.PRESENT, 3.0)
+
     assert visit.state is ZoneVisitState.INSIDE
-
-
-def test_entered_at_is_candidate_time_not_confirm_time() -> None:
-    """점유 시간을 재는 기준이므로 실제 진입 시점으로 잡아야 한다.
-
-    확인 시각으로 잡으면 EV 장기 점유가 확인시간만큼 짧게 측정된다.
-    """
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    visit = feed(tracker, PresenceSignal.PRESENT, 3.0)
+    assert visit.visit_id == first.visit_id
     assert visit.entered_at == T0
+    assert visit.entry_trusted_seconds == pytest.approx(3.0)
 
 
-def test_absent_during_entering_discards_candidate() -> None:
-    tracker = make_tracker(entry=3.0)
+def test_long_observed_gap_contributes_zero_and_restarts_entry_chain() -> None:
+    tracker = make_tracker(entry=3.0, max_gap=2.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
-    assert feed(tracker, PresenceSignal.ABSENT, 1.0) is None
-    # 다시 PRESENT면 후보 시각이 새로 잡힌다.
-    visit = feed(tracker, PresenceSignal.PRESENT, 2.0)
-    assert visit.entered_candidate_at == at(2.0)
+
+    after_gap = feed(tracker, PresenceSignal.PRESENT, 100)
+    resumed = feed(tracker, PresenceSignal.PRESENT, 102)
+
+    assert after_gap.state is ZoneVisitState.ENTERING
+    assert after_gap.entry_trusted_seconds == 0.0
+    assert resumed.state is ZoneVisitState.ENTERING
+    assert resumed.entry_trusted_seconds == pytest.approx(2.0)
 
 
-def test_absent_during_inside_enters_exiting() -> None:
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    visit = feed(tracker, PresenceSignal.ABSENT, 2.0)
-    assert visit.state is ZoneVisitState.EXITING
-    assert visit.exit_candidate_at == at(2.0)
-    assert visit.exited_at is None
-
-
-def test_present_during_exiting_returns_to_inside() -> None:
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    visit = feed(tracker, PresenceSignal.PRESENT, 3.0)
-    assert visit.state is ZoneVisitState.INSIDE
-    assert visit.exit_candidate_at is None
-    assert visit.entered_at == T0
-
-
-def test_absent_for_exit_confirm_seconds_closes_visit() -> None:
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    closed = feed(tracker, PresenceSignal.ABSENT, 5.0)
-    assert closed.state is ZoneVisitState.OUTSIDE
-    assert closed.exited_at == at(2.0)
-
-
-def test_closed_visit_is_returned_exactly_once() -> None:
-    """규칙이 RESOLVE를 만들려면 종료를 한 번은 봐야 하고, 두 번 보면 중복이 된다."""
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    assert feed(tracker, PresenceSignal.ABSENT, 5.0) is not None
-    assert feed(tracker, PresenceSignal.ABSENT, 6.0) is None
-
-
-def test_unknown_does_not_advance_entry_timer() -> None:
-    """UNKNOWN 구간은 확인시간에 누적되지 않는다.
-
-    벽시계 차이로 확인시간을 재면 이 테스트가 깨진다 — 카메라가 10초 먹통이었다는
-    사실이 진입 확인을 앞당기면 안 된다.
-    """
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    visit = feed(tracker, PresenceSignal.UNKNOWN, 10.0)
-    assert visit.state is ZoneVisitState.ENTERING
-    # 공백 뒤 첫 관측은 누적 사슬을 다시 시작하므로 간격 0을 기여한다.
-    assert feed(tracker, PresenceSignal.PRESENT, 10.5).state is ZoneVisitState.ENTERING
-    # 여기서부터 다시 3초를 관측해야 확인된다.
-    assert feed(tracker, PresenceSignal.PRESENT, 13.5).state is ZoneVisitState.INSIDE
-
-
-def test_unknown_preserves_already_accumulated_time() -> None:
-    """공백이 기존 누적을 초기화하지도 않는다 — 계약은 '누적도 초기화도 안 함'이다."""
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 2.0)  # 누적 2.0
-    feed(tracker, PresenceSignal.UNKNOWN, 50.0)  # 사슬만 끊김, 누적 2.0 보존
-    # 간격 0 기여, 누적 2.0 — 아직 미확인이어야 한다. 벽시계로 재면 여기서
-    # 이미 51초 경과로 확인돼버려 이 assert가 깨진다.
-    assert feed(tracker, PresenceSignal.PRESENT, 51.0).state is ZoneVisitState.ENTERING
-    assert feed(tracker, PresenceSignal.PRESENT, 52.0).state is ZoneVisitState.INSIDE  # 누적 3.0
-
-
-def test_unknown_does_not_advance_exit_timer() -> None:
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.UNKNOWN, 20.0)
-    assert feed(tracker, PresenceSignal.ABSENT, 20.5).state is ZoneVisitState.EXITING
-    assert feed(tracker, PresenceSignal.ABSENT, 23.5).state is ZoneVisitState.OUTSIDE
-
-
-def test_unknown_does_not_reset_inside_state() -> None:
-    tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    visit = feed(tracker, PresenceSignal.UNKNOWN, 100.0)
+def test_zero_entry_threshold_confirms_on_first_sample() -> None:
+    visit = feed(make_tracker(entry=0.0), PresenceSignal.PRESENT, 0)
     assert visit.state is ZoneVisitState.INSIDE
     assert visit.entered_at == T0
 
 
-def test_unknown_from_outside_returns_none() -> None:
+def test_absent_during_entering_returns_canceled_record() -> None:
     tracker = make_tracker()
-    assert feed(tracker, PresenceSignal.UNKNOWN, 0) is None
+    candidate = feed(tracker, PresenceSignal.PRESENT, 0)
+    canceled = feed(tracker, PresenceSignal.ABSENT, 1)
+
+    assert canceled.visit_id == candidate.visit_id
+    assert canceled.state is ZoneVisitState.CANCELED
+    assert canceled.ended_at == at(1)
+    assert canceled.termination_reason == ENTRY_NOT_CONFIRMED
+    assert tracker.active_visits(CAR) == ()
+    assert tracker._slots == {}
 
 
-def test_one_vehicle_can_visit_two_zones_at_once() -> None:
-    tracker = make_tracker(entry=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0, zone=ZONE)
-    feed(tracker, PresenceSignal.PRESENT, 0, zone=OTHER_ZONE)
-    a = feed(tracker, PresenceSignal.PRESENT, 1.0, zone=ZONE)
-    b = feed(tracker, PresenceSignal.PRESENT, 1.0, zone=OTHER_ZONE)
-    assert a.state is ZoneVisitState.INSIDE
-    assert b.state is ZoneVisitState.INSIDE
-    assert a.visit_id != b.visit_id
-
-
-def test_two_vehicles_in_same_zone_are_independent() -> None:
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0, vehicle=CAR)
-    feed(tracker, PresenceSignal.PRESENT, 2.0, vehicle=OTHER_CAR)
-    assert feed(tracker, PresenceSignal.PRESENT, 3.0, vehicle=CAR).state is ZoneVisitState.INSIDE
-    assert feed(tracker, PresenceSignal.PRESENT, 3.0, vehicle=OTHER_CAR).state is ZoneVisitState.ENTERING
-
-
-def test_revisit_after_close_gets_new_visit_id() -> None:
-    tracker = make_tracker(entry=1.0, exit_=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    first = feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 4.0)
-    feed(tracker, PresenceSignal.PRESENT, 10.0)
-    second = feed(tracker, PresenceSignal.PRESENT, 11.0)
+def test_reentry_after_cancellation_gets_new_id() -> None:
+    tracker = make_tracker()
+    first = feed(tracker, PresenceSignal.PRESENT, 0)
+    feed(tracker, PresenceSignal.ABSENT, 1)
+    second = feed(tracker, PresenceSignal.PRESENT, 2)
     assert second.visit_id != first.visit_id
 
 
-def test_visit_id_is_deterministic() -> None:
-    """같은 입력을 두 번 돌리면 같은 visit_id가 나와야 리플레이 검증이 가능하다."""
-    ids = []
-    for _ in range(2):
-        tracker = make_tracker(entry=1.0)
-        feed(tracker, PresenceSignal.PRESENT, 0)
-        ids.append(feed(tracker, PresenceSignal.PRESENT, 1.0).visit_id)
-    assert ids[0] == ids[1]
-
-
-def test_active_visits_excludes_entering_visits() -> None:
-    tracker = make_tracker(entry=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0, zone=ZONE)
-    feed(tracker, PresenceSignal.PRESENT, 1.0, zone=ZONE)
-    feed(tracker, PresenceSignal.PRESENT, 1.0, zone=OTHER_ZONE)  # ENTERING
-    active = tracker.active_visits(CAR)
-    assert [visit.zone_id for visit in active] == [ZONE]
-
-
-def test_active_visits_excludes_exiting_visits() -> None:
-    """이탈 확인 중에 사건을 닫으면 잠깐 가려진 차량이 위반을 지운다."""
+def test_absent_inside_enters_exiting_and_present_cancels_exit() -> None:
     tracker = make_tracker(entry=1.0, exit_=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)  # EXITING
-    assert tracker.active_visits(CAR) == ()
+    inside = enter(tracker, confirmed=1.0)
+    exiting = feed(tracker, PresenceSignal.ABSENT, 2.0)
+    returned = feed(tracker, PresenceSignal.PRESENT, 3.0)
+
+    assert exiting.state is ZoneVisitState.EXITING
+    assert exiting.exit_candidate_at == at(2.0)
+    assert returned.state is ZoneVisitState.INSIDE
+    assert returned.visit_id == inside.visit_id
+    assert returned.entered_at == T0
+    assert returned.exit_candidate_at is None
+    assert returned.exit_trusted_seconds == 0.0
 
 
-def test_active_visits_includes_the_visit_closed_this_frame() -> None:
-    """규칙이 matched=False를 만들려면 닫힌 방문을 봐야 한다.
+def test_trusted_present_occupancy_continues_inside_but_excludes_exiting_gap() -> None:
+    tracker = make_tracker(entry=1.0, exit_=10.0)
+    inside = enter(tracker, confirmed=1.0)
+    occupied = feed(tracker, PresenceSignal.PRESENT, 4.0)
+    feed(tracker, PresenceSignal.ABSENT, 5.0)
+    returned = feed(tracker, PresenceSignal.PRESENT, 20.0)
+    resumed = feed(tracker, PresenceSignal.PRESENT, 22.0)
 
-    이 방문이 빠지면 이미 열린 사건이 영원히 EDGE_CONFIRMED로 남는다.
-    """
-    tracker = make_tracker(entry=1.0, exit_=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
+    assert inside.entry_trusted_seconds == pytest.approx(1.0)
+    assert occupied.entry_trusted_seconds == pytest.approx(4.0)
+    assert returned.entry_trusted_seconds == pytest.approx(4.0)
+    assert resumed.entry_trusted_seconds == pytest.approx(6.0)
+
+
+def test_long_observed_gap_contributes_zero_to_exit_confirmation() -> None:
+    tracker = make_tracker(entry=1.0, exit_=3.0, max_gap=2.0)
+    enter(tracker, confirmed=1.0)
     feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 3.0)  # 종료
-    active = tracker.active_visits(CAR)
-    assert [visit.state for visit in active] == [ZoneVisitState.OUTSIDE]
-    assert active[0].exited_at == at(2.0)
+
+    after_gap = feed(tracker, PresenceSignal.ABSENT, 100.0)
+    resumed = feed(tracker, PresenceSignal.ABSENT, 102.0)
+
+    assert after_gap.state is ZoneVisitState.EXITING
+    assert after_gap.exit_trusted_seconds == 0.0
+    assert resumed.state is ZoneVisitState.EXITING
+    assert resumed.exit_trusted_seconds == pytest.approx(2.0)
 
 
-def test_active_visits_is_a_pure_read() -> None:
-    """같은 프레임에서 몇 번을 불러도 답이 같아야 한다 — 소비하는 읽기가 아니다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
+def test_reliable_exit_confirmation_returns_ended_record() -> None:
+    tracker = make_tracker(entry=1.0, exit_=3.0)
+    enter(tracker, confirmed=1.0)
     feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 3.0)
-    assert tracker.active_visits(CAR) == tracker.active_visits(CAR)
+    ended = feed(tracker, PresenceSignal.ABSENT, 5.0)
 
-
-def test_prune_removes_the_closed_visit_so_it_is_judged_once() -> None:
-    """종료가 규칙에 정확히 한 번 보이게 만드는 장치가 prune()이다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 3.0)
-    assert len(tracker.active_visits(CAR)) == 1
-    tracker.prune(at(3.0))
+    assert ended.state is ZoneVisitState.ENDED
+    assert ended.ended_at == at(2.0)
+    assert ended.updated_at == at(5.0)
+    assert ended.termination_reason == ZONE_EXIT_CONFIRMED
+    assert ended.exit_trusted_seconds == pytest.approx(3.0)
     assert tracker.active_visits(CAR) == ()
+    assert tracker._slots == {}
 
 
-def test_absent_after_close_removes_the_slot_without_prune() -> None:
-    """조립기가 prune()을 빠뜨려도 다음 ABSENT가 종료 슬롯을 지운다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0)
+def test_zero_exit_threshold_ends_on_first_absent_sample() -> None:
+    tracker = make_tracker(entry=0.0, exit_=0.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 3.0)
-    assert feed(tracker, PresenceSignal.ABSENT, 4.0) is None
-    assert tracker.active_visits(CAR) == ()
+    ended = feed(tracker, PresenceSignal.ABSENT, 1)
+    assert ended.state is ZoneVisitState.ENDED
+    assert ended.ended_at == at(1)
 
 
-def test_prune_returns_the_visit_it_force_closed() -> None:
-    """추적이 끊겨 update()가 멈춘 차량의 종료는 prune()의 반환값으로만 나온다.
-
-    조립기의 판정 루프는 이번 프레임에 관측된 차량만 돈다. 추적이 끊긴 차량에는
-    active_visits()를 아예 부르지 않으므로, 강제 종료를 그쪽으로만 내보내면
-    아무도 조회하지 않아 사건이 영원히 EDGE_CONFIRMED로 남는다.
-    """
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+def test_unknown_pauses_entry_timer_and_preserves_lower_bound() -> None:
+    tracker = make_tracker(entry=3.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    assert tracker.prune(at(20.0)) == ()  # 아직 유휴 한도 안이다
-    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+    feed(tracker, PresenceSignal.PRESENT, 2)
+    paused = feed(
+        tracker,
+        PresenceSignal.UNKNOWN,
+        50,
+        observation=unknown(last_reliable=2),
+    )
+    resumed = feed(tracker, PresenceSignal.PRESENT, 51)
 
-    force_closed = tracker.prune(at(40.0))
-    assert [v.state for v in force_closed] == [ZoneVisitState.OUTSIDE]
-    assert force_closed[0].physical_vehicle_id == CAR
-    # 관측이 끊긴 시점까지만 점유로 인정한다.
-    assert force_closed[0].exited_at == at(1.0)
+    assert paused.state is ZoneVisitState.ENTERING
+    assert paused.entry_trusted_seconds == pytest.approx(2.0)
+    assert paused.observation.state is ObservationState.UNKNOWN
+    assert resumed.state is ZoneVisitState.ENTERING
+    assert resumed.entry_trusted_seconds == pytest.approx(2.0)
+    assert feed(tracker, PresenceSignal.PRESENT, 52).state is ZoneVisitState.INSIDE
 
 
-def test_force_closed_visit_leaves_no_slot_behind() -> None:
-    """반환과 동시에 슬롯을 지운다 — 같은 종료가 두 통로로 두 번 나가면 안 된다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
+def test_unknown_signal_with_observed_status_is_rejected_without_mutation() -> None:
+    tracker = make_tracker(entry=3.0)
+    before = feed(tracker, PresenceSignal.PRESENT, 0)
+
+    with pytest.raises(ValueError, match="UNKNOWN presence signal"):
+        feed(tracker, PresenceSignal.UNKNOWN, 1, observation=observed(1))
+
+    assert tracker.active_visits(CAR) == (before,)
+
+
+def test_degraded_sample_also_pauses_timer_even_with_present_signal() -> None:
+    tracker = make_tracker(entry=3.0)
     feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    assert len(tracker.prune(at(40.0))) == 1
-    assert tracker.active_visits(CAR) == ()
-    assert tracker.prune(at(41.0)) == ()
+    feed(tracker, PresenceSignal.PRESENT, 2)
+    paused = feed(
+        tracker,
+        PresenceSignal.PRESENT,
+        20,
+        observation=degraded(last_reliable=2),
+    )
+    resumed = feed(tracker, PresenceSignal.PRESENT, 21)
+
+    assert paused.entry_trusted_seconds == pytest.approx(2.0)
+    assert paused.observation.state is ObservationState.DEGRADED
+    assert resumed.entry_trusted_seconds == pytest.approx(2.0)
 
 
-def test_prune_does_not_return_visits_closed_by_observation() -> None:
-    """관측으로 닫힌 방문은 active_visits()로 나간다. 두 통로는 겹치지 않는다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.ABSENT, 2.0)
-    feed(tracker, PresenceSignal.ABSENT, 3.0)
-    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.OUTSIDE]
-    assert tracker.prune(at(3.0)) == ()
+def test_pause_without_snapshot_updates_all_visits_and_breaks_timer_chains() -> None:
+    tracker = make_tracker(entry=3.0)
+    for zone in (ZONE, OTHER_ZONE):
+        feed(tracker, PresenceSignal.PRESENT, 0, zone=zone)
+        feed(tracker, PresenceSignal.PRESENT, 2, zone=zone)
+
+    paused = tracker.pause_physical_vehicle(
+        CAR,
+        unknown(last_reliable=2),
+        at(100),
+    )
+
+    assert {visit.zone_id for visit in paused} == {ZONE, OTHER_ZONE}
+    assert all(visit.state is ZoneVisitState.ENTERING for visit in paused)
+    assert all(visit.entry_trusted_seconds == pytest.approx(2.0) for visit in paused)
+    assert all(visit.observation.state is ObservationState.UNKNOWN for visit in paused)
+    for zone in (ZONE, OTHER_ZONE):
+        resumed = feed(tracker, PresenceSignal.PRESENT, 101, zone=zone)
+        assert resumed.entry_trusted_seconds == pytest.approx(2.0)
+        assert feed(tracker, PresenceSignal.PRESENT, 102, zone=zone).state is ZoneVisitState.INSIDE
 
 
-def test_prune_discards_a_stale_entering_candidate() -> None:
-    """진입이 확정된 적 없는 후보는 방문이 성립하지 않았으므로 종료로 보고하지 않는다."""
-    tracker = make_tracker(entry=3.0, exit_=1.0, stale=30.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    assert tracker.prune(at(40.0)) == ()
-    assert tracker.active_visits(CAR) == ()
-    # 슬롯이 남지 않았으므로 다시 들어오면 후보 시각이 새로 잡힌다.
-    assert feed(tracker, PresenceSignal.PRESENT, 50.0).entered_candidate_at == at(50.0)
-
-
-def test_prune_keeps_a_visit_that_is_still_being_observed() -> None:
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    for second in range(2, 100):
-        feed(tracker, PresenceSignal.PRESENT, float(second))
-        tracker.prune(at(float(second)))
-    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
-
-
-def test_unknown_keeps_a_slot_alive_against_pruning() -> None:
-    """UNKNOWN은 '관측이 끊겼다'가 아니라 '이번 프레임엔 모르겠다'이다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=30.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    feed(tracker, PresenceSignal.UNKNOWN, 25.0)
-    assert tracker.prune(at(40.0)) == ()
-    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
-
-
-def test_prune_rejects_naive_datetime() -> None:
+def test_pause_without_active_visit_returns_empty_tuple() -> None:
     tracker = make_tracker()
-    with pytest.raises(ValueError, match="timezone"):
-        tracker.prune(datetime(2026, 7, 31, 10, 0, 0))
+    assert tracker.pause_physical_vehicle(CAR, unknown(), at(0)) == ()
 
 
-def test_zero_stale_after_seconds_disables_force_close() -> None:
-    """0은 '즉시 강제 종료'가 아니라 '안전망 끔'이다. 매 프레임 방문이 닫히면 안 된다."""
-    tracker = make_tracker(entry=1.0, exit_=1.0, stale=0.0)
-    feed(tracker, PresenceSignal.PRESENT, 0)
-    feed(tracker, PresenceSignal.PRESENT, 1.0)
-    assert tracker.prune(at(9999.0)) == ()
-    assert [v.state for v in tracker.active_visits(CAR)] == [ZoneVisitState.INSIDE]
+def test_pause_rejects_backwards_time_without_partially_mutating_visits() -> None:
+    tracker = make_tracker(entry=3.0)
+    first = feed(tracker, PresenceSignal.PRESENT, 10, zone=ZONE)
+    second = feed(tracker, PresenceSignal.PRESENT, 10, zone=OTHER_ZONE)
+
+    with pytest.raises(ValueError, match="past|과거"):
+        tracker.pause_physical_vehicle(CAR, unknown(), at(5))
+
+    assert tracker.active_visits(CAR) == (first, second)
 
 
-def test_negative_stale_after_seconds_is_rejected() -> None:
-    with pytest.raises(ValueError, match="stale_after_seconds"):
+def test_unknown_pauses_exit_timer_without_ending_visit() -> None:
+    tracker = make_tracker(entry=1.0, exit_=3.0)
+    enter(tracker, confirmed=1.0)
+    feed(tracker, PresenceSignal.ABSENT, 2)
+    feed(tracker, PresenceSignal.ABSENT, 4)
+    paused = feed(
+        tracker,
+        PresenceSignal.UNKNOWN,
+        100,
+        observation=unknown(last_reliable=4),
+    )
+    resumed = feed(tracker, PresenceSignal.ABSENT, 101)
+
+    assert paused.state is ZoneVisitState.EXITING
+    assert paused.exit_trusted_seconds == pytest.approx(2.0)
+    assert resumed.exit_trusted_seconds == pytest.approx(2.0)
+    assert feed(tracker, PresenceSignal.ABSENT, 102).state is ZoneVisitState.ENDED
+
+
+def test_long_unknown_never_terminates_inside_visit() -> None:
+    tracker = make_tracker(entry=1.0)
+    inside = enter(tracker, confirmed=1.0)
+    occupied = feed(tracker, PresenceSignal.PRESENT, 4)
+    paused = feed(
+        tracker,
+        PresenceSignal.UNKNOWN,
+        100_000,
+        observation=unknown(last_reliable=4),
+    )
+    resumed = feed(tracker, PresenceSignal.PRESENT, 100_001)
+    advanced = feed(tracker, PresenceSignal.PRESENT, 100_003)
+
+    assert paused.visit_id == inside.visit_id
+    assert paused.state is ZoneVisitState.INSIDE
+    assert paused.observation.state is ObservationState.UNKNOWN
+    assert occupied.entry_trusted_seconds == pytest.approx(4.0)
+    assert paused.entry_trusted_seconds == pytest.approx(4.0)
+    assert resumed.entry_trusted_seconds == pytest.approx(4.0)
+    assert advanced.entry_trusted_seconds == pytest.approx(6.0)
+    assert tracker.active_visits(CAR) == (advanced,)
+
+
+def test_vehicle_zone_pairs_are_independent() -> None:
+    tracker = make_tracker(entry=1.0)
+    first = enter(tracker, confirmed=1, vehicle=CAR, zone=ZONE)
+    second = enter(tracker, confirmed=1, vehicle=CAR, zone=OTHER_ZONE)
+    third = enter(tracker, confirmed=1, vehicle=OTHER_CAR, zone=ZONE)
+
+    assert len({first.visit_id, second.visit_id, third.visit_id}) == 3
+    assert len(tracker.active_visits(CAR)) == 2
+    assert len(tracker.active_visits(OTHER_CAR)) == 1
+
+
+def test_active_visits_contains_all_non_terminal_states_only() -> None:
+    tracker = make_tracker(entry=2.0, exit_=2.0)
+    entering = feed(tracker, PresenceSignal.PRESENT, 0, zone=ZONE)
+    enter(tracker, start=0, confirmed=2, zone=OTHER_ZONE)
+    exiting = feed(tracker, PresenceSignal.ABSENT, 3, zone=OTHER_ZONE)
+
+    assert [visit.state for visit in tracker.active_visits(CAR)] == [
+        entering.state,
+        exiting.state,
+    ]
+
+
+def test_physical_exit_cancels_entering_and_ends_confirmed_visits() -> None:
+    tracker = make_tracker(entry=1.0, exit_=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 0, zone=ZONE)
+    enter(tracker, start=0, confirmed=1, zone=OTHER_ZONE)
+    terminated = tracker.physical_exit(physical_vehicle_id=CAR, observed_at=at(2))
+
+    assert {visit.zone_id: visit.state for visit in terminated} == {
+        ZONE: ZoneVisitState.CANCELED,
+        OTHER_ZONE: ZoneVisitState.ENDED,
+    }
+    assert all(visit.termination_reason == PHYSICAL_EXIT for visit in terminated)
+    assert all(visit.ended_at == at(2) for visit in terminated)
+    assert tracker.active_visits(CAR) == ()
+    assert tracker.physical_exit(physical_vehicle_id=CAR, observed_at=at(3)) == ()
+
+
+def test_physical_exit_validates_all_visit_timestamps_before_mutation() -> None:
+    tracker = make_tracker(entry=3.0)
+    first = feed(tracker, PresenceSignal.PRESENT, 10, zone=ZONE)
+    second = feed(tracker, PresenceSignal.PRESENT, 20, zone=OTHER_ZONE)
+
+    with pytest.raises(ValueError, match="past|과거"):
+        tracker.physical_exit(physical_vehicle_id=CAR, observed_at=at(15))
+
+    assert tracker.active_visits(CAR) == (first, second)
+
+
+def test_threshold_and_version_are_snapshotted_per_tracker_scope() -> None:
+    visit = feed(make_tracker(entry=4.0, exit_=5.0), PresenceSignal.PRESENT, 0)
+    assert visit.zone_definition_version == VERSION
+    assert visit.entry_confirmation_seconds == 4.0
+    assert visit.exit_confirmation_seconds == 5.0
+
+
+def test_invalid_constructor_values_are_rejected() -> None:
+    with pytest.raises(ValueError, match="version"):
         InMemoryZoneVisitTracker(
-            entry_confirm_seconds=1.0, exit_confirm_seconds=1.0, stale_after_seconds=-1.0
+            zone_definition_version=ZoneDefinitionVersion(0),
+            entry_confirm_seconds=1,
+            exit_confirm_seconds=1,
+            trusted_sample_max_gap_seconds=1,
         )
+    with pytest.raises(ValueError, match="non-negative"):
+        InMemoryZoneVisitTracker(
+            zone_definition_version=VERSION,
+            entry_confirm_seconds=-1,
+            exit_confirm_seconds=1,
+            trusted_sample_max_gap_seconds=1,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        InMemoryZoneVisitTracker(
+            zone_definition_version=VERSION,
+            entry_confirm_seconds=1,
+            exit_confirm_seconds=float("inf"),
+            trusted_sample_max_gap_seconds=1,
+        )
+    for invalid_gap in (0, 0.0000001, 0.0000006):
+        with pytest.raises(ValueError, match="trusted_sample_max_gap_seconds"):
+            InMemoryZoneVisitTracker(
+                zone_definition_version=VERSION,
+                entry_confirm_seconds=1,
+                exit_confirm_seconds=1,
+                trusted_sample_max_gap_seconds=invalid_gap,
+            )
 
 
-def test_naive_datetime_is_rejected() -> None:
-    tracker = make_tracker()
+def test_naive_and_backwards_observations_are_rejected_without_corrupting_timer() -> None:
+    tracker = make_tracker(entry=3.0)
+    feed(tracker, PresenceSignal.PRESENT, 10)
     with pytest.raises(ValueError, match="timezone"):
         tracker.update(
             physical_vehicle_id=CAR,
             zone_id=ZONE,
             signal=PresenceSignal.PRESENT,
+            observation=observed(10),
             observed_at=datetime(2026, 7, 31, 10, 0, 0),
         )
+    with pytest.raises(ValueError, match="past|\uacfc\uac70"):
+        feed(tracker, PresenceSignal.PRESENT, 5)
+    assert feed(tracker, PresenceSignal.PRESENT, 13).state is ZoneVisitState.INSIDE
 
 
-def test_backwards_observation_is_rejected() -> None:
-    """뒤로 간 관측을 받아들이면 누적이 음수가 돼 진입 확정이 조용히 늦어진다."""
+def test_same_timestamp_is_allowed_and_order_is_checked_per_pair() -> None:
     tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 10.0)
-    with pytest.raises(ValueError, match="과거"):
-        feed(tracker, PresenceSignal.PRESENT, 5.0)
-
-
-def test_backwards_observation_does_not_drive_accumulation_negative() -> None:
-    """거부가 상태를 망가뜨리지 않는지까지 본다 — 이후 정상 관측은 그대로 동작한다."""
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 10.0)
-    with pytest.raises(ValueError):
-        feed(tracker, PresenceSignal.PRESENT, 5.0)
-    # 5.0초를 되감았다면 누적이 -5.0이 돼 13.0에서 확정되지 못한다.
-    assert feed(tracker, PresenceSignal.PRESENT, 13.0).state is ZoneVisitState.INSIDE
-
-
-def test_same_timestamp_observation_is_allowed() -> None:
-    """한 프레임 안의 관측은 같은 observed_at을 공유하므로 동일 시각은 정상이다."""
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 10.0)
-    assert feed(tracker, PresenceSignal.PRESENT, 10.0).state is ZoneVisitState.ENTERING
-
-
-def test_observation_order_is_checked_per_pair() -> None:
-    """상태가 (차량, 구역)별로 독립이므로 순서 검사도 쌍별이다.
-
-    전역으로 검사하면 한 프레임 안에서 쌍들을 갱신하는 순서가 판정을 바꾼다.
-    """
-    tracker = make_tracker(entry=3.0)
-    feed(tracker, PresenceSignal.PRESENT, 10.0, zone=ZONE)
-    assert feed(tracker, PresenceSignal.PRESENT, 5.0, zone=OTHER_ZONE) is not None
+    feed(tracker, PresenceSignal.PRESENT, 10, zone=ZONE)
+    assert feed(tracker, PresenceSignal.PRESENT, 10, zone=ZONE).state is ZoneVisitState.ENTERING
+    other = feed(tracker, PresenceSignal.PRESENT, 5, zone=OTHER_ZONE)
+    assert other.state is ZoneVisitState.ENTERING

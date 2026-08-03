@@ -1,12 +1,14 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { RequestOverdueTimelineCard, type RequestOverdueTimelineStep } from './request-overdue-timeline-card';
+import type { RequestTimelineStep } from '@/features/move-request/utils/move-request';
+
+import { RequestTimelineCard } from '../request-timeline-card';
 import { RequestOverdueTimerRing } from './request-overdue-timer-ring';
 import { styles } from './request-overdue-section.styles';
 
 type RequestOverdueSectionProps = {
   elapsedLabel: string;
-  timeline: RequestOverdueTimelineStep[];
+  timeline: RequestTimelineStep[];
   onPressDetail: () => void;
 };
 
@@ -21,7 +23,7 @@ export function RequestOverdueSection({ elapsedLabel, timeline, onPressDetail }:
       </View>
 
       <RequestOverdueTimerRing label={elapsedLabel} />
-      <RequestOverdueTimelineCard timeline={timeline} />
+      <RequestTimelineCard title="진행 기록" timeline={timeline} />
 
       <Pressable accessibilityRole="button" style={styles.detailButton} onPress={onPressDetail}>
         <Text style={styles.detailButtonText}>상세 요청 보기</Text>

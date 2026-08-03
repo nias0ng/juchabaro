@@ -7,7 +7,7 @@ export const styles = StyleSheet.create({
     flexGrow: 1,
     gap: Spacing.lg,
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
+    paddingBottom: Spacing.xxl,
   },
   footer: {
     marginTop: 'auto',
@@ -25,6 +25,9 @@ export const styles = StyleSheet.create({
     backgroundColor: Palette.gray975,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  submitButtonDisabled: {
+    opacity: 0.6,
   },
   submitButtonText: {
     fontSize: 15,

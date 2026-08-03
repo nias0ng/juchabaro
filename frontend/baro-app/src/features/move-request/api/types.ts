@@ -11,9 +11,10 @@ export type MoveEventType =
   | 'DOUBLE_PARKING'
   | 'DISABLED_ZONE_VIOLATION'
   | 'EV_OVERSTAY'
-  | 'OUT_OF_ZONE';
+  | 'OUT_OF_ZONE'
+  | 'ETC';
 export type MoveResponseType = 'WILL_MOVE' | 'CANNOT_MOVE_NOW';
-export type MoveImageType = 'PLATE' | 'PARKING_STATE';
+export type MoveImageType = 'PLATE' | 'PARKING_STATE' | 'REPORT';
 export type MoveHistoryNotificationType =
   | 'MOVE_REQUEST'
   | 'REMINDER'
@@ -78,6 +79,27 @@ export type MoveResponseResult = {
   respondedAt: string;
 };
 
+// POST /api/move-requests 요청 파라미터.
+export type MoveRequestCreateParams = {
+  targetPlateNumber: string;
+  eventType: MoveEventType;
+  reason: string;
+  zoneName?: string;
+  images: string[]; // 로컬 이미지 uri 목록
+};
+
+// POST /api/move-requests 응답의 result.
+export type MoveRequestCreateResult = {
+  eventId: number;
+  requestId: number;
+  targetVehicleId: number;
+  requestType: MoveRequestType;
+  requestStatus: MoveRequestStatus;
+  reminderCount: number;
+  images: MoveRequestImage[];
+  requestedAt: string;
+};
+
 export type MoveRequestScope = 'RECEIVED' | 'SENT' | 'ALL';
 
 // GET /api/move-requests 응답의 result.moveRequests 항목.
@@ -103,4 +125,13 @@ export type MoveRequestListResult = {
   size: number;
   totalElements: number;
   totalPages: number;
+};
+
+// 목록 API(MoveRequestSummary)엔 없는 구역/응답시간/완료시각을 상세 조회로 채운 목록 항목.
+// 상세 조회가 실패한 항목은 이 필드들이 전부 null로 남는다(카드 쪽에서 없는 값으로 처리).
+export type MoveRequestListItem = MoveRequestSummary & {
+  zoneNumber: string | null;
+  estimatedMinutes: number | null;
+  respondedAt: string | null;
+  resolvedAt: string | null;
 };

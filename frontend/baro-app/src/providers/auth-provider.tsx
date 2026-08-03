@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { getMyProfile, login as loginRequest } from '@/features/auth/api/auth-api';
-import type { UserRole, UserStatus } from '@/features/auth/api/types';
+import type { UserProfile, UserRole, UserStatus } from '@/features/auth/api/types';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
 
 /* 
@@ -32,7 +32,20 @@ type AuthContextValue = {
   accessToken: string | null;
   login: (loginId: string, password: string, keepSignedIn: boolean) => Promise<void>;
   logout: () => Promise<void>;
+  updateUserProfile: (profile: UserProfile) => void;
 };
+
+function toAuthUser(profile: UserProfile): AuthUser {
+  return {
+    userId: profile.userId,
+    nickname: profile.name,
+    role: profile.role,
+    buildingNumber: profile.buildingNumber,
+    unitNumber: profile.unitNumber,
+    status: profile.status,
+    phoneNumber: profile.phoneNumber,
+  };
+}
 
 // Context는 "이 컴포넌트 트리 어디서든 꺼내 쓸 수 있는 공용 상자"라고 생각하면 된다.
 // 로그인 상태를 props로 화면마다 일일이 전달하지 않고, 트리 아무 곳에서나 useAuth()로 꺼낸다.
@@ -58,15 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // 토큰만 있고 user 정보는 없으니, GET /api/users/me로 다시 조회해서 채움
         const profile = await getMyProfile(session.accessToken);
         setAccessToken(session.accessToken);
-        setUser({
-          userId: profile.userId,
-          nickname: profile.name,
-          role: profile.role,
-          buildingNumber: profile.buildingNumber,
-          unitNumber: profile.unitNumber,
-          status: profile.status,
-          phoneNumber: profile.phoneNumber,
-        });
+        setUser(toAuthUser(profile));
         setStatus('authenticated');
       } catch {
         // 토큰이 만료/무효(401)거나 사용자를 못 찾으면(404), 반쪽짜리 세션으로 두지 않고 guest로 되돌린다.
@@ -89,16 +94,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 이렇게 하면 세션 복원 때(위 useEffect)와 user를 채우는 방식이 하나로 통일된다.
     const profile = await getMyProfile(result.accessToken);
     setAccessToken(result.accessToken);
-    setUser({
-      userId: profile.userId,
-      nickname: profile.name,
-      role: profile.role,
-      buildingNumber: profile.buildingNumber,
-      unitNumber: profile.unitNumber,
-      status: profile.status,
-      phoneNumber: profile.phoneNumber,
-    });
+    setUser(toAuthUser(profile));
     setStatus('authenticated');
+  }, []);
+
+  const updateUserProfile = useCallback((profile: UserProfile) => {
+    setUser(toAuthUser(profile));
   }, []);
 
   const logout = useCallback(async () => {
@@ -110,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ status, user, accessToken, login, logout }}>
+    <AuthContext.Provider value={{ status, user, accessToken, login, logout, updateUserProfile }}>
       {children}
     </AuthContext.Provider>
   );

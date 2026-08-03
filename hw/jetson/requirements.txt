@@ -1,9 +1,10 @@
-fastapi
-uvicorn[standard]
-pydantic-settings
+fastapi==0.138.0
+uvicorn[standard]==0.40.0
+pydantic-settings==2.14.2
 
 # camera 계층(428): 영상 decode, fisheye 보정
-numpy==2.3.5
+# 2.3+는 Python 3.11 이상이라 Jetson 목표 Python 3.10.12와 맞지 않는다.
+numpy==2.2.6
 opencv-python==4.10.0.84
 
 # tracking 계층(436): YOLO + ByteTrack (hw/raspberry-pi와 버전 통일)

@@ -1,8 +1,4 @@
-"""트랙 재결합과 이동 관측에 필요한 바운딩박스 기하 계산.
-
-ai/tracking/jetson_vehicle_tracking_baseline.py의 BoundingBox.center()/
-_centroid_distance에서 이관(436).
-"""
+"""트랙 재결합과 이동 관측에 필요한 바운딩박스 기하 계산."""
 
 from __future__ import annotations
 
