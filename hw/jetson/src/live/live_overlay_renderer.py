@@ -45,6 +45,10 @@ _ZONE_VISIT_PRIORITY: tuple[ZoneVisitState, ...] = (
     ZoneVisitState.ENDED,
     ZoneVisitState.CANCELED,
 )
+_ZONE_VISIT_PRIORITY_RANK: dict[ZoneVisitState, int] = {
+    state: rank for rank, state in enumerate(_ZONE_VISIT_PRIORITY)
+}
+_UNKNOWN_ZONE_VISIT_RANK = len(_ZONE_VISIT_PRIORITY)
 _PARKING_EPISODE_COLORS: dict[ParkingState, tuple[int, int, int]] = {
     ParkingState.STOP_PENDING: (0, 255, 255),
     ParkingState.PARKED: (0, 0, 255),
@@ -159,7 +163,10 @@ def _index_zone_visits(
 
 
 def _pick_primary_visit(visits: tuple[ZoneVisit, ...]) -> ZoneVisit:
-    return min(visits, key=lambda visit: _ZONE_VISIT_PRIORITY.index(visit.state))
+    return min(
+        visits,
+        key=lambda visit: _ZONE_VISIT_PRIORITY_RANK.get(visit.state, _UNKNOWN_ZONE_VISIT_RANK),
+    )
 
 
 def _vehicle_status(

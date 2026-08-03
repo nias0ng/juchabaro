@@ -301,6 +301,18 @@ def test_dynamic_status_palette_colors_are_all_distinct() -> None:
     assert len(set(colors)) == len(colors), f"Duplicate colors found: {colors}"
 
 
+def test_pick_primary_visit_falls_back_when_state_missing_from_priority_map(monkeypatch) -> None:
+    """A ZoneVisitState absent from the priority rank map must not crash _pick_primary_visit."""
+    from src.live import live_overlay_renderer
+
+    monkeypatch.setattr(live_overlay_renderer, "_ZONE_VISIT_PRIORITY_RANK", {})
+    visit = _zone_visit(ZoneVisitState.INSIDE)
+
+    result = live_overlay_renderer._pick_primary_visit((visit,))
+
+    assert result is visit
+
+
 def _approx_row_has_color(
     canvas: np.ndarray, y: int, color: tuple[int, int, int], *, tolerance: int = 40
 ) -> bool:
