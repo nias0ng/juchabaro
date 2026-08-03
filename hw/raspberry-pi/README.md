@@ -114,12 +114,22 @@ OCR이 번호판을 확정한 경우 다음 body 필드를 전송한다.
 {
   "entryAttemptId": "550e8400-e29b-41d4-a716-446655440000",
   "recognizedPlateNumber": "12가3456",
+  "confidence": 0.97,
   "entryTime": "2026-07-31T12:34:56+09:00"
 }
 ```
 
-현재 OCR 공개 결과에는 Backend 요청에 사용할 대표 confidence가 없으므로
-confidence 값을 임의로 생성하거나 전송하지 않는다.
+OCR pipeline이 반환한 `PlateReadResult.rec_score`를 Backend 요청의
+`confidence`로 전달한다. 이 값은 OCR 내부 판정의 `winner_rec_score`에서
+가져온 대표 인식 점수이며, Raspberry Pi에서 별도로 계산하거나 보정하지
+않는다.
+
+```text
+PlateDecision.winner_rec_score
+→ PlateReadResult.rec_score
+→ BackendEntryRequest.confidence
+→ JSON의 confidence
+```
 
 ### BackendClient 생명주기
 
@@ -317,7 +327,7 @@ finally:
 - 공개 계약에 없는 상태와 예상하지 못한 예외는 정상적인 이벤트 실패로 숨기지 않는다.
 
 Backend 입차 등록 API는 `ReadStatus.SUCCESS`이면서 확정된
-`plate_number`가 존재할 때만 호출한다.
+`plate_number`와 대표 `rec_score`가 모두 존재할 때만 호출한다.
 
 다음 상태에서는 Backend를 호출하지 않고 현재 이벤트를 종료한 뒤 다음
 감지를 기다린다.
@@ -334,9 +344,10 @@ Backend 입차 등록 API는 `ReadStatus.SUCCESS`이면서 확정된
 - OCR 입력의 `InvalidBurstError`
 - OCR 실행의 `OcrRuntimeError`
 
-`SUCCESS`인데 확정된 번호판이 없거나 공개 계약에 없는 OCR 상태가
-반환되면 `RuntimeError`를 전파한다. 그 밖의 예상하지 못한 예외도
-정상적인 이벤트 실패로 숨기지 않는다.
+`SUCCESS`인데 확정된 번호판이나 대표 `rec_score`가 없으면 OCR 결과 계약
+위반으로 `RuntimeError`를 전파하고 Backend를 호출하지 않는다. 공개 계약에
+없는 OCR 상태와 그 밖의 예상하지 못한 예외도 정상적인 이벤트 실패로
+숨기지 않는다.
 
 하드웨어 초기화 이후 서비스가 종료되면 카메라를 먼저 정리하고 센서를
 정리한다. 카메라 cleanup 실패는 센서 cleanup을 막지 않으며 cleanup 중
@@ -380,7 +391,8 @@ OCR model과 HTTP 요청을 mock으로 교체한다. PC 테스트 환경은 앞�
 - `+09:00` 입차 시각
 - OCR pipeline의 startup 1회 구성과 OCR 설정 전달
 - OCR 결과에 따른 Backend 호출 여부
-- Backend 요청 필드와 idempotency key 전달
+- Backend 요청 필드, OCR `rec_score`의 `confidence` 매핑과 idempotency key 전달
+- OCR 성공 결과의 번호판 또는 대표 `rec_score` 누락에 대한 계약 위반 처리
 - `BackendClientError` 처리
 - 요청과 응답의 `entryAttemptId` 일치 검증
 - `ALLOW`, `REVIEW`, `DENY` 판정별 로그
