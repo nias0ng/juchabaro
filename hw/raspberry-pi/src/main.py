@@ -2,20 +2,35 @@
 Raspberry Pi 입차 감지 서비스의 객체 생명주기와 실행 흐름을 관리한다.
 
 초음파 센서 측정값으로 입차 확정 신호를 확인하고 해당 시점에 카메라
-촬영과 번호판 OCR을 수행한다. 입차 판단 세부 로직, 카메라 내부 제어와
-외부 통신은 담당하지 않는다.
+촬영, 번호판 OCR과 Backend 입차 등록을 수행한다. 입차 판단 세부 로직,
+카메라 내부 제어와 HTTP 통신 세부 구현은 담당하지 않는다. Backend HTTP
+통신은 BackendClient에 위임하고, 이 모듈은 요청 실행 순서와 오류 경계를
+조율한다.
 """
 
+from datetime import datetime, timedelta, timezone
 import logging
 import math
 import time
+from uuid import uuid4
 
 from src.camera.entry_camera import (
     CameraInitializationError,
     CaptureSequenceError,
     EntryCamera,
 )
+from src.communication.backend_client import (
+    BackendClient,
+    BackendClientError,
+)
+from src.communication.schemas import (
+    AccessDecision,
+    BackendEntryRequest,
+    BackendEntryResult,
+)
 from src.config.settings import (
+    BACKEND_BASE_URL,
+    BACKEND_HW_API_KEY,
     CAPTURE_FRAME_COUNT,
     MEASUREMENT_INTERVAL_SECONDS,
     OCR_DETECTOR_MODEL_PATH,
@@ -24,6 +39,7 @@ from src.config.settings import (
     OCR_WARMUP_ENABLED,
 )
 from src.entry.entry_controller import EntryController, EntrySignal
+from src.entry.entry_event import EntryEvent
 from src.ocr import (
     InvalidBurstError,
     OcrPipelinePolicy,
@@ -35,6 +51,9 @@ from src.ocr import (
     load_plate_ocr_pipeline,
 )
 from src.sensors.ultrasonic_sensor import UltrasonicSensor
+
+
+ENTRY_TIMEZONE = timezone(timedelta(hours=9))
 
 
 def configure_logging() -> None:
@@ -54,6 +73,26 @@ def validate_measurement_interval() -> None:
         raise ValueError("측정 주기는 0보다 큰 유한한 수여야 합니다.")
 
 
+def validate_backend_settings() -> None:
+    """Backend 입차 등록에 필요한 필수 설정을 검증한다."""
+
+    if not BACKEND_BASE_URL.strip():
+        raise ValueError("Backend base URL은 비어 있을 수 없습니다.")
+
+    if not BACKEND_HW_API_KEY.strip():
+        raise ValueError("Backend hardware API key는 비어 있을 수 없습니다.")
+
+
+def create_entry_event() -> EntryEvent:
+    """한 번의 물리적 차량 입차 인식 시도를 생성한다."""
+
+    return EntryEvent(
+        entry_attempt_id=str(uuid4()),
+        idempotency_key=str(uuid4()),
+        entry_time=datetime.now(ENTRY_TIMEZONE),
+    )
+
+
 def log_ocr_result(
     result: PlateReadResult,
     logger: logging.Logger,
@@ -61,11 +100,6 @@ def log_ocr_result(
     """OCR 판독 결과를 성공, 정상 실패 또는 불확실 상태로 기록한다."""
 
     if result.status is ReadStatus.SUCCESS:
-        if result.plate_number is None:
-            raise RuntimeError(
-                "OCR 성공 결과에는 확정된 번호판이 필요합니다."
-            )
-
         logger.info(
             "Vehicle plate OCR succeeded. plate_number=%s",
             result.plate_number,
@@ -98,12 +132,46 @@ def log_ocr_result(
     )
 
 
-def process_entry_event(
-    camera: EntryCamera,
-    ocr_pipeline: PlateOcrPipeline,
+def log_backend_entry_result(
+    result: BackendEntryResult,
     logger: logging.Logger,
 ) -> None:
-    """한 번의 입차 이벤트에 대해 프레임을 촬영하고 번호판을 판독한다."""
+    """Backend 입차 판정 결과를 판정별 로그 레벨로 기록한다."""
+
+    log_arguments = (
+        "Backend entry decision received. "
+        "entry_attempt_id=%s access_decision=%s duplicate_request=%s",
+        result.entry_attempt_id,
+        result.access_decision.value,
+        result.duplicate_request,
+    )
+
+    if result.access_decision is AccessDecision.ALLOW:
+        logger.info(*log_arguments)
+        return
+
+    if result.access_decision in (
+        AccessDecision.REVIEW,
+        AccessDecision.DENY,
+    ):
+        logger.warning(*log_arguments)
+        return
+
+    raise RuntimeError(
+        f"Unsupported Backend access decision: "
+        f"{result.access_decision!r}"
+    )
+
+
+def process_entry_event(
+    event: EntryEvent,
+    *,
+    camera: EntryCamera,
+    ocr_pipeline: PlateOcrPipeline,
+    backend_client: BackendClient,
+    logger: logging.Logger,
+) -> None:
+    """한 번의 입차 이벤트를 촬영하고 OCR 결과를 Backend에 등록한다."""
 
     try:
         frames = camera.capture_sequence()
@@ -134,14 +202,65 @@ def process_entry_event(
         )
         return
 
+    if result.status is not ReadStatus.SUCCESS:
+        log_ocr_result(result, logger)
+        return
+
+    plate_number = result.plate_number
+
+    if plate_number is None:
+        raise RuntimeError(
+            "OCR 성공 결과에는 확정된 번호판이 필요합니다."
+        )
+
+    rec_score = result.rec_score
+
+    if rec_score is None:
+        raise RuntimeError(
+            "OCR 성공 결과에는 대표 rec_score가 필요합니다."
+        )
+
     log_ocr_result(result, logger)
+
+    request = BackendEntryRequest(
+        entry_attempt_id=event.entry_attempt_id,
+        recognized_plate_number=plate_number,
+        confidence=rec_score,
+        entry_time=event.entry_time,
+    )
+
+    try:
+        backend_result = backend_client.request_entry(
+            request,
+            idempotency_key=event.idempotency_key,
+        )
+    except BackendClientError:
+        logger.error(
+            "Backend entry request failed. entry_attempt_id=%s",
+            event.entry_attempt_id,
+            exc_info=True,
+        )
+        return
+
+    if backend_result.entry_attempt_id != event.entry_attempt_id:
+        raise RuntimeError(
+            "Backend 응답의 entry_attempt_id가 요청과 일치하지 않습니다."
+        )
+
+    log_backend_entry_result(backend_result, logger)
 
 
 def main() -> None:
     configure_logging()
     validate_measurement_interval()
+    validate_backend_settings()
 
     logger = logging.getLogger(__name__)
+
+    backend_client = BackendClient(
+        base_url=BACKEND_BASE_URL,
+        api_key=BACKEND_HW_API_KEY,
+    )
 
     policy = OcrPipelinePolicy(
         frame_count=CAPTURE_FRAME_COUNT,
@@ -180,10 +299,13 @@ def main() -> None:
 
                 if signal is EntrySignal.ENTRY_DETECTED:
                     logger.info("Vehicle entry detected.")
+                    event = create_entry_event()
                     process_entry_event(
-                        camera,
-                        ocr_pipeline,
-                        logger,
+                        event,
+                        camera=camera,
+                        ocr_pipeline=ocr_pipeline,
+                        backend_client=backend_client,
+                        logger=logger,
                     )
 
                 time.sleep(MEASUREMENT_INTERVAL_SECONDS)
