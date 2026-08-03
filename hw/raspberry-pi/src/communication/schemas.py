@@ -26,14 +26,14 @@ def _to_iso8601(value: datetime) -> str:
 class BackendEntryRequest:
     """Raspberry Pi가 Backend 입차 판정 API로 보내는 데이터."""
 
-    tracking_id: str
+    entry_attempt_id: str
     recognized_plate_number: str
     entry_time: datetime
     ocr_confidence: float | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
-            "trackingId": self.tracking_id,
+            "entryAttemptId": self.entry_attempt_id,
             "recognizedPlateNumber": self.recognized_plate_number,
             "entryTime": _to_iso8601(self.entry_time),
         }
@@ -52,7 +52,7 @@ class BackendEntryResult:
     is_disabled_vehicle: bool | None
     is_electric: bool | None
     vehicle_status: str | None
-    tracking_id: str
+    entry_attempt_id: str
     session_id: int | None
     duplicate_request: bool
 
@@ -68,7 +68,7 @@ class BackendEntryResult:
             is_disabled_vehicle=payload["isDisabledVehicle"],
             is_electric=payload["isElectric"],
             vehicle_status=payload["vehicleStatus"],
-            tracking_id=payload["trackingId"],
+            entry_attempt_id=payload["entryAttemptId"],
             session_id=payload["sessionId"],
             duplicate_request=payload["duplicateRequest"],
         )
@@ -78,7 +78,7 @@ class BackendEntryResult:
 class JetsonEntryRequest:
     """Raspberry Pi가 Jetson 입차 이벤트 API로 보내는 데이터."""
 
-    tracking_id: str
+    entry_attempt_id: str
     recognized_plate_number: str
     entry_time: datetime
     access_decision: AccessDecision
@@ -97,7 +97,7 @@ class JetsonEntryRequest:
         result: BackendEntryResult,
     ) -> JetsonEntryRequest:
         return cls(
-            tracking_id=result.tracking_id,
+            entry_attempt_id=result.entry_attempt_id,
             recognized_plate_number=request.recognized_plate_number,
             entry_time=request.entry_time,
             access_decision=result.access_decision,
@@ -112,7 +112,7 @@ class JetsonEntryRequest:
 
     def to_payload(self) -> dict[str, object]:
         return {
-            "trackingId": self.tracking_id,
+            "entryAttemptId": self.entry_attempt_id,
             "recognizedPlateNumber": self.recognized_plate_number,
             "entryTime": _to_iso8601(self.entry_time),
             "accessDecision": self.access_decision.value,
