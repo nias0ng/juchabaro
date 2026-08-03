@@ -61,12 +61,12 @@ def _frame(size: int = 100) -> CapturedFrame:
     )
 
 
-def _zone_registry(zone_type: ZoneType = ZoneType.GENERAL) -> ZoneRegistry:
+def _zone_registry() -> ZoneRegistry:
     return ZoneRegistry(
         [
             ZoneDefinition(
                 zone_id=ZoneId(1),
-                zone_type=zone_type,
+                zone_type=ZoneType.GENERAL,
                 polygon=((0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)),
                 zone_definition_version=ZoneDefinitionVersion(1),
                 calibration_reference=CALIBRATION_ID,
@@ -124,7 +124,7 @@ def _row_has_color(canvas: np.ndarray, y: int, color: tuple[int, int, int]) -> b
 
 def test_draw_overlay_paints_zone_polygon_with_type_color() -> None:
     canvas = draw_overlay(
-        _frame(), _tracking_batch(()), _result(), zones=_zone_registry(ZoneType.GENERAL)
+        _frame(), _tracking_batch(()), _result(), zones=_zone_registry()
     )
 
     assert _row_has_color(canvas, 10, GENERAL_ZONE_COLOR)
@@ -274,6 +274,31 @@ def test_draw_overlay_falls_back_to_neutral_when_terminal_episode_has_no_zone_vi
     canvas = draw_overlay(_frame(), _tracking_batch((vehicle,)), result, zones=_zone_registry())
 
     assert _row_has_color(canvas, 20, NEUTRAL_COLOR)
+
+
+def test_draw_overlay_does_not_mutate_source_frame() -> None:
+    """draw_overlay must never modify frame.image in-place (RemapFrameSource reuses dst buffer)."""
+    frame = _frame()
+    before = frame.image.copy()
+    draw_overlay(
+        frame,
+        _tracking_batch((_vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6)),)),
+        _result(),
+        zones=_zone_registry(),
+    )
+    assert np.array_equal(frame.image, before)
+
+
+def test_dynamic_status_palette_colors_are_all_distinct() -> None:
+    """All BGR tuples in the dynamic status palette must be pairwise distinct."""
+    from src.live.live_overlay_renderer import (
+        _NEUTRAL_COLOR,
+        _PARKING_EPISODE_COLORS,
+        _ZONE_VISIT_COLORS,
+    )
+
+    colors = [_NEUTRAL_COLOR, *_ZONE_VISIT_COLORS.values(), *_PARKING_EPISODE_COLORS.values()]
+    assert len(set(colors)) == len(colors), f"Duplicate colors found: {colors}"
 
 
 def _approx_row_has_color(

@@ -51,6 +51,7 @@ _PARKING_EPISODE_COLORS: dict[ParkingState, tuple[int, int, int]] = {
     ParkingState.MOVE_PENDING: (255, 0, 255),
 }
 _ACTIVE_PARKING_STATES = frozenset(_PARKING_EPISODE_COLORS)
+_DEFAULT_JPEG_QUALITY = 80
 
 
 def draw_overlay(
@@ -62,8 +63,9 @@ def draw_overlay(
 ) -> np.ndarray:
     """RGB `CapturedFrame` 위에 구역·bbox·판정상태를 그린 BGR uint8 canvas를 반환한다.
 
-    `frame.image`는 수정하지 않는다 — `RemapFrameSource`가 dst 버퍼를
-    재사용하므로 그리기 전에 복사해 다음 프레임에 낙서가 남는 것을 막는다.
+    `cv2.cvtColor`가 항상 새 배열을 할당하므로 `frame.image`를 그대로 두고 그린다 —
+    이 함수는 `frame.image`를 in-place로 수정해서는 안 된다(`RemapFrameSource`가 dst
+    버퍼를 재사용하므로 원본을 건드리면 다음 프레임에 낙서가 남는다).
     """
 
     canvas = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
@@ -72,8 +74,14 @@ def draw_overlay(
     return canvas
 
 
-def encode_jpeg(canvas: np.ndarray, *, jpeg_quality: int = 80) -> bytes:
-    """BGR canvas를 JPEG bytes로 인코딩한다."""
+def encode_jpeg(canvas: np.ndarray, *, jpeg_quality: int = _DEFAULT_JPEG_QUALITY) -> bytes:
+    """BGR canvas를 JPEG bytes로 인코딩한다.
+
+    인코딩 실패 시 `ValueError`를 던진다. 이 예외를 잡아 placeholder 프레임으로
+    대체하는 책임은 호출자(향후 479의 `live_stream_loop`)에 있다 —
+    `MonitoringPipeline`으로 전파되면 `MonitoringWorker`가 이를 치명 오류로 처리해
+    전체 카메라·모델을 끈다.
+    """
 
     ok, buffer = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
     if not ok:
@@ -87,12 +95,27 @@ def render_overlay_jpeg(
     result: FrameObservationResult,
     *,
     zones: ZoneRegistry,
-    jpeg_quality: int = 80,
+    jpeg_quality: int = _DEFAULT_JPEG_QUALITY,
 ) -> bytes:
     """`(frame, tracking_batch, result)` -> JPEG bytes. `FrameObserver`에 zones/jpeg_quality를 고정해 연결하는 진입점."""
 
     canvas = draw_overlay(frame, tracking_batch, result, zones=zones)
     return encode_jpeg(canvas, jpeg_quality=jpeg_quality)
+
+
+def _draw_zones(canvas: np.ndarray, zones: ZoneRegistry) -> None:
+    height, width = canvas.shape[:2]
+    for zone in zones.all():
+        color = _ZONE_COLORS.get(zone.zone_type, (255, 255, 255))
+        thickness = 3 if zone.zone_type in _THICK_ZONE_TYPES else 1
+        points = np.array(
+            [[int(x * width), int(y * height)] for x, y in zone.polygon], dtype=np.int32
+        )
+        cv2.polylines(canvas, [points], isClosed=True, color=color, thickness=thickness)
+        cv2.putText(
+            canvas, str(zone.zone_id), tuple(int(v) for v in points[0]),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
+        )
 
 
 def _draw_vehicles(
@@ -136,11 +159,7 @@ def _index_zone_visits(
 
 
 def _pick_primary_visit(visits: tuple[ZoneVisit, ...]) -> ZoneVisit:
-    by_state = {visit.state: visit for visit in visits}
-    for state in _ZONE_VISIT_PRIORITY:
-        if state in by_state:
-            return by_state[state]
-    return visits[0]
+    return min(visits, key=lambda visit: _ZONE_VISIT_PRIORITY.index(visit.state))
 
 
 def _vehicle_status(
@@ -150,26 +169,11 @@ def _vehicle_status(
 ) -> tuple[tuple[int, int, int], str]:
     episode = episode_by_vehicle.get(vehicle_id)
     if episode is not None and episode.state in _ACTIVE_PARKING_STATES:
-        return _PARKING_EPISODE_COLORS[episode.state], episode.state.value
+        return _PARKING_EPISODE_COLORS.get(episode.state, _NEUTRAL_COLOR), episode.state.value
 
     visits = visit_by_vehicle.get(vehicle_id)
     if visits:
         visit = _pick_primary_visit(visits)
-        return _ZONE_VISIT_COLORS[visit.state], f"zone{visit.zone_id} {visit.state.value}"
+        return _ZONE_VISIT_COLORS.get(visit.state, _NEUTRAL_COLOR), f"zone{visit.zone_id} {visit.state.value}"
 
     return _NEUTRAL_COLOR, ""
-
-
-def _draw_zones(canvas: np.ndarray, zones: ZoneRegistry) -> None:
-    height, width = canvas.shape[:2]
-    for zone in zones.all():
-        color = _ZONE_COLORS.get(zone.zone_type, (255, 255, 255))
-        thickness = 3 if zone.zone_type in _THICK_ZONE_TYPES else 1
-        points = np.array(
-            [[int(x * width), int(y * height)] for x, y in zone.polygon], dtype=np.int32
-        )
-        cv2.polylines(canvas, [points], isClosed=True, color=color, thickness=thickness)
-        cv2.putText(
-            canvas, str(zone.zone_id), tuple(points[0]),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
-        )
