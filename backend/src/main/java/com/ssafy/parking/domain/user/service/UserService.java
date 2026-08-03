@@ -72,4 +72,38 @@ public class UserService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
         return MeResponse.from(user);
     }
+
+    @Transactional
+    public MeResponse updateMe(Long userId, UpdateMeRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+
+        boolean hasName = request.name() != null && !request.name().isBlank();
+        boolean hasNewPassword = request.newPassword() != null && !request.newPassword().isBlank();
+
+        if (!hasName && !hasNewPassword) {
+            throw new BusinessException(ErrorCode.USER_UPDATE_INVALID);
+        }
+
+        if (hasName) {
+            user.changeName(request.name());
+        }
+
+        if (hasNewPassword) {
+            if (request.currentPassword() == null
+                    || !passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+                throw new BusinessException(ErrorCode.CURRENT_PASSWORD_MISMATCH);
+            }
+            user.changePassword(passwordEncoder.encode(request.newPassword()));
+        }
+
+        return MeResponse.from(user);
+    }
+
+    @Transactional
+    public void withdraw(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+        user.withdraw(); // status = DELETED → 이후 로그인 차단
+    }
 }
