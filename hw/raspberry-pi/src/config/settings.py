@@ -51,7 +51,10 @@ REQUIRED_RELEASE_COUNT: Final[int] = 3
 
 CAMERA_WIDTH: Final[int] = 1280
 CAMERA_HEIGHT: Final[int] = 720
+
+# Picamera2의 RGB888 capture_array 결과는 NumPy에서 BGR 순서다.
 CAMERA_PIXEL_FORMAT: Final[str] = "RGB888"
+
 CAMERA_WARMUP_SECONDS: Final[float] = 2.0
 
 CAPTURE_FRAME_COUNT: Final[int] = 6
