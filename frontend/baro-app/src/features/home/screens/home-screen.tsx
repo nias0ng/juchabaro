@@ -64,7 +64,9 @@ export default function HomeScreen() {
   const primarySession = pickPrimarySession(sessions);
   const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
   const additionalSessionCount = Math.max(sessions.length - 1, 0);
-  const myZoneNumbers = sessions.map((session) => session.zoneNumber);
+  const myZoneNumbers = sessions.flatMap((session) =>
+    session.zoneNumber ? [session.zoneNumber] : [],
+  );
 
   const {
     summary,
