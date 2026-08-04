@@ -14,6 +14,7 @@ from src.domain.models import (
 )
 from src.tracking.models import (
     BoundingBox,
+    DetectionObservation,
     MotionSignal,
     PhysicalVehicle,
     PhysicalVehicleId,
@@ -142,11 +143,15 @@ def _result(
     *observations: TrackObservation,
     ended_track_segment_ids=(),
     all_detections_tracked: bool = True,
+    detection_count: int | None = None,
+    detections: tuple[DetectionObservation, ...] = (),
 ) -> TrackerFrameResult:
     return TrackerFrameResult(
         observations=observations,
         all_detections_tracked=all_detections_tracked,
         ended_track_segment_ids=ended_track_segment_ids,
+        detection_count=detection_count,
+        detections=detections,
     )
 
 
@@ -187,6 +192,27 @@ def test_caller_certified_frame_is_a_healthy_full_area_observation():
     assert batch.observation.state is ObservationState.OBSERVED
     assert batch.full_area_observed is True
     assert batch.all_detections_tracked is True
+
+
+def test_pretrack_detection_diagnostics_are_propagated_without_identity():
+    detector = FakeDetector()
+    detection = DetectionObservation(
+        bbox=BBOX,
+        confidence=0.27,
+        class_id=0,
+    )
+    detector.results_by_frame_id[7] = _result(
+        detection_count=1,
+        detections=(detection,),
+        all_detections_tracked=False,
+    )
+
+    batch = _pipeline(detector).process(_make_frame(7))
+
+    assert batch.detection_count == 1
+    assert batch.detections == (detection,)
+    assert batch.vehicles == ()
+    assert batch.all_detections_tracked is False
 
 
 def test_full_area_certification_is_a_required_keyword():

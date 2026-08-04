@@ -83,6 +83,25 @@ class TrackObservation:
 
 
 @dataclass(frozen=True)
+class DetectionObservation:
+    """confidence threshold를 통과한 tracker 적용 전 YOLO detection.
+
+    판정·identity 입력이 아니라 모델 품질 분석용 ephemeral 진단값이다.
+    ByteTrack ID가 붙지 않은 후보도 보존해 confidence 분포와 detection
+    누락을 viewer에서 재구성할 수 있게 한다.
+    """
+
+    bbox: BoundingBox
+    confidence: float
+    class_id: int
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("detection confidence must be between 0 and 1")
+        require_non_negative(self.class_id, "class_id")
+
+
+@dataclass(frozen=True)
 class TrackerFrameResult:
     """Tracker adapter가 한 frame에서 확정한 관측과 segment 종료.
 
@@ -95,6 +114,8 @@ class TrackerFrameResult:
     observations: tuple[TrackObservation, ...]
     all_detections_tracked: bool
     ended_track_segment_ids: tuple[TrackSegmentId, ...] = ()
+    detection_count: int | None = None
+    detections: tuple[DetectionObservation, ...] = ()
 
     def __post_init__(self) -> None:
         observed_ids = tuple(observation.track_segment_id for observation in self.observations)
@@ -104,6 +125,12 @@ class TrackerFrameResult:
             raise ValueError("tracker frame cannot contain duplicate ended track segment ids")
         if set(observed_ids).intersection(self.ended_track_segment_ids):
             raise ValueError("a track segment cannot be observed and ended in the same frame")
+        if self.detection_count is not None:
+            require_non_negative(self.detection_count, "detection_count")
+            if self.detection_count < len(self.detections):
+                raise ValueError(
+                    "detection_count cannot be smaller than projected detections"
+                )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -219,12 +246,20 @@ class TrackingBatch:
     full_area_observed: bool
     all_detections_tracked: bool
     not_present_confirmed_vehicle_ids: tuple[PhysicalVehicleId, ...] = ()
+    detection_count: int | None = None
+    detections: tuple[DetectionObservation, ...] = ()
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")
         if not self.camera_id:
             raise ValueError("camera_id must not be empty")
         require_non_negative(self.frame_id, "frame_id")
+        if self.detection_count is not None:
+            require_non_negative(self.detection_count, "detection_count")
+            if self.detection_count < len(self.detections):
+                raise ValueError(
+                    "detection_count cannot be smaller than projected detections"
+                )
 
         observed_vehicle_ids = {
             snapshot.physical_vehicle_id for snapshot in self.vehicles

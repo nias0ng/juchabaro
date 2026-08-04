@@ -94,7 +94,9 @@ class ViewerPolicy:
     blocking_relation_clear_seconds: float = 1.0
     entry_match_window_seconds: float = 10.0
     movement_epsilon: float = 0.01
-    confidence: float = 0.50
+    # 모델 confidence 분포를 수집하기 위한 Viewer 진단용 provisional 기본값.
+    # 운영 threshold로 승격하기 전 영상별 precision/recall 재평가가 필요하다.
+    confidence: float = 0.01
     tracker_config: str = "bytetrack.yaml"
     remap_balance: float = DEFAULT_REMAP_BALANCE
 
@@ -153,6 +155,8 @@ class ViewerRun:
     video_duration_seconds: float
     zones: tuple[Any, ...]
     model_path: Path
+    detection_confidence_threshold: float
+    tracker_config: str
     error_type: str | None = None
     error_message: str | None = None
 
@@ -269,6 +273,7 @@ def run_viewer_pipeline(
         model_path=str(request.paths.model),
         tracker_config=request.policy.tracker_config,
         confidence=request.policy.confidence,
+        capture_detections=True,
     )
 
     error_type: str | None = None
@@ -333,6 +338,8 @@ def run_viewer_pipeline(
         video_duration_seconds=inner.duration_seconds,
         zones=zones.all(),
         model_path=request.paths.model,
+        detection_confidence_threshold=request.policy.confidence,
+        tracker_config=request.policy.tracker_config,
         error_type=error_type,
         error_message=error_message,
     )

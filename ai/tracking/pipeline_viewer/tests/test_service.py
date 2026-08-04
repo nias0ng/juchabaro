@@ -31,6 +31,10 @@ def test_bad_parking_overlap_default_is_forwarded_to_monitoring_policy() -> None
     )
 
 
+def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:
+    assert ViewerPolicy().confidence == 0.01
+
+
 def test_allow_example_matches_current_entry_event_wire() -> None:
     raw = build_allow_example()
     payload = parse_entry_event(raw)

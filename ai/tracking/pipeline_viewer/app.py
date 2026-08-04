@@ -130,7 +130,15 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
 
         confidence = columns[1].number_input(
-            "YOLO confidence", min_value=0.0, max_value=1.0, value=defaults.confidence
+            "YOLO confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.confidence,
+            format="%.4f",
+            help=(
+                "진단용 provisional 기본값입니다. 낮출수록 export에 더 많은 "
+                "post-threshold 후보가 남지만 오탐과 처리시간도 증가합니다."
+            ),
         )
         remap_balance = columns[2].number_input(
             "Remap balance", min_value=0.0, max_value=1.0, value=defaults.remap_balance

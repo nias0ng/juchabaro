@@ -143,6 +143,8 @@ class TrackingPipeline:
                 not_present_confirmed_vehicle_ids=(
                     presence_result.not_present_confirmed_vehicle_ids
                 ),
+                detection_count=tracker_result.detection_count,
+                detections=tracker_result.detections,
             )
         batch_observation = self._batch_observation(
             observed_at=frame.captured_at,
@@ -196,6 +198,8 @@ class TrackingPipeline:
             full_area_observed=full_area_observed,
             all_detections_tracked=tracker_result.all_detections_tracked,
             not_present_confirmed_vehicle_ids=presence_result.not_present_confirmed_vehicle_ids,
+            detection_count=tracker_result.detection_count,
+            detections=tracker_result.detections,
         )
 
     def pause_absence_confirmation(self) -> None:

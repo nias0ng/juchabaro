@@ -63,8 +63,19 @@ PyTorch·TensorRT 설치가 별도로 필요하므로 이 PC용 Conda 절차를 
 - frame slider와 상태 변경 프레임 바로가기
 - EntryMatch, ZoneVisit, ParkingEpisode, BlockingRelation, Incident 상태 변화
 - 실제 `TrackingBatch`와 `FrameObservationResult` JSON 요약
+- 기존 상태 변경 timeline의 명시적 CSV 다운로드
+- 프레임별 YOLO detection·tracker 관측·차량 소실 진단 CSV 다운로드
 - 정상 commit 이후의 프레임만 표시하고 오류 발생 시 마지막 정상 프레임과
   원래 예외를 함께 보존
+
+진단 CSV의 `DETECTION` 행은 화면에서 설정한 YOLO confidence threshold를 통과한
+post-NMS, pre-track 후보입니다. `TRACKED_VEHICLE` 행은 ByteTrack ID와
+PhysicalVehicle ID가 부여되어 도메인으로 전달된 관측이며, detection이 없는
+프레임도 `FRAME` 행으로 남습니다. 따라서 threshold보다 낮아 YOLO 결과에서
+제거된 후보는 export에도 나타나지 않습니다. 낮은 confidence 분포를 확인하려면
+Viewer 실행 전 threshold를 `0.01`처럼 낮추되, 후보 증가에 따른 오탐·처리시간
+증가를 함께 비교해야 합니다. 현재 Viewer의 진단용 provisional 기본값은
+`0.01`이며 운영 threshold를 뜻하지 않습니다.
 
 실행 중 frame 이미지는 session별 임시 workspace에 JPEG로 저장됩니다. 새 실행을
 시작하면 이전 workspace를 정리합니다.
