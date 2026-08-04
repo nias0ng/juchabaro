@@ -12,6 +12,15 @@ type ApiEnvelope<T> = {
 };
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
+const API_LOGS_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_API_LOGS === 'true';
+
+function getSafePath(path: string): string {
+  return path.split('?')[0];
+}
+
+function getErrorDescription(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
 
 // 모든 API 호출이 거치는 공통 통로. 여기 하나만 있으면
 // "요청 보내기 → 응답 JSON 파싱 → 성공/실패 판별"을 매번 화면마다 반복하지 않아도 된다.
@@ -24,23 +33,48 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   }
 
   const isFormData = init.body instanceof FormData;
+  const method = init.method ?? 'GET';
+  const safePath = getSafePath(path);
+  const startedAt = Date.now();
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...init.headers,
-    },
-  });
+  if (API_LOGS_ENABLED) {
+    console.info(`[API] --> ${method} ${safePath}`);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    if (API_LOGS_ENABLED) {
+      console.error(`[API] NETWORK_ERROR ${method} ${safePath} - ${getErrorDescription(error)}`);
+    }
+    throw new ApiError('서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.', 0);
+  }
+
+  if (API_LOGS_ENABLED) {
+    console.info(`[API] <-- ${response.status} ${method} ${safePath} (${Date.now() - startedAt}ms)`);
+  }
 
   let body: ApiEnvelope<T> | undefined;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
+    if (API_LOGS_ENABLED) {
+      console.error(`[API] INVALID_JSON ${method} ${safePath} - ${getErrorDescription(error)}`);
+    }
     // 본문이 없거나 JSON이 아닌 응답(예: 502)은 body 없이 상태 코드만으로 처리한다.
   }
 
   if (!response.ok || !body?.isSuccess) {
+    if (API_LOGS_ENABLED) {
+      console.warn(`[API] FAILED ${method} ${safePath} status=${response.status} code=${body?.code ?? 'none'}`);
+    }
     throw new ApiError(body?.message ?? '요청을 처리하지 못했습니다.', response.status, body?.code);
   }
 

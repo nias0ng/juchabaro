@@ -85,14 +85,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
     const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
 
-    // keepSignedIn이 true일 때 만, 로그인 성공 시 서버가 내려준 accessToken/refreshToken을 기기에 저장한다.
-    if (keepSignedIn) {
-      await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken });
-    }
-
+    // 로그인 API는 accessToken만 발급하므로 로그인 유지가 필요할 때 accessToken만 저장한다.
     // 로그인 응답에는 동/호수 같은 상세 프로필이 없어서, 성공 직후 한 번 더 조회해서 채운다.
     // 이렇게 하면 세션 복원 때(위 useEffect)와 user를 채우는 방식이 하나로 통일된다.
     const profile = await getMyProfile(result.accessToken);
+
+    if (keepSignedIn) {
+      await saveSession({ accessToken: result.accessToken });
+    } else {
+      await clearSession();
+    }
+
     setAccessToken(result.accessToken);
     setUser(toAuthUser(profile));
     setStatus('authenticated');
