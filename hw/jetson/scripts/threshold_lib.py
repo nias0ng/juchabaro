@@ -25,10 +25,10 @@ from typing import Any
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 # 전용구역(§4.7의 즉시 위반 판정 대상)만 후보로 삼는다 —
-# config/zone_definition.pilot.json 기준(zoneId 1=EV_CHARGING, zoneId 4=DISABLED).
+# config/zone_definition.pilot.json 기준(zoneId 4=DISABLED, zoneId 5=EV_CHARGING).
 # 리뷰에서 잡힌 사례: 이 상수는 예전 ai/tracking/zones_pilot.json(zoneId 3/7)
 # 기준값이 그대로 남아 있던 적이 있다 — zones 파일을 바꿀 때마다 반드시 같이 검토한다.
-RESTRICTED_ZONE_IDS = {1, 4}
+RESTRICTED_ZONE_IDS = {4, 5}
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

@@ -10,6 +10,8 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
 
 public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> {
 
@@ -47,4 +49,31 @@ public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> 
     Page<MoveRequest> findSent(@Param("userId") Long userId,
                                @Param("status") MoveRequestStatus status,
                                Pageable pageable);
+
+    @Query("""
+        select mr from MoveRequest mr
+        where mr.reminderCount = 0
+          and (
+            (mr.requestStatus = :sent and mr.requestedAt <= :sentThreshold)
+            or (mr.requestStatus = :responded and mr.dueAt <= :now)
+          )
+        """)
+    List<MoveRequest> findReminderTargets(
+            @Param("sent") MoveRequestStatus sent,
+            @Param("responded") MoveRequestStatus responded,
+            @Param("sentThreshold") LocalDateTime sentThreshold,
+            @Param("now") LocalDateTime now);
+
+    @Query("""
+        select mr from MoveRequest mr
+        where mr.reminderCount >= 1
+          and mr.reminderSentAt <= :escalateThreshold
+          and mr.requestStatus not in :terminal
+        """)
+    List<MoveRequest> findEscalationTargets(
+            @Param("escalateThreshold") LocalDateTime escalateThreshold,
+            @Param("terminal") java.util.Collection<MoveRequestStatus> terminal);
+
+    Optional<MoveRequest> findByEvent_Id(Long eventId);
+    List<MoveRequest> findByEvent_IdIn(Collection<Long> eventIds);
 }

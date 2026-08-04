@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import pytest
+
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
+    AssignmentState,
     BlockingRelationState,
     IncidentState,
     IncidentTransitionType,
@@ -60,6 +63,7 @@ INSIDE = BoundingBox(0.15, 0.15, 0.25, 0.25)
 OUTSIDE = BoundingBox(0.70, 0.70, 0.80, 0.80)
 AMBIGUOUS = BoundingBox(0.20, 0.12, 0.30, 0.28)
 ASSIGNED_FIRST = BoundingBox(0.11, 0.12, 0.19, 0.28)
+PROTRUDING_FROM_FIRST = BoundingBox(0.18, 0.12, 0.38, 0.28)
 
 SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
@@ -200,6 +204,7 @@ def make_pipeline(
     zone_overlap_ratio: float = 0.5,
     assignment_overlap_ratio: float = 0.5,
     ambiguous_margin: float = 0.05,
+    bad_parking_overlap_ratio: float = 0.75,
     blocking_confirm_seconds: float = 0.0,
     blocking_clear_seconds: float = 0.0,
 ):
@@ -234,6 +239,7 @@ def make_pipeline(
         min_overlap_ratio=zone_overlap_ratio,
         assignment_min_overlap_ratio=assignment_overlap_ratio,
         assignment_ambiguous_margin=ambiguous_margin,
+        bad_parking_min_primary_overlap_ratio=bad_parking_overlap_ratio,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
 
@@ -390,6 +396,32 @@ def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
     assert opened[0].incident.entry_attempt_id == ATTEMPT
     assert opened[0].incident.parking_session_id is None
     assert result.parking_transitions == ()
+
+
+def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=PROTRUDING_FROM_FIRST)),
+        entry_attempt_ids=attempts,
+    )
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=PROTRUDING_FROM_FIRST)),
+        entry_attempt_ids=attempts,
+    )
+
+    assignment = result.parking_episode_updates[-1].assignment
+    assert assignment is not None
+    assert assignment.state is AssignmentState.ASSIGNED
+    assert assignment.confidence == pytest.approx(0.60)
+    opened = transitions_for(result, BAD_PARKING)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
 
 
 def test_qualified_vehicle_does_not_open_restricted_incident() -> None:

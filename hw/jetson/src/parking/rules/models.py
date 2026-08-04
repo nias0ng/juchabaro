@@ -37,6 +37,7 @@ class RuleContext:
     parking_assignment: ParkingAssignment | None
     blocking_relations: tuple[BlockingRelation, ...]
     zones: ZoneRegistry
+    bad_parking_min_primary_overlap_ratio: float
     observed_at: datetime
 
     def __post_init__(self) -> None:

@@ -254,6 +254,7 @@ python -m scripts.replay_pilot_video \
     --absence-confirmation-seconds 5.0 \
     --trusted-sample-max-gap-seconds 1.0 \
     --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \
+    --bad-parking-min-primary-overlap-ratio 0.75 \
     --movement-epsilon 0.01 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl

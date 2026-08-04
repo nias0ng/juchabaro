@@ -3,6 +3,8 @@
 최신 geometry 결과인 ``RuleContext.parking_assignment``가 술어 입력이다.
 ``ParkingEpisode``의 저장된 assignment는 감사 snapshot일 뿐 재평가에 쓰지 않고,
 episode의 ``PARKED`` 상태만 새 Incident의 OPEN eligibility를 결정한다.
+한 주차면에 배정됐더라도 차량 footprint의 1위 주차면 포함률이 정책값보다
+낮으면 주차면 밖으로 튀어나온 불량 주차로 평가한다.
 """
 
 from __future__ import annotations
@@ -74,6 +76,8 @@ def _assignment_predicates(
         return IncidentSignalValue.MATCHED, IncidentSignalValue.NOT_MATCHED
     if assignment.state is AssignmentState.UNASSIGNED:
         return IncidentSignalValue.NOT_MATCHED, IncidentSignalValue.MATCHED
+    if assignment.confidence < context.bad_parking_min_primary_overlap_ratio:
+        return IncidentSignalValue.MATCHED, IncidentSignalValue.NOT_MATCHED
     return IncidentSignalValue.NOT_MATCHED, IncidentSignalValue.NOT_MATCHED
 
 
@@ -116,6 +120,12 @@ def _signal(
         evidence={
             "assignmentState": None if assignment is None else assignment.state.value,
             "assignmentZoneId": None if assignment is None else assignment.zone_id,
+            "assignmentConfidence": (
+                None if assignment is None else assignment.confidence
+            ),
+            "badParkingMinPrimaryOverlapRatio": (
+                context.bad_parking_min_primary_overlap_ratio
+            ),
             "parkingState": (
                 None
                 if context.parking_episode is None

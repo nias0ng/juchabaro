@@ -40,8 +40,8 @@ public class ParkingSession extends BaseEntity {
     @Column(name = "recognized_plate_number", nullable = false, length = 20)
     private String recognizedPlateNumber;
 
-    @Column(name = "tracking_id", length = 100)
-    private String trackingId;
+    @Column(name = "entry_attempt_id", length = 100)
+    private String entryAttemptId;
 
     @Column(name = "entry_time", nullable = false)
     private LocalDateTime entryTime;
@@ -60,7 +60,7 @@ public class ParkingSession extends BaseEntity {
             Vehicle vehicle,
             ParkingZone zone,
             String recognizedPlateNumber,
-            String trackingId,
+            String entryAttemptId,
             LocalDateTime entryTime,
             LocalDateTime parkedAt,
             LocalDateTime exitTime,
@@ -69,10 +69,24 @@ public class ParkingSession extends BaseEntity {
         this.vehicle = vehicle;
         this.zone = zone;
         this.recognizedPlateNumber = recognizedPlateNumber;
-        this.trackingId = trackingId;
+        this.entryAttemptId = entryAttemptId;
         this.entryTime = entryTime;
         this.parkedAt = parkedAt;
         this.exitTime = exitTime;
         this.idempotencyKey = idempotencyKey;
+    }
+
+    public void assignZone(ParkingZone zone, LocalDateTime parkedAt) {
+        this.zone = zone;
+        this.parkedAt = parkedAt;
+    }
+
+    public void unassign() {
+        this.zone = null;
+        this.parkedAt = null;
+    }
+
+    public void markExit(LocalDateTime exitTime) {
+        this.exitTime = exitTime;
     }
 }

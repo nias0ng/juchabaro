@@ -19,6 +19,15 @@ TRIGGER_PIN: Final[int] = 23  # BCM GPIO23 -> 물리 핀 16
 ECHO_PIN: Final[int] = 24  # BCM GPIO24 -> 물리 핀 18
 
 
+# [LED 설정]
+
+GREEN_LED_PIN: Final[int] = 17  # BCM GPIO17 -> 물리 핀 11
+GREEN_LED_ACTIVE_HIGH: Final[bool] = True
+
+# 프로토타입 입차 흐름 검증 후 실제 운영 환경에 맞게 재조정
+GREEN_LED_DURATION_SECONDS: Final[float] = 3.0
+
+
 # [초음파 센서 측정 설정]
 
 TRIGGER_PULSE_SECONDS: Final[float] = 0.00001
@@ -51,7 +60,10 @@ REQUIRED_RELEASE_COUNT: Final[int] = 3
 
 CAMERA_WIDTH: Final[int] = 1280
 CAMERA_HEIGHT: Final[int] = 720
+
+# Picamera2의 RGB888 capture_array 결과는 NumPy에서 BGR 순서다.
 CAMERA_PIXEL_FORMAT: Final[str] = "RGB888"
+
 CAMERA_WARMUP_SECONDS: Final[float] = 2.0
 
 CAPTURE_FRAME_COUNT: Final[int] = 6

@@ -108,6 +108,7 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "zone_presence_min_overlap_ratio": 0.5,
         "assignment_min_overlap_ratio": 0.5,
         "assignment_ambiguous_margin": 0.05,
+        "bad_parking_min_primary_overlap_ratio": 0.75,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
     }
@@ -152,6 +153,30 @@ def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> Non
         build_monitoring_pipeline(
             zones=_zones(),
             policy=_policy(entry_zone_min_overlap_ratio=0.0),
+            dependencies=MonitoringDependencies(
+                camera_id="camera-1",
+                frame_source=_FrameSource(),
+                detector=_Detector(),
+                publication_preparer=_PublicationPreparer(),
+                connection_factory=lambda: connect_database(database_path),
+            ),
+        )
+
+
+def test_factory_rejects_bad_parking_overlap_below_assignment_overlap(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-overlap.db"
+    connection = open_database(database_path)
+    connection.close()
+
+    with pytest.raises(ValueError, match="bad_parking_min_primary_overlap_ratio"):
+        build_monitoring_pipeline(
+            zones=_zones(),
+            policy=_policy(
+                assignment_min_overlap_ratio=0.5,
+                bad_parking_min_primary_overlap_ratio=0.49,
+            ),
             dependencies=MonitoringDependencies(
                 camera_id="camera-1",
                 frame_source=_FrameSource(),

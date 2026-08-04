@@ -123,6 +123,7 @@ def make_context(
         parking_assignment=None,
         blocking_relations=relations,
         zones=ZoneRegistry((aisle,)),
+        bad_parking_min_primary_overlap_ratio=0.75,
         observed_at=T0,
     )
 

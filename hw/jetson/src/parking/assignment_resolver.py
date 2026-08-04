@@ -29,7 +29,9 @@ def resolve(
 
     ``confidence``에는 가장 강한 spot overlap 근거를 기록한다. detector
     confidence와 공간 assignment confidence를 섞지 않으면서 모든 상태에
-    결정론적인 값을 제공하기 위한 선택이다.
+    결정론적인 값을 제공하기 위한 선택이다. ``min_overlap_ratio``는 1위
+    구역의 배정 자격을 판단하고, 2위 구역은 기준 미만이어도 1위와의 차이가
+    ``ambiguous_margin`` 이내인지 비교해 경계 걸침을 보존한다.
     """
 
     _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
@@ -45,9 +47,7 @@ def resolve(
         key=lambda pair: pair[1],
         reverse=True,
     )
-    candidates = [pair for pair in ranked if pair[1] >= min_overlap_ratio]
-
-    if not candidates:
+    if not ranked or ranked[0][1] < min_overlap_ratio:
         return ParkingAssignment(
             state=AssignmentState.UNASSIGNED,
             representative_footprint=footprint,
@@ -56,8 +56,8 @@ def resolve(
             unassigned_reason=NO_ELIGIBLE_ZONE,
         )
 
-    top_zone_id, top_ratio = candidates[0]
-    if len(candidates) >= 2 and top_ratio - candidates[1][1] <= ambiguous_margin:
+    top_zone_id, top_ratio = ranked[0]
+    if len(ranked) >= 2 and top_ratio - ranked[1][1] <= ambiguous_margin:
         return ParkingAssignment(
             state=AssignmentState.AMBIGUOUS,
             representative_footprint=footprint,

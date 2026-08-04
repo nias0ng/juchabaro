@@ -11,6 +11,7 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md - 1,
     paddingVertical: Spacing.sm + 3,
+    gap: Spacing.xxs,
   },
   text: {
     fontSize: 13,

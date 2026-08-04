@@ -182,7 +182,7 @@ class PlateReadResult:
     """상위 입차 서비스에 반환하는 최소 OCR 판독 결과.
 
     성공 시 ``rec_score``는 최종 번호판 winner의 대표 PaddleOCR 점수이며,
-    외부 API의 ``confidence``로 전달할 수 있다.
+    외부 API의 ``ocrConfidence``로 전달할 수 있다.
     """
 
     status: ReadStatus

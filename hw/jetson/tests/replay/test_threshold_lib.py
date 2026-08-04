@@ -38,12 +38,12 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 
 def test_load_completed_visits_filters_by_zone_and_state(tmp_path):
-    """RESTRICTED_ZONE_IDS={1, 4}(config/zone_definition.pilot.json의 EV_CHARGING/DISABLED)
+    """RESTRICTED_ZONE_IDS={4, 5}(config/zone_definition.pilot.json의 DISABLED/EV_CHARGING)
     만 남기고, 같은 파일의 GENERAL 구역(zoneId=3)은 걸러야 한다."""
 
     path = tmp_path / "zone_visits.jsonl"
     _write_jsonl(path, [
-        {"zoneId": 1, "state": "ENDED", "zoneVisitId": "v1",
+        {"zoneId": 5, "state": "ENDED", "zoneVisitId": "v1",
          "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
         {"zoneId": 3, "state": "ENDED", "zoneVisitId": "v2",
          "enteredAt": "1970-01-01T00:00:05+00:00", "endedAt": "1970-01-01T00:00:08+00:00"},
@@ -93,7 +93,7 @@ def test_build_candidates_skips_incomplete_and_computes_dwell(tmp_path):
 def test_build_candidates_recognizes_real_producer_output_for_restricted_zone(tmp_path):
     """`load_completed_visits`/`RESTRICTED_ZONE_IDS`를 손으로 쓴 dict가 아니라
     실제 wire 생산자(`zone_visit_to_jsonable`)와 실제 config/zone_definition.pilot.json의
-    zoneId(EV_CHARGING=1)로 검증한다.
+    zoneId(EV_CHARGING=5)로 검증한다.
 
     RESTRICTED_ZONE_IDS가 옛 ai/tracking/zones_pilot.json 값(3/7)으로 굳어 있던
     적이 있었는데, 이 파일의 픽스처가 전부 손으로 쓴 dict라 그 드리프트를
@@ -104,8 +104,8 @@ def test_build_candidates_recognizes_real_producer_output_for_restricted_zone(tm
     visit = ZoneVisit(
         visit_id=UUID(int=101),
         physical_vehicle_id=UUID(int=102),
-        zone_id=1,  # config/zone_definition.pilot.json: zoneId 1 == EV_CHARGING
-        zone_definition_version=3,
+        zone_id=5,  # config/zone_definition.pilot.json: zoneId 5 == EV_CHARGING
+        zone_definition_version=5,
         state=ZoneVisitState.ENDED,
         observation=ObservationStatus(
             state=ObservationState.OBSERVED, last_reliable_observed_at=T0
@@ -131,7 +131,7 @@ def test_build_candidates_recognizes_real_producer_output_for_restricted_zone(tm
 
     assert len(candidates) == 1
     assert candidates[0]["visitId"] == str(visit.visit_id)
-    assert candidates[0]["zoneId"] == 1
+    assert candidates[0]["zoneId"] == 5
     assert candidates[0]["dwellSeconds"] == pytest.approx(4.0)
 
 

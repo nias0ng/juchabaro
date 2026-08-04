@@ -8,9 +8,12 @@ import { styles } from './violation-list-item.styles';
 import { ViolationStatusBadge } from './violation-status-badge';
 
 const TYPE_ICON_COLOR: Record<MockViolationType, string> = {
-  LANE_VIOLATION: Palette.peach100,
+  BAD_PARKING: Palette.peach100,
   DOUBLE_PARKING: Palette.mint100,
   EV_OVERSTAY: Palette.mint100,
+  DISABLED_ZONE_VIOLATION: Palette.sky100,
+  OUT_OF_ZONE: Palette.peach100,
+  ECT: Palette.gray100,
 };
 
 type ViolationListItemProps = {

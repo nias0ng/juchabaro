@@ -48,7 +48,7 @@ export function useVehicleManagement() {
       ]);
 
       const parkingSpotByVehicleId = new Map(
-        parkingSessions.map((session) => [session.vehicleId, `${session.zoneName} · ${session.spotCode}`]),
+        parkingSessions.map((session) => [session.vehicleId, `${session.floor} · ${session.zoneNumber}`]),
       );
 
       // 목록 조회엔 등록일(createdAt) 등이 없어서, 카드에 채워 보여주려고 차량별로 상세를 추가 조회한다.

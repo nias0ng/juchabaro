@@ -1,10 +1,8 @@
 package com.ssafy.parking.domain.user.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
-import com.ssafy.parking.domain.user.dto.LoginRequest;
-import com.ssafy.parking.domain.user.dto.LoginResponse;
-import com.ssafy.parking.domain.user.dto.SignupRequest;
-import com.ssafy.parking.domain.user.dto.SignupResponse;
+import com.ssafy.parking.domain.notification.service.DeviceTokenService;
+import com.ssafy.parking.domain.user.dto.*;
 import com.ssafy.parking.domain.user.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
@@ -25,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final UserService userService;
+    private final DeviceTokenService deviceTokenService;
 
     @Operation(summary = "회원가입", description = "신규 사용자를 등록합니다. 로그인 아이디는 중복될 수 없습니다.")
     @ApiResponses({
@@ -57,5 +56,15 @@ public class AuthController {
         return ResponseEntity.ok(
                 ApiResponse.success(HttpStatus.OK, "로그인에 성공했습니다.", result)
         );
+    }
+
+    @Operation(summary = "로그아웃", description = "Stateless JWT — 클라이언트가 토큰을 폐기하고, 전달된 기기 토큰이 있으면 제거합니다.")
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<Void>> logout(
+            @RequestBody(required = false) LogoutRequest request) {
+        if (request != null) {
+            deviceTokenService.unregisterByToken(request.token());
+        }
+        return ResponseEntity.ok(ApiResponse.successWithoutData());
     }
 }
