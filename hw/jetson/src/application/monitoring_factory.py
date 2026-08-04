@@ -55,6 +55,7 @@ class MonitoringPolicy:
     zone_presence_min_overlap_ratio: float
     assignment_min_overlap_ratio: float
     assignment_ambiguous_margin: float
+    bad_parking_min_primary_overlap_ratio: float
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
 
@@ -137,6 +138,9 @@ def build_monitoring_pipeline(
         ),
         assignment_ambiguous_margin=(
             policy.assignment_ambiguous_margin
+        ),
+        bad_parking_min_primary_overlap_ratio=(
+            policy.bad_parking_min_primary_overlap_ratio
         ),
     )
     frame_workflow = FrameObservationWorkflow(
