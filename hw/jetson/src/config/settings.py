@@ -8,9 +8,9 @@ class Settings(BaseSettings):
     app_name: str = "Smart Parking Jetson API"
     log_level: str = "INFO"
 
-    backend_base_url: str = "http://localhost:8080"
+    backend_base_url: str = "https://i15e202.p.ssafy.io/"
+    backend_hw_api_key: str = ""
 
-    hw_api_key: str = ""
     internal_api_key: str = ""
 
     # Jetson local durable state. 요청 thread와 tracking worker는 각자

@@ -104,13 +104,13 @@ def test_lifespan_keeps_monitoring_disabled_without_exact_wire_factory(
         assert application.state.outbox_publisher_worker is None
 
 
-def test_lifespan_runs_outbox_publisher_when_hw_api_key_is_configured(
+def test_lifespan_runs_outbox_publisher_when_backend_hw_api_key_is_configured(
     tmp_path,
 ) -> None:
     from src.main import create_app
 
     settings = _settings(tmp_path).model_copy(
-        update={"hw_api_key": "configured-hardware-key"}
+        update={"backend_hw_api_key": "configured-hardware-key"}
     )
     application = create_app(settings=settings)
 

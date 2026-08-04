@@ -119,7 +119,7 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 
 `main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
 outbox publisher와 단일 monitoring thread의 시작·정상 종료 생명주기를
-소유한다. `HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
+소유한다. `BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
 값이 있으면 `BACKEND_BASE_URL`의 API 6·7·10 endpoint로 exact outbox bytes를
 전송한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
 충돌은 `FAILED_TERMINAL`로 격리한다. `APPLIED`와 `ALREADY_APPLIED` ACK는

@@ -135,13 +135,13 @@ def create_app(
         application.state.monitoring_worker = monitoring_worker
 
         outbox_publisher_worker: OutboxPublisherWorker | None = None
-        if resolved_settings.hw_api_key.strip():
+        if resolved_settings.backend_hw_api_key.strip():
             outbox_publisher_worker = OutboxPublisherWorker(
                 OutboxPublisher(
                     connection_factory=connection_factory,
                     client=BackendClient(
                         base_url=resolved_settings.backend_base_url,
-                        hw_api_key=resolved_settings.hw_api_key,
+                        hw_api_key=resolved_settings.backend_hw_api_key,
                     ),
                 )
             )
