@@ -40,7 +40,11 @@ from src.application.monitoring_factory import (
 )
 from src.camera.frame_source import EndOfVideo
 from src.camera.models import CapturedFrame
-from src.communication.models import EntryContext
+from src.communication.models import (
+    EntryAccessDecision,
+    EntryDecisionInput,
+    EntrySessionContextInput,
+)
 from src.parking.models import (
     EntryExitRole,
     ZoneDefinition,
@@ -108,6 +112,7 @@ def _policy() -> MonitoringPolicy:
         zone_presence_min_overlap_ratio=0.5,
         assignment_min_overlap_ratio=0.5,
         assignment_ambiguous_margin=0.05,
+        bad_parking_min_primary_overlap_ratio=0.75,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
     )
@@ -196,18 +201,17 @@ def _receive_entry_event(connection: sqlite3.Connection, *, t0: datetime) -> Non
         match_window_seconds=10.0,
     )
     intake.receive(
-        EntryContext(
-            tracking_id=TRACKING_ID,
-            recognized_plate_number="12가3456",
+        EntryDecisionInput(
+            entry_attempt_id=UUID(TRACKING_ID),
+            decision_revision=1,
             entry_time=t0,
-            access_decision="ALLOW",
-            registered=True,
-            vehicle_id=10,
-            is_disabled_vehicle=False,
-            is_electric=True,
-            vehicle_status="ACTIVE",
-            session_id=55,
-            duplicate_request=False,
+            access_decision=EntryAccessDecision.ALLOW,
+            session_context=EntrySessionContextInput(
+                session_id=55,
+                vehicle_id=10,
+                is_disabled_vehicle=False,
+                is_electric=True,
+            ),
         ),
         idempotency_key="rpi-request-1",
         connection=connection,

@@ -116,6 +116,7 @@ class ParkingPipeline:
         min_overlap_ratio: float,
         assignment_min_overlap_ratio: float,
         assignment_ambiguous_margin: float,
+        bad_parking_min_primary_overlap_ratio: float,
     ) -> None:
         _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
         _validate_ratio(
@@ -126,6 +127,15 @@ class ParkingPipeline:
             assignment_ambiguous_margin,
             "assignment_ambiguous_margin",
         )
+        _validate_ratio(
+            bad_parking_min_primary_overlap_ratio,
+            "bad_parking_min_primary_overlap_ratio",
+        )
+        if bad_parking_min_primary_overlap_ratio < assignment_min_overlap_ratio:
+            raise ValueError(
+                "bad_parking_min_primary_overlap_ratio must be greater than "
+                "or equal to assignment_min_overlap_ratio"
+            )
         self._zones = zones
         self._zone_visit_tracker = zone_visit_tracker
         self._parking_episode_tracker = parking_episode_tracker
@@ -134,6 +144,9 @@ class ParkingPipeline:
         self._min_overlap_ratio = min_overlap_ratio
         self._assignment_min_overlap_ratio = assignment_min_overlap_ratio
         self._assignment_ambiguous_margin = assignment_ambiguous_margin
+        self._bad_parking_min_primary_overlap_ratio = (
+            bad_parking_min_primary_overlap_ratio
+        )
 
     def checkpoint_state(self) -> tuple[object, object, object, object]:
         """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
@@ -312,6 +325,9 @@ class ParkingPipeline:
                     vehicle_id
                 ),
                 zones=self._zones,
+                bad_parking_min_primary_overlap_ratio=(
+                    self._bad_parking_min_primary_overlap_ratio
+                ),
                 observed_at=frame.vehicle.observed_at,
             )
             self._evaluate_rules(

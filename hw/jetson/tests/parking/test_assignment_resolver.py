@@ -35,6 +35,8 @@ CAR = PhysicalVehicleId(UUID(int=1))
 VERSION = ZoneDefinitionVersion(3)
 FULL: NormalizedPolygon = ((0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3))
 HALF: NormalizedPolygon = ((0.1, 0.1), (0.2, 0.1), (0.2, 0.3), (0.1, 0.3))
+BARELY_TOP: NormalizedPolygon = ((0.198, 0.1), (0.3, 0.1), (0.3, 0.3), (0.198, 0.3))
+BARELY_SECOND: NormalizedPolygon = ((0.1, 0.1), (0.198, 0.1), (0.198, 0.3), (0.1, 0.3))
 FAR: NormalizedPolygon = ((0.6, 0.6), (0.8, 0.6), (0.8, 0.8), (0.6, 0.8))
 BBOX = BoundingBox(0.1, 0.1, 0.3, 0.3)
 FOOTPRINT: NormalizedPolygon = FULL
@@ -127,6 +129,34 @@ def test_close_candidates_are_ambiguous_with_reason() -> None:
     assert result.zone_id is None
     assert result.unassigned_reason == AMBIGUOUS_ZONE_OVERLAP
     assert result.confidence == pytest.approx(1.0)
+
+
+def test_runner_up_below_minimum_still_makes_assignment_ambiguous() -> None:
+    result = resolve_with(
+        make_zone(1, ZoneType.GENERAL, BARELY_TOP),
+        make_zone(2, ZoneType.GENERAL, BARELY_SECOND),
+        minimum=0.5,
+        margin=0.05,
+    )
+
+    assert result.state is AssignmentState.AMBIGUOUS
+    assert result.zone_id is None
+    assert result.unassigned_reason == AMBIGUOUS_ZONE_OVERLAP
+    assert result.confidence == pytest.approx(0.51)
+
+
+def test_close_overlaps_below_minimum_remain_unassigned() -> None:
+    result = resolve_with(
+        make_zone(1, ZoneType.GENERAL, HALF),
+        make_zone(2, ZoneType.GENERAL, HALF),
+        minimum=0.51,
+        margin=0.05,
+    )
+
+    assert result.state is AssignmentState.UNASSIGNED
+    assert result.zone_id is None
+    assert result.unassigned_reason == NO_ELIGIBLE_ZONE
+    assert result.confidence == pytest.approx(0.5)
 
 
 def test_ambiguity_margin_boundary_is_inclusive() -> None:

@@ -1,8 +1,8 @@
-"""현재 wire 호환 입력과 cross-system command의 내부 의미 모델.
+"""Cross-system 입력을 application 계층에 전달하는 내부 의미 모델.
 
-Endpoint, HTTP method와 최종 request/response DTO는 후속 API 계약의 범위다.
-현행 Raspberry Pi 입차 요청은 `EntryContext`로 그대로 보존하고, 새 durable
-workflow 모델과 섞지 않는다.
+HTTP endpoint와 camelCase 파싱은 api 계층이 담당한다. 이 모듈은 파싱이 끝난
+RPi EntryDecision과 Backend command를 Python 값으로 보존하며, session domain
+aggregate나 FastAPI DTO를 대신하지 않는다.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import NewType
+from uuid import UUID
 
 from src.domain.models import require_aware, require_non_negative, require_positive
 from src.parking.models import IncidentId
@@ -21,32 +22,165 @@ ParkingEventId = NewType("ParkingEventId", int)
 MoveRequestId = NewType("MoveRequestId", int)
 
 
+class EntryAccessDecision(str, Enum):
+    """RPi가 전달하는 Backend의 초기 출입 판정."""
+
+    ALLOW = "ALLOW"
+    REVIEW = "REVIEW"
+    DENY = "DENY"
+
+
+class EntryReviewResolution(str, Enum):
+    """Backend가 REVIEW_PENDING 입차 시도에 내린 후속 판정."""
+
+    REVIEW_ALLOW = "REVIEW_ALLOW"
+    REVIEW_DENY = "REVIEW_DENY"
+    REVIEW_EXPIRED = "REVIEW_EXPIRED"
+
+
+def _require_positive_int(value: object, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
+
+
 @dataclass(frozen=True)
-class EntryContext:
-    """현행 `POST /internal/entry-events` wire와 동일한 임시 DTO.
+class EntrySessionContextInput:
+    """Backend가 ALLOW와 함께 제공한 authoritative session snapshot."""
 
-    `tracking_id`는 ByteTrack ID가 아니라 입차 upstream이 생성한 UUID 문자열이며
-    목표 도메인의 `entryAttemptId` 의미다. 최종 필드명 변경은 API 계약에서 한다.
-    """
-
-    tracking_id: str
-    recognized_plate_number: str
-    entry_time: datetime
-    access_decision: str
-    registered: bool
-    vehicle_id: int | None
-    is_disabled_vehicle: bool | None
-    is_electric: bool | None
-    vehicle_status: str | None
-    session_id: int | None
-    duplicate_request: bool
+    session_id: int
+    vehicle_id: int
+    is_disabled_vehicle: bool
+    is_electric: bool
 
     def __post_init__(self) -> None:
+        _require_positive_int(self.session_id, "session_id")
+        _require_positive_int(self.vehicle_id, "vehicle_id")
+        for name in ("is_disabled_vehicle", "is_electric"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be boolean")
+
+
+@dataclass(frozen=True)
+class EntryDecisionInput:
+    """API 2에서 durable EntryMatchAttempt로 변환할 초기 EntryDecision."""
+
+    entry_attempt_id: UUID
+    decision_revision: int
+    access_decision: EntryAccessDecision
+    entry_time: datetime
+    session_context: EntrySessionContextInput | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry_attempt_id, UUID):
+            raise ValueError("entry_attempt_id must be UUID")
+        _require_positive_int(self.decision_revision, "decision_revision")
+        if not isinstance(self.access_decision, EntryAccessDecision):
+            raise ValueError("access_decision must be EntryAccessDecision")
         require_aware(self.entry_time, "entry_time")
-        if not self.tracking_id:
-            raise ValueError("tracking_id must not be empty")
-        if not self.access_decision:
-            raise ValueError("access_decision must not be empty")
+        if self.access_decision is EntryAccessDecision.ALLOW:
+            if self.session_context is None:
+                raise ValueError("ALLOW EntryDecision requires session_context")
+        elif self.session_context is not None:
+            raise ValueError(
+                "REVIEW or DENY EntryDecision must not carry session_context"
+            )
+
+
+@dataclass(frozen=True)
+class EntryReviewResolutionInput:
+    """API 4에서 기존 REVIEW_PENDING attempt에 적용할 후속 판정."""
+
+    entry_attempt_id: UUID
+    decision_revision: int
+    resolution: EntryReviewResolution
+    resolved_at: datetime
+    session_context: EntrySessionContextInput | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry_attempt_id, UUID):
+            raise ValueError("entry_attempt_id must be UUID")
+        _require_positive_int(self.decision_revision, "decision_revision")
+        if not isinstance(self.resolution, EntryReviewResolution):
+            raise ValueError("resolution must be EntryReviewResolution")
+        require_aware(self.resolved_at, "resolved_at")
+        if self.resolution is EntryReviewResolution.REVIEW_ALLOW:
+            if self.session_context is None:
+                raise ValueError("REVIEW_ALLOW requires session_context")
+        elif self.session_context is not None:
+            raise ValueError(
+                "REVIEW_DENY or REVIEW_EXPIRED must not carry session_context"
+            )
+
+
+@dataclass(frozen=True)
+class SessionContextUpdateContextInput:
+    """API 5가 전달하는 Backend authoritative 자격 snapshot."""
+
+    vehicle_id: int
+    is_disabled_vehicle: bool
+    is_electric: bool
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.vehicle_id, "vehicle_id")
+        for name in ("is_disabled_vehicle", "is_electric"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be boolean")
+
+
+@dataclass(frozen=True)
+class SessionContextUpdateInput:
+    """API 5에서 session mirror와 active binding에 적용할 변경."""
+
+    session_id: int
+    entry_attempt_id: UUID
+    context_revision: int
+    administrative_state: str
+    updated_at: datetime
+    session_context: SessionContextUpdateContextInput
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.session_id, "session_id")
+        if not isinstance(self.entry_attempt_id, UUID):
+            raise ValueError("entry_attempt_id must be UUID")
+        _require_positive_int(self.context_revision, "context_revision")
+        if self.administrative_state not in {"ACTIVE", "CLOSED"}:
+            raise ValueError("administrative_state must be ACTIVE or CLOSED")
+        require_aware(self.updated_at, "updated_at")
+        if not isinstance(
+            self.session_context,
+            SessionContextUpdateContextInput,
+        ):
+            raise ValueError(
+                "session_context must be SessionContextUpdateContextInput"
+            )
+
+
+@dataclass(frozen=True)
+class MoveVerificationCommandInput:
+    """API 11에서 하나 이상의 Incident 재확인을 요청하는 command."""
+
+    request_id: int
+    verification_attempt: int
+    target_incident_ids: tuple[UUID, ...]
+    requested_at: datetime
+    deadline_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.request_id, "request_id")
+        _require_positive_int(self.verification_attempt, "verification_attempt")
+        if not self.target_incident_ids:
+            raise ValueError("target_incident_ids must not be empty")
+        if any(
+            not isinstance(incident_id, UUID)
+            for incident_id in self.target_incident_ids
+        ):
+            raise ValueError("target_incident_ids must contain UUID values")
+        if len(set(self.target_incident_ids)) != len(self.target_incident_ids):
+            raise ValueError("target_incident_ids must be unique")
+        require_aware(self.requested_at, "requested_at")
+        require_aware(self.deadline_at, "deadline_at")
+        if self.deadline_at < self.requested_at:
+            raise ValueError("deadline_at must not precede requested_at")
 
 
 class MoveVerificationState(str, Enum):
@@ -73,6 +207,14 @@ class PublicationApplicationResult(str, Enum):
     APPLIED = "APPLIED"
     ALREADY_APPLIED = "ALREADY_APPLIED"
     CONFLICT = "CONFLICT"
+
+
+class InboundApplicationResult(str, Enum):
+    """Backend command를 Jetson durable state에 반영한 결과."""
+
+    APPLIED = "APPLIED"
+    ALREADY_APPLIED = "ALREADY_APPLIED"
+    STALE = "STALE"
 
 
 @dataclass(frozen=True)

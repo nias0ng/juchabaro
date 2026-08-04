@@ -1,7 +1,7 @@
 """
 실제 Picamera2 장치 없이 EntryCamera의 촬영 및 자원 관리 계약을 검증한다.
 
-카메라 초기화, 설정 검증, 프레임 변환, 전체 재촬영, 예외 전파와 cleanup
+카메라 초기화, 설정 검증, 프레임 배열 계약, 전체 재촬영, 예외 전파와 cleanup
 상태를 mock으로 확인한다. 실제 CSI 카메라 연결, 이미지 품질, OCR 실행,
 파일 저장 및 외부 통신은 검증하지 않는다.
 """
@@ -19,13 +19,13 @@ from src.ocr.types import CapturedFrame
 # [테스트 데이터와 생성 도우미]
 
 
-def make_rgb_image(
+def make_bgr_camera_image(
     *,
     red: int = 10,
     green: int = 20,
     blue: int = 30,
 ) -> np.ndarray:
-    """운영 촬영 계약과 동일한 크기의 RGB uint8 배열을 생성한다."""
+    """Picamera2 RGB888 capture_array와 동일한 BGR uint8 배열을 생성한다."""
 
     image = np.empty(
         (
@@ -35,9 +35,9 @@ def make_rgb_image(
         ),
         dtype=np.uint8,
     )
-    image[..., 0] = red
+    image[..., 0] = blue
     image[..., 1] = green
-    image[..., 2] = blue
+    image[..., 2] = red
     return image
 
 
@@ -51,7 +51,7 @@ def make_camera(
 
     camera.create_still_configuration.return_value = configuration
     camera.capture_array.return_value = (
-        image if image is not None else make_rgb_image()
+        image if image is not None else make_bgr_camera_image()
     )
 
     return camera, configuration
@@ -189,13 +189,18 @@ def test_constructor_initializes_camera_in_order() -> None:
         ),
         pytest.param(
             "CAMERA_PIXEL_FORMAT",
+            None,
+            id="non-string-pixel-format",
+        ),
+        pytest.param(
+            "CAMERA_PIXEL_FORMAT",
             "",
             id="empty-pixel-format",
         ),
         pytest.param(
             "CAMERA_PIXEL_FORMAT",
-            "   ",
-            id="blank-pixel-format",
+            "BGR888",
+            id="unsupported-pixel-format",
         ),
     ],
 )
@@ -228,13 +233,13 @@ def test_constructor_raises_value_error_for_invalid_setting(
 # [프레임 촬영과 이미지 계약]
 
 
-def test_capture_sequence_returns_six_bgr_frames() -> None:
-    rgb_image = make_rgb_image(
+def test_capture_sequence_preserves_bgr_camera_channel_order() -> None:
+    captured_bgr_image = make_bgr_camera_image(
         red=10,
         green=20,
         blue=30,
     )
-    camera, _ = make_camera(rgb_image)
+    camera, _ = make_camera(captured_bgr_image)
     instance, camera, _, sleep = make_entry_camera(
         camera=camera,
     )
@@ -281,19 +286,19 @@ def test_capture_sequence_returns_six_bgr_frames() -> None:
 
 
 def test_capture_sequence_returns_independent_images() -> None:
-    rgb_image = make_rgb_image(
+    captured_bgr_image = make_bgr_camera_image(
         red=11,
         green=22,
         blue=33,
     )
-    camera, _ = make_camera(rgb_image)
+    camera, _ = make_camera(captured_bgr_image)
     instance, _, _, _ = make_entry_camera(camera=camera)
 
     frames = instance.capture_sequence()
     expected_pixel = (33, 22, 11)
 
     assert all(
-        not np.shares_memory(frame.image, rgb_image)
+        not np.shares_memory(frame.image, captured_bgr_image)
         for frame in frames
     )
     assert all(
@@ -301,7 +306,7 @@ def test_capture_sequence_returns_independent_images() -> None:
         for index in range(len(frames) - 1)
     )
 
-    rgb_image[...] = 0
+    captured_bgr_image[...] = 0
 
     assert all(
         tuple(frame.image[0, 0]) == expected_pixel
@@ -380,12 +385,12 @@ def test_capture_frame_preserves_camera_api_error_as_cause() -> None:
 
 def test_capture_sequence_retries_entire_sequence_after_frame_failure(
 ) -> None:
-    first_frame = make_rgb_image(
+    first_frame = make_bgr_camera_image(
         red=1,
         green=2,
         blue=3,
     )
-    retry_frame = make_rgb_image(
+    retry_frame = make_bgr_camera_image(
         red=90,
         green=91,
         blue=92,
@@ -436,7 +441,7 @@ def test_capture_sequence_retries_entire_sequence_after_frame_failure(
 
 
 def test_capture_sequence_raises_after_all_attempts_fail() -> None:
-    valid_image = make_rgb_image()
+    valid_image = make_bgr_camera_image()
     first_error = RuntimeError("첫 번째 시도 실패")
     second_error = RuntimeError("두 번째 시도 실패")
 

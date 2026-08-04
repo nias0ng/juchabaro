@@ -26,9 +26,12 @@ public class HwTransitionService {
 
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingZoneRepository parkingZoneRepository;
+    private final InboundIdempotencyService inboundIdempotencyService;
 
     @Transactional
-    public HwPublicationAck handleTransition(HwTransitionRequest req) {
+    public HwPublicationAck handleTransition(String idempotencyKey, HwTransitionRequest req) {
+        inboundIdempotencyService.record("PARKING_TRANSITION", idempotencyKey, req);
+
         ParkingSession session = parkingSessionRepository.findById(req.sessionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARKING_SESSION_NOT_FOUND));
 
@@ -64,7 +67,9 @@ public class HwTransitionService {
     }
 
     @Transactional
-    public HwPublicationAck handleExit(HwExitRequest req) {
+    public HwPublicationAck handleExit(String idempotencyKey, HwExitRequest req) {
+        inboundIdempotencyService.record("SESSION_EXIT", idempotencyKey, req);
+
         ParkingSession session = parkingSessionRepository.findById(req.sessionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARKING_SESSION_NOT_FOUND));
 

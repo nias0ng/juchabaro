@@ -53,6 +53,7 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --absence-confirmation-seconds 5.0 \\
         --trusted-sample-max-gap-seconds 1.0 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
+        --bad-parking-min-primary-overlap-ratio 0.75 \\
         --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
@@ -83,6 +84,7 @@ from src.application.monitoring_factory import (
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
 from src.camera.frame_source import (
+    CropFrameSource,
     EndOfVideo,
     RemapFrameSource,
     VideoFileFrameSource,
@@ -152,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="배정 모호 판정 여유값. 코드·설정 어디에도 확립된 기본값이 없어 필수다.",
     )
     parser.add_argument(
+        "--bad-parking-min-primary-overlap-ratio", type=float, required=True,
+        help="정상 주차로 인정할 1위 주차면 최소 포함률. 파일럿 실측값을 필수로 받는다.",
+    )
+    parser.add_argument(
         "--blocking-relation-confirm-seconds", type=float, required=True,
         help="이중주차 차단 관계 확정 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
     )
@@ -180,6 +186,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--remap-balance", type=float, default=DEFAULT_REMAP_BALANCE)
+    parser.add_argument(
+        "--crop-left-px", type=int, default=0,
+        help="remap 이후 프레임에서 왼쪽 여백을 잘라낼 픽셀 수. 기본 0(자르지 않음).",
+    )
+    parser.add_argument(
+        "--crop-right-px", type=int, default=0,
+        help="remap 이후 프레임에서 오른쪽 여백을 잘라낼 픽셀 수. 기본 0(자르지 않음).",
+    )
     parser.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO")
     return parser
 
@@ -263,6 +277,9 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         zone_presence_min_overlap_ratio=args.min_overlap_ratio,
         assignment_min_overlap_ratio=args.assignment_min_overlap_ratio,
         assignment_ambiguous_margin=args.assignment_ambiguous_margin,
+        bad_parking_min_primary_overlap_ratio=(
+            args.bad_parking_min_primary_overlap_ratio
+        ),
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
     )
@@ -285,6 +302,9 @@ def build_pipeline(
         camera_id=args.camera_id, path=args.video, start_seconds=args.start_seconds, end_seconds=args.end_seconds
     )
     frame_source = RemapFrameSource(inner=inner, calibration_path=str(args.calibration), balance=args.remap_balance)
+    frame_source = CropFrameSource(
+        inner=frame_source, crop_left_px=args.crop_left_px, crop_right_px=args.crop_right_px
+    )
 
     detector = UltralyticsVehicleTracker(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence

@@ -31,6 +31,7 @@ REQUIRED_THRESHOLD_ARGS = [
     "--trusted-sample-max-gap-seconds", "1.0",
     "--assignment-min-overlap-ratio", "0.5",
     "--assignment-ambiguous-margin", "0.05",
+    "--bad-parking-min-primary-overlap-ratio", "0.75",
     "--blocking-relation-confirm-seconds", "3.0",
     "--blocking-relation-clear-seconds", "3.0",
 ]
@@ -87,6 +88,8 @@ def test_defaults_match_documented_baseline_values():
     assert args.min_overlap_ratio == 0.40
     assert args.movement_epsilon == 0.01
     assert args.remap_balance == 0.5
+    assert args.crop_left_px == 0
+    assert args.crop_right_px == 0
 
 
 def test_defaults_reuse_existing_codebase_values_only():
@@ -104,7 +107,7 @@ def test_defaults_reuse_existing_codebase_values_only():
 
 
 def test_build_policy_passes_every_cli_value_through_unchanged():
-    """CLI가 MonitoringPolicy의 14개 값을 모두 채운다(숨은 기본값 없음)."""
+    """CLI가 MonitoringPolicy의 15개 값을 모두 채운다(숨은 기본값 없음)."""
 
     args = _parse("--min-overlap-ratio", "0.6")
     policy = build_policy(args)
@@ -116,6 +119,7 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.trusted_sample_max_gap_seconds == 1.0
     assert policy.assignment_min_overlap_ratio == 0.5
     assert policy.assignment_ambiguous_margin == 0.05
+    assert policy.bad_parking_min_primary_overlap_ratio == 0.75
     assert policy.zone_presence_min_overlap_ratio == 0.6
     assert policy.entry_zone_min_overlap_ratio == 0.40
     assert policy.parking_confirm_seconds == 600.0

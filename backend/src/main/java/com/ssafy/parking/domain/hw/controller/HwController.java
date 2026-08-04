@@ -58,7 +58,7 @@ public class HwController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody HwTransitionRequest request
     ) {
-        HwPublicationAck ack = hwTransitionService.handleTransition(request);
+        HwPublicationAck ack = hwTransitionService.handleTransition(idempotencyKey, request);
         return ResponseEntity.ok(ApiResponse.success(HttpStatus.OK, "전이가 적용되었습니다.", ack));
     }
 
@@ -68,7 +68,7 @@ public class HwController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody HwExitRequest request
     ) {
-        HwPublicationAck ack = hwTransitionService.handleExit(request);
+        HwPublicationAck ack = hwTransitionService.handleExit(idempotencyKey, request);
         return ResponseEntity.ok(ApiResponse.success(HttpStatus.OK, "출차가 적용되었습니다.", ack));
     }
 }

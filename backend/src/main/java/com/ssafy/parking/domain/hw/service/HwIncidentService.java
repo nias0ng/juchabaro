@@ -33,6 +33,7 @@ public class HwIncidentService {
     private final ParkingZoneRepository parkingZoneRepository;
 
     private final NotificationDispatcher notificationDispatcher;
+    private final InboundIdempotencyService inboundIdempotencyService;
 
     @Transactional
     public HwPublicationAck handle(HwIncidentTransitionRequest req) {
@@ -88,7 +89,8 @@ public class HwIncidentService {
     private HwPublicationAck resolve(HwIncidentTransitionRequest req) {
         ParkingEvent event = parkingEventRepository.findByIncidentId(req.incidentId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.HW_INCIDENT_NOT_FOUND));
-        if (event.getEventStatus() == ParkingEventStatus.RESOLVED) {
+        if (event.getEventStatus() == ParkingEventStatus.RESOLVED
+                || event.getEventStatus() == ParkingEventStatus.DISMISSED) {
             return ack(req, event, "ALREADY_APPLIED");
         }
         event.resolve(toKst(req.occurredAt()));
@@ -104,5 +106,16 @@ public class HwIncidentService {
 
     private LocalDateTime toKst(OffsetDateTime t) {
         return t.atZoneSameInstant(ZoneId.of("Asia/Seoul")).toLocalDateTime();
+    }
+
+    @Transactional
+    public HwPublicationAck handle(String idempotencyKey, HwIncidentTransitionRequest req) {
+        inboundIdempotencyService.record("INCIDENT_TRANSITION", idempotencyKey, req);
+        if ("OPEN".equals(req.transitionType())) {
+            return open(req);
+        } else if ("RESOLVE".equals(req.transitionType())) {
+            return resolve(req);
+        }
+        throw new BusinessException(ErrorCode.HW_INCIDENT_INVALID);
     }
 }

@@ -31,4 +31,11 @@ public class DeviceTokenService {
     public void unregister(Long userId, String token) {
         deviceTokenRepository.deleteByUser_IdAndToken(userId, token);
     }
+
+    @Transactional
+    public void unregisterByToken(String token) {
+        if (token != null && !token.isBlank()) {
+            deviceTokenRepository.deleteByToken(token);
+        }
+    }
 }

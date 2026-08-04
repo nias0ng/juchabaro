@@ -56,11 +56,15 @@ def unknown() -> ObservationStatus:
     )
 
 
-def make_assignment(state: AssignmentState) -> ParkingAssignment:
+def make_assignment(
+    state: AssignmentState,
+    *,
+    confidence: float = 0.9,
+) -> ParkingAssignment:
     return ParkingAssignment(
         state=state,
         representative_footprint=SQUARE,
-        confidence=0.9,
+        confidence=confidence,
         last_stable_at=T0,
         zone_id=(ZoneId(1) if state is AssignmentState.ASSIGNED else None),
         unassigned_reason=(None if state is AssignmentState.ASSIGNED else state.value),
@@ -164,6 +168,7 @@ def make_context(
         parking_assignment=parking_assignment,
         blocking_relations=(),
         zones=ZoneRegistry(zones),
+        bad_parking_min_primary_overlap_ratio=0.75,
         observed_at=T0,
     )
 
@@ -192,6 +197,40 @@ def test_assigned_parked_vehicle_matches_none_of_the_three_predicates() -> None:
         signal.value is IncidentSignalValue.NOT_MATCHED
         for signal in signals.values()
     )
+
+
+def test_assigned_vehicle_below_primary_overlap_matches_bad_parking() -> None:
+    signals = signals_by_rule(
+        make_context(
+            parking_assignment=make_assignment(
+                AssignmentState.ASSIGNED,
+                confidence=0.60,
+            )
+        )
+    )
+
+    assert signals["BAD_PARKING"].value is IncidentSignalValue.MATCHED
+    assert signals["BAD_PARKING"].confirmable is True
+    assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.NOT_MATCHED
+    assert signals["BAD_PARKING"].evidence["assignmentConfidence"] == 0.60
+    assert (
+        signals["BAD_PARKING"].evidence["badParkingMinPrimaryOverlapRatio"]
+        == 0.75
+    )
+
+
+def test_primary_overlap_boundary_is_normal_parking() -> None:
+    signals = signals_by_rule(
+        make_context(
+            parking_assignment=make_assignment(
+                AssignmentState.ASSIGNED,
+                confidence=0.75,
+            )
+        )
+    )
+
+    assert signals["BAD_PARKING"].value is IncidentSignalValue.NOT_MATCHED
+    assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.NOT_MATCHED
 
 
 def test_ambiguous_assignment_matches_only_bad_parking() -> None:
