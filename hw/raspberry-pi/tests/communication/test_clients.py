@@ -60,8 +60,8 @@ def make_backend_request() -> BackendEntryRequest:
     return BackendEntryRequest(
         entry_attempt_id=ENTRY_ATTEMPT_ID,
         recognized_plate_number="12가3456",
-        confidence=0.98,
         entry_time=ENTRY_TIME,
+        ocr_confidence=0.98,
     )
 
 
@@ -110,7 +110,7 @@ def test_backend_client_posts_api_1_and_parses_allow_result() -> None:
         ),
     )
     client = BackendClient(
-        "http://backend:8080",
+        "http://backend:8080/api",
         "backend-api-key",
         timeout_seconds=3.0,
     )
@@ -129,7 +129,7 @@ def test_backend_client_posts_api_1_and_parses_allow_result() -> None:
         name.lower(): value for name, value in sent_request.header_items()
     }
 
-    assert sent_request.full_url == "http://backend:8080/hw/parking/entry"
+    assert sent_request.full_url == "http://backend:8080/api/hw/parking/entry"
     assert sent_request.get_method() == "POST"
     assert sent_headers["x-hw-api-key"] == "backend-api-key"
     assert sent_headers["idempotency-key"] == IDEMPOTENCY_KEY
@@ -141,6 +141,16 @@ def test_backend_client_posts_api_1_and_parses_allow_result() -> None:
     }
     assert mocked_urlopen.call_args.kwargs["timeout"] == 3.0
     assert result == make_backend_result()
+
+
+def test_backend_entry_request_omits_optional_ocr_confidence() -> None:
+    request = BackendEntryRequest(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        recognized_plate_number="12가3456",
+        entry_time=ENTRY_TIME,
+    )
+
+    assert "ocrConfidence" not in request.to_payload()
 
 
 def test_backend_client_parses_review_without_session_context() -> None:
@@ -157,7 +167,7 @@ def test_backend_client_parses_review_without_session_context() -> None:
             status=200,
         ),
     )
-    client = BackendClient("http://backend:8080", "backend-api-key")
+    client = BackendClient("http://backend:8080/api", "backend-api-key")
 
     with patch(
         "src.communication.backend_client.urlopen",
@@ -186,7 +196,7 @@ def test_backend_client_rejects_legacy_flat_result() -> None:
             status=201,
         ),
     )
-    client = BackendClient("http://backend:8080", "backend-api-key")
+    client = BackendClient("http://backend:8080/api", "backend-api-key")
 
     with (
         patch(
@@ -202,7 +212,7 @@ def test_backend_client_rejects_legacy_flat_result() -> None:
 
 
 def test_backend_client_wraps_connection_failure() -> None:
-    client = BackendClient("http://backend:8080", "backend-api-key")
+    client = BackendClient("http://backend:8080/api", "backend-api-key")
 
     with (
         patch(

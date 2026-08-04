@@ -31,6 +31,7 @@ def test_input_acceptance_deduplicates_identical_retry_and_rejects_conflict(
                 input_type="EntryDecision",
                 input_identity="entry-1",
                 input_revision=2,
+                idempotency_key="EntryDecision:entry-1:2",
                 request_payload=b'{"decision":"ALLOW"}',
                 workflow_state="ACCEPTED",
                 accepted_at_us=10,
@@ -40,6 +41,7 @@ def test_input_acceptance_deduplicates_identical_retry_and_rejects_conflict(
                 input_type="EntryDecision",
                 input_identity="entry-1",
                 input_revision=2,
+                idempotency_key="EntryDecision:entry-1:2",
                 request_payload=b'{"decision":"ALLOW"}',
                 workflow_state="IGNORED_ON_RETRY",
                 accepted_at_us=20,
@@ -49,6 +51,7 @@ def test_input_acceptance_deduplicates_identical_retry_and_rejects_conflict(
         assert retry.created is False
         assert retry.record == first.record
         assert retry.record.accepted_at_us == 10
+        assert retry.record.idempotency_key == "EntryDecision:entry-1:2"
 
         with pytest.raises(AcceptedInputConflictError):
             with UnitOfWork(connection):
@@ -56,11 +59,42 @@ def test_input_acceptance_deduplicates_identical_retry_and_rejects_conflict(
                     input_type="EntryDecision",
                     input_identity="entry-1",
                     input_revision=2,
+                    idempotency_key="EntryDecision:entry-1:2",
                     request_payload=b'{"decision":"DENY"}',
                     workflow_state="ACCEPTED",
                 )
 
         assert repository.get("EntryDecision", "entry-1", 2) == first.record
+    finally:
+        connection.close()
+
+
+def test_input_acceptance_rejects_key_reuse_for_another_identity(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    repository = AcceptedInputRepository(connection)
+    try:
+        with UnitOfWork(connection):
+            repository.accept(
+                input_type="EntryReviewResolution",
+                input_identity="entry-1",
+                input_revision=2,
+                idempotency_key="shared-key",
+                request_payload=b'{"resolution":"REVIEW_ALLOW"}',
+                workflow_state="APPLIED",
+            )
+
+        with pytest.raises(AcceptedInputConflictError):
+            with UnitOfWork(connection):
+                repository.accept(
+                    input_type="SessionContextUpdate",
+                    input_identity="55",
+                    input_revision=2,
+                    idempotency_key="shared-key",
+                    request_payload=b'{"contextRevision":2}',
+                    workflow_state="APPLIED",
+                )
     finally:
         connection.close()
 
@@ -73,6 +107,7 @@ def test_repository_writes_require_explicit_unit_of_work(tmp_path: Path) -> None
                 input_type="MoveVerificationCommand",
                 input_identity="request-1",
                 input_revision=1,
+                idempotency_key="MoveVerification:request-1:1",
                 request_payload=b"{}",
                 workflow_state="ACCEPTED",
             )
@@ -104,6 +139,7 @@ def test_input_acceptance_and_outbox_roll_back_atomically(tmp_path: Path) -> Non
                     input_type="SessionContextUpdate",
                     input_identity="entry-9",
                     input_revision=3,
+                    idempotency_key="SessionContextUpdate:entry-9:3",
                     request_payload=b'{"contextRevision":3}',
                     workflow_state="ACCEPTED",
                 )
