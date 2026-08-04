@@ -1,6 +1,6 @@
 """Backend HW publication을 보내고 공통 적용 ACK를 검증한다.
 
-API 6·7·10은 exact outbox payload bytes를 그대로 사용한다. API 8·9·13은
+API 6·7·10·12는 exact outbox payload bytes를 그대로 사용한다. API 8·9는
 communication DTO를 직접 전송하며 application wiring은 이 모듈의 책임이 아니다.
 네트워크·5xx만 retryable로 분류하고, 4xx·계약 위반·payload 충돌은 운영 개입이
 필요한 terminal 실패로 분리한다.
@@ -86,14 +86,7 @@ class BackendClient:
     def publish(self, publication: OutboxRecord) -> PublicationConfirmation:
         """outbox의 exact bytes를 전송하고 aggregate ACK를 교차 검증한다."""
 
-        endpoint = _ENDPOINTS.get(
-            (publication.aggregate_type, publication.transition_type)
-        )
-        if endpoint is None:
-            raise TerminalBackendPublicationError(
-                "unsupported outbound publication: "
-                f"{publication.aggregate_type}/{publication.transition_type}"
-            )
+        endpoint = _resolve_endpoint(publication)
         try:
             response = self._client.post(
                 f"{self._base_url}{endpoint}",
@@ -186,7 +179,7 @@ class BackendClient:
         *,
         idempotency_key: str,
     ) -> PublicationConfirmation:
-        """API 13 이동 확인 결과를 전송한다."""
+        """API 12 이동 확인 결과를 직접 전송한다."""
 
         payload = canonical_json_bytes(request.to_payload())
         response = self._post_json(
@@ -247,6 +240,37 @@ def _parse_confirmation(
         expected_aggregate_id=publication.aggregate_id,
         expected_revision=publication.publication_revision,
         expected_payload_hash=publication.payload_hash,
+    )
+
+
+def _resolve_endpoint(publication: OutboxRecord) -> str:
+    endpoint = _ENDPOINTS.get(
+        (publication.aggregate_type, publication.transition_type)
+    )
+    if endpoint is not None:
+        return endpoint
+    if (
+        publication.aggregate_type == "MoveVerificationAttempt"
+        and publication.transition_type == "VERIFICATION_COMPLETED"
+    ):
+        request_id, separator, verification_attempt = (
+            publication.aggregate_id.partition(":")
+        )
+        if (
+            separator
+            and request_id.isdigit()
+            and int(request_id) > 0
+            and verification_attempt.isdigit()
+            and int(verification_attempt) > 0
+        ):
+            return f"/api/hw/move-requests/{request_id}/verification"
+        raise TerminalBackendPublicationError(
+            "invalid MoveVerificationAttempt aggregate_id: "
+            f"{publication.aggregate_id!r}"
+        )
+    raise TerminalBackendPublicationError(
+        "unsupported outbound publication: "
+        f"{publication.aggregate_type}/{publication.transition_type}"
     )
 
 

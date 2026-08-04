@@ -302,7 +302,7 @@ def test_publish_evidence_unavailable_uses_api_9_contract() -> None:
     }
 
 
-def test_publish_move_verification_uses_api_13_contract() -> None:
+def test_publish_move_verification_uses_api_12_contract() -> None:
     incident_id = IncidentId(
         UUID("1f21d60c-c077-4fb4-a092-7cbdb5fc5a91")
     )
@@ -363,6 +363,48 @@ def test_publish_move_verification_uses_api_13_contract() -> None:
         ],
         "completedAt": None,
     }
+
+
+def test_publish_routes_api_12_outbox_to_request_specific_path() -> None:
+    payload = b'{"publicationRevision":1,"verificationAttempt":3}'
+    publication = OutboxRecord(
+        delivery_id="MoveVerificationAttempt:201:3:1",
+        aggregate_type="MoveVerificationAttempt",
+        aggregate_id="201:3",
+        destination="backend",
+        publication_revision=1,
+        transition_type="VERIFICATION_COMPLETED",
+        payload=payload,
+        payload_hash=hashlib.sha256(payload).hexdigest(),
+        idempotency_key="MoveVerificationAttempt:201:3:1",
+        delivery_state=DeliveryState.IN_FLIGHT,
+        attempt_count=1,
+        next_attempt_at_us=None,
+        last_error=None,
+        created_at_us=1,
+        updated_at_us=2,
+        confirmed_at_us=None,
+        record_version=2,
+    )
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_ack(publication))
+
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.publish(publication)
+    finally:
+        client.close()
+
+    assert captured[0].url.path == "/api/hw/move-requests/201/verification"
+    assert captured[0].content == payload
+    assert captured[0].headers["idempotency-key"] == publication.idempotency_key
 
 
 def _publication(

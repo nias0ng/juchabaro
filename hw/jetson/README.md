@@ -150,6 +150,21 @@ identity·revision을 다른 payload에 사용하면 `409 IDEMPOTENCY_CONFLICT`�
 여기서 `APPLIED`는 API 11의 현장 재확인 완료가 아니라 command가 Jetson의
 durable workflow에 반영됐다는 의미다.
 
+접수된 command는 별도 실행 worker가 `ACCEPTED → CHECKING → COMPLETED`로
+처리한다. API 11 접수 이후의 최신 Incident가 `OPEN`이고 관측이 정상이라면
+`STILL_ACTIVE`, 모든 대상이 `RESOLVED`라면 `RESOLVED`다. `CLEAR_PENDING`,
+관측 불가, 접수 전의 오래된 관측은 `deadlineAt`까지 다시 확인하고 끝까지
+확정되지 않으면 `UNKNOWN`으로 완료한다.
+완료 상태와 아래 API 12 outbox 레코드는 한 SQLite transaction에 저장한다.
+
+```text
+POST /api/hw/move-requests/{requestId}/verification
+Idempotency-Key: MoveVerificationAttempt:{requestId}:{verificationAttempt}:{publicationRevision}
+```
+
+process가 중단돼도 `CHECKING` command를 다음 기동에서 다시 읽으며, API 12의
+네트워크·5xx 실패는 기존 outbox backoff 정책으로 같은 key와 payload를 재전송한다.
+
 ```json
 {
   "httpStatus": "ACCEPTED",

@@ -807,6 +807,18 @@ class MoveVerificationAttemptRepository:
             else None
         )
 
+    def list_non_terminal(self) -> tuple[MoveVerificationAttempt, ...]:
+        """실행 또는 재시작 복구가 필요한 command를 접수 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM move_verification_attempts
+            WHERE domain_state IN ('ACCEPTED', 'CHECKING')
+            ORDER BY accepted_at_us, request_id, verification_attempt
+            """
+        ).fetchall()
+        return tuple(_move_verification_attempt_from_row(row) for row in rows)
+
     def add(self, attempt: MoveVerificationAttempt) -> None:
         """신규 ACCEPTED command를 추가한다. 같은 identity는 conflict다."""
 
@@ -872,6 +884,124 @@ class MoveVerificationAttemptRepository:
             raise MoveVerificationAttemptConflictError(
                 "MoveVerificationAttempt identity 또는 state가 충돌합니다."
             ) from error
+
+    def save(
+        self,
+        attempt: MoveVerificationAttempt,
+        *,
+        expected_record_version: int,
+    ) -> None:
+        """실행 상태와 immutable 결과를 optimistic update한다."""
+
+        from src.communication.models import MoveVerificationState
+
+        require_write_transaction(self._connection)
+        if attempt.record_version != expected_record_version + 1:
+            raise ValueError(
+                "attempt.record_version must be exactly one greater than "
+                "expected_record_version"
+            )
+        existing = self.get(
+            attempt.request_id,
+            attempt.verification_attempt,
+        )
+        if existing is None:
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt를 찾을 수 없습니다."
+            )
+        immutable_fields = (
+            "subject_physical_vehicle_id",
+            "target_incident_ids",
+            "command_payload_hash",
+            "deadline_at",
+            "accepted_at",
+        )
+        if any(
+            getattr(attempt, field_name) != getattr(existing, field_name)
+            for field_name in immutable_fields
+        ):
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt command scope는 변경할 수 없습니다."
+            )
+        allowed_states = {
+            MoveVerificationState.ACCEPTED: {
+                MoveVerificationState.CHECKING,
+                MoveVerificationState.CANCELED,
+                MoveVerificationState.FAILED,
+            },
+            MoveVerificationState.CHECKING: {
+                MoveVerificationState.COMPLETED,
+                MoveVerificationState.CANCELED,
+                MoveVerificationState.FAILED,
+            },
+        }
+        if attempt.state not in allowed_states.get(existing.state, set()):
+            raise MoveVerificationAttemptConflictError(
+                f"허용되지 않은 MoveVerificationAttempt 전이입니다: "
+                f"{existing.state.value} -> {attempt.state.value}"
+            )
+
+        results_payload = (
+            json.dumps(
+                [
+                    {
+                        "incidentId": uuid_to_text(item.incident_id),
+                        "incidentPublicationRevision": (
+                            item.incident_publication_revision
+                        ),
+                        "result": item.result.value,
+                    }
+                    for item in attempt.incident_results
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if attempt.incident_results
+            else None
+        )
+        try:
+            cursor = self._connection.execute(
+                """
+                UPDATE move_verification_attempts
+                SET domain_state = ?, result = ?,
+                    per_incident_results_payload = ?, termination_reason = ?,
+                    publication_revision = ?, updated_at_us = ?,
+                    completed_at_us = ?, record_version = ?
+                WHERE request_id = ? AND verification_attempt = ?
+                  AND record_version = ?
+                """,
+                (
+                    attempt.state.value,
+                    (
+                        attempt.result.value
+                        if attempt.result is not None
+                        else None
+                    ),
+                    results_payload,
+                    attempt.terminal_reason,
+                    attempt.publication_revision,
+                    datetime_to_epoch_microseconds(attempt.updated_at),
+                    (
+                        datetime_to_epoch_microseconds(attempt.completed_at)
+                        if attempt.completed_at is not None
+                        else None
+                    ),
+                    attempt.record_version,
+                    int(attempt.request_id),
+                    attempt.verification_attempt,
+                    expected_record_version,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt update가 durable state 계약을 위반했습니다."
+            ) from error
+        if cursor.rowcount != 1:
+            raise OptimisticConcurrencyError(
+                "MoveVerificationAttempt가 없거나 더 최신 version입니다: "
+                f"{int(attempt.request_id)}:{attempt.verification_attempt}"
+            )
 
 
 class PendingHandoffRepository:

@@ -28,6 +28,10 @@ from src.application.entry_review_resolution_intake import (
 )
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
+from src.application.move_verification_executor import (
+    MoveVerificationExecutor,
+    MoveVerificationExecutorWorker,
+)
 from src.application.move_verification_intake import MoveVerificationIntake
 from src.application.outbox_publisher import (
     OutboxPublisher,
@@ -134,6 +138,14 @@ def create_app(
             monitoring_worker = MonitoringWorker(pipeline)
         application.state.monitoring_worker = monitoring_worker
 
+        move_verification_worker = MoveVerificationExecutorWorker(
+            MoveVerificationExecutor(
+                connection_factory=connection_factory,
+                publication_preparer=publication_preparer,
+            )
+        )
+        application.state.move_verification_worker = move_verification_worker
+
         outbox_publisher_worker: OutboxPublisherWorker | None = None
         if resolved_settings.backend_hw_api_key.strip():
             outbox_publisher_worker = OutboxPublisherWorker(
@@ -151,10 +163,12 @@ def create_app(
             # publication을 보내기 시작한다.
             if monitoring_worker is not None:
                 monitoring_worker.start()
+            move_verification_worker.start()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.start()
             yield
         finally:
+            move_verification_worker.stop()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.stop()
             if monitoring_worker is not None:

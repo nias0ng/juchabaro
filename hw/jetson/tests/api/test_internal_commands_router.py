@@ -487,7 +487,7 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
             "BAD_PARKING",
         ),
         physical_vehicle_id=PHYSICAL_VEHICLE_ID,
-        state=IncidentState.CANDIDATE,
+        state=IncidentState.OPEN,
         observation=observation,
         confirm_trusted_seconds=0.0,
         clear_trusted_seconds=0.0,
@@ -495,10 +495,12 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
         clear_duration_seconds=3.0,
         trusted_sample_max_gap_seconds=1.0,
         record_version=1,
-        publication_revision=0,
+        publication_revision=1,
         first_observed_at=ENTRY_TIME,
         created_at=ENTRY_TIME,
         updated_at=ENTRY_TIME,
+        entry_attempt_id=EntryAttemptId(ENTRY_ATTEMPT_ID),
+        confirmed_at=ENTRY_TIME,
     )
     connection = connect_database(database_path)
     try:

@@ -20,7 +20,7 @@ from src.communication.models import (
     MoveVerificationCommandInput,
     MoveVerificationState,
 )
-from src.parking.models import Incident, IncidentId
+from src.parking.models import Incident, IncidentId, IncidentState
 from src.storage.aggregate_repositories import IncidentRepository
 from src.storage.codecs import datetime_from_epoch_microseconds
 from src.storage.repositories import (
@@ -122,6 +122,19 @@ class MoveVerificationIntake:
                 if len(subject_ids) != 1:
                     raise MoveVerificationCommandConflictError(
                         "모든 target Incident는 같은 subject PhysicalVehicle이어야 합니다."
+                    )
+                if any(
+                    incident.publication_revision < 1
+                    or incident.state
+                    not in {
+                        IncidentState.OPEN,
+                        IncidentState.CLEAR_PENDING,
+                        IncidentState.RESOLVED,
+                    }
+                    for incident in incidents
+                ):
+                    raise MoveVerificationCommandConflictError(
+                        "target Incident는 Backend에 공개된 Incident여야 합니다."
                     )
 
                 accepted_at = datetime_from_epoch_microseconds(

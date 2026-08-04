@@ -1,4 +1,4 @@
-"""Backend로 직접 전송하는 evidence·verification wire 요청 DTO.
+"""Backend로 전송하는 evidence·verification wire 요청 DTO.
 
 이 모듈은 API 8·9·13의 camelCase payload와 전송 전 계약 검증만 소유한다.
 capture, spool 상태 전이, verification 실행과 outbox enqueue는 담당하지 않는다.
@@ -136,7 +136,7 @@ class EvidenceUnavailableRequest:
 
 @dataclass(frozen=True, kw_only=True)
 class MoveVerificationResultRequest:
-    """API 13의 전체·Incident별 이동 확인 결과 JSON 요청."""
+    """API 12의 전체·Incident별 이동 확인 결과 JSON 요청."""
 
     request_id: int
     verification_attempt: int
