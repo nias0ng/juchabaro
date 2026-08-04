@@ -309,7 +309,6 @@ export function toRequestListItemDisplay(item: MoveRequestListItem): RequestList
     situationLabel,
     closedSummary,
     dueAt: status === 'RESPONDED' ? item.dueAt : undefined,
-    respondedAt: status === 'RESPONDED' ? item.respondedAt : undefined,
     estimatedMinutes: status === 'RESPONDED' ? item.estimatedMinutes : undefined,
   };
 }

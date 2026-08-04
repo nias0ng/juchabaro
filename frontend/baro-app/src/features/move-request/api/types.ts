@@ -114,9 +114,12 @@ export type MoveRequestSummary = {
   requestType: MoveRequestType;
   requestStatus: MoveRequestStatus;
   eventType: MoveEventType;
+  zoneNumber: string | null; // 구역 외 주차면이면 null
   message: string | null;
   requestedAt: string;
   dueAt: string | null;
+  resolvedAt: string | null; // COMPLETED 전에는 null
+  estimatedMinutes: number | null; // 응답 전이거나 CANNOT_MOVE_NOW면 null
   reminderCount: number;
 };
 
@@ -129,11 +132,5 @@ export type MoveRequestListResult = {
   totalPages: number;
 };
 
-// 목록 API(MoveRequestSummary)엔 없는 구역/응답시간/완료시각을 상세 조회로 채운 목록 항목.
-// 상세 조회가 실패한 항목은 이 필드들이 전부 null로 남는다(카드 쪽에서 없는 값으로 처리).
-export type MoveRequestListItem = MoveRequestSummary & {
-  zoneNumber: string | null;
-  estimatedMinutes: number | null;
-  respondedAt: string | null;
-  resolvedAt: string | null;
-};
+// 목록 화면(E-04) 카드가 그대로 쓰는 목록 항목. 목록 API가 카드에 필요한 필드를 전부 내려준다.
+export type MoveRequestListItem = MoveRequestSummary;

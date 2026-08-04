@@ -36,7 +36,7 @@ export default function MyPageScreen() {
 
         <Stack gap={Spacing.base + 2}>
           <ProfileSummaryCard
-            name={user?.nickname ?? ''}
+            name={user?.name ?? ''}
             meta={meta}
             statusLabel={user ? STATUS_LABEL[user.status] : undefined}
           />

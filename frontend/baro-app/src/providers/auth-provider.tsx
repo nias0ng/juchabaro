@@ -21,7 +21,7 @@ type AuthStatus = 'loading' | 'guest' | 'authenticated';
 // buildingNumber/unitNumber는 GET /api/users/me 명세 기준 관리자는 null일 수 있다.
 type AuthUser = {
   userId: number;
-  nickname: string;
+  name: string;
   role: UserRole;
   buildingNumber: string | null;
   unitNumber: string | null;
@@ -43,7 +43,7 @@ type AuthContextValue = {
 function toAuthUser(profile: UserProfile): AuthUser {
   return {
     userId: profile.userId,
-    nickname: profile.name,
+    name: profile.name,
     role: profile.role,
     buildingNumber: profile.buildingNumber,
     unitNumber: profile.unitNumber,
