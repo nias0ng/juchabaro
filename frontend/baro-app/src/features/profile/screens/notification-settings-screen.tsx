@@ -1,12 +1,19 @@
 import { useState } from 'react';
+import { ActivityIndicator, Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
-import { ChannelSelectCard } from '@/features/profile/components/notification-settings/channel-select-card';
+import {
+  AppButton,
+  FormErrorBanner,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  Stack,
+} from '@/components/ui';
 import { NotificationToggleRow } from '@/features/profile/components/notification-settings/notification-toggle-row';
 import { QuietHoursCard } from '@/features/profile/components/notification-settings/quiet-hours-card';
 import { QuietHoursTimePickerModal } from '@/features/profile/components/notification-settings/quiet-hours-time-picker-modal';
 import { useNotificationSettings } from '@/features/profile/hooks/use-notification-settings';
-import { Spacing } from '@/styles';
+import { Palette, Spacing } from '@/styles';
 
 import { styles } from './notification-settings-screen.styles';
 
@@ -15,10 +22,13 @@ type EditingField = 'start' | 'end' | null;
 export default function NotificationSettingsScreen() {
   const {
     settings,
+    isLoading,
+    isSaving,
+    loadErrorMessage,
+    saveErrorMessage,
+    reload,
     setResponseReminder,
     setEvOverstay,
-    setOfficeNotice,
-    setChannel,
     setQuietHoursStart,
     setQuietHoursEnd,
   } = useNotificationSettings();
@@ -36,40 +46,54 @@ export default function NotificationSettingsScreen() {
         <ScreenHeader title="알림 설정" />
 
         <Stack gap={Spacing.base + 2} style={styles.content}>
-          <Stack style={styles.toggleCard}>
-            <NotificationToggleRow
-              label="이동 요청 수신"
-              subtitle="끌 수 없는 필수 알림"
-              value={settings.moveRequestReceive}
-              onChange={() => {}}
-              disabled
-            />
-            <NotificationToggleRow
-              label="요청 응답 · 재알림"
-              value={settings.responseReminder}
-              onChange={setResponseReminder}
-            />
-            <NotificationToggleRow
-              label="충전구역 시간 알림"
-              value={settings.evOverstay}
-              onChange={setEvOverstay}
-            />
-            <NotificationToggleRow
-              label="관리사무소 공지"
-              value={settings.officeNotice}
-              onChange={setOfficeNotice}
-              bordered={false}
-            />
-          </Stack>
+          {isLoading ? (
+            <View style={styles.stateContainer}>
+              <ActivityIndicator color={Palette.violet600} />
+              <Text style={styles.stateText}>알림 설정을 불러오는 중입니다</Text>
+            </View>
+          ) : loadErrorMessage ? (
+            <Stack gap={Spacing.md}>
+              <FormErrorBanner message={loadErrorMessage} />
+              <AppButton label="다시 불러오기" variant="muted" size="md" onPress={() => void reload()} />
+            </Stack>
+          ) : (
+            <>
+              {saveErrorMessage ? <FormErrorBanner message={saveErrorMessage} /> : null}
 
-          <QuietHoursCard
-            startLabel={settings.quietHoursStart}
-            endLabel={settings.quietHoursEnd}
-            onPressStart={() => setEditingField('start')}
-            onPressEnd={() => setEditingField('end')}
-          />
+              <Stack style={styles.toggleCard}>
+                <NotificationToggleRow
+                  label="이동 요청 수신"
+                  subtitle="끌 수 없는 필수 알림"
+                  value={settings.moveRequestReceive}
+                  onChange={() => {}}
+                  disabled
+                />
+                <NotificationToggleRow
+                  label="재알림 받기"
+                  value={settings.responseReminder}
+                  onChange={setResponseReminder}
+                  disabled={isSaving}
+                />
+                <NotificationToggleRow
+                  label="충전구역 시간 초과 알림"
+                  value={settings.evOverstay}
+                  onChange={setEvOverstay}
+                  disabled={isSaving}
+                  bordered={false}
+                />
+              </Stack>
 
-          <ChannelSelectCard value={settings.channel} onChange={setChannel} />
+              <QuietHoursCard
+                startLabel={settings.quietHoursStart}
+                endLabel={settings.quietHoursEnd}
+                disabled={isSaving}
+                onPressStart={() => setEditingField('start')}
+                onPressEnd={() => setEditingField('end')}
+              />
+
+              {isSaving ? <Text style={styles.savingText}>변경사항을 저장하는 중입니다...</Text> : null}
+            </>
+          )}
         </Stack>
 
         <QuietHoursTimePickerModal

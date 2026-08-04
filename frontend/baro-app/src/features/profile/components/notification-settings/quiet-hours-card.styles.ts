@@ -30,6 +30,9 @@ export const styles = StyleSheet.create({
   timeBoxPressed: {
     backgroundColor: '#ecebf7',
   },
+  timeBoxDisabled: {
+    opacity: 0.6,
+  },
   timeLabel: {
     fontSize: 11,
     color: Palette.gray400,
