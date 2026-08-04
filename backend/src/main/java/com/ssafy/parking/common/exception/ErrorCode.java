@@ -202,6 +202,11 @@ public enum ErrorCode {
             "재알림을 보낼 이동 요청이 없습니다."
     ),
 
+    HW_IDEMPOTENCY_CONFLICT(
+            HttpStatus.CONFLICT,
+            "동일한 Idempotency-Key로 다른 요청이 이미 처리되었습니다."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
