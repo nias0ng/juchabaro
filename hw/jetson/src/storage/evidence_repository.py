@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from src.domain.models import DeliveryState
+from src.domain.models import DeliveryState, require_aware
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
@@ -168,6 +168,62 @@ class EvidenceArtifactRepository:
             (uuid_to_text(incident_id),),
         ).fetchone()
         return int(row[0])
+
+    def list_for_incident(
+        self,
+        incident_id: IncidentId,
+    ) -> tuple[EvidenceArtifact, ...]:
+        """한 Incident에 예약된 artifact를 capture 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM evidence_artifacts
+            WHERE incident_id = ?
+            ORDER BY captured_at_us, evidence_id
+            """,
+            (uuid_to_text(incident_id),),
+        ).fetchall()
+        return tuple(_artifact_from_row(row) for row in rows)
+
+    def bind_publication_revision_for_incident(
+        self,
+        incident_id: IncidentId,
+        *,
+        publication_revision: int,
+        bound_at: datetime,
+    ) -> int:
+        """아직 local-only인 evidence를 Incident OPEN revision에 결속한다.
+
+        correlation이 늦은 Incident는 정지 이미지를 먼저 보관하고 API 7 OPEN이
+        materialize되는 transaction에서 revision을 확정한다. 이미 결속된 artifact는
+        같은 호출을 반복해도 변경하지 않는다.
+        """
+
+        require_write_transaction(self._connection)
+        if publication_revision < 1:
+            raise ValueError("publication_revision must be positive")
+        require_aware(bound_at, "bound_at")
+
+        bound = 0
+        for artifact in self.list_for_incident(incident_id):
+            if artifact.publication_revision is not None:
+                if artifact.publication_revision != publication_revision:
+                    raise EvidenceArtifactConflictError(
+                        "Incident evidence is already bound to another publication revision"
+                    )
+                continue
+            replacement = replace(
+                artifact,
+                publication_revision=publication_revision,
+                record_version=artifact.record_version + 1,
+                updated_at=max(artifact.updated_at, bound_at),
+            )
+            self.save(
+                replacement,
+                expected_record_version=artifact.record_version,
+            )
+            bound += 1
+        return bound
 
     def byte_size_for_incident(
         self,

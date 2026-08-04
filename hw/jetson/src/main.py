@@ -49,6 +49,7 @@ from src.communication.backend_publication_preparer import (
     BackendPublicationPreparer,
 )
 from src.config.settings import Settings, get_settings
+from src.evidence.capture import EvidenceCaptureCoordinator
 from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
@@ -66,6 +67,7 @@ class RuntimeContext:
     zones: ZoneRegistry
     connection_factory: DatabaseConnectionFactory
     publication_preparer: BackendPublicationPreparer
+    evidence_capture_coordinator: EvidenceCaptureCoordinator
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
@@ -128,6 +130,21 @@ def create_app(
         application.state.database_connection_factory = connection_factory
         publication_preparer = BackendPublicationPreparer()
         application.state.publication_preparer = publication_preparer
+        evidence_capture_coordinator = EvidenceCaptureCoordinator(
+            connection_factory=connection_factory,
+            zones=zones,
+            spool_path=resolved_settings.evidence_spool_path,
+            spool_cap_bytes=resolved_settings.evidence_spool_cap_bytes,
+            filesystem_floor_ratio=(
+                resolved_settings.evidence_filesystem_floor_ratio
+            ),
+            capture_stop_free_ratio=(
+                resolved_settings.evidence_capture_stop_free_ratio
+            ),
+        )
+        application.state.evidence_capture_coordinator = (
+            evidence_capture_coordinator
+        )
 
         monitoring_worker: MonitoringWorker | None = None
         if monitoring_pipeline_factory is not None:
@@ -137,8 +154,18 @@ def create_app(
                     zones=zones,
                     connection_factory=connection_factory,
                     publication_preparer=publication_preparer,
+                    evidence_capture_coordinator=(
+                        evidence_capture_coordinator
+                    ),
                 )
             )
+            if (
+                isinstance(pipeline, MonitoringPipeline)
+                and not pipeline.has_evidence_capture_sink
+            ):
+                pipeline.bind_evidence_capture_sink(
+                    evidence_capture_coordinator
+                )
             monitoring_worker = MonitoringWorker(pipeline)
         application.state.monitoring_worker = monitoring_worker
 
@@ -190,6 +217,10 @@ def create_app(
             # publication을 보내기 시작한다.
             if evidence_publication_worker is not None:
                 evidence_publication_worker.start()
+            else:
+                # Backend key가 없어 publisher를 끈 현장도 interrupted local
+                # JPEG를 다음 capture 전 일관된 FAILED/READY 상태로 만든다.
+                evidence_capture_coordinator.recover()
             if monitoring_worker is not None:
                 monitoring_worker.start()
             move_verification_worker.start()

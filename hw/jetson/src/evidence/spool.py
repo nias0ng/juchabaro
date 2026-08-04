@@ -307,6 +307,36 @@ class EvidenceSpool:
             self._save(ready, expected_record_version=writing.record_version)
             return ready
 
+    def fail_reservation(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        error: str,
+        disposition: EvidenceRetentionDisposition = (
+            EvidenceRetentionDisposition.LOST_OR_CORRUPTED
+        ),
+        now: datetime | None = None,
+    ) -> EvidenceArtifact:
+        """JPEG 생성 전에 실패한 RESERVED capture를 durable loss로 남긴다."""
+
+        if not error:
+            raise ValueError("error must not be empty")
+        at = now or _utc_now()
+        with self._lock:
+            artifact = self._require_artifact(evidence_id)
+            if artifact.state is EvidenceState.FAILED:
+                return artifact
+            if artifact.state is not EvidenceState.RESERVED:
+                raise EvidenceStateError(
+                    f"evidence {evidence_id} is {artifact.state.value}, not RESERVED"
+                )
+            return self._mark_failed(
+                artifact,
+                at=at,
+                error=error,
+                disposition=disposition,
+            )
+
     def recover(self, *, now: datetime | None = None) -> EvidenceRecoveryReport:
         """Worker start 전에 interrupted write·upload·eviction을 reconciliation한다."""
 

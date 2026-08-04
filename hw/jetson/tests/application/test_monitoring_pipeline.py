@@ -27,7 +27,12 @@ VEHICLE_ID = PhysicalVehicleId(
 OBSERVED_AT = datetime(2026, 8, 2, tzinfo=timezone.utc)
 
 
-def _result(*, retired=(), active_incidents=()) -> FrameObservationResult:
+def _result(
+    *,
+    retired=(),
+    active_incidents=(),
+    evidence_capture_intents=(),
+) -> FrameObservationResult:
     return FrameObservationResult(
         parking_result=ParkingPipelineResult(
             zone_visit_updates=(),
@@ -36,6 +41,7 @@ def _result(*, retired=(), active_incidents=()) -> FrameObservationResult:
         ),
         retired_physical_vehicle_ids=retired,
         active_incidents=active_incidents,
+        evidence_capture_intents=evidence_capture_intents,
     )
 
 
@@ -137,10 +143,12 @@ class _FrameWorkflow:
         *,
         retired=(),
         active_incidents=(),
+        evidence_capture_intents=(),
     ) -> None:
         self.results: list[FrameObservationResult] = []
         self.retired = retired
         self.active_incidents = active_incidents
+        self.evidence_capture_intents = evidence_capture_intents
         self.batches: list[object] = []
         self.connections: list[_Connection] = []
         self.recovery_connections: list[_Connection] = []
@@ -158,6 +166,7 @@ class _FrameWorkflow:
         result = _result(
             retired=self.retired,
             active_incidents=self.active_incidents,
+            evidence_capture_intents=self.evidence_capture_intents,
         )
         self.results.append(result)
         return result
@@ -170,6 +179,7 @@ def _pipeline(
     *,
     actuator_command_planner=None,
     actuator_port=None,
+    evidence_capture_sink=None,
 ) -> MonitoringPipeline:
     return MonitoringPipeline(
         frame_source=frame_source,
@@ -179,6 +189,7 @@ def _pipeline(
         calibration_reference="pilot-v1",
         actuator_command_planner=actuator_command_planner,
         actuator_port=actuator_port,
+        evidence_capture_sink=evidence_capture_sink,
     )
 
 
@@ -397,6 +408,32 @@ def test_process_next_frame_calls_frame_observer_after_commit() -> None:
     assert observed_batch in workflow.batches
     assert observed_result is result
     assert observed_result is workflow.results[0]
+
+
+def test_process_next_frame_completes_evidence_before_telemetry_observer() -> None:
+    frame = SimpleNamespace(calibration_id="pilot-v1")
+    workflow = _FrameWorkflow(evidence_capture_intents=("capture-intent",))
+    order: list[str] = []
+
+    class _CaptureSink:
+        def capture(self, captured_frame, batch, intents) -> None:
+            assert captured_frame is frame
+            assert batch in workflow.batches
+            assert intents == ("capture-intent",)
+            order.append("capture")
+
+    pipeline = _pipeline(
+        _FrameSource([frame]),
+        _TrackingPipeline(),
+        workflow,
+        evidence_capture_sink=_CaptureSink(),
+    )
+
+    pipeline.process_next_frame(
+        frame_observer=lambda *_args: order.append("observer")
+    )
+
+    assert order == ["capture", "observer"]
 
 
 def test_process_next_frame_skips_observer_when_capture_fails() -> None:
