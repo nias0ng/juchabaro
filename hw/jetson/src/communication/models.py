@@ -21,6 +21,11 @@ from src.tracking.models import PhysicalVehicleId
 ParkingEventId = NewType("ParkingEventId", int)
 MoveRequestId = NewType("MoveRequestId", int)
 
+# Backend wire 타입과 Jetson SQLite INTEGER가 공통으로 수용하는 범위다.
+# requestId는 Java Long, verificationAttempt는 Java Integer 계약을 따른다.
+BACKEND_LONG_MAX = (1 << 63) - 1
+BACKEND_INTEGER_MAX = (1 << 31) - 1
+
 
 class EntryAccessDecision(str, Enum):
     """RPi가 전달하는 Backend의 초기 출입 판정."""
@@ -38,9 +43,18 @@ class EntryReviewResolution(str, Enum):
     REVIEW_EXPIRED = "REVIEW_EXPIRED"
 
 
-def _require_positive_int(value: object, field_name: str) -> None:
+def _require_positive_int(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field_name} must be a positive integer")
+    if maximum is not None and value > maximum:
+        raise ValueError(
+            f"{field_name} must not exceed Backend type maximum {maximum}"
+        )
 
 
 @dataclass(frozen=True)
@@ -166,8 +180,16 @@ class MoveVerificationCommandInput:
     deadline_at: datetime
 
     def __post_init__(self) -> None:
-        _require_positive_int(self.request_id, "request_id")
-        _require_positive_int(self.verification_attempt, "verification_attempt")
+        _require_positive_int(
+            self.request_id,
+            "request_id",
+            maximum=BACKEND_LONG_MAX,
+        )
+        _require_positive_int(
+            self.verification_attempt,
+            "verification_attempt",
+            maximum=BACKEND_INTEGER_MAX,
+        )
         if not self.target_incident_ids:
             raise ValueError("target_incident_ids must not be empty")
         if any(
@@ -250,7 +272,16 @@ class MoveVerificationAttempt:
     terminal_reason: str | None = None
 
     def __post_init__(self) -> None:
-        require_positive(self.verification_attempt, "verification_attempt")
+        _require_positive_int(
+            self.request_id,
+            "request_id",
+            maximum=BACKEND_LONG_MAX,
+        )
+        _require_positive_int(
+            self.verification_attempt,
+            "verification_attempt",
+            maximum=BACKEND_INTEGER_MAX,
+        )
         require_positive(self.record_version, "record_version")
         require_non_negative(self.publication_revision, "publication_revision")
         for name in ("accepted_at", "updated_at", "deadline_at", "completed_at"):

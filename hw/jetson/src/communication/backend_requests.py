@@ -15,6 +15,8 @@ from enum import Enum
 from uuid import UUID
 
 from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
     MoveVerificationIncidentResult,
     MoveVerificationResult,
 )
@@ -146,10 +148,15 @@ class MoveVerificationResultRequest:
     completed_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        _require_positive_int(self.request_id, "request_id")
+        _require_positive_int(
+            self.request_id,
+            "request_id",
+            maximum=BACKEND_LONG_MAX,
+        )
         _require_positive_int(
             self.verification_attempt,
             "verification_attempt",
+            maximum=BACKEND_INTEGER_MAX,
         )
         _require_positive_int(
             self.publication_revision,
@@ -205,9 +212,18 @@ def _require_uuid(value: object, field_name: str) -> None:
         raise TypeError(f"{field_name} must be UUID")
 
 
-def _require_positive_int(value: object, field_name: str) -> None:
+def _require_positive_int(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field_name} must be a positive integer")
+    if maximum is not None and value > maximum:
+        raise ValueError(
+            f"{field_name} must not exceed Backend type maximum {maximum}"
+        )
 
 
 def _require_non_negative_int(value: object, field_name: str) -> None:

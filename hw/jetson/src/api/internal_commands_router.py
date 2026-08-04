@@ -31,6 +31,8 @@ from src.application.session_context_update_intake import (
     SessionContextUpdateNotFoundError,
 )
 from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
     EntryReviewResolution,
     EntryReviewResolutionInput,
     EntrySessionContextInput,
@@ -176,11 +178,17 @@ class MoveVerificationPayload(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    request_id: int = Field(alias="requestId", strict=True, gt=0)
+    request_id: int = Field(
+        alias="requestId",
+        strict=True,
+        gt=0,
+        le=BACKEND_LONG_MAX,
+    )
     verification_attempt: int = Field(
         alias="verificationAttempt",
         strict=True,
         gt=0,
+        le=BACKEND_INTEGER_MAX,
     )
     target_incident_ids: tuple[UUID, ...] = Field(
         alias="targetIncidentIds",

@@ -225,7 +225,7 @@ def _require_incident(
     if incident is None:
         raise MoveVerificationExecutionInvariantError(
             "접수된 MoveVerification target Incident가 사라졌습니다: "
-            f"{int(attempt.request_id)}:{attempt.verification_attempt}/{incident_id}"
+            f"{attempt.request_id}:{attempt.verification_attempt}/{incident_id}"
         )
     if incident.physical_vehicle_id != attempt.subject_physical_vehicle_id:
         raise MoveVerificationExecutionInvariantError(

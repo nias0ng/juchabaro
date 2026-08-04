@@ -22,6 +22,8 @@ from src.communication.backend_requests import (
     MoveVerificationResultRequest,
 )
 from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
     MoveVerificationIncidentResult,
     MoveVerificationResult,
 )
@@ -407,6 +409,53 @@ def test_publish_routes_api_12_outbox_to_request_specific_path() -> None:
     assert captured[0].url.path == "/api/hw/move-requests/201/verification"
     assert captured[0].content == payload
     assert captured[0].headers["idempotency-key"] == publication.idempotency_key
+
+
+@pytest.mark.parametrize(
+    "aggregate_id",
+    [
+        f"{BACKEND_LONG_MAX + 1}:1",
+        f"1:{BACKEND_INTEGER_MAX + 1}",
+    ],
+)
+def test_publish_rejects_api_12_identity_outside_backend_types(
+    aggregate_id: str,
+) -> None:
+    payload = b'{"publicationRevision":1,"verificationAttempt":1}'
+    publication = OutboxRecord(
+        delivery_id=f"MoveVerificationAttempt:{aggregate_id}:1",
+        aggregate_type="MoveVerificationAttempt",
+        aggregate_id=aggregate_id,
+        destination="backend",
+        publication_revision=1,
+        transition_type="VERIFICATION_COMPLETED",
+        payload=payload,
+        payload_hash=hashlib.sha256(payload).hexdigest(),
+        idempotency_key=f"MoveVerificationAttempt:{aggregate_id}:1",
+        delivery_state=DeliveryState.IN_FLIGHT,
+        attempt_count=1,
+        next_attempt_at_us=None,
+        last_error=None,
+        created_at_us=1,
+        updated_at_us=2,
+        confirmed_at_us=None,
+        record_version=2,
+    )
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(
+            lambda _request: pytest.fail("invalid publication must not be sent")
+        ),
+    )
+    try:
+        with pytest.raises(
+            TerminalBackendPublicationError,
+            match="invalid MoveVerificationAttempt aggregate_id",
+        ):
+            client.publish(publication)
+    finally:
+        client.close()
 
 
 def _publication(

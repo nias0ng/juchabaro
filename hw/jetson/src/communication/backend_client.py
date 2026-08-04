@@ -21,7 +21,11 @@ from src.communication.backend_requests import (
     MoveVerificationResultRequest,
     canonical_json_bytes,
 )
-from src.communication.models import PublicationApplicationResult
+from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
+    PublicationApplicationResult,
+)
 from src.storage.models import OutboxRecord, PublicationApplicationStatus
 
 
@@ -256,14 +260,22 @@ def _resolve_endpoint(publication: OutboxRecord) -> str:
         request_id, separator, verification_attempt = (
             publication.aggregate_id.partition(":")
         )
+        bounded_request_id = _parse_bounded_positive_decimal(
+            request_id,
+            maximum=BACKEND_LONG_MAX,
+        )
+        bounded_verification_attempt = _parse_bounded_positive_decimal(
+            verification_attempt,
+            maximum=BACKEND_INTEGER_MAX,
+        )
         if (
             separator
-            and request_id.isdigit()
-            and int(request_id) > 0
-            and verification_attempt.isdigit()
-            and int(verification_attempt) > 0
+            and bounded_request_id is not None
+            and bounded_verification_attempt is not None
         ):
-            return f"/api/hw/move-requests/{request_id}/verification"
+            return (
+                f"/api/hw/move-requests/{bounded_request_id}/verification"
+            )
         raise TerminalBackendPublicationError(
             "invalid MoveVerificationAttempt aggregate_id: "
             f"{publication.aggregate_id!r}"
@@ -272,6 +284,25 @@ def _resolve_endpoint(publication: OutboxRecord) -> str:
         "unsupported outbound publication: "
         f"{publication.aggregate_type}/{publication.transition_type}"
     )
+
+
+def _parse_bounded_positive_decimal(
+    value: str,
+    *,
+    maximum: int,
+) -> int | None:
+    """거대한 decimal을 int로 만들기 전에 Backend 타입 범위를 제한한다."""
+
+    if not value or not value.isascii() or not value.isdigit():
+        return None
+    maximum_text = str(maximum)
+    normalized = value.lstrip("0") or "0"
+    if len(normalized) > len(maximum_text):
+        return None
+    if len(normalized) == len(maximum_text) and normalized > maximum_text:
+        return None
+    parsed = int(normalized)
+    return parsed if parsed > 0 else None
 
 
 def _parse_application_confirmation(

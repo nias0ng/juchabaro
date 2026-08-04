@@ -15,6 +15,8 @@ from src.communication.backend_requests import (
     MoveVerificationResultRequest,
 )
 from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
     MoveVerificationIncidentResult,
     MoveVerificationResult,
 )
@@ -108,3 +110,26 @@ def test_move_verification_builds_request_identity_and_results() -> None:
             "incidentPublicationRevision": 2,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("request_id", BACKEND_LONG_MAX + 1),
+        ("verification_attempt", BACKEND_INTEGER_MAX + 1),
+    ],
+)
+def test_move_verification_rejects_values_outside_backend_types(
+    field_name: str,
+    value: int,
+) -> None:
+    arguments = {
+        "request_id": 201,
+        "verification_attempt": 1,
+        "publication_revision": 1,
+        "result": MoveVerificationResult.RESOLVED,
+    }
+    arguments[field_name] = value
+
+    with pytest.raises(ValueError, match="Backend type maximum"):
+        MoveVerificationResultRequest(**arguments)
