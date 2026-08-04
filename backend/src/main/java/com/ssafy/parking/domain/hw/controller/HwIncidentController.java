@@ -41,7 +41,7 @@ public class HwIncidentController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody HwIncidentTransitionRequest request
     ) {
-        HwPublicationAck ack = hwIncidentService.handle(request);
+        HwPublicationAck ack = hwIncidentService.handle(idempotencyKey, request);
         return ResponseEntity.ok(ApiResponse.success(HttpStatus.OK, "사건 전이가 적용되었습니다.", ack));
     }
 
