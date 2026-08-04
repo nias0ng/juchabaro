@@ -1,6 +1,6 @@
 """Backend로 전송하는 evidence·verification wire 요청 DTO.
 
-이 모듈은 API 8·9·13의 camelCase payload와 전송 전 계약 검증만 소유한다.
+이 모듈은 API 8·9·12의 camelCase payload와 전송 전 계약 검증만 소유한다.
 capture, spool 상태 전이, verification 실행과 outbox enqueue는 담당하지 않는다.
 """
 

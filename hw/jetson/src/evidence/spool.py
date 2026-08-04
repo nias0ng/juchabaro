@@ -799,6 +799,10 @@ class EvidenceSpool:
         self._fsync_directory()
 
     def _fsync_directory(self) -> None:
+        # Windows는 directory descriptor open/fsync를 지원하지 않는다. 배포 대상인
+        # Jetson Linux에서는 아래 fsync를 그대로 수행한다.
+        if os.name == "nt":
+            return
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         descriptor = os.open(self._root, flags)
         try:

@@ -118,12 +118,14 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 실제 재식별 근거와 구현은 후속 범위다.
 
 `main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
-outbox publisher와 단일 monitoring thread의 시작·정상 종료 생명주기를
+outbox publisher, evidence publication worker와 단일 monitoring thread의 시작·정상 종료 생명주기를
 소유한다. `BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
-값이 있으면 `BACKEND_BASE_URL`의 API 6·7·10 endpoint로 exact outbox bytes를
-전송한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
-충돌은 `FAILED_TERMINAL`로 격리한다. `APPLIED`와 `ALREADY_APPLIED` ACK는
-payload hash까지 검증한 뒤 14일 delivery receipt로 보존한다.
+값이 있으면 `BACKEND_BASE_URL`로 전송하는 두 worker를 기동한다. outbox publisher는
+API 6·7·10·12의 exact JSON bytes를, evidence publication worker는 API 8·9를
+담당한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
+충돌은 `FAILED_TERMINAL`로 격리한다. outbox의 `APPLIED`와 `ALREADY_APPLIED` ACK는
+payload hash까지 검증한 뒤 14일 delivery receipt로 보존한다. evidence ACK와
+전송 상태는 해당 artifact metadata에 보존한다.
 
 ## Backend → Jetson 내부 API 계약
 
@@ -196,9 +198,24 @@ outbox publisher를 시작하므로 복구 중인 aggregate와 동시에 전송�
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,
 `EVIDENCE_SPOOL_CAP_BYTES`는 8GiB를 넘게 설정할 수 없다. root filesystem
 여유공간이 35% 보다 작아질 write는 새 capture를 중지하고 30%
-보호선을 침범하지 않는다. spool 복구·보존·압박 정리 로직을
-제공하지만 capture·upload·기동 흐름에 배선하는 것은 후속 application
-리팩터링 범위다. 원본 video는 이 spool의 보존 대상이 아니다.
+보호선을 침범하지 않는다. 원본 video는 이 spool의 보존 대상이 아니다.
+
+Evidence publication worker는 기동 시 spool과 중단된 전송을 복구한다.
+전송 가능한 `READY` binary는 API 8로 업로드하고, 보존 만료·저장공간 압박·손상
+등으로 binary를 제공할 수 없는 `FAILED`·`EVICTED` artifact는 API 9로 알린다.
+각 요청의 멱등 키는 아래 형식이며 재시도할 때 같은 key와 exact payload를 유지한다.
+
+```text
+EvidenceArtifact:{evidenceId}:{publicationRevision}
+EvidenceUnavailable:{evidenceId}:{publicationRevision}
+```
+
+네트워크·timeout·5xx는 1초부터 최대 300초까지 지수 backoff로 계속 재시도한다.
+4xx와 ACK 계약 위반은 `FAILED_TERMINAL`로 격리하며 자동 재시도하지 않는다.
+전송 시도·다음 재시도 시각·Backend ACK는 SQLite에 보존하므로 process가
+중단돼도 동일 publication identity로 이어서 처리한다. API 8 직전에 파일 손실이나
+checksum 불일치를 발견하면 해당 binary를 `LOST_OR_CORRUPTED`로 확정하고 API 9로
+전환한다. capture를 실제 Incident workflow에 연결하는 작업은 별도 범위다.
 
 `ABSENCE_CONFIRMATION_SECONDS`는
 ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을

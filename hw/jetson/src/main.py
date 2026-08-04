@@ -26,6 +26,10 @@ from src.application.entry_event_intake import EntryEventIntake
 from src.application.entry_review_resolution_intake import (
     EntryReviewResolutionIntake,
 )
+from src.application.evidence_publication_worker import (
+    EvidencePublicationPublisher,
+    EvidencePublicationWorker,
+)
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
 from src.application.move_verification_executor import (
@@ -146,8 +150,28 @@ def create_app(
         )
         application.state.move_verification_worker = move_verification_worker
 
+        evidence_publication_worker: EvidencePublicationWorker | None = None
         outbox_publisher_worker: OutboxPublisherWorker | None = None
         if resolved_settings.backend_hw_api_key.strip():
+            evidence_publication_worker = EvidencePublicationWorker(
+                EvidencePublicationPublisher(
+                    connection_factory=connection_factory,
+                    client=BackendClient(
+                        base_url=resolved_settings.backend_base_url,
+                        hw_api_key=resolved_settings.backend_hw_api_key,
+                    ),
+                    spool_path=resolved_settings.evidence_spool_path,
+                    spool_cap_bytes=(
+                        resolved_settings.evidence_spool_cap_bytes
+                    ),
+                    filesystem_floor_ratio=(
+                        resolved_settings.evidence_filesystem_floor_ratio
+                    ),
+                    capture_stop_free_ratio=(
+                        resolved_settings.evidence_capture_stop_free_ratio
+                    ),
+                )
+            )
             outbox_publisher_worker = OutboxPublisherWorker(
                 OutboxPublisher(
                     connection_factory=connection_factory,
@@ -157,10 +181,15 @@ def create_app(
                     ),
                 )
             )
+        application.state.evidence_publication_worker = (
+            evidence_publication_worker
+        )
         application.state.outbox_publisher_worker = outbox_publisher_worker
         try:
             # MonitoringPipeline.open()이 durable recovery를 끝낸 뒤 기존·신규
             # publication을 보내기 시작한다.
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.start()
             if monitoring_worker is not None:
                 monitoring_worker.start()
             move_verification_worker.start()
@@ -169,6 +198,8 @@ def create_app(
             yield
         finally:
             move_verification_worker.stop()
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.stop()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.stop()
             if monitoring_worker is not None:

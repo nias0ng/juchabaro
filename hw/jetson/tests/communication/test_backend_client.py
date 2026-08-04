@@ -232,7 +232,7 @@ def test_upload_evidence_uses_multipart_contract() -> None:
                     tzinfo=timezone(timedelta(hours=9)),
                 ),
             ),
-            idempotency_key="EvidenceArtifact:upload:1",
+            idempotency_key=f"EvidenceArtifact:{evidence_id}:1",
         )
     finally:
         client.close()
@@ -240,7 +240,9 @@ def test_upload_evidence_uses_multipart_contract() -> None:
     sent = captured[0]
     assert sent.url.path == f"/api/hw/parking-events/{incident_id}/evidence"
     assert sent.headers["x-hw-api-key"] == "key"
-    assert sent.headers["idempotency-key"] == "EvidenceArtifact:upload:1"
+    assert sent.headers["idempotency-key"] == (
+        f"EvidenceArtifact:{evidence_id}:1"
+    )
     assert sent.headers["content-type"].startswith("multipart/form-data; boundary=")
     assert b'name="file"' in sent.content
     assert b'name="metadata"' in sent.content
@@ -279,7 +281,7 @@ def test_publish_evidence_unavailable_uses_api_9_contract() -> None:
                 publication_revision=1,
                 reason=EvidenceUnavailableReason.STORAGE_PRESSURE,
             ),
-            idempotency_key="EvidenceArtifact:unavailable:1",
+            idempotency_key=f"EvidenceUnavailable:{evidence_id}:1",
         )
     finally:
         client.close()
@@ -290,7 +292,7 @@ def test_publish_evidence_unavailable_uses_api_9_contract() -> None:
     )
     assert sent.headers["x-hw-api-key"] == "key"
     assert sent.headers["idempotency-key"] == (
-        "EvidenceArtifact:unavailable:1"
+        f"EvidenceUnavailable:{evidence_id}:1"
     )
     assert json.loads(sent.content) == {
         "evidenceId": str(evidence_id),
