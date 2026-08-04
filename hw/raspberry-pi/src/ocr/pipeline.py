@@ -254,25 +254,47 @@ class PlateOcrPipeline:
         frame_by_index: dict[int, CapturedFrame],
         anchor_indices: tuple[int, int],
     ) -> list[DetectedPlate]:
-        """두 anchor의 후보를 호출·반환 순서대로 평탄화한다."""
+        """두 anchor를 탐지하고 1번 미검출 시 0번을 대신 사용한다."""
 
-        detections: list[DetectedPlate] = []
+        earlier_frame_index, later_frame_index = anchor_indices
+        earlier_candidates = self._detect_frame(
+            frame_by_index,
+            earlier_frame_index,
+        )
 
-        # 첫 anchor의 정상 미검출(빈 tuple)과 무관하게 두 번째도 실행해
-        # single-anchor fallback 가능성을 유지한다.
-        for frame_index in anchor_indices:
-            candidates = self._detector.detect(
-                frame_by_index[frame_index]
+        # 품질 점수로 1번을 골랐어도 번호판 검출에는 0번이 더 나을 수 있다.
+        # 정상 미검출에만 fallback하며 모델 실행 오류는 기존대로 전파한다.
+        if not earlier_candidates and earlier_frame_index == 1:
+            earlier_candidates = self._detect_frame(
+                frame_by_index,
+                0,
             )
-            for candidate in candidates:
-                self._validate_matching_frame_index(
-                    component="detector",
-                    actual=candidate.frame_index,
-                    expected=frame_index,
-                )
-                detections.append(candidate)
 
-        return detections
+        # earlier anchor의 미검출과 무관하게 마지막 anchor도 실행해
+        # single-anchor geometry fallback 가능성을 유지한다.
+        later_candidates = self._detect_frame(
+            frame_by_index,
+            later_frame_index,
+        )
+        return [*earlier_candidates, *later_candidates]
+
+    def _detect_frame(
+        self,
+        frame_by_index: dict[int, CapturedFrame],
+        frame_index: int,
+    ) -> tuple[DetectedPlate, ...]:
+        """한 프레임의 후보를 탐지하고 반환 frame index를 검증한다."""
+
+        candidates = self._detector.detect(
+            frame_by_index[frame_index]
+        )
+        for candidate in candidates:
+            self._validate_matching_frame_index(
+                component="detector",
+                actual=candidate.frame_index,
+                expected=frame_index,
+            )
+        return candidates
 
     def _estimate_quads(
         self,
