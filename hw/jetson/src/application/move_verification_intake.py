@@ -9,10 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.communication.models import (
+    InboundApplicationResult,
     MoveRequestId,
     MoveVerificationAttempt,
     MoveVerificationCommandInput,
@@ -22,6 +24,7 @@ from src.parking.models import Incident, IncidentId
 from src.storage.aggregate_repositories import IncidentRepository
 from src.storage.codecs import datetime_from_epoch_microseconds
 from src.storage.repositories import (
+    AcceptanceResult,
     AcceptedInputRepository,
     MoveVerificationAttemptRepository,
 )
@@ -29,6 +32,11 @@ from src.storage.unit_of_work import UnitOfWork
 
 
 _ACCEPTED_INPUT_TYPE = "MoveVerificationCommand"
+VerificationClock = Callable[[], datetime]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class MoveVerificationIncidentNotFoundError(LookupError):
@@ -45,12 +53,15 @@ class MoveVerificationAcceptance:
 
     request_id: MoveRequestId
     verification_attempt: int
-    created: bool
+    application_result: InboundApplicationResult
     accepted_at: datetime
 
 
 class MoveVerificationIntake:
     """같은 PhysicalVehicle의 Incident 재확인 command를 한 번만 적재한다."""
+
+    def __init__(self, *, clock: VerificationClock = _utc_now) -> None:
+        self._clock = clock
 
     def receive(
         self,
@@ -70,15 +81,28 @@ class MoveVerificationIntake:
         attempt_repository = MoveVerificationAttemptRepository(connection)
 
         with UnitOfWork(connection):
+            latest = attempt_repository.get_latest(request_id)
+            is_stale = (
+                command.deadline_at < self._clock()
+                or (
+                    latest is not None
+                    and command.verification_attempt
+                    < latest.verification_attempt
+                )
+            )
             acceptance = AcceptedInputRepository(connection).accept(
                 input_type=_ACCEPTED_INPUT_TYPE,
                 input_identity=str(int(request_id)),
                 input_revision=command.verification_attempt,
+                idempotency_key=idempotency_key,
                 request_payload=request_payload,
-                workflow_state="MOVE_VERIFICATION_ACCEPTED",
+                workflow_state=(
+                    "MOVE_VERIFICATION_STALE"
+                    if is_stale
+                    else "MOVE_VERIFICATION_ACCEPTED"
+                ),
             )
-            if acceptance.created:
-                latest = attempt_repository.get_latest(request_id)
+            if acceptance.created and not is_stale:
                 if (
                     latest is not None
                     and command.verification_attempt
@@ -124,11 +148,21 @@ class MoveVerificationIntake:
         return MoveVerificationAcceptance(
             request_id=request_id,
             verification_attempt=command.verification_attempt,
-            created=acceptance.created,
+            application_result=_application_result(acceptance),
             accepted_at=datetime_from_epoch_microseconds(
                 acceptance.record.accepted_at_us
             ),
-        )
+    )
+
+
+def _application_result(
+    acceptance: AcceptanceResult,
+) -> InboundApplicationResult:
+    if acceptance.record.workflow_state == "MOVE_VERIFICATION_STALE":
+        return InboundApplicationResult.STALE
+    if not acceptance.created:
+        return InboundApplicationResult.ALREADY_APPLIED
+    return InboundApplicationResult.APPLIED
 
 
 def _require_incident(

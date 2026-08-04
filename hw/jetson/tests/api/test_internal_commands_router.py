@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import router as entry_events_router
 from src.api.internal_commands_router import router as internal_commands_router
 from src.application.entry_event_intake import EntryEventIntake
@@ -70,10 +71,14 @@ PHYSICAL_VEHICLE_ID = PhysicalVehicleId(
     UUID("b3a857d1-58ce-47d0-8899-33dc175aa201")
 )
 ENTRY_TIME = datetime(2026, 8, 1, 1, 0, tzinfo=timezone.utc)
-VALID_HEADERS = {
-    "Idempotency-Key": "command-1",
-    "X-Internal-API-Key": TEST_INTERNAL_API_KEY,
-}
+AUTH_HEADERS = {"X-Internal-API-Key": TEST_INTERNAL_API_KEY}
+
+
+def _headers(idempotency_key: str) -> dict[str, str]:
+    return {
+        **AUTH_HEADERS,
+        "Idempotency-Key": idempotency_key,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +108,7 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
 
     coordinator = _entry_match_coordinator()
     app = FastAPI()
+    register_error_handlers(app)
     app.include_router(entry_events_router)
     app.include_router(internal_commands_router)
     app.state.entry_event_intake = EntryEventIntake(
@@ -115,7 +121,9 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     app.state.session_context_update_intake = SessionContextUpdateIntake(
         ContextBindingCoordinator()
     )
-    app.state.move_verification_intake = MoveVerificationIntake()
+    app.state.move_verification_intake = MoveVerificationIntake(
+        clock=lambda: ENTRY_TIME
+    )
     app.state.database_connection_factory = lambda: connect_database(
         database_path
     )
@@ -130,7 +138,7 @@ def _post_initial_decision(
 ) -> None:
     response = client.post(
         "/internal/entry-events",
-        headers=VALID_HEADERS,
+        headers=_headers(f"EntryDecision:{ENTRY_ATTEMPT_ID}:1"),
         json={
             "entryAttemptId": str(ENTRY_ATTEMPT_ID),
             "decisionRevision": 1,
@@ -170,22 +178,43 @@ def test_api_4_resolves_review_and_returns_existing_acceptance_on_retry(
 
     first = client.post(
         "/internal/entry-review-resolutions",
-        headers=VALID_HEADERS,
+        headers=_headers(f"EntryReviewResolution:{ENTRY_ATTEMPT_ID}:2"),
         json=payload,
     )
     retry = client.post(
         "/internal/entry-review-resolutions",
-        headers={**VALID_HEADERS, "Idempotency-Key": "command-2"},
+        headers=_headers(f"EntryReviewResolution:{ENTRY_ATTEMPT_ID}:2"),
         json=payload,
     )
 
     assert first.status_code == 202
     assert retry.status_code == 202
-    assert first.json()["result"]["acceptanceStatus"] == "ACCEPTED"
-    assert retry.json()["result"]["acceptanceStatus"] == "ALREADY_ACCEPTED"
-    assert retry.json()["result"]["acceptedAt"] == first.json()["result"][
-        "acceptedAt"
-    ]
+    assert first.json()["result"] == {
+        "aggregateType": "EntryReviewResolution",
+        "aggregateId": str(ENTRY_ATTEMPT_ID),
+        "publicationRevision": 2,
+        "applicationResult": "APPLIED",
+        "backendCorrelation": {
+            "acceptedAt": first.json()["result"]["backendCorrelation"][
+                "acceptedAt"
+            ]
+        },
+    }
+    assert retry.json()["result"]["applicationResult"] == "ALREADY_APPLIED"
+    assert retry.json()["result"]["backendCorrelation"] == first.json()[
+        "result"
+    ]["backendCorrelation"]
+
+    conflicting = client.post(
+        "/internal/entry-review-resolutions",
+        headers=_headers(f"EntryReviewResolution:{ENTRY_ATTEMPT_ID}:2"),
+        json={**payload, "resolvedAt": (ENTRY_TIME + timedelta(seconds=3)).isoformat()},
+    )
+    assert conflicting.status_code == 409
+    assert conflicting.json()["result"] == {
+        "errorType": "IDEMPOTENCY_CONFLICT",
+        "retryable": False,
+    }
 
     connection = connect_database(database_path)
     try:
@@ -202,6 +231,54 @@ def test_api_4_resolves_review_and_returns_existing_acceptance_on_retry(
     assert attempt.decision_revision == 2
     assert mirror is not None
     assert mirror.entry_attempt_id == EntryAttemptId(ENTRY_ATTEMPT_ID)
+
+
+def test_api_4_returns_stale_for_an_unseen_older_decision(
+    tmp_path: Path,
+) -> None:
+    client, _database_path = make_client(tmp_path)
+    _post_initial_decision(
+        client,
+        access_decision="REVIEW",
+        session_context=None,
+    )
+    latest = {
+        "entryAttemptId": str(ENTRY_ATTEMPT_ID),
+        "decisionRevision": 3,
+        "resolution": "REVIEW_DENY",
+        "resolvedAt": (ENTRY_TIME + timedelta(seconds=3)).isoformat(),
+        "sessionContext": None,
+    }
+    applied = client.post(
+        "/internal/entry-review-resolutions",
+        headers=_headers(f"EntryReviewResolution:{ENTRY_ATTEMPT_ID}:3"),
+        json=latest,
+    )
+    stale_payload = {
+        **latest,
+        "decisionRevision": 2,
+        "resolvedAt": (ENTRY_TIME + timedelta(seconds=2)).isoformat(),
+    }
+    stale_headers = _headers(
+        f"EntryReviewResolution:{ENTRY_ATTEMPT_ID}:2"
+    )
+    stale = client.post(
+        "/internal/entry-review-resolutions",
+        headers=stale_headers,
+        json=stale_payload,
+    )
+    stale_retry = client.post(
+        "/internal/entry-review-resolutions",
+        headers=stale_headers,
+        json=stale_payload,
+    )
+
+    assert applied.status_code == 202
+    assert applied.json()["result"]["applicationResult"] == "APPLIED"
+    assert stale.status_code == 202
+    assert stale.json()["result"]["applicationResult"] == "STALE"
+
+    assert stale_retry.json()["result"]["applicationResult"] == "STALE"
 
 
 def test_api_5_closed_ends_binding_without_creating_a_physical_exit(
@@ -284,7 +361,7 @@ def test_api_5_closed_ends_binding_without_creating_a_physical_exit(
     updated_at = ENTRY_TIME + timedelta(seconds=3)
     response = client.post(
         "/internal/session-context-updates",
-        headers=VALID_HEADERS,
+        headers=_headers("SessionContextUpdate:55:2"),
         json={
             "sessionId": 55,
             "entryAttemptId": str(ENTRY_ATTEMPT_ID),
@@ -323,6 +400,64 @@ def test_api_5_closed_ends_binding_without_creating_a_physical_exit(
     assert persisted_binding.context.is_disabled_vehicle is True
     assert persisted_vehicle is not None
     assert persisted_vehicle.state is PhysicalVehicleState.ACTIVE
+
+
+def test_api_5_returns_stale_without_overwriting_newer_context(
+    tmp_path: Path,
+) -> None:
+    client, database_path = make_client(tmp_path)
+    _post_initial_decision(
+        client,
+        access_decision="ALLOW",
+        session_context=_session_context(),
+    )
+    latest = {
+        "sessionId": 55,
+        "entryAttemptId": str(ENTRY_ATTEMPT_ID),
+        "contextRevision": 3,
+        "administrativeState": "ACTIVE",
+        "updatedAt": (ENTRY_TIME + timedelta(seconds=3)).isoformat(),
+        "sessionContext": {
+            "vehicleId": 10,
+            "isDisabledVehicle": True,
+            "isElectric": True,
+        },
+    }
+    applied = client.post(
+        "/internal/session-context-updates",
+        headers=_headers("SessionContextUpdate:55:3"),
+        json=latest,
+    )
+    stale = client.post(
+        "/internal/session-context-updates",
+        headers=_headers("SessionContextUpdate:55:2"),
+        json={
+            **latest,
+            "contextRevision": 2,
+            "updatedAt": (ENTRY_TIME + timedelta(seconds=2)).isoformat(),
+            "sessionContext": {
+                **latest["sessionContext"],
+                "isDisabledVehicle": False,
+            },
+        },
+    )
+
+    assert applied.status_code == 202
+    assert applied.json()["result"]["applicationResult"] == "APPLIED"
+    assert stale.status_code == 202
+    assert stale.json()["result"]["applicationResult"] == "STALE"
+
+    connection = connect_database(database_path)
+    try:
+        mirror = ParkingSessionMirrorRepository(connection).get(
+            ParkingSessionId(55)
+        )
+    finally:
+        connection.close()
+    assert mirror is not None
+    assert mirror.context_revision == 3
+    assert mirror.last_context is not None
+    assert mirror.last_context.is_disabled_vehicle is True
 
 
 def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
@@ -375,40 +510,71 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
 
     payload = {
         "requestId": 201,
-        "verificationAttempt": 1,
+        "verificationAttempt": 2,
         "targetIncidentIds": [str(incident_id)],
         "requestedAt": (ENTRY_TIME + timedelta(seconds=5)).isoformat(),
         "deadlineAt": (ENTRY_TIME + timedelta(seconds=35)).isoformat(),
     }
     first = client.post(
         "/internal/move-verifications",
-        headers=VALID_HEADERS,
+        headers=_headers("MoveVerification:201:2"),
         json=payload,
     )
     retry = client.post(
         "/internal/move-verifications",
-        headers={**VALID_HEADERS, "Idempotency-Key": "command-2"},
+        headers=_headers("MoveVerification:201:2"),
         json=payload,
     )
 
     assert first.status_code == 202
     assert retry.status_code == 202
     assert first.json()["result"].keys() == {
-        "requestId",
-        "verificationAttempt",
-        "acceptanceStatus",
-        "acceptedAt",
+        "aggregateType",
+        "aggregateId",
+        "publicationRevision",
+        "applicationResult",
+        "backendCorrelation",
     }
-    assert retry.json()["result"]["acceptanceStatus"] == "ALREADY_ACCEPTED"
+    assert first.json()["result"]["aggregateType"] == "MoveVerification"
+    assert first.json()["result"]["aggregateId"] == "201"
+    assert first.json()["result"]["publicationRevision"] == 2
+    assert first.json()["result"]["applicationResult"] == "APPLIED"
+    assert retry.json()["result"]["applicationResult"] == "ALREADY_APPLIED"
+
+    stale = client.post(
+        "/internal/move-verifications",
+        headers=_headers("MoveVerification:201:1"),
+        json={**payload, "verificationAttempt": 1},
+    )
+    assert stale.status_code == 202
+    assert stale.json()["result"]["applicationResult"] == "STALE"
+
+    expired = client.post(
+        "/internal/move-verifications",
+        headers=_headers("MoveVerification:201:3"),
+        json={
+            **payload,
+            "verificationAttempt": 3,
+            "requestedAt": (ENTRY_TIME - timedelta(seconds=10)).isoformat(),
+            "deadlineAt": (ENTRY_TIME - timedelta(seconds=1)).isoformat(),
+        },
+    )
+    assert expired.status_code == 202
+    assert expired.json()["result"]["applicationResult"] == "STALE"
 
     connection = connect_database(database_path)
     try:
         attempt = MoveVerificationAttemptRepository(connection).get(
             201,
-            1,
+            2,
+        )
+        expired_attempt = MoveVerificationAttemptRepository(connection).get(
+            201,
+            3,
         )
     finally:
         connection.close()
     assert attempt is not None
     assert attempt.target_incident_ids == (incident_id,)
     assert attempt.result is None
+    assert expired_attempt is None

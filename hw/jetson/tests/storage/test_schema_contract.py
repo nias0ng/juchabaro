@@ -96,6 +96,40 @@ def test_no_lifecycle_foreign_key_uses_delete_cascade(tmp_path: Path) -> None:
         connection.close()
 
 
+def test_inbound_idempotency_key_is_durable_and_unique(tmp_path: Path) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    try:
+        assert "idempotency_key" in _column_names(connection, "accepted_inputs")
+        with UnitOfWork(connection):
+            connection.execute(
+                """
+                INSERT INTO accepted_inputs(
+                    input_type, input_identity, input_revision,
+                    idempotency_key, payload_hash, request_payload,
+                    workflow_state, accepted_at_us, updated_at_us,
+                    record_version
+                ) VALUES ('Command', 'one', 1, 'same-key', 'hash-1', X'01',
+                          'APPLIED', 1, 1, 1)
+                """
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            with UnitOfWork(connection):
+                connection.execute(
+                    """
+                    INSERT INTO accepted_inputs(
+                        input_type, input_identity, input_revision,
+                        idempotency_key, payload_hash, request_payload,
+                        workflow_state, accepted_at_us, updated_at_us,
+                        record_version
+                    ) VALUES ('Command', 'two', 1, 'same-key', 'hash-2', X'02',
+                              'APPLIED', 2, 2, 1)
+                    """
+                )
+    finally:
+        connection.close()
+
+
 def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
     tmp_path: Path,
 ) -> None:

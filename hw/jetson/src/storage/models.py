@@ -30,6 +30,7 @@ class AcceptedInputRecord:
     input_type: str
     input_identity: str
     input_revision: int
+    idempotency_key: str | None
     payload_hash: str
     request_payload: bytes
     workflow_state: str

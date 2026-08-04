@@ -209,6 +209,14 @@ class PublicationApplicationResult(str, Enum):
     CONFLICT = "CONFLICT"
 
 
+class InboundApplicationResult(str, Enum):
+    """Backend command를 Jetson durable state에 반영한 결과."""
+
+    APPLIED = "APPLIED"
+    ALREADY_APPLIED = "ALREADY_APPLIED"
+    STALE = "STALE"
+
+
 @dataclass(frozen=True)
 class MoveVerificationIncidentResult:
     """한 target Incident에 대한 immutable 최종 판단."""

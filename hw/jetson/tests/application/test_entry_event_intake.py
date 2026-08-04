@@ -165,7 +165,7 @@ def test_non_allow_decisions_are_stored_without_authoritative_context(
         connection.close()
 
 
-def test_domain_identity_controls_retry_independently_of_transport_key(
+def test_domain_identity_and_transport_key_are_both_immutable_on_retry(
     tmp_path: Path,
 ) -> None:
     connection = open_database(tmp_path / "jetson.db")
@@ -182,17 +182,16 @@ def test_domain_identity_controls_retry_independently_of_transport_key(
             idempotency_key="same-key",
             connection=connection,
         )
-        new_key_retry = intake.receive(
-            original,
-            idempotency_key="different-transport-key",
-            connection=connection,
-        )
-
         assert first.created is True
         assert same_key_retry.created is False
-        assert new_key_retry.created is False
         assert same_key_retry.accepted_at == first.accepted_at
-        assert new_key_retry.match_deadline_at == first.match_deadline_at
+
+        with pytest.raises(AcceptedInputConflictError):
+            intake.receive(
+                original,
+                idempotency_key="different-transport-key",
+                connection=connection,
+            )
 
         with pytest.raises(AcceptedInputConflictError):
             intake.receive(

@@ -125,6 +125,54 @@ outbox publisher와 단일 monitoring thread의 시작·정상 종료 생명주�
 충돌은 `FAILED_TERMINAL`로 격리한다. `APPLIED`와 `ALREADY_APPLIED` ACK는
 payload hash까지 검증한 뒤 14일 delivery receipt로 보존한다.
 
+## Backend → Jetson 내부 API 계약
+
+Jetson은 `0.0.0.0:8000`에 수신 서버를 열며 실제 Backend base URL은 EC2에서
+접근 가능한 Jetson IP·DNS·터널 주소로 정한다. `/home/e202` 같은 배포 경로는
+네트워크 주소가 아니다.
+
+```text
+POST /internal/entry-review-resolutions
+POST /internal/session-context-updates
+POST /internal/move-verifications
+```
+
+모든 요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
+local `.env`의 `INTERNAL_API_KEY`에만 저장하고 Git에는 넣지 않는다.
+`Idempotency-Key`는 command identity·revision·payload와 함께 SQLite에 기간
+제한 없이 보존한다. 같은 key와 같은 payload는 재적용하지 않으며, 같은 key나
+identity·revision을 다른 payload에 사용하면 `409 IDEMPOTENCY_CONFLICT`다.
+이미 더 높은 revision이 반영된 뒤 처음 도착한 낮은 revision은 상태를 바꾸지
+않고 `202 STALE`로 확인한다. `MoveVerification`은 수신 시점이 `deadlineAt`을
+지난 경우에도 실행 scope를 만들지 않고 같은 결과를 반환한다.
+
+성공은 Backend `ApiResponse<HwPublicationAck>`와 대칭인 JSON을 반환한다.
+여기서 `APPLIED`는 API 11의 현장 재확인 완료가 아니라 command가 Jetson의
+durable workflow에 반영됐다는 의미다.
+
+```json
+{
+  "httpStatus": "ACCEPTED",
+  "isSuccess": true,
+  "message": "명령이 durable하게 접수되었습니다.",
+  "code": 202,
+  "result": {
+    "aggregateType": "MoveVerification",
+    "aggregateId": "201",
+    "publicationRevision": 1,
+    "applicationResult": "APPLIED",
+    "backendCorrelation": {
+      "acceptedAt": "2026-08-04T06:00:00+00:00"
+    }
+  }
+}
+```
+
+`applicationResult`는 `APPLIED`, `ALREADY_APPLIED`, `STALE` 중 하나다. 실패는
+같은 `ApiResponse` envelope의 `result.errorType`과 `retryable`로 분류한다.
+네트워크 오류·timeout·`retryable=true`만 동일 key와 payload로 재시도하고
+나머지 4xx는 재시도하지 않는다.
+
 camera·model owner는 배포 entrypoint가 `MonitoringPipelineFactory`를
 명시적으로 주입했을 때만 하나 기동한다. Monitoring recovery가 끝난 뒤
 outbox publisher를 시작하므로 복구 중인 aggregate와 동시에 전송하지 않는다.

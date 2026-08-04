@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import router as entry_events_router
 from src.api.health_router import router as health_router
 from src.api.internal_commands_router import router as internal_commands_router
@@ -165,6 +166,7 @@ def create_app(
         description="Smart Parking Jetson hardware interface",
         lifespan=lifespan,
     )
+    register_error_handlers(application)
 
     application.include_router(health_router)
     application.include_router(entry_events_router)

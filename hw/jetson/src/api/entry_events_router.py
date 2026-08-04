@@ -13,9 +13,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.api.error_handlers import JetsonApiError
 from src.application.entry_event_intake import EntryEventIntake
 from src.application.entry_match_query import (
     EntryMatchNotFoundError,
@@ -117,9 +118,10 @@ def verify_internal_api_key(
     x_internal_api_key: str = Header(alias="X-Internal-API-Key"),
 ) -> None:
     if x_internal_api_key != get_settings().internal_api_key:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="X-Internal-API-Key가 올바르지 않습니다.",
+            error_type="INTERNAL_API_KEY_INVALID",
+            message="X-Internal-API-Key가 올바르지 않습니다.",
         )
 
 
@@ -160,24 +162,33 @@ def receive_entry_event(
             idempotency_key=idempotency_key,
             connection=connection,
         )
+    except AcceptedInputConflictError as error:
+        raise JetsonApiError(
+            status_code=status.HTTP_409_CONFLICT,
+            error_type="IDEMPOTENCY_CONFLICT",
+            message=str(error),
+        ) from error
     except (
-        AcceptedInputConflictError,
         EntryMatchAttemptConflictError,
         ParkingSessionMirrorConflictError,
     ) as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(error),
+            error_type="STATE_CONFLICT",
+            message=str(error),
         ) from error
     except ValueError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(error),
+            error_type="INVALID_REQUEST",
+            message=str(error),
         ) from error
     except sqlite3.OperationalError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            error_type="DURABLE_STORAGE_UNAVAILABLE",
+            message="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            retryable=True,
         ) from error
     finally:
         if connection is not None:
@@ -216,14 +227,17 @@ def get_entry_match_outcome(
         connection = request.app.state.database_connection_factory()
         outcome = query.get(entry_attempt_id, connection=connection)
     except EntryMatchNotFoundError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(error),
+            error_type="TARGET_NOT_FOUND",
+            message=str(error),
         ) from error
     except sqlite3.OperationalError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            error_type="DURABLE_STORAGE_UNAVAILABLE",
+            message="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            retryable=True,
         ) from error
     finally:
         if connection is not None:

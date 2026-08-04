@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import (
     get_entry_match_query,
     router,
@@ -80,6 +81,7 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     connection.close()
 
     app = FastAPI()
+    register_error_handlers(app)
     app.include_router(router)
     app.state.entry_event_intake = EntryEventIntake(
         _entry_match_coordinator(),
@@ -167,7 +169,7 @@ def test_api_2_same_domain_input_returns_already_accepted(tmp_path: Path) -> Non
     second = client.post(
         "/internal/entry-events",
         json=make_payload(),
-        headers={**VALID_HEADERS, "Idempotency-Key": "req-2"},
+        headers=VALID_HEADERS,
     )
 
     assert first.status_code == 202
@@ -190,10 +192,14 @@ def test_api_2_same_identity_and_revision_with_different_payload_conflicts(
     response = client.post(
         "/internal/entry-events",
         json=make_payload(entryTime=(ENTRY_TIME + timedelta(seconds=1)).isoformat()),
-        headers={**VALID_HEADERS, "Idempotency-Key": "req-2"},
+        headers=VALID_HEADERS,
     )
 
     assert response.status_code == 409
+    assert response.json()["result"] == {
+        "errorType": "IDEMPOTENCY_CONFLICT",
+        "retryable": False,
+    }
 
 
 def test_api_2_deny_and_review_are_accepted_without_session_context(
@@ -249,6 +255,7 @@ def test_api_2_invalid_wire_contract_is_unprocessable(
     )
 
     assert response.status_code == 422
+    assert response.json()["result"]["errorType"] == "INVALID_REQUEST"
 
 
 def test_api_2_rejects_legacy_extra_fields(tmp_path: Path) -> None:
@@ -297,6 +304,10 @@ def test_api_2_wrong_internal_api_key_is_unauthorized(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 401
+    assert response.json()["result"] == {
+        "errorType": "INTERNAL_API_KEY_INVALID",
+        "retryable": False,
+    }
 
 
 def test_api_2_storage_failure_is_service_unavailable(tmp_path: Path) -> None:
@@ -314,6 +325,10 @@ def test_api_2_storage_failure_is_service_unavailable(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 503
+    assert response.json()["result"] == {
+        "errorType": "DURABLE_STORAGE_UNAVAILABLE",
+        "retryable": True,
+    }
 
 
 def test_api_3_returns_durable_pending_attempt(tmp_path: Path) -> None:

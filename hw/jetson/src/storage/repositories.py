@@ -160,6 +160,11 @@ def _accepted_input_from_row(row: sqlite3.Row) -> AcceptedInputRecord:
         input_type=str(row["input_type"]),
         input_identity=str(row["input_identity"]),
         input_revision=int(row["input_revision"]),
+        idempotency_key=(
+            str(row["idempotency_key"])
+            if row["idempotency_key"] is not None
+            else None
+        ),
         payload_hash=str(row["payload_hash"]),
         request_payload=bytes(row["request_payload"]),
         workflow_state=str(row["workflow_state"]),
@@ -647,12 +652,23 @@ class AcceptedInputRepository:
         ).fetchone()
         return _accepted_input_from_row(row) if row is not None else None
 
+    def get_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> AcceptedInputRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM accepted_inputs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        return _accepted_input_from_row(row) if row is not None else None
+
     def accept(
         self,
         *,
         input_type: str,
         input_identity: str,
         input_revision: int,
+        idempotency_key: str,
         request_payload: bytes | bytearray | memoryview,
         workflow_state: str,
         accepted_at_us: int | None = None,
@@ -662,8 +678,25 @@ class AcceptedInputRepository:
         require_write_transaction(self._connection)
         if input_revision < 0:
             raise ValueError("input_revision must be non-negative")
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise ValueError("idempotency_key must not be empty")
         payload = _payload_bytes(request_payload)
         payload_hash = _sha256(payload)
+
+        key_record = self.get_by_idempotency_key(normalized_key)
+        if key_record is not None:
+            if (
+                key_record.input_type != input_type
+                or key_record.input_identity != input_identity
+                or key_record.input_revision != input_revision
+                or key_record.payload_hash != payload_hash
+                or key_record.request_payload != payload
+            ):
+                raise AcceptedInputConflictError(
+                    "Idempotency-Key was reused for a different input"
+                )
+            return AcceptanceResult(record=key_record, created=False)
 
         existing = self.get(input_type, input_identity, input_revision)
         if existing is not None:
@@ -671,22 +704,46 @@ class AcceptedInputRepository:
                 raise AcceptedInputConflictError(
                     "input identity and revision were reused with a different payload"
                 )
-            return AcceptanceResult(record=existing, created=False)
+            if existing.idempotency_key is not None:
+                raise AcceptedInputConflictError(
+                    "input identity and revision were retried with a different Idempotency-Key"
+                )
+            self._connection.execute(
+                """
+                UPDATE accepted_inputs
+                SET idempotency_key = ?, updated_at_us = ?,
+                    record_version = record_version + 1
+                WHERE input_type = ? AND input_identity = ? AND input_revision = ?
+                """,
+                (
+                    normalized_key,
+                    _utc_now_microseconds(),
+                    input_type,
+                    input_identity,
+                    input_revision,
+                ),
+            )
+            adopted = self.get(input_type, input_identity, input_revision)
+            if adopted is None:  # pragma: no cover - broken SQLite connection.
+                raise RuntimeError("accepted input disappeared while adopting its key")
+            return AcceptanceResult(record=adopted, created=False)
 
         now = accepted_at_us if accepted_at_us is not None else _utc_now_microseconds()
         try:
             self._connection.execute(
                 """
                 INSERT INTO accepted_inputs(
-                    input_type, input_identity, input_revision, payload_hash,
+                    input_type, input_identity, input_revision, idempotency_key,
+                    payload_hash,
                     request_payload, workflow_state, result_payload,
                     accepted_at_us, updated_at_us, record_version
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
                 """,
                 (
                     input_type,
                     input_identity,
                     input_revision,
+                    normalized_key,
                     payload_hash,
                     payload,
                     workflow_state,

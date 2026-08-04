@@ -115,10 +115,9 @@ class EntryEventIntake:
         with UnitOfWork(connection):
             acceptance = AcceptedInputRepository(connection).accept(
                 input_type=_ACCEPTED_INPUT_TYPE,
-                # Domain retry identity는 HTTP transport key가 아니라
-                # entryAttemptId + decisionRevision이다.
                 input_identity=str(entry_attempt_id),
                 input_revision=entry_decision.decision_revision,
+                idempotency_key=idempotency_key,
                 request_payload=request_payload,
                 workflow_state="ENTRY_MATCH_ATTEMPT_OPENED",
             )

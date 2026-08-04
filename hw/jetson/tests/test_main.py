@@ -80,7 +80,7 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
         try:
             assert connection.execute(
                 "SELECT COUNT(*) FROM schema_migrations"
-            ).fetchone()[0] == 3
+            ).fetchone()[0] == 4
         finally:
             connection.close()
 

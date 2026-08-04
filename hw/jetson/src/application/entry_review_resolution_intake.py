@@ -16,6 +16,7 @@ from src.communication.models import (
     EntryReviewResolution,
     EntryReviewResolutionInput,
     EntrySessionContextInput,
+    InboundApplicationResult,
 )
 from src.domain.models import ObservationState, ObservationStatus
 from src.session.entry_match_coordinator import EntryMatchCoordinator
@@ -30,6 +31,7 @@ from src.session.models import (
 )
 from src.storage.codecs import datetime_from_epoch_microseconds
 from src.storage.repositories import (
+    AcceptanceResult,
     AcceptedInputRepository,
     EntryMatchAttemptRepository,
     ParkingSessionMirrorRepository,
@@ -56,7 +58,7 @@ class EntryReviewResolutionAcceptance:
 
     entry_attempt_id: EntryAttemptId
     decision_revision: int
-    created: bool
+    application_result: InboundApplicationResult
     accepted_at: datetime
     match_state: EntryMatchState
     match_deadline_at: datetime
@@ -91,14 +93,20 @@ class EntryReviewResolutionIntake:
                     f"EntryMatchAttempt를 찾을 수 없습니다: {entry_attempt_id}"
                 )
 
+            is_stale = resolution.decision_revision < attempt.decision_revision
             acceptance = AcceptedInputRepository(connection).accept(
                 input_type=_ACCEPTED_INPUT_TYPE,
                 input_identity=str(entry_attempt_id),
                 input_revision=resolution.decision_revision,
+                idempotency_key=idempotency_key,
                 request_payload=request_payload,
-                workflow_state="ENTRY_REVIEW_RESOLVED",
+                workflow_state=(
+                    "ENTRY_REVIEW_STALE"
+                    if is_stale
+                    else "ENTRY_REVIEW_RESOLVED"
+                ),
             )
-            if acceptance.created:
+            if acceptance.created and not is_stale:
                 context = _authoritative_context(resolution.session_context)
                 updated_attempt = self._coordinator.apply_decision(
                     attempt,
@@ -129,7 +137,7 @@ class EntryReviewResolutionIntake:
         return EntryReviewResolutionAcceptance(
             entry_attempt_id=entry_attempt_id,
             decision_revision=resolution.decision_revision,
-            created=acceptance.created,
+            application_result=_application_result(acceptance),
             accepted_at=datetime_from_epoch_microseconds(
                 acceptance.record.accepted_at_us
             ),
@@ -149,6 +157,16 @@ def _authoritative_context(
         is_electric=context.is_electric,
         is_disabled_vehicle=context.is_disabled_vehicle,
     )
+
+
+def _application_result(
+    acceptance: AcceptanceResult,
+) -> InboundApplicationResult:
+    if acceptance.record.workflow_state == "ENTRY_REVIEW_STALE":
+        return InboundApplicationResult.STALE
+    if not acceptance.created:
+        return InboundApplicationResult.ALREADY_APPLIED
+    return InboundApplicationResult.APPLIED
 
 
 def _initial_session_mirror(

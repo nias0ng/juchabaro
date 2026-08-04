@@ -11,9 +11,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.api.error_handlers import JetsonApiError
 from src.api.entry_events_router import _success_envelope, verify_internal_api_key
 from src.application.entry_review_resolution_intake import (
     EntryReviewResolutionIntake,
@@ -233,7 +234,6 @@ def get_move_verification_intake(request: Request) -> MoveVerificationIntake:
 
 
 _CONFLICT_ERRORS = (
-    AcceptedInputConflictError,
     ContextBindingConflictError,
     ContextBindingError,
     EntryMatchAttemptConflictError,
@@ -244,6 +244,27 @@ _CONFLICT_ERRORS = (
     ParkingSessionMirrorConflictError,
     SessionContextUpdateConflictError,
 )
+
+
+def _command_ack(
+    *,
+    aggregate_type: str,
+    aggregate_id: str,
+    revision: int,
+    application_result: str,
+    accepted_at: datetime,
+) -> dict[str, object]:
+    """Backend ``HwPublicationAck``와 대칭인 durable command ACK."""
+
+    return {
+        "aggregateType": aggregate_type,
+        "aggregateId": aggregate_id,
+        "publicationRevision": revision,
+        "applicationResult": application_result,
+        "backendCorrelation": {
+            "acceptedAt": accepted_at.isoformat(),
+        },
+    }
 
 
 @router.post(
@@ -268,15 +289,35 @@ def receive_entry_review_resolution(
             connection=connection,
         )
     except EntryReviewResolutionNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=404,
+            error_type="TARGET_NOT_FOUND",
+            message=str(error),
+        ) from error
+    except AcceptedInputConflictError as error:
+        raise JetsonApiError(
+            status_code=409,
+            error_type="IDEMPOTENCY_CONFLICT",
+            message=str(error),
+        ) from error
     except _CONFLICT_ERRORS as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=409,
+            error_type="STATE_CONFLICT",
+            message=str(error),
+        ) from error
     except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=422,
+            error_type="INVALID_REQUEST",
+            message=str(error),
+        ) from error
     except sqlite3.OperationalError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=503,
-            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            error_type="DURABLE_STORAGE_UNAVAILABLE",
+            message="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            retryable=True,
         ) from error
     finally:
         if connection is not None:
@@ -286,16 +327,13 @@ def receive_entry_review_resolution(
         http_status="ACCEPTED",
         code=202,
         message="입차 검토 후속 판정이 durable하게 접수되었습니다.",
-        result={
-            "entryAttemptId": str(acceptance.entry_attempt_id),
-            "decisionRevision": acceptance.decision_revision,
-            "acceptanceStatus": (
-                "ACCEPTED" if acceptance.created else "ALREADY_ACCEPTED"
-            ),
-            "matchState": acceptance.match_state.value,
-            "acceptedAt": acceptance.accepted_at.isoformat(),
-            "matchDeadlineAt": acceptance.match_deadline_at.isoformat(),
-        },
+        result=_command_ack(
+            aggregate_type="EntryReviewResolution",
+            aggregate_id=str(acceptance.entry_attempt_id),
+            revision=acceptance.decision_revision,
+            application_result=acceptance.application_result.value,
+            accepted_at=acceptance.accepted_at,
+        ),
     )
 
 
@@ -321,15 +359,35 @@ def receive_session_context_update(
             connection=connection,
         )
     except SessionContextUpdateNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=404,
+            error_type="TARGET_NOT_FOUND",
+            message=str(error),
+        ) from error
+    except AcceptedInputConflictError as error:
+        raise JetsonApiError(
+            status_code=409,
+            error_type="IDEMPOTENCY_CONFLICT",
+            message=str(error),
+        ) from error
     except _CONFLICT_ERRORS as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=409,
+            error_type="STATE_CONFLICT",
+            message=str(error),
+        ) from error
     except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=422,
+            error_type="INVALID_REQUEST",
+            message=str(error),
+        ) from error
     except sqlite3.OperationalError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=503,
-            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            error_type="DURABLE_STORAGE_UNAVAILABLE",
+            message="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            retryable=True,
         ) from error
     finally:
         if connection is not None:
@@ -339,14 +397,13 @@ def receive_session_context_update(
         http_status="ACCEPTED",
         code=202,
         message="세션 문맥 변경이 durable하게 접수되었습니다.",
-        result={
-            "sessionId": int(acceptance.session_id),
-            "contextRevision": acceptance.context_revision,
-            "acceptanceStatus": (
-                "ACCEPTED" if acceptance.created else "ALREADY_ACCEPTED"
-            ),
-            "acceptedAt": acceptance.accepted_at.isoformat(),
-        },
+        result=_command_ack(
+            aggregate_type="SessionContextUpdate",
+            aggregate_id=str(int(acceptance.session_id)),
+            revision=acceptance.context_revision,
+            application_result=acceptance.application_result.value,
+            accepted_at=acceptance.accepted_at,
+        ),
     )
 
 
@@ -370,15 +427,35 @@ def receive_move_verification(
             connection=connection,
         )
     except MoveVerificationIncidentNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=404,
+            error_type="TARGET_NOT_FOUND",
+            message=str(error),
+        ) from error
+    except AcceptedInputConflictError as error:
+        raise JetsonApiError(
+            status_code=409,
+            error_type="IDEMPOTENCY_CONFLICT",
+            message=str(error),
+        ) from error
     except _CONFLICT_ERRORS as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=409,
+            error_type="STATE_CONFLICT",
+            message=str(error),
+        ) from error
     except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        raise JetsonApiError(
+            status_code=422,
+            error_type="INVALID_REQUEST",
+            message=str(error),
+        ) from error
     except sqlite3.OperationalError as error:
-        raise HTTPException(
+        raise JetsonApiError(
             status_code=503,
-            detail="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            error_type="DURABLE_STORAGE_UNAVAILABLE",
+            message="Jetson durable storage를 일시적으로 사용할 수 없습니다.",
+            retryable=True,
         ) from error
     finally:
         if connection is not None:
@@ -388,12 +465,11 @@ def receive_move_verification(
         http_status="ACCEPTED",
         code=202,
         message="현장 재확인 명령이 durable하게 접수되었습니다.",
-        result={
-            "requestId": int(acceptance.request_id),
-            "verificationAttempt": acceptance.verification_attempt,
-            "acceptanceStatus": (
-                "ACCEPTED" if acceptance.created else "ALREADY_ACCEPTED"
-            ),
-            "acceptedAt": acceptance.accepted_at.isoformat(),
-        },
+        result=_command_ack(
+            aggregate_type="MoveVerification",
+            aggregate_id=str(int(acceptance.request_id)),
+            revision=acceptance.verification_attempt,
+            application_result=acceptance.application_result.value,
+            accepted_at=acceptance.accepted_at,
+        ),
     )

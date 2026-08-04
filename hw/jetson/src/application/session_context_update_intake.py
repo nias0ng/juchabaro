@@ -12,7 +12,10 @@ import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from src.communication.models import SessionContextUpdateInput
+from src.communication.models import (
+    InboundApplicationResult,
+    SessionContextUpdateInput,
+)
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.models import (
     ContextBinding,
@@ -24,6 +27,7 @@ from src.session.models import (
 )
 from src.storage.codecs import datetime_from_epoch_microseconds
 from src.storage.repositories import (
+    AcceptanceResult,
     AcceptedInputRepository,
     ContextBindingRepository,
     ParkingSessionMirrorRepository,
@@ -49,7 +53,7 @@ class SessionContextUpdateAcceptance:
 
     session_id: ParkingSessionId
     context_revision: int
-    created: bool
+    application_result: InboundApplicationResult
     accepted_at: datetime
 
 
@@ -88,14 +92,20 @@ class SessionContextUpdateIntake:
                     "entryAttemptId가 기존 session correlation과 다릅니다."
                 )
 
+            is_stale = update.context_revision < mirror.context_revision
             acceptance = AcceptedInputRepository(connection).accept(
                 input_type=_ACCEPTED_INPUT_TYPE,
                 input_identity=str(int(session_id)),
                 input_revision=update.context_revision,
+                idempotency_key=idempotency_key,
                 request_payload=request_payload,
-                workflow_state="SESSION_CONTEXT_UPDATED",
+                workflow_state=(
+                    "SESSION_CONTEXT_STALE"
+                    if is_stale
+                    else "SESSION_CONTEXT_UPDATED"
+                ),
             )
-            if acceptance.created:
+            if acceptance.created and not is_stale:
                 next_mirror = _apply_mirror_update(mirror, update)
                 binding = binding_repository.get_by_entry_attempt_id(
                     entry_attempt_id
@@ -126,7 +136,7 @@ class SessionContextUpdateIntake:
         return SessionContextUpdateAcceptance(
             session_id=session_id,
             context_revision=update.context_revision,
-            created=acceptance.created,
+            application_result=_application_result(acceptance),
             accepted_at=datetime_from_epoch_microseconds(
                 acceptance.record.accepted_at_us
             ),
@@ -224,6 +234,16 @@ def _apply_mirror_update(
         record_version=mirror.record_version + 1,
         updated_at=update.updated_at,
     )
+
+
+def _application_result(
+    acceptance: AcceptanceResult,
+) -> InboundApplicationResult:
+    if acceptance.record.workflow_state == "SESSION_CONTEXT_STALE":
+        return InboundApplicationResult.STALE
+    if not acceptance.created:
+        return InboundApplicationResult.ALREADY_APPLIED
+    return InboundApplicationResult.APPLIED
 
 
 def _canonical_request_payload(update: SessionContextUpdateInput) -> bytes:
