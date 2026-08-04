@@ -158,12 +158,10 @@ class EntryCamera:
                     f"{name}는 0 이상의 유한한 수여야 합니다."
                 )
 
-        if (
-            not isinstance(CAMERA_PIXEL_FORMAT, str)
-            or not CAMERA_PIXEL_FORMAT.strip()
-        ):
+        if CAMERA_PIXEL_FORMAT != "RGB888":
             raise ValueError(
-                "CAMERA_PIXEL_FORMAT은 비어 있지 않은 문자열이어야 합니다."
+                "CAMERA_PIXEL_FORMAT은 Picamera2 BGR 배열 계약을 위해 "
+                "RGB888이어야 합니다."
             )
 
     def _initialize_camera(self) -> None:
@@ -259,9 +257,9 @@ class EntryCamera:
 
     def _capture_frame(self, frame_index: int) -> CapturedFrame:
         """
-        main stream의 RGB 프레임 하나를 독립적인 BGR 배열로 변환한다.
+        Picamera2 RGB888 main stream의 BGR 프레임을 독립 배열로 복사한다.
 
-        카메라 API 오류, 잘못된 배열 또는 변환·복사 실패는 실패한
+        카메라 API 오류, 잘못된 배열 또는 복사 실패는 실패한
         frame_index를 포함하는 FrameCaptureError로 변환한다.
         """
 
@@ -269,7 +267,7 @@ class EntryCamera:
         camera = self._camera
 
         try:
-            rgb_image = camera.capture_array("main")
+            captured_bgr_image = camera.capture_array("main")
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
@@ -278,33 +276,35 @@ class EntryCamera:
             ) from exc
 
         try:
-            self._validate_rgb_image(
-                rgb_image,
+            self._validate_bgr_image(
+                captured_bgr_image,
                 frame_index=frame_index,
             )
-            bgr_image: BgrImage = rgb_image[:, :, ::-1].copy()
+            independent_bgr_image: BgrImage = captured_bgr_image.copy()
         except (KeyboardInterrupt, SystemExit):
             raise
         except FrameCaptureError:
             raise
         except Exception as exc:
             raise FrameCaptureError(
-                f"frame_index={frame_index}: RGB 이미지를 독립적인 "
-                "BGR 배열로 변환하지 못했습니다."
+                f"frame_index={frame_index}: 카메라 BGR 이미지를 독립적인 "
+                "배열로 복사하지 못했습니다."
             ) from exc
 
         return CapturedFrame(
             frame_index=frame_index,
-            image=bgr_image,
+            image=independent_bgr_image,
         )
 
     @staticmethod
-    def _validate_rgb_image(
+    def _validate_bgr_image(
         image: Any,
         *,
         frame_index: int,
     ) -> None:
-        """Picamera2 결과가 확정된 RGB 이미지 계약을 만족하는지 검증한다."""
+        """
+        Picamera2 RGB888 결과가 BGR 이미지의 구조적 계약을 만족하는지 검증한다.
+        """
 
         if image is None:
             raise FrameCaptureError(
