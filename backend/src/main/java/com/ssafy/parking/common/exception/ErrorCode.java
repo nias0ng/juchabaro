@@ -207,6 +207,11 @@ public enum ErrorCode {
             "동일한 Idempotency-Key로 다른 요청이 이미 처리되었습니다."
     ),
 
+    HW_IDEMPOTENCY_IN_PROGRESS(
+            HttpStatus.CONFLICT,
+            "동시에 처리 중인 요청입니다. 잠시 후 다시 시도해 주세요."
+    ),
+
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,
             "서버 내부 오류가 발생했습니다."
