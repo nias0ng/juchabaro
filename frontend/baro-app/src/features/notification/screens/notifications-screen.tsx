@@ -31,7 +31,7 @@ export default function NotificationsScreen() {
     }
 
     if (notification.notificationType === 'EV_OVERSTAY') {
-      router.replace('/resident');
+      router.push('/resident');
       return;
     }
 
