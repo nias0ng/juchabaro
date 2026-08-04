@@ -69,8 +69,9 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
     with TestClient(application) as client:
         assert pipeline.entered_run.wait(timeout=1.0)
         assert client.get("/health").status_code == 200
-        assert application.state.zone_registry.zone_definition_version == 3
+        assert application.state.zone_registry.zone_definition_version == 6
         assert application.state.monitoring_worker.is_running is True
+        assert application.state.move_verification_worker.is_running is True
         assert application.state.publication_preparer is (
             received_contexts[0].publication_preparer
         )
@@ -80,7 +81,7 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
         try:
             assert connection.execute(
                 "SELECT COUNT(*) FROM schema_migrations"
-            ).fetchone()[0] == 4
+            ).fetchone()[0] == 5
         finally:
             connection.close()
 
@@ -89,6 +90,7 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
     assert pipeline.opened is True
     assert pipeline.closed.is_set()
     assert application.state.monitoring_worker.is_running is False
+    assert application.state.move_verification_worker.is_running is False
 
 
 def test_lifespan_keeps_monitoring_disabled_without_exact_wire_factory(
@@ -101,21 +103,27 @@ def test_lifespan_keeps_monitoring_disabled_without_exact_wire_factory(
     with TestClient(application) as client:
         assert client.get("/health").status_code == 200
         assert application.state.monitoring_worker is None
+        assert application.state.move_verification_worker.is_running is True
+        assert application.state.evidence_publication_worker is None
         assert application.state.outbox_publisher_worker is None
 
+    assert application.state.move_verification_worker.is_running is False
 
-def test_lifespan_runs_outbox_publisher_when_hw_api_key_is_configured(
+
+def test_lifespan_runs_outbox_publisher_when_backend_hw_api_key_is_configured(
     tmp_path,
 ) -> None:
     from src.main import create_app
 
     settings = _settings(tmp_path).model_copy(
-        update={"hw_api_key": "configured-hardware-key"}
+        update={"backend_hw_api_key": "configured-hardware-key"}
     )
     application = create_app(settings=settings)
 
     with TestClient(application) as client:
         assert client.get("/health").status_code == 200
+        assert application.state.evidence_publication_worker.is_running is True
         assert application.state.outbox_publisher_worker.is_running is True
 
+    assert application.state.evidence_publication_worker.is_running is False
     assert application.state.outbox_publisher_worker.is_running is False

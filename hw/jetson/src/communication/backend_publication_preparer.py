@@ -1,4 +1,4 @@
-"""API 6·7·10 domain transition을 Backend wire publication으로 확정한다.
+"""API 6·7·10·12 domain transition을 Backend wire publication으로 확정한다.
 
 이 adapter가 JSON field, ruleCode 호환 mapping, aggregate identity와
 Idempotency-Key 형식을 소유한다. 한 번 반환한 payload bytes는 SQLite outbox에서
@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from src.application.physical_presence_workflow import SessionExitTransition
+from src.communication.backend_requests import MoveVerificationResultRequest
+from src.communication.models import MoveVerificationAttempt, MoveVerificationState
 from src.communication.outbox import PreparedPublication
 from src.parking.models import (
     AssignmentState,
@@ -50,7 +52,7 @@ class UnsupportedIncidentRuleCodeError(ValueError):
 
 
 class BackendPublicationPreparer:
-    """API 6·7·10의 canonical JSON과 immutable publication identity를 만든다."""
+    """API 6·7·10·12의 canonical JSON과 immutable publication identity를 만든다."""
 
     def prepare_parking(
         self,
@@ -170,6 +172,32 @@ class BackendPublicationPreparer:
             publication_revision=transition.publication_revision,
             transition_type="SESSION_EXIT",
             payload=payload,
+        )
+
+    def prepare_move_verification_result(
+        self,
+        attempt: MoveVerificationAttempt,
+    ) -> PreparedPublication:
+        """완료된 API 11 command의 immutable 결과를 API 12 payload로 만든다."""
+
+        if attempt.state is not MoveVerificationState.COMPLETED:
+            raise ValueError("MoveVerification publication requires COMPLETED state")
+        if attempt.result is None or attempt.completed_at is None:
+            raise ValueError("completed MoveVerification requires result timestamps")
+        request = MoveVerificationResultRequest(
+            request_id=int(attempt.request_id),
+            verification_attempt=attempt.verification_attempt,
+            publication_revision=attempt.publication_revision,
+            result=attempt.result,
+            incident_results=attempt.incident_results,
+            completed_at=attempt.completed_at,
+        )
+        return _prepare(
+            aggregate_type="MoveVerificationAttempt",
+            aggregate_id=request.aggregate_id,
+            publication_revision=request.publication_revision,
+            transition_type="VERIFICATION_COMPLETED",
+            payload=request.to_payload(),
         )
 
 

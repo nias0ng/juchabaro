@@ -8,6 +8,8 @@ from uuid import uuid4
 import pytest
 
 from src.communication.models import (
+    BACKEND_INTEGER_MAX,
+    BACKEND_LONG_MAX,
     MoveRequestId,
     MoveVerificationAttempt,
     MoveVerificationIncidentResult,
@@ -422,6 +424,32 @@ def test_move_verification_requires_non_empty_targets() -> None:
             verification_attempt=1,
             subject_physical_vehicle_id=PhysicalVehicleId(uuid4()),
             target_incident_ids=(),
+            command_payload_hash="abc",
+            state=MoveVerificationState.ACCEPTED,
+            record_version=1,
+            publication_revision=0,
+            accepted_at=NOW,
+            updated_at=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_id", "verification_attempt"),
+    [
+        (MoveRequestId(BACKEND_LONG_MAX + 1), 1),
+        (MoveRequestId(1), BACKEND_INTEGER_MAX + 1),
+    ],
+)
+def test_move_verification_rejects_values_outside_backend_types(
+    request_id: MoveRequestId,
+    verification_attempt: int,
+) -> None:
+    with pytest.raises(ValueError, match="Backend type maximum"):
+        MoveVerificationAttempt(
+            request_id=request_id,
+            verification_attempt=verification_attempt,
+            subject_physical_vehicle_id=PhysicalVehicleId(uuid4()),
+            target_incident_ids=(IncidentId(uuid4()),),
             command_payload_hash="abc",
             state=MoveVerificationState.ACCEPTED,
             record_version=1,

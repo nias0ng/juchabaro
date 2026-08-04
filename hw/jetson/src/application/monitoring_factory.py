@@ -22,6 +22,7 @@ from src.application.session_observation_workflow import (
     SessionObservationWorkflow,
 )
 from src.camera.frame_source import FrameSource
+from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
@@ -76,6 +77,7 @@ class MonitoringDependencies:
     motion_estimator: MotionEstimator | None = None
     actuator_command_planner: ActuatorCommandPlanner | None = None
     actuator_port: ActuatorPort | None = None
+    evidence_capture_sink: EvidenceCaptureSink | None = None
 
 
 def build_monitoring_pipeline(
@@ -167,4 +169,5 @@ def build_monitoring_pipeline(
         calibration_reference=zones.calibration_reference,
         actuator_command_planner=dependencies.actuator_command_planner,
         actuator_port=dependencies.actuator_port,
+        evidence_capture_sink=dependencies.evidence_capture_sink,
     )

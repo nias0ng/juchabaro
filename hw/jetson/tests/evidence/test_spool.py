@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -126,7 +127,11 @@ def test_store_jpeg_fsyncs_file_then_renames_and_fsyncs_directory(
         assert ready.byte_size == len(JPEG)
         assert ready.checksum is not None and ready.checksum.startswith("sha256:")
         assert not (root / f"{artifact.evidence_id}.jpg.part").exists()
-        assert events == ["fsync", "replace", "fsync"]
+        assert events == (
+            ["fsync", "replace"]
+            if os.name == "nt"
+            else ["fsync", "replace", "fsync"]
+        )
         assert EvidenceArtifactRepository(connection).get(artifact.evidence_id) == ready
 
         # An exact command retry reuses the immutable file and does not rewrite it.

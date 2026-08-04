@@ -33,7 +33,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1, 2, 3, 4)
+        assert runner.apply() == (1, 2, 3, 4, 5)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
@@ -43,6 +43,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
             (2, "0002_tracking_session_lifecycle"),
             (3, "0003_parking_timer_policy_snapshots"),
             (4, "0004_inbound_idempotency_keys"),
+            (5, "0005_evidence_delivery_state"),
         ]
     finally:
         connection.close()
@@ -207,6 +208,61 @@ def test_parking_timer_policy_migration_backfills_existing_snapshots(
                     )
                 finally:
                     connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_evidence_delivery_migration_preserves_existing_artifacts(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    for version in (
+        "0001_initial.sql",
+        "0002_tracking_session_lifecycle.sql",
+        "0003_parking_timer_policy_snapshots.sql",
+        "0004_inbound_idempotency_keys.sql",
+    ):
+        (migrations / version).write_text(
+            (source / version).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == (1, 2, 3, 4)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO evidence_artifacts(
+                evidence_id, incident_id, publication_revision,
+                captured_at_us, image_type, workflow_state,
+                record_version, created_at_us, updated_at_us
+            ) VALUES (
+                '1f21d60c-c077-4fb4-a092-7cbdb5fc5a91',
+                '2f21d60c-c077-4fb4-a092-7cbdb5fc5a92',
+                1, 1, 'image/jpeg', 'RESERVED', 1, 1, 1
+            )
+            """
+        )
+        connection.commit()
+
+        migration = "0005_evidence_delivery_state.sql"
+        (migrations / migration).write_text(
+            (source / migration).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        assert MigrationRunner(connection, migrations).apply() == (5,)
+
+        row = connection.execute(
+            """
+            SELECT delivery_state, delivery_attempt_count,
+                   next_delivery_attempt_at_us, last_delivery_error
+            FROM evidence_artifacts
+            """
+        ).fetchone()
+        assert tuple(row) == (None, 0, None, None)
     finally:
         connection.close()
 
