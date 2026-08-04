@@ -18,6 +18,7 @@ export type MoveResponseType = 'WILL_MOVE' | 'CANNOT_MOVE_NOW';
 export type MoveImageType = 'PLATE' | 'PARKING_STATE' | 'REPORT';
 export type MoveHistoryNotificationType =
   | 'MOVE_REQUEST'
+  | 'MOVE_RESPONSE'
   | 'REMINDER'
   | 'EV_OVERSTAY'
   | 'EVENT_RESOLVED';

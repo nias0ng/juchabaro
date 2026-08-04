@@ -1,5 +1,3 @@
-import { router } from 'expo-router';
-
 import {
   AsyncStateView,
   GradientScreenBackground,
@@ -8,9 +6,10 @@ import {
   SegmentedControl,
   Stack,
 } from '@/components/ui';
-import { NotificationCard } from '@/features/notification/components/list/notification-card';
 import type { NotificationSummary } from '@/features/notification/api/types';
+import { NotificationCard } from '@/features/notification/components/list/notification-card';
 import { useNotifications, type NotificationTab } from '@/features/notification/hooks/use-notifications';
+import { navigateFromNotification } from '@/features/notification/utils/notification-navigation';
 import { Spacing } from '@/styles';
 
 const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
@@ -22,28 +21,21 @@ export default function NotificationsScreen() {
   const { notifications, isLoading, error, tab, setTab } = useNotifications();
 
   const handlePressNotification = (notification: NotificationSummary) => {
-    if (notification.notificationType === 'MOVE_REQUEST' && notification.requestId !== null) {
-      router.push({
-        pathname: '/resident/request-detail',
-        params: { requestId: String(notification.requestId) },
-      });
-      return;
-    }
-
-    if (notification.notificationType === 'EV_OVERSTAY') {
-      router.push('/resident');
-      return;
-    }
-
-    // 나머지 타입은 눌러도 실제 목적지가 아직 없어 아무 동작이 없다.
+    navigateFromNotification(
+      {
+        notificationType: notification.notificationType,
+        requestId: notification.requestId,
+      },
+      false,
+    );
   };
 
   const statusMessage = isLoading
-    ? '알림을 불러오는 중입니다'
+    ? '알림을 불러오는 중입니다.'
     : error
-      ? '알림을 불러오지 못했습니다'
+      ? '알림을 불러오지 못했습니다.'
       : notifications.length === 0
-        ? '받은 알림이 없습니다'
+        ? '받은 알림이 없습니다.'
         : undefined;
 
   return (

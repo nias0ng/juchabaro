@@ -1,8 +1,19 @@
 import { useEffect, useRef } from 'react';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 
-import { registerDeviceToken } from '@/features/notification/api/device-token-api';
+import {
+  registerDeviceToken,
+  unregisterDeviceToken,
+} from '@/features/notification/api/device-token-api';
 import { getPushTokenRegistration } from '@/features/notification/services/push-token';
+import {
+  getStoredPushTokenRegistration,
+  savePushTokenRegistration,
+} from '@/features/notification/services/push-token-storage';
 import { useAuth } from '@/providers/auth-provider';
+
+const PUSH_LOGS_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_API_LOGS === 'true';
 
 export function usePushTokenRegistration(): void {
   const { accessToken, status, user } = useAuth();
@@ -24,22 +35,42 @@ export function usePushTokenRegistration(): void {
     const register = async () => {
       try {
         const registration = await getPushTokenRegistration();
-        if (!registration || cancelled) {
-          return;
-        }
+        if (!registration || cancelled) return;
 
         await registerDeviceToken(registration, accessToken);
+        if (cancelled) return;
+
+        const previousRegistration = await getStoredPushTokenRegistration();
+        await savePushTokenRegistration(registration);
+
+        if (previousRegistration && previousRegistration.token !== registration.token) {
+          try {
+            await unregisterDeviceToken(previousRegistration, accessToken);
+          } catch (error) {
+            if (PUSH_LOGS_ENABLED) {
+              console.warn('[PUSH] OLD_TOKEN_UNREGISTER_FAILED', error);
+            }
+          }
+        }
       } catch (error) {
-        if (__DEV__) {
-          console.warn('푸시 알림 토큰을 등록하지 못했습니다.', error);
+        if (PUSH_LOGS_ENABLED) {
+          console.warn('[PUSH] TOKEN_REGISTRATION_FAILED', error);
         }
       }
     };
 
     void register();
 
+    const tokenSubscription =
+      Platform.OS === 'web'
+        ? null
+        : Notifications.addPushTokenListener(() => {
+            void register();
+          });
+
     return () => {
       cancelled = true;
+      tokenSubscription?.remove();
     };
   }, [accessToken, status, user?.role]);
 }

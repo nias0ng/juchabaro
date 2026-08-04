@@ -117,9 +117,10 @@ export function getJson<T>(path: string, accessToken: string): Promise<T> {
 }
 
 // accessToken이 필요한 삭제용 DELETE.
-export function deleteJson<T>(path: string, accessToken: string): Promise<T> {
+export function deleteJson<T>(path: string, accessToken: string, data?: unknown): Promise<T> {
   return request<T>(path, {
     method: 'DELETE',
+    body: data === undefined ? undefined : JSON.stringify(data),
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }

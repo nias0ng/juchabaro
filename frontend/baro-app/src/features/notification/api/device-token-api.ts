@@ -1,4 +1,4 @@
-import { postJson } from '@/services/http-client';
+import { deleteJson, postJson } from '@/services/http-client';
 
 export type DevicePlatform = 'ANDROID' | 'IOS';
 
@@ -14,4 +14,11 @@ export function registerDeviceToken(
   accessToken: string,
 ): Promise<void> {
   return postJson<void>(DEVICE_TOKENS_PATH, request, accessToken);
+}
+
+export function unregisterDeviceToken(
+  request: RegisterDeviceTokenRequest,
+  accessToken: string,
+): Promise<void> {
+  return deleteJson<void>(DEVICE_TOKENS_PATH, accessToken, request);
 }
