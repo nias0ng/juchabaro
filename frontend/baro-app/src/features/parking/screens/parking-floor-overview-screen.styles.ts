@@ -12,6 +12,9 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.medium,
     color: Palette.violet500,
   },
+  headerActionDisabled: {
+    color: Palette.gray400,
+  },
   content: {
     gap: Spacing.base + 2,
     paddingTop: 20,
