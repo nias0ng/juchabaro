@@ -19,7 +19,7 @@
 7. 촬영 프레임에서 번호판 OCR 수행
 8. OCR 성공 시 Backend 입차 등록 API 호출
 9. Backend로부터 `ALLOW`, `REVIEW`, `DENY` 판정과 입차 처리 결과 수신
-10. Backend 응답을 기반으로 LED를 제어해 입차 가능 여부 표시
+10. 검증된 `ALLOW` 응답에서 초록 LED로 입차 허용 표시
 11. 필요한 입차 정보를 Jetson으로 전송
 12. 다음 차량 입차 감지 대기
 
@@ -29,15 +29,18 @@
 ## 현재 구현 범위
 
 현재 `src.main`에는 초음파 센서 기반 차량 감지, 입차 시도 정보 생성,
-6프레임 촬영, OCR pipeline 실행과 Backend 입차 등록 요청이 연결되어
-있다.
+6프레임 촬영, OCR pipeline 실행, Backend 입차 등록 요청과 `ALLOW` 판정의
+초록 LED 표시가 연결되어 있다.
 
-서비스 시작 시 Backend 설정을 검증하고 `BackendClient`와 OCR pipeline을
-각각 한 번 생성한다. OCR이 번호판을 확정한 경우에만 Backend 입차 등록
-API를 호출하며, 응답의 `ALLOW`, `REVIEW`, `DENY` 판정을 로그로 기록한다.
+서비스 시작 시 Backend 설정을 검증하고 `BackendClient`, OCR pipeline과
+`GreenLed`를 각각 한 번 생성한다. OCR이 번호판을 확정한 경우에만 Backend
+입차 등록 API를 호출하며, 응답의 `entryAttemptId`를 검증한 뒤 `ALLOW`,
+`REVIEW`, `DENY` 판정을 로그로 기록한다. 검증된 `ALLOW` 판정에서만
+초록 LED를 제어한다.
 
-현재 구현에는 LED 표시, Jetson 전송, 자동 재시도와 Backend
-응답 영속 저장이 포함되어 있지 않다.
+현재 구현에는 Jetson 전송, 차단기 제어, 자동 재시도와 Backend 응답 영속
+저장이 포함되어 있지 않다. `REVIEW`와 `DENY`의 별도 LED 표시 정책도
+아직 결정되지 않았다.
 
 ## Backend 입차 등록 연동
 
@@ -136,8 +139,8 @@ PlateDecision.winner_rec_score
 `BackendClient`는 startup에서 한 번 생성되고 여러 입차 이벤트에서 같은
 객체를 재사용한다. 요청은 동기 방식이며 기본 timeout은 5초다.
 
-`BackendClient`에는 별도 cleanup API가 없다. 서비스 종료 시에는 기존과
-같이 카메라를 먼저 정리하고 센서를 정리한다.
+`BackendClient`에는 별도 cleanup API가 없다. 하드웨어 자원의 종료 정책은
+아래의 초록 LED 입차 허용 표시 section을 따른다.
 
 ### Backend 응답과 오류 정책
 
@@ -149,20 +152,90 @@ PlateDecision.winner_rec_score
 | `REVIEW` | warning |
 | `DENY` | warning |
 
-현재 구현은 판정을 로그로 기록하며 LED 또는 Jetson을 제어하지
-않는다.
-
 Backend 응답의 `entryAttemptId`가 요청 값과 다르면 예상하지 못한 계약
 위반으로 `RuntimeError`를 전파한다. 이 경우 정상 판정 로그를 남기지
-않는다.
+않고 LED를 제어하지 않는다. JSON의 `entryAttemptId`는 Python 응답 객체의
+`entry_attempt_id`로 변환되며 현재 `EntryEvent`의 값과 비교한다.
+
+응답 ID가 일치하면 판정 로그를 먼저 기록한다. `ALLOW`에서는 로그 기록
+후 초록 LED를 3초간 켰다가 끈다. `REVIEW`와 `DENY`에서는 기존 warning
+로그만 기록하고 LED를 제어하지 않는다.
 
 `BackendClientError`는 연결 실패, timeout, HTTP 오류, 잘못된 JSON과
 응답 계약 오류를 나타낸다. 이 오류는 현재 입차 이벤트의 실패로 기록하고
 다음 센서 감지를 계속한다.
 
 예상하지 못한 예외와 응답 ID 불일치는 상위로 전파한다. `main()`의
-`finally`는 이 경우에도 카메라와 센서를 정리한다. 현재 자동 재시도는
-구현되어 있지 않다.
+`finally`는 이 경우에도 LED, 카메라와 초음파 센서를 정리한다. 현재 자동
+재시도는 구현되어 있지 않다.
+
+## 초록 LED 입차 허용 표시
+
+### 설정과 회로
+
+초록 LED는 다음 설정을 사용한다.
+
+| 설정 | 값 | 의미 |
+| --- | --- | --- |
+| `GREEN_LED_PIN` | `17` | BCM GPIO17, 물리 핀 11 |
+| `GREEN_LED_ACTIVE_HIGH` | `True` | HIGH에서 ON, LOW에서 OFF |
+| `GREEN_LED_DURATION_SECONDS` | `3.0` | `ALLOW` 점등 시간(초) |
+
+`GREEN_LED_DURATION_SECONDS`의 3초는 프로토타입 입차 흐름 검증을 위한
+초기 정책이며, 실제 운영 환경에 맞춰 재조정할 수 있다.
+
+회로는 다음과 같이 연결한다.
+
+```text
+GPIO17(물리 핀 11) → 330Ω 저항 → 초록 LED → GND
+```
+
+GPIO 출력은 3.3V 논리다. LED를 5V 핀에 직접 연결하지 않으며, 330Ω
+저항은 LED와 직렬로 연결한다.
+
+### 실행 흐름과 생명주기
+
+LED가 포함된 입차 이벤트 처리는 다음 순서로 동작한다.
+
+```text
+차량 감지
+→ 촬영
+→ OCR
+→ Backend 입차 등록 요청
+→ 응답 entryAttemptId 검증
+→ 판정 로그
+→ ALLOW이면 초록 LED 3초 점등
+→ 다음 차량 감지
+```
+
+LED 점등은 동기 방식이다. 따라서 `ALLOW` 표시를 수행하는 3초 동안에는
+다음 초음파 센서 측정과 새 입차 이벤트 처리가 대기한다.
+
+`GreenLed`는 서비스 startup에서 한 번 생성되어 여러 입차 이벤트에서
+재사용된다. LED 초기화 실패는 서비스 시작 실패로 처리한다. LED 출력
+실패는 LED 상태가 불명확할 수 있으므로 오류를 기록하고 서비스 종료
+경계로 전파한다.
+
+서비스 종료 시 LED OFF와 핀 cleanup을 시도한 뒤 카메라와 초음파 센서를
+정리한다.
+
+```text
+GreenLed → EntryCamera → UltrasonicSensor
+```
+
+LED cleanup이 실패해도 카메라와 초음파 센서 cleanup은 계속 시도한다.
+
+### 실물 점등 확인
+
+`hw/raspberry-pi` 디렉터리에서 다음 명령을 실행한다.
+
+```bash
+python -m scripts.check_green_led
+```
+
+초록 LED가 설정된 3초 동안 켜진 뒤 꺼지고 GPIO17이 cleanup된다. 이
+스크립트는 Backend, OCR, 카메라 및 초음파 센서와 연결되지 않은 독립적인
+실물 GPIO 점검 도구다.
 
 ## 설치 준비
 
@@ -300,9 +373,9 @@ finally:
     camera.cleanup()
 ```
 
-실제 서비스에서는 startup에서 생성한 `EntryCamera`와 OCR pipeline을
-반복해서 사용하고 서비스 종료 시 기존 lifecycle에 따라 카메라와 센서를
-정리한다. OCR pipeline에는 별도의 cleanup API가 없다.
+실제 서비스에서는 startup에서 생성한 `EntryCamera`, `GreenLed`와 OCR
+pipeline을 반복해서 사용한다. 하드웨어 종료 정책은 앞의 초록 LED 입차
+허용 표시 section을 따르며 OCR pipeline에는 별도의 cleanup API가 없다.
 
 `EntryCamera.capture_sequence()`이 반환한 `tuple[CapturedFrame, ...]`은
 별도 변환이나 복사 없이 `read_plate(frames)`에 전달된다.
@@ -349,9 +422,10 @@ Backend 입차 등록 API는 `ReadStatus.SUCCESS`이면서 확정된
 없는 OCR 상태와 그 밖의 예상하지 못한 예외도 정상적인 이벤트 실패로
 숨기지 않는다.
 
-하드웨어 초기화 이후 서비스가 종료되면 카메라를 먼저 정리하고 센서를
-정리한다. 카메라 cleanup 실패는 센서 cleanup을 막지 않으며 cleanup 중
-발생한 `KeyboardInterrupt`와 `SystemExit`도 보존한다.
+하드웨어 초기화 이후 서비스가 종료되면 앞의 초록 LED 입차 허용 표시
+section에 설명한 순서로 자원을 정리한다. 한 자원의 cleanup 실패가 나머지
+자원의 cleanup을 막지 않으며 cleanup 중 발생한 첫 `KeyboardInterrupt`
+또는 `SystemExit`를 보존한다.
 
 ## 테스트
 
@@ -366,6 +440,13 @@ python -m pytest
 
 ```bash
 python -m pytest tests/test_main.py
+```
+
+초록 LED 컴포넌트의 GPIO 및 생명주기 계약만 확인하려면 다음과 같이
+실행한다.
+
+```bash
+python -m pytest tests/indicators/test_green_led.py
 ```
 
 입차 시도 객체의 계약은 다음 테스트에서 검증한다.
@@ -396,10 +477,23 @@ OCR model과 HTTP 요청을 mock으로 교체한다. PC 테스트 환경은 앞�
 - `BackendClientError` 처리
 - 요청과 응답의 `entryAttemptId` 일치 검증
 - `ALLOW`, `REVIEW`, `DENY` 판정별 로그
+- `ALLOW`에서만 설정된 시간으로 LED 표시 호출
+- `REVIEW`, `DENY` 및 촬영·OCR·Backend 오류 경로에서 LED 미호출
+- `GreenLed`의 startup 1회 생성과 입차 이벤트 간 재사용
+- LED 출력 오류 및 종료 예외 전파
 - BackendClient와 OCR pipeline 재사용
 - 예상하지 못한 예외 전파
-- 기존 카메라와 센서 cleanup 회귀
+- LED, 카메라와 초음파 센서의 생성·cleanup lifecycle
 
-센서, 카메라와 OCR pipeline 등 각 컴포넌트의 세부 동작은 해당 테스트
-모듈에서 검증한다. 실물 센서, CSI 카메라, 실제 OCR 모델과 Backend를
-함께 사용하는 통합 검증은 Raspberry Pi 환경에서 별도로 수행해야 한다.
+`tests/indicators/test_green_led.py`는 다음 항목을 검증한다.
+
+- LED 설정 검증
+- active-high와 active-low 논리 극성
+- 동기 점등과 점등 시간 전달
+- 점등 중 예외 발생 시 OFF 복구
+- 소유 핀 단위 cleanup과 반복 cleanup
+
+센서, 카메라, LED와 OCR pipeline 등 각 컴포넌트의 세부 동작은 해당
+테스트 모듈에서 검증한다. 실물 센서, CSI 카메라, 실제 OCR 모델과
+Backend를 함께 사용하는 통합 검증은 Raspberry Pi 환경에서 별도로
+수행해야 한다.
