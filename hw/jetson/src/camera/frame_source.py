@@ -476,3 +476,60 @@ class RemapFrameSource:
         self._map_size = None
         self._dst = None
         self._inner.close()
+
+
+class CropFrameSource:
+    """다른 FrameSource가 공급하는 프레임의 좌우 여백을 잘라낸다.
+
+    `RemapFrameSource` 뒤에 놓아 이미 보정이 끝난 프레임을 자르는 용도다.
+    `calibration_id`는 캘리브레이션 파일 자체의 지문이라 crop과 무관하므로
+    그대로 통과시킨다(`calibration_fingerprint()` 참고) — crop을 껴 넣어도
+    캘리브레이션 재작업이나 zones 파일의 `calibrationReference` 변경이 필요
+    없다. zone polygon만 새 폭 기준으로 재정규화하면 된다
+    (`scripts/recrop_zone_definition.py`).
+    """
+
+    def __init__(
+        self,
+        *,
+        inner: FrameSource,
+        crop_left_px: int = 0,
+        crop_right_px: int = 0,
+    ) -> None:
+        if crop_left_px < 0:
+            raise ValueError(f"crop_left_px는 음수일 수 없습니다: {crop_left_px}")
+        if crop_right_px < 0:
+            raise ValueError(f"crop_right_px는 음수일 수 없습니다: {crop_right_px}")
+        self._inner = inner
+        self._crop_left_px = crop_left_px
+        self._crop_right_px = crop_right_px
+
+    def open(self) -> None:
+        self._inner.open()
+
+    def capture(self) -> CapturedFrame:
+        frame = self._inner.capture()
+        width = frame.width
+        total_crop = self._crop_left_px + self._crop_right_px
+        if total_crop >= width:
+            raise FrameSourceError(
+                "crop 합이 프레임 폭 이상입니다: "
+                f"crop_left_px={self._crop_left_px}, crop_right_px={self._crop_right_px}, width={width}",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+                observed_at=frame.captured_at,
+            )
+        right_bound = width - self._crop_right_px
+        cropped_image = frame.image[:, self._crop_left_px:right_bound]
+        return CapturedFrame(
+            camera_id=frame.camera_id,
+            frame_id=frame.frame_id,
+            captured_at=frame.captured_at,
+            image=cropped_image,
+            width=right_bound - self._crop_left_px,
+            height=frame.height,
+            calibration_id=frame.calibration_id,
+        )
+
+    def close(self) -> None:
+        self._inner.close()

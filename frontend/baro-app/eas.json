@@ -15,7 +15,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://i15e202.p.ssafy.io"
+        "EXPO_PUBLIC_API_BASE_URL": "https://i15e202.p.ssafy.io",
+        "EXPO_PUBLIC_ENABLE_API_LOGS": "true"
       }
     },
     "production": {

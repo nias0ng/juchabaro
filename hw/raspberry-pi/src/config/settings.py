@@ -49,8 +49,8 @@ MAX_VALID_DISTANCE_CM: Final[float] = 30.0
 # [입차 판단 설정]
 
 # 실제 차량 위치와 센서 측정 결과에 따라 조정
-ENTRY_DISTANCE_THRESHOLD_CM: Final[float] = 6.0
-RELEASE_DISTANCE_THRESHOLD_CM: Final[float] = 10.0
+ENTRY_DISTANCE_THRESHOLD_CM: Final[float] = 10.0
+RELEASE_DISTANCE_THRESHOLD_CM: Final[float] = 15.0
 
 REQUIRED_DETECTION_COUNT: Final[int] = 3
 REQUIRED_RELEASE_COUNT: Final[int] = 3
@@ -68,8 +68,8 @@ CAMERA_WARMUP_SECONDS: Final[float] = 2.0
 
 CAPTURE_FRAME_COUNT: Final[int] = 6
 
-# 실제 차량 촬영 테스트 후 재조정이 필요한 초기값
-CAPTURE_START_DELAY_SECONDS: Final[float] = 0.5
+# 차량 감지 1초 후 첫 프레임 촬영
+CAPTURE_START_DELAY_SECONDS: Final[float] = 1.0
 CAPTURE_INTERVAL_SECONDS: Final[float] = 0.1
 CAPTURE_RETRY_DELAY_SECONDS: Final[float] = 0.2
 

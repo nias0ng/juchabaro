@@ -30,10 +30,4 @@ export const styles = StyleSheet.create({
   monthItems: {
     gap: Spacing.md,
   },
-  emptyText: {
-    fontSize: 13,
-    color: Palette.gray500,
-    textAlign: 'center',
-    paddingVertical: Spacing.lg,
-  },
 });

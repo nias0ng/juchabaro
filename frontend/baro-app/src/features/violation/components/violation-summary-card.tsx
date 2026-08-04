@@ -1,15 +1,16 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { Text, View } from 'react-native';
 
-import type { MockViolationSummary } from '../mocks/violation-history.mock';
 import { Palette } from '@/styles';
+
+import type { ViolationStats } from '../api/types';
 
 import { styles } from './violation-summary-card.styles';
 
 const SUMMARY_CARD_GRADIENT = [Palette.peach100, Palette.lavender100] as const;
 
 type ViolationSummaryCardProps = {
-  summary: MockViolationSummary;
+  summary: ViolationStats;
 };
 
 export function ViolationSummaryCard({ summary }: ViolationSummaryCardProps) {

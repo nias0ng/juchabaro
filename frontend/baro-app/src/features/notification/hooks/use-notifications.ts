@@ -8,7 +8,7 @@ export type NotificationTab = 'all' | 'moveRequest';
 
 // 백엔드 notificationType 필터는 값 1개만 받으므로, "이동 요청" 탭은 서버에 다시 요청하지 않고
 // 전체 목록을 한 번만 받아 이 타입들로 클라이언트에서 걸러낸다.
-const MOVE_REQUEST_TAB_TYPES = new Set(['MOVE_REQUEST', 'REMINDER']);
+const MOVE_REQUEST_TAB_TYPES = new Set(['MOVE_REQUEST', 'MOVE_RESPONSE', 'REMINDER']);
 
 async function fetchNotifications(accessToken: string): Promise<NotificationSummary[]> {
   const result = await getNotifications(accessToken);

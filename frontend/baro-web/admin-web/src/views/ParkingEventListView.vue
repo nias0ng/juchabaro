@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ChevronDown, Download, Search } from '@lucide/vue'
 
@@ -10,33 +10,47 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import AppPagination from '@/components/ui/AppPagination.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
+import type { AdminEventSummary, EventStatus, EventType } from '@/features/parking-events/api/types'
 import {
-  EVENT_ROWS,
-  MOCK_TODAY,
-  STATUS_OPTIONS,
-  TYPE_OPTIONS,
+  EVENT_STATUS_OPTIONS,
+  EVENT_TYPE_OPTIONS,
+  eventStatusLabel,
+  eventTypeLabel,
   formatDate,
-  normalizeEventId,
+  formatTime,
   statusTone,
+  todayDateString,
   typeTone,
 } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-import type { EventRow } from '@/features/parking-events/types'
 
 const PAGE_SIZE = 10
+// 백엔드는 날짜/상태/유형으로만 필터링하고 차량 번호 검색은 지원하지 않는다. 선택한
+// 조건에 맞는 사건을 넉넉히 받아온 뒤 차량 번호 검색과 페이지네이션은 화면에서 처리한다.
+const FETCH_SIZE = 200
 
-function exportRowsToCsv(rows: EventRow[], dateFilter: string) {
+function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string) {
   const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', 'AI 신뢰도', '상태', '날짜']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
   // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
   const lines = [
     headers.map(escapeCsv).join(','),
-    ...rows.map((r) => [r.id, r.car, rowType(r), r.loc, r.time, r.ai, rowStatus(r), `'${r.date}`].map(escapeCsv).join(',')),
+    ...rows.map((r) =>
+      [
+        `#${r.eventId}`,
+        r.plateNumber,
+        eventTypeLabel(r.eventType),
+        r.zoneNumber ?? '-',
+        formatTime(r.detectedAt),
+        r.violationRatio !== null ? `${r.violationRatio}%` : '-',
+        eventStatusLabel(r.eventStatus),
+        `'${dateFilter}`,
+      ].map(escapeCsv).join(','),
+    ),
   ]
   // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
-  // 파일명에는 실제 오늘 날짜가 아니라, 목록에 적용된 날짜 필터(당일 기준)를 그대로 쓴다.
   const stamp = dateFilter.replaceAll('-', '')
 
   const link = document.createElement('a')
@@ -50,9 +64,9 @@ function exportRowsToCsv(rows: EventRow[], dateFilter: string) {
 
 type DropdownName = 'status' | 'type' | 'date'
 
-const statusFilter = ref<string | null>(null)
-const typeFilter = ref<string | null>(null)
-const dateFilter = ref(MOCK_TODAY)
+const statusFilter = ref<EventStatus | null>(null)
+const typeFilter = ref<EventType | null>(null)
+const dateFilter = ref(todayDateString())
 const carQuery = ref('')
 const page = ref(1)
 
@@ -60,26 +74,28 @@ const parkingEventStore = useParkingEventStore()
 
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
+function loadEvents() {
+  void parkingEventStore.fetchEvents({
+    date: dateFilter.value,
+    eventStatus: statusFilter.value ?? undefined,
+    eventType: typeFilter.value ?? undefined,
+    size: FETCH_SIZE,
+  })
+}
+
+watch([dateFilter, statusFilter, typeFilter], () => {
+  page.value = 1
+  loadEvents()
+}, { immediate: true })
+
 const selectedRow = computed(
-  () => EVENT_ROWS.find((r) => r.id === parkingEventStore.selectedId) ?? EVENT_ROWS[0]!,
+  () => parkingEventStore.events.find((r) => r.eventId === parkingEventStore.selectedEventId) ?? parkingEventStore.events[0] ?? null,
 )
-// 오탐 처리한 사건은 원래 유형 대신 '오탐'으로, 완료 처리한 사건은 원래 상태 대신 '완료'로
-// 보여준다. 목록 표의 각 행과 사건 상세 패널이 같은 기준으로 표시해야 하므로 함수로 묶는다.
-function rowType(row: EventRow) {
-  return parkingEventStore.oTamIds[normalizeEventId(row.id)] ? '오탐' : row.type
-}
-function rowStatus(row: EventRow) {
-  return parkingEventStore.completedIds[normalizeEventId(row.id)] ? '완료' : row.st
-}
+
 const filteredRows = computed(() => {
   const query = carQuery.value.trim().replaceAll(' ', '')
-  return EVENT_ROWS.filter((r) => {
-    if (statusFilter.value && r.st !== statusFilter.value) return false
-    if (typeFilter.value && r.type !== typeFilter.value) return false
-    if (dateFilter.value && r.date !== dateFilter.value) return false
-    if (query && !r.car.replaceAll(' ', '').includes(query)) return false
-    return true
-  })
+  if (!query) return parkingEventStore.events
+  return parkingEventStore.events.filter((r) => r.plateNumber.replaceAll(' ', '').includes(query))
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
@@ -92,9 +108,26 @@ const pagedRows = computed(() =>
 const rangeStart = computed(() => (filteredRows.value.length === 0 ? 0 : (safePage.value - 1) * PAGE_SIZE + 1))
 const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRows.value.length))
 
-function handleResendClick(event: MouseEvent, id: string) {
+// 연결된 이동요청이 없으면(requestStatus === null) 백엔드가 재알림을 409로 거부하므로
+// 미리 버튼을 막는다. 완료·오탐으로 이미 종결된 사건도 다시 보낼 수 없다.
+function canRemind(row: AdminEventSummary): boolean {
+  return row.requestStatus !== null && row.eventStatus !== 'RESOLVED' && row.eventStatus !== 'DISMISSED'
+}
+
+const submittingReminderId = ref<number | null>(null)
+const reminderError = ref<string | null>(null)
+
+async function handleResendClick(event: MouseEvent, eventId: number) {
   event.stopPropagation()
-  parkingEventStore.resend(id)
+  submittingReminderId.value = eventId
+  reminderError.value = null
+  try {
+    await parkingEventStore.sendReminder(eventId)
+  } catch (error) {
+    reminderError.value = error instanceof Error ? error.message : '재알림 전송에 실패했습니다.'
+  } finally {
+    submittingReminderId.value = null
+  }
 }
 </script>
 
@@ -112,7 +145,7 @@ function handleResendClick(event: MouseEvent, id: string) {
               :class="{ active: !!statusFilter }"
               @click="toggleDropdown('status')"
             >
-              {{ statusFilter ?? '전체 상태' }} <ChevronDown :size="14" />
+              {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
             </button>
             <div v-if="openDropdown === 'status'" class="dropdown-menu">
               <button
@@ -124,14 +157,14 @@ function handleResendClick(event: MouseEvent, id: string) {
                 전체
               </button>
               <button
-                v-for="opt in STATUS_OPTIONS"
+                v-for="opt in EVENT_STATUS_OPTIONS"
                 :key="opt"
                 type="button"
                 class="dropdown-item"
                 :class="{ selected: statusFilter === opt }"
                 @click="statusFilter = opt; openDropdown = null"
               >
-                {{ opt }}
+                {{ eventStatusLabel(opt) }}
               </button>
             </div>
           </div>
@@ -143,7 +176,7 @@ function handleResendClick(event: MouseEvent, id: string) {
               :class="{ active: !!typeFilter }"
               @click="toggleDropdown('type')"
             >
-              {{ typeFilter ?? '전체 유형' }} <ChevronDown :size="14" />
+              {{ typeFilter ? eventTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
             </button>
             <div v-if="openDropdown === 'type'" class="dropdown-menu wide">
               <button
@@ -155,14 +188,14 @@ function handleResendClick(event: MouseEvent, id: string) {
                 전체
               </button>
               <button
-                v-for="opt in TYPE_OPTIONS"
+                v-for="opt in EVENT_TYPE_OPTIONS"
                 :key="opt"
                 type="button"
                 class="dropdown-item"
                 :class="{ selected: typeFilter === opt }"
                 @click="typeFilter = opt; openDropdown = null"
               >
-                {{ opt }}
+                {{ eventTypeLabel(opt) }}
               </button>
             </div>
           </div>
@@ -186,6 +219,8 @@ function handleResendClick(event: MouseEvent, id: string) {
           </button>
         </div>
 
+        <p v-if="reminderError" class="banner-error">{{ reminderError }}</p>
+
         <div class="panel table-panel">
           <div class="table-scroll">
             <table>
@@ -197,34 +232,40 @@ function handleResendClick(event: MouseEvent, id: string) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="pagedRows.length === 0">
+                <tr v-if="parkingEventStore.eventsLoading">
+                  <td colspan="8" class="empty">불러오는 중입니다…</td>
+                </tr>
+                <tr v-else-if="parkingEventStore.eventsError">
+                  <td colspan="8" class="empty error">{{ parkingEventStore.eventsError }}</td>
+                </tr>
+                <tr v-else-if="pagedRows.length === 0">
                   <td colspan="8" class="empty">조건에 맞는 사건이 없습니다.</td>
                 </tr>
                 <tr
                   v-for="r in pagedRows"
                   v-else
-                  :key="r.id"
+                  :key="r.eventId"
                   class="row"
-                  :class="{ selected: r.id === parkingEventStore.selectedId }"
-                  @click="parkingEventStore.setSelectedId(r.id)"
+                  :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
+                  @click="parkingEventStore.setSelectedEventId(r.eventId)"
                 >
-                  <td class="strong">{{ r.id }}</td>
-                  <td class="nowrap">{{ r.car }}</td>
-                  <td><StatusTag :tone="typeTone(rowType(r))">{{ rowType(r) }}</StatusTag></td>
-                  <td class="nowrap muted">{{ r.loc }}</td>
-                  <td class="muted">{{ r.time }}</td>
-                  <td class="muted">{{ r.ai }}</td>
-                  <td><StatusTag :tone="statusTone(rowStatus(r))">{{ rowStatus(r) }}</StatusTag></td>
+                  <td class="strong">#{{ r.eventId }}</td>
+                  <td class="nowrap">{{ r.plateNumber }}</td>
+                  <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
+                  <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
+                  <td class="muted">{{ formatTime(r.detectedAt) }}</td>
+                  <td class="muted">{{ r.violationRatio !== null ? `${r.violationRatio}%` : '-' }}</td>
+                  <td><StatusTag :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus) }}</StatusTag></td>
                   <td>
                     <div class="row-actions">
-                      <RouterLink :to="`/events/${normalizeEventId(r.id)}`" class="link-btn">상세 보기</RouterLink>
+                      <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
                       <button
                         type="button"
                         class="outline-btn"
-                        :disabled="rowStatus(r) === '완료' || Boolean(parkingEventStore.resentIds[normalizeEventId(r.id)])"
-                        @click="handleResendClick($event, r.id)"
+                        :disabled="!canRemind(r) || submittingReminderId === r.eventId"
+                        @click="handleResendClick($event, r.eventId)"
                       >
-                        {{ parkingEventStore.resentIds[normalizeEventId(r.id)] ? '전송됨' : '재알림' }}
+                        재알림
                       </button>
                     </div>
                   </td>
@@ -242,10 +283,13 @@ function handleResendClick(event: MouseEvent, id: string) {
       </div>
 
       <aside class="panel detail-panel">
-        <EventDetailCard :event-id="selectedRow.id" />
+        <template v-if="selectedRow">
+          <EventDetailCard :event-id="selectedRow.eventId" />
 
-        <h4 class="timeline-title">사건 진행 이력</h4>
-        <EventTimeline :event-id="selectedRow.id" />
+          <h4 class="timeline-title">사건 진행 이력</h4>
+          <EventTimeline :event-id="selectedRow.eventId" />
+        </template>
+        <p v-else class="empty-hint">선택된 사건이 없습니다.</p>
       </aside>
     </div>
   </AppShell>
@@ -318,7 +362,7 @@ function handleResendClick(event: MouseEvent, id: string) {
 }
 
 .dropdown-menu.wide {
-  width: 160px;
+  width: 180px;
 }
 
 .dropdown-menu.date-menu {
@@ -384,6 +428,12 @@ function handleResendClick(event: MouseEvent, id: string) {
   cursor: pointer;
 }
 
+.banner-error {
+  margin-bottom: var(--spacing-base);
+  font-size: var(--font-size-sm);
+  color: var(--panel-danger);
+}
+
 .table-panel {
   padding: var(--spacing-md);
 }
@@ -418,6 +468,10 @@ td {
   padding: 40px var(--spacing-base);
   text-align: center;
   color: var(--panel-muted-foreground);
+}
+
+.empty.error {
+  color: var(--panel-danger);
 }
 
 .row {
@@ -508,5 +562,10 @@ td {
   margin-bottom: var(--spacing-base);
   margin-top: 28px;
   font-weight: 700;
+}
+
+.empty-hint {
+  font-size: var(--font-size-sm);
+  color: var(--panel-muted-foreground);
 }
 </style>

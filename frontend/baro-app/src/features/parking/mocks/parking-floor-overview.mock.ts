@@ -156,8 +156,11 @@ export const MOCK_PARKING_FLOORS: MockParkingFloor[] = [
 export function getMyVehicleLocation(
   sessions: ParkingSession[],
 ): MockMyVehicleLocation | null {
-  const session = sessions.find(({ status }) => status === 'PARKED');
-  if (!session) return null;
+  const session = sessions.find(
+    ({ status, floor, zoneNumber }) =>
+      status === 'PARKED' && Boolean(floor?.trim()) && Boolean(zoneNumber?.trim()),
+  );
+  if (!session?.floor || !session.zoneNumber) return null;
 
   const floorKey = session.floor.trim().toLowerCase();
   if (!MOCK_PARKING_FLOORS.some(({ key }) => key === floorKey)) return null;

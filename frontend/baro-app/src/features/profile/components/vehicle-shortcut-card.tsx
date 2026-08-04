@@ -1,7 +1,6 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import { Pressable, Text, View } from 'react-native';
 
-import { Gradients, Palette } from '@/styles';
+import { Palette } from '@/styles';
 
 import { ProfileIcon } from './profile-icon';
 import { styles } from './vehicle-shortcut-card.styles';
@@ -19,7 +18,7 @@ export function VehicleShortcutCard({ subtitle, onPress }: VehicleShortcutCardPr
       style={({ pressed }) => [styles.pressable, pressed && styles.pressablePressed]}
       onPress={onPress}
     >
-      <LinearGradient colors={Gradients.vehicleShortcut} style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.iconBadge}>
           <ProfileIcon name="car" size={18} color={Palette.gray975} />
         </View>
@@ -28,7 +27,7 @@ export function VehicleShortcutCard({ subtitle, onPress }: VehicleShortcutCardPr
           <Text style={styles.subtitle}>{subtitle}</Text>
         </View>
         <Text style={styles.chevron}>›</Text>
-      </LinearGradient>
+      </View>
     </Pressable>
   );
 }

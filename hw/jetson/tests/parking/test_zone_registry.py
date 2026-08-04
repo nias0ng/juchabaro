@@ -110,7 +110,7 @@ def test_loads_tracked_pilot_deployment_snapshot() -> None:
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(5)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(6)
     assert len(registry.all()) == 9
     assert registry.get(1).zone_type is ZoneType.GENERAL
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)
