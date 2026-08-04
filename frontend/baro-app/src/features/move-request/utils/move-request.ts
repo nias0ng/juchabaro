@@ -15,7 +15,7 @@ const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   DISABLED_ZONE_VIOLATION: '장애인 주차구역 위반',
   EV_OVERSTAY: '전기차 충전구역 장기 점유',
   OUT_OF_ZONE: '구역 외 주차',
-  ECT: '기타',
+  ETC: '기타',
 };
 
 const REQUEST_TYPE_DISPLAY: Record<

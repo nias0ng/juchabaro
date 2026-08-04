@@ -20,8 +20,8 @@ export const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 2,
   },
-  cardDisabled: {
-    opacity: 0.6,
+  cardPressed: {
+    opacity: 0.82,
   },
   label: {
     fontSize: 11,
@@ -31,10 +31,5 @@ export const styles = StyleSheet.create({
     fontSize: 23,
     fontWeight: FontWeight.semibold,
     color: Palette.gray975,
-  },
-  valueDisabled: {
-    fontSize: 14,
-    fontWeight: FontWeight.semibold,
-    color: Palette.gray400,
   },
 });

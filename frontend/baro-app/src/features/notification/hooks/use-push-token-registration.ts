@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 import {
@@ -20,7 +19,12 @@ export function usePushTokenRegistration(): void {
   const attemptedAccessTokenRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (status !== 'authenticated' || !accessToken || user?.role !== 'RESIDENT') {
+    if (
+      Platform.OS === 'web' ||
+      status !== 'authenticated' ||
+      !accessToken ||
+      user?.role !== 'RESIDENT'
+    ) {
       attemptedAccessTokenRef.current = null;
       return;
     }
@@ -61,16 +65,8 @@ export function usePushTokenRegistration(): void {
 
     void register();
 
-    const tokenSubscription =
-      Platform.OS === 'web'
-        ? null
-        : Notifications.addPushTokenListener(() => {
-            void register();
-          });
-
     return () => {
       cancelled = true;
-      tokenSubscription?.remove();
     };
   }, [accessToken, status, user?.role]);
 }

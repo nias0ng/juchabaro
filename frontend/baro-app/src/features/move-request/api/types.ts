@@ -12,8 +12,7 @@ export type MoveEventType =
   | 'DISABLED_ZONE_VIOLATION'
   | 'EV_OVERSTAY'
   | 'OUT_OF_ZONE'
-  // 문서상 오타가 아니라 백엔드가 실제로 이 철자로 내려준다("기타"의 오타 ECT를 그대로 씀).
-  | 'ECT';
+  | 'ETC';
 export type MoveResponseType = 'WILL_MOVE' | 'CANNOT_MOVE_NOW';
 export type MoveImageType = 'PLATE' | 'PARKING_STATE' | 'REPORT';
 export type MoveHistoryNotificationType =
