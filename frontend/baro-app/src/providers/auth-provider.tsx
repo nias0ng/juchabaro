@@ -2,6 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 
 import { getMyProfile, login as loginRequest } from '@/features/auth/api/auth-api';
 import type { UserProfile, UserRole, UserStatus } from '@/features/auth/api/types';
+import { unregisterDeviceToken } from '@/features/notification/api/device-token-api';
+import {
+  clearStoredPushTokenRegistration,
+  getStoredPushTokenRegistration,
+} from '@/features/notification/services/push-token-storage';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
 
 /* 
@@ -16,7 +21,7 @@ type AuthStatus = 'loading' | 'guest' | 'authenticated';
 // buildingNumber/unitNumber는 GET /api/users/me 명세 기준 관리자는 null일 수 있다.
 type AuthUser = {
   userId: number;
-  nickname: string;
+  name: string;
   role: UserRole;
   buildingNumber: string | null;
   unitNumber: string | null;
@@ -38,7 +43,7 @@ type AuthContextValue = {
 function toAuthUser(profile: UserProfile): AuthUser {
   return {
     userId: profile.userId,
-    nickname: profile.name,
+    name: profile.name,
     role: profile.role,
     buildingNumber: profile.buildingNumber,
     unitNumber: profile.unitNumber,
@@ -85,14 +90,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
     const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
 
-    // keepSignedIn이 true일 때 만, 로그인 성공 시 서버가 내려준 accessToken/refreshToken을 기기에 저장한다.
-    if (keepSignedIn) {
-      await saveSession({ accessToken: result.accessToken, refreshToken: result.refreshToken });
-    }
-
+    // 로그인 API는 accessToken만 발급하므로 로그인 유지가 필요할 때 accessToken만 저장한다.
     // 로그인 응답에는 동/호수 같은 상세 프로필이 없어서, 성공 직후 한 번 더 조회해서 채운다.
     // 이렇게 하면 세션 복원 때(위 useEffect)와 user를 채우는 방식이 하나로 통일된다.
     const profile = await getMyProfile(result.accessToken);
+
+    if (keepSignedIn) {
+      await saveSession({ accessToken: result.accessToken });
+    } else {
+      await clearSession();
+    }
+
     setAccessToken(result.accessToken);
     setUser(toAuthUser(profile));
     setStatus('authenticated');
@@ -103,12 +111,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    try {
+      const pushTokenRegistration = await getStoredPushTokenRegistration();
+
+      if (accessToken && pushTokenRegistration) {
+        await unregisterDeviceToken(pushTokenRegistration, accessToken);
+      }
+    } catch (error) {
+      if (__DEV__ || process.env.EXPO_PUBLIC_ENABLE_API_LOGS === 'true') {
+        console.warn('[PUSH] TOKEN_UNREGISTER_FAILED', error);
+      }
+    }
+
+    await Promise.allSettled([clearStoredPushTokenRegistration(), clearSession()]);
     // keepSignedIn 여부와 상관없이 로그아웃할 땐 항상 기기에 남아있을 수 있는 세션까지 전부 지운다.
-    await clearSession();
     setAccessToken(null);
     setUser(null);
     setStatus('guest');
-  }, []);
+  }, [accessToken]);
 
   return (
     <AuthContext.Provider value={{ status, user, accessToken, login, logout, updateUserProfile }}>

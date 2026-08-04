@@ -5,6 +5,12 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   pressable: {
     width: '100%',
+    borderRadius: Radius.xl,
+    shadowColor: Palette.gray975,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
   },
   pressablePressed: {
     opacity: 0.82,
@@ -17,11 +23,7 @@ export const styles = StyleSheet.create({
     minHeight: 76,
     borderRadius: Radius.xl,
     paddingHorizontal: Spacing.md,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
+    backgroundColor: Palette.violet600,
   },
   iconBadge: {
     width: 38,
@@ -38,15 +40,15 @@ export const styles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: FontWeight.bold,
-    color: Palette.gray975,
+    color: Palette.white,
   },
   subtitle: {
     fontSize: 11,
-    color: Palette.gray700,
+    color: Palette.white80,
   },
   chevron: {
     fontSize: 19,
     lineHeight: 22,
-    color: Palette.gray500,
+    color: Palette.white,
   },
 });

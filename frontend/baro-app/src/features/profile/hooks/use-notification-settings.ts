@@ -1,35 +1,105 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { NotificationChannel, NotificationSettings } from '@/features/profile/api/types';
+import {
+  getNotificationSettings,
+  updateNotificationSettings,
+} from '@/features/profile/api/notification-settings-api';
+import type { NotificationSettings, UpdateNotificationSettingsRequest } from '@/features/profile/api/types';
+import { useAuth } from '@/providers/auth-provider';
+import { ApiError } from '@/services/api-error';
 
-// TODO(profile-api): PATCH /users/me/notification-settings가 준비되면 조회/저장을 실제 API로 교체한다.
 const DEFAULT_SETTINGS: NotificationSettings = {
   moveRequestReceive: true,
   responseReminder: true,
   evOverstay: true,
-  officeNotice: false,
   quietHoursStart: '23:00',
   quietHoursEnd: '07:00',
-  channel: 'PUSH',
 };
 
 export function useNotificationSettings() {
+  const { accessToken, status } = useAuth();
   const [settings, setSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [loadErrorMessage, setLoadErrorMessage] = useState<string>();
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string>();
+  const mountedRef = useRef(true);
+  const savingRef = useRef(false);
 
-  const setResponseReminder = (value: boolean) =>
-    setSettings((prev) => ({ ...prev, responseReminder: value }));
-  const setEvOverstay = (value: boolean) => setSettings((prev) => ({ ...prev, evOverstay: value }));
-  const setOfficeNotice = (value: boolean) => setSettings((prev) => ({ ...prev, officeNotice: value }));
-  const setChannel = (value: NotificationChannel) => setSettings((prev) => ({ ...prev, channel: value }));
-  const setQuietHoursStart = (value: string) => setSettings((prev) => ({ ...prev, quietHoursStart: value }));
-  const setQuietHoursEnd = (value: string) => setSettings((prev) => ({ ...prev, quietHoursEnd: value }));
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    if (status !== 'authenticated' || !accessToken) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadErrorMessage(undefined);
+
+    try {
+      const result = await getNotificationSettings(accessToken);
+      if (mountedRef.current) setSettings(result);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setLoadErrorMessage(
+        error instanceof ApiError ? error.message : '알림 설정을 불러오지 못했습니다.',
+      );
+    } finally {
+      if (mountedRef.current) setIsLoading(false);
+    }
+  }, [accessToken, status]);
+
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
+
+  const saveSettings = useCallback(
+    async (request: UpdateNotificationSettingsRequest) => {
+      if (!accessToken || savingRef.current) return;
+
+      const previousSettings = settings;
+      savingRef.current = true;
+      setIsSaving(true);
+      setSaveErrorMessage(undefined);
+      setSettings((current) => ({ ...current, ...request }));
+
+      try {
+        const result = await updateNotificationSettings(request, accessToken);
+        if (mountedRef.current) setSettings(result);
+      } catch (error) {
+        if (!mountedRef.current) return;
+        setSettings(previousSettings);
+        setSaveErrorMessage(
+          error instanceof ApiError ? error.message : '알림 설정을 저장하지 못했습니다.',
+        );
+      } finally {
+        savingRef.current = false;
+        if (mountedRef.current) setIsSaving(false);
+      }
+    },
+    [accessToken, settings],
+  );
+
+  const setResponseReminder = (value: boolean) => void saveSettings({ responseReminder: value });
+  const setEvOverstay = (value: boolean) => void saveSettings({ evOverstay: value });
+  const setQuietHoursStart = (value: string) => void saveSettings({ quietHoursStart: value });
+  const setQuietHoursEnd = (value: string) => void saveSettings({ quietHoursEnd: value });
 
   return {
     settings,
+    isLoading,
+    isSaving,
+    loadErrorMessage,
+    saveErrorMessage,
+    reload: loadSettings,
     setResponseReminder,
     setEvOverstay,
-    setOfficeNotice,
-    setChannel,
     setQuietHoursStart,
     setQuietHoursEnd,
   };

@@ -36,6 +36,16 @@ export type VehicleStatusDisplay = {
   dueAt: string | null;
 };
 
+export function formatParkingLocation(
+  floor: string | null,
+  zoneNumber: string | null,
+): string {
+  const parts = [floor, zoneNumber].filter(
+    (value): value is string => Boolean(value?.trim()),
+  );
+  return parts.length > 0 ? parts.join(' · ') : '위치 확인 중';
+}
+
 // 화면에서 표시할 문자열로 변환
 export function toVehicleStatusDisplay(session: ParkingSession): VehicleStatusDisplay {
   const isEvCharging = isEvChargingSession(session);
@@ -50,7 +60,7 @@ export function toVehicleStatusDisplay(session: ParkingSession): VehicleStatusDi
           : '정상 주차 중',
     statusTime: `${formatTime(session.enteredAt)} 입차`,
     plateNumber: session.plateNumber,
-    location: `${session.floor} · ${session.zoneNumber}`,
+    location: formatParkingLocation(session.floor, session.zoneNumber),
     isEvCharging,
     dueAt: isEvCharging ? session.dueAt : null,
   };

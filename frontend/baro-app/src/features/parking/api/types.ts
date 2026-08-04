@@ -8,10 +8,11 @@ export type ParkingSession = {
   plateNumber: string;
   status: ParkingSessionStatus;
   isElectric: boolean;
-  zoneId: number;
-  zoneNumber: string;
-  zoneType: ParkingZoneType;
-  floor: string;
+  // 입차 직후 아직 주차면이 배정되지 않은 세션은 위치 관련 값이 null이다.
+  zoneId: number | null;
+  zoneNumber: string | null;
+  zoneType: ParkingZoneType | null;
+  floor: string | null;
   enteredAt: string; // ISO 8601
   /** 전기차 충전 구역 이용 종료 시각. 해당하지 않는 세션은 null. */
   dueAt: string | null;

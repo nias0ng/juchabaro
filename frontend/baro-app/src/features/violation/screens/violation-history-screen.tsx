@@ -2,12 +2,21 @@ import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
+import {
+  AsyncStateView,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  SegmentedControl,
+  Stack,
+} from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import { ViolationListItem } from '../components/violation-list-item';
 import { ViolationSummaryCard } from '../components/violation-summary-card';
-import { MOCK_VIOLATION_HISTORY, MOCK_VIOLATION_SUMMARY, type MockViolationItem } from '../mocks/violation-history.mock';
+import type { ViolationHistoryItem } from '../api/types';
+import { useViolationHistory } from '../hooks/use-violation-history';
+import { useViolationStats } from '../hooks/use-violation-stats';
 
 import { styles } from './violation-history-screen.styles';
 
@@ -28,14 +37,14 @@ function goBack() {
   router.replace('/resident');
 }
 
-function filterByStatus(items: MockViolationItem[], filter: ViolationFilter): MockViolationItem[] {
+function filterByStatus(items: ViolationHistoryItem[], filter: ViolationFilter): ViolationHistoryItem[] {
   if (filter === 'ALL') return items;
   return items.filter((item) => item.status === filter);
 }
 
 // 이미 월 내림차순으로 정렬된 배열을 연속된 monthLabel 기준으로 묶는다.
-function groupByMonth(items: MockViolationItem[]): { monthLabel: string; items: MockViolationItem[] }[] {
-  const groups: { monthLabel: string; items: MockViolationItem[] }[] = [];
+function groupByMonth(items: ViolationHistoryItem[]): { monthLabel: string; items: ViolationHistoryItem[] }[] {
+  const groups: { monthLabel: string; items: ViolationHistoryItem[] }[] = [];
 
   for (const item of items) {
     const lastGroup = groups[groups.length - 1];
@@ -52,11 +61,21 @@ function groupByMonth(items: MockViolationItem[]): { monthLabel: string; items: 
 // J-02. 위반 이력 전체
 export default function ViolationHistoryScreen() {
   const [filter, setFilter] = useState<ViolationFilter>('ALL');
+  const { stats, isLoading: isStatsLoading, error: statsError } = useViolationStats();
+  const { violations, isLoading: isHistoryLoading, error: historyError } = useViolationHistory();
 
   const monthGroups = useMemo(
-    () => groupByMonth(filterByStatus(MOCK_VIOLATION_HISTORY, filter)),
-    [filter],
+    () => groupByMonth(filterByStatus(violations, filter)),
+    [filter, violations],
   );
+
+  const historyStatusMessage = isHistoryLoading
+    ? '위반 이력을 불러오는 중입니다.'
+    : historyError
+      ? '위반 이력을 불러오지 못했습니다.'
+      : monthGroups.length === 0
+        ? '표시할 위반 이력이 없습니다.'
+        : undefined;
 
   return (
     <GradientScreenBackground>
@@ -64,27 +83,34 @@ export default function ViolationHistoryScreen() {
 
       <ResponsiveContainer style={styles.content}>
         <Stack gap={Spacing.base + 2}>
-          {/* TODO: 위반 이력 조회 API 완성 후 실제 서버 응답의 최근 90일 통계로 교체 */}
-          <ViolationSummaryCard summary={MOCK_VIOLATION_SUMMARY} />
+          <AsyncStateView
+            message={
+              isStatsLoading
+                ? '위반 통계를 불러오는 중입니다.'
+                : statsError
+                  ? '위반 통계를 불러오지 못했습니다.'
+                  : undefined
+            }
+            fill={false}
+          >
+            {stats ? <ViolationSummaryCard summary={stats} /> : null}
+          </AsyncStateView>
 
           <SegmentedControl options={FILTER_OPTIONS} value={filter} onChange={setFilter} />
 
           <View style={styles.listCard}>
-            {/* TODO: 위반 이력 조회 API 완성 후 mock 데이터를 서버 응답(월별 그룹 포함)으로 교체 */}
-            {monthGroups.length === 0 ? (
-              <Text style={styles.emptyText}>표시할 위반 이력이 없습니다.</Text>
-            ) : (
-              monthGroups.map((group) => (
+            <AsyncStateView message={historyStatusMessage} fill={false}>
+              {monthGroups.map((group) => (
                 <View key={group.monthLabel} style={styles.monthGroup}>
                   <Text style={styles.monthLabel}>{group.monthLabel}</Text>
                   <View style={styles.monthItems}>
                     {group.items.map((item) => (
-                      <ViolationListItem key={item.id} item={item} />
+                      <ViolationListItem key={item.requestId} item={item} />
                     ))}
                   </View>
                 </View>
-              ))
-            )}
+              ))}
+            </AsyncStateView>
           </View>
         </Stack>
       </ResponsiveContainer>

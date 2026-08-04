@@ -49,7 +49,7 @@ const quickActions: QuickAction[] = [
 
 export default function HomeScreen() {
   const { user } = useAuth();
-  const avatarInitial = user?.nickname?.trim().charAt(0) || DEFAULT_AVATAR_INITIAL;
+  const avatarInitial = user?.name?.trim().charAt(0) || DEFAULT_AVATAR_INITIAL;
   // 관리자 계정 등 동/호수가 없는 경우(buildingNumber/unitNumber가 null) 대비.
   const unitLabel =
     user?.buildingNumber && user?.unitNumber
@@ -64,7 +64,9 @@ export default function HomeScreen() {
   const primarySession = pickPrimarySession(sessions);
   const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
   const additionalSessionCount = Math.max(sessions.length - 1, 0);
-  const myZoneNumbers = sessions.map((session) => session.zoneNumber);
+  const myZoneNumbers = sessions.flatMap((session) =>
+    session.zoneNumber ? [session.zoneNumber] : [],
+  );
 
   const {
     summary,
