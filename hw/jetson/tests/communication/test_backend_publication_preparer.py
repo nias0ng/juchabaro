@@ -183,6 +183,22 @@ def test_prepare_incident_resolve_uses_resolution_fact() -> None:
     assert payload["terminationReason"] == "ZONE_VISIT_ENDED"
 
 
+def test_prepare_incident_requires_backend_session_id() -> None:
+    transition = _open_incident("EV_OVERSTAY")
+    without_session = replace(
+        transition.incident,
+        parking_session_id=None,
+    )
+
+    with pytest.raises(ValueError, match="sessionId"):
+        BackendPublicationPreparer().prepare_incident(
+            IncidentTransition(
+                transition_type=IncidentTransitionType.OPEN,
+                incident=without_session,
+            )
+        )
+
+
 def test_prepare_session_exit_uses_api_10_contract() -> None:
     prepared = BackendPublicationPreparer().prepare_session_exit(
         SessionExitTransition(

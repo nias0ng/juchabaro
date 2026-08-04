@@ -82,10 +82,8 @@ class BackendPublicationPreparer:
         """Incident OPEN·RESOLVE 전이를 API 7 payload로 만든다."""
 
         incident = transition.incident
-        if incident.entry_attempt_id is None and incident.parking_session_id is None:
-            raise ValueError(
-                "Backend publication requires entryAttemptId or sessionId"
-            )
+        if incident.parking_session_id is None:
+            raise ValueError("Backend Incident publication requires sessionId")
         try:
             wire_rule_code = _INCIDENT_RULE_CODE_MAPPING[incident.key.rule_code]
         except KeyError as error:

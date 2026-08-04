@@ -1,18 +1,26 @@
-"""API 6·7·10 publication을 보내고 공통 적용 ACK를 검증한다.
+"""Backend HW publication을 보내고 공통 적용 ACK를 검증한다.
 
-HTTP 전송은 exact outbox payload bytes를 그대로 사용한다. 네트워크·5xx만
-retryable로 분류하고, 4xx·계약 위반·payload 충돌은 운영 개입이 필요한 terminal
-실패로 분리한다.
+API 6·7·10은 exact outbox payload bytes를 그대로 사용한다. API 8·9·13은
+communication DTO를 직접 전송하며 application wiring은 이 모듈의 책임이 아니다.
+네트워크·5xx만 retryable로 분류하고, 4xx·계약 위반·payload 충돌은 운영 개입이
+필요한 terminal 실패로 분리한다.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 import httpx
 
+from src.communication.backend_requests import (
+    EvidenceUnavailableRequest,
+    EvidenceUploadRequest,
+    MoveVerificationResultRequest,
+    canonical_json_bytes,
+)
 from src.communication.models import PublicationApplicationResult
 from src.storage.models import OutboxRecord, PublicationApplicationStatus
 
@@ -23,6 +31,9 @@ _ENDPOINTS = {
     ("Incident", "OPEN"): "/api/hw/parking-events/transitions",
     ("Incident", "RESOLVE"): "/api/hw/parking-events/transitions",
     ("ParkingSession", "SESSION_EXIT"): "/api/hw/parking/exit",
+}
+_ACK_AGGREGATE_TYPES = {
+    ("ParkingSession", "SESSION_EXIT"): "Session",
 }
 _SHA256 = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 
@@ -44,12 +55,12 @@ class PublicationConfirmation:
     """검증을 마친 Backend의 APPLIED·ALREADY_APPLIED 확인."""
 
     application_status: PublicationApplicationStatus
-    payload_hash: str
+    payload_hash: str | None
     backend_correlation: Mapping[str, object]
 
 
 class BackendClient:
-    """API 6·7·10 endpoint와 outbound 적용 확인 계약을 소유한다."""
+    """Backend HW endpoint와 outbound 적용 확인 계약을 소유한다."""
 
     def __init__(
         self,
@@ -98,15 +109,123 @@ class BackendClient:
                 f"Backend request failed: {type(error).__name__}"
             ) from error
 
-        if response.status_code >= 500:
-            raise RetryableBackendPublicationError(
-                f"Backend returned HTTP {response.status_code}"
-            )
-        if not 200 <= response.status_code < 300:
-            raise TerminalBackendPublicationError(
-                f"Backend returned HTTP {response.status_code}"
-            )
+        _require_success(response)
         return _parse_confirmation(response, publication)
+
+    def upload_evidence(
+        self,
+        request: EvidenceUploadRequest,
+        *,
+        idempotency_key: str,
+    ) -> PublicationConfirmation:
+        """API 8 multipart(file+metadata) evidence를 전송한다."""
+
+        _require_idempotency_key(idempotency_key)
+        metadata = canonical_json_bytes(request.metadata_payload())
+        try:
+            response = self._client.post(
+                (
+                    f"{self._base_url}/api/hw/parking-events/"
+                    f"{request.incident_id}/evidence"
+                ),
+                headers={
+                    "X-HW-API-Key": self._hw_api_key,
+                    "Idempotency-Key": idempotency_key,
+                },
+                files={
+                    "file": (
+                        request.filename,
+                        request.content,
+                        request.mime_type,
+                    ),
+                    "metadata": (None, metadata, "application/json"),
+                },
+            )
+        except httpx.RequestError as error:
+            raise RetryableBackendPublicationError(
+                f"Backend request failed: {type(error).__name__}"
+            ) from error
+
+        _require_success(response)
+        return _parse_application_confirmation(
+            response,
+            expected_aggregate_type="EvidenceArtifact",
+            expected_aggregate_id=str(request.evidence_id),
+            expected_revision=request.publication_revision,
+            expected_payload_hash=None,
+        )
+
+    def publish_evidence_unavailable(
+        self,
+        request: EvidenceUnavailableRequest,
+        *,
+        idempotency_key: str,
+    ) -> PublicationConfirmation:
+        """API 9 evidence 제공 불가 사실을 전송한다."""
+
+        payload = canonical_json_bytes(request.to_payload())
+        response = self._post_json(
+            (
+                f"/api/hw/parking-events/{request.incident_id}/"
+                "evidence-unavailable"
+            ),
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+        return _parse_application_confirmation(
+            response,
+            expected_aggregate_type="EvidenceArtifact",
+            expected_aggregate_id=str(request.evidence_id),
+            expected_revision=request.publication_revision,
+            expected_payload_hash=hashlib.sha256(payload).hexdigest(),
+        )
+
+    def publish_move_verification_result(
+        self,
+        request: MoveVerificationResultRequest,
+        *,
+        idempotency_key: str,
+    ) -> PublicationConfirmation:
+        """API 13 이동 확인 결과를 전송한다."""
+
+        payload = canonical_json_bytes(request.to_payload())
+        response = self._post_json(
+            f"/api/hw/move-requests/{request.request_id}/verification",
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+        return _parse_application_confirmation(
+            response,
+            expected_aggregate_type="MoveVerificationAttempt",
+            expected_aggregate_id=request.aggregate_id,
+            expected_revision=request.publication_revision,
+            expected_payload_hash=hashlib.sha256(payload).hexdigest(),
+        )
+
+    def _post_json(
+        self,
+        endpoint: str,
+        *,
+        payload: bytes,
+        idempotency_key: str,
+    ) -> httpx.Response:
+        _require_idempotency_key(idempotency_key)
+        try:
+            response = self._client.post(
+                f"{self._base_url}{endpoint}",
+                content=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-HW-API-Key": self._hw_api_key,
+                    "Idempotency-Key": idempotency_key,
+                },
+            )
+        except httpx.RequestError as error:
+            raise RetryableBackendPublicationError(
+                f"Backend request failed: {type(error).__name__}"
+            ) from error
+        _require_success(response)
+        return response
 
     def close(self) -> None:
         """내부 connection pool을 닫는다."""
@@ -117,6 +236,27 @@ class BackendClient:
 def _parse_confirmation(
     response: httpx.Response,
     publication: OutboxRecord,
+) -> PublicationConfirmation:
+    expected_aggregate_type = _ACK_AGGREGATE_TYPES.get(
+        (publication.aggregate_type, publication.transition_type),
+        publication.aggregate_type,
+    )
+    return _parse_application_confirmation(
+        response,
+        expected_aggregate_type=expected_aggregate_type,
+        expected_aggregate_id=publication.aggregate_id,
+        expected_revision=publication.publication_revision,
+        expected_payload_hash=publication.payload_hash,
+    )
+
+
+def _parse_application_confirmation(
+    response: httpx.Response,
+    *,
+    expected_aggregate_type: str,
+    expected_aggregate_id: str,
+    expected_revision: int,
+    expected_payload_hash: str | None,
 ) -> PublicationConfirmation:
     try:
         envelope = response.json()
@@ -144,11 +284,11 @@ def _parse_confirmation(
         raise TerminalBackendPublicationError(
             "Backend reported a publication conflict"
         )
-    if result.get("aggregateType") != publication.aggregate_type:
+    if result.get("aggregateType") != expected_aggregate_type:
         raise TerminalBackendPublicationError(
             "Backend ACK aggregateType differs from the publication"
         )
-    if str(result.get("aggregateId")) != publication.aggregate_id:
+    if str(result.get("aggregateId")) != expected_aggregate_id:
         raise TerminalBackendPublicationError(
             "Backend ACK aggregateId differs from the publication"
         )
@@ -156,27 +296,32 @@ def _parse_confirmation(
     if (
         isinstance(revision, bool)
         or not isinstance(revision, int)
-        or revision != publication.publication_revision
+        or revision != expected_revision
     ):
         raise TerminalBackendPublicationError(
             "Backend ACK publicationRevision differs from the publication"
         )
 
     payload_hash_value = result.get("payloadHash")
-    match = (
-        _SHA256.fullmatch(payload_hash_value)
-        if isinstance(payload_hash_value, str)
-        else None
-    )
-    if match is None:
-        raise TerminalBackendPublicationError(
-            "Backend ACK payloadHash must use sha256:<hex>"
+    payload_hash = expected_payload_hash
+    if payload_hash_value is not None:
+        match = (
+            _SHA256.fullmatch(payload_hash_value)
+            if isinstance(payload_hash_value, str)
+            else None
         )
-    payload_hash = match.group(1).lower()
-    if payload_hash != publication.payload_hash:
-        raise TerminalBackendPublicationError(
-            "Backend ACK payloadHash differs from the immutable publication"
-        )
+        if match is None:
+            raise TerminalBackendPublicationError(
+                "Backend ACK payloadHash must use sha256:<hex>"
+            )
+        payload_hash = match.group(1).lower()
+        if (
+            expected_payload_hash is not None
+            and payload_hash != expected_payload_hash
+        ):
+            raise TerminalBackendPublicationError(
+                "Backend ACK payloadHash differs from the immutable publication"
+            )
 
     correlation = result.get("backendCorrelation", {})
     if not isinstance(correlation, dict):
@@ -188,3 +333,19 @@ def _parse_confirmation(
         payload_hash=payload_hash,
         backend_correlation=correlation,
     )
+
+
+def _require_success(response: httpx.Response) -> None:
+    if response.status_code >= 500:
+        raise RetryableBackendPublicationError(
+            f"Backend returned HTTP {response.status_code}"
+        )
+    if not 200 <= response.status_code < 300:
+        raise TerminalBackendPublicationError(
+            f"Backend returned HTTP {response.status_code}"
+        )
+
+
+def _require_idempotency_key(value: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("idempotency_key must not be empty")

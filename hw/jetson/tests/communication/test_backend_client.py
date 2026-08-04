@@ -1,8 +1,11 @@
-"""API 6·7·10 endpoint·header·공통 ACK 검증 테스트."""
+"""Backend HW endpoint·header·공통 ACK 검증 테스트."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import httpx
 import pytest
@@ -12,22 +15,54 @@ from src.communication.backend_client import (
     RetryableBackendPublicationError,
     TerminalBackendPublicationError,
 )
+from src.communication.backend_requests import (
+    EvidenceUnavailableReason,
+    EvidenceUnavailableRequest,
+    EvidenceUploadRequest,
+    MoveVerificationResultRequest,
+)
+from src.communication.models import (
+    MoveVerificationIncidentResult,
+    MoveVerificationResult,
+)
 from src.domain.models import DeliveryState
+from src.parking.models import IncidentId
 from src.storage.models import OutboxRecord, PublicationApplicationStatus
 
 
 @pytest.mark.parametrize(
-    ("aggregate_type", "transition_type", "expected_path"),
+    (
+        "aggregate_type",
+        "transition_type",
+        "expected_path",
+        "expected_ack_aggregate_type",
+    ),
     [
-        ("ParkingEpisode", "PARKED", "/api/hw/parking/transitions"),
-        ("Incident", "OPEN", "/api/hw/parking-events/transitions"),
-        ("ParkingSession", "SESSION_EXIT", "/api/hw/parking/exit"),
+        (
+            "ParkingEpisode",
+            "PARKED",
+            "/api/hw/parking/transitions",
+            "ParkingEpisode",
+        ),
+        (
+            "Incident",
+            "OPEN",
+            "/api/hw/parking-events/transitions",
+            "Incident",
+        ),
+        (
+            "ParkingSession",
+            "SESSION_EXIT",
+            "/api/hw/parking/exit",
+            "Session",
+        ),
     ],
 )
 def test_publish_routes_exact_bytes_and_validates_ack(
     aggregate_type: str,
     transition_type: str,
     expected_path: str,
+    expected_ack_aggregate_type: str,
 ) -> None:
     publication = _publication(
         aggregate_type=aggregate_type,
@@ -39,7 +74,10 @@ def test_publish_routes_exact_bytes_and_validates_ack(
         captured.append(request)
         return httpx.Response(
             200,
-            json=_ack(publication),
+            json=_ack(
+                publication,
+                aggregate_type=expected_ack_aggregate_type,
+            ),
         )
 
     client = BackendClient(
@@ -61,6 +99,25 @@ def test_publish_routes_exact_bytes_and_validates_ack(
     assert confirmation.application_status is PublicationApplicationStatus.APPLIED
     assert confirmation.payload_hash == publication.payload_hash
     assert confirmation.backend_correlation == {"eventId": 301}
+
+
+def test_publish_accepts_ack_without_optional_payload_hash() -> None:
+    publication = _publication()
+    ack = _ack(publication)
+    del ack["result"]["payloadHash"]
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=ack)
+        ),
+    )
+    try:
+        confirmation = client.publish(publication)
+    finally:
+        client.close()
+
+    assert confirmation.payload_hash == publication.payload_hash
 
 
 def test_publish_treats_network_and_5xx_as_retryable() -> None:
@@ -137,6 +194,177 @@ def test_publish_treats_4xx_and_mismatched_hash_as_terminal() -> None:
         mismatch_client.close()
 
 
+def test_upload_evidence_uses_multipart_contract() -> None:
+    incident_id = UUID("1f21d60c-c077-4fb4-a092-7cbdb5fc5a91")
+    evidence_id = UUID("7f4f9b5d-16c5-495f-8a91-bb7916f17e77")
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=_direct_ack(
+                aggregate_type="EvidenceArtifact",
+                aggregate_id=str(evidence_id),
+                publication_revision=1,
+            ),
+        )
+
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        confirmation = client.upload_evidence(
+            EvidenceUploadRequest(
+                incident_id=incident_id,
+                evidence_id=evidence_id,
+                publication_revision=1,
+                content=b"\xff\xd8evidence\xff\xd9",
+                captured_at=datetime(
+                    2026,
+                    8,
+                    3,
+                    10,
+                    16,
+                    5,
+                    tzinfo=timezone(timedelta(hours=9)),
+                ),
+            ),
+            idempotency_key="EvidenceArtifact:upload:1",
+        )
+    finally:
+        client.close()
+
+    sent = captured[0]
+    assert sent.url.path == f"/api/hw/parking-events/{incident_id}/evidence"
+    assert sent.headers["x-hw-api-key"] == "key"
+    assert sent.headers["idempotency-key"] == "EvidenceArtifact:upload:1"
+    assert sent.headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="file"' in sent.content
+    assert b'name="metadata"' in sent.content
+    assert b"application/json" in sent.content
+    assert b"evidenceId" in sent.content
+    assert b"\xff\xd8evidence\xff\xd9" in sent.content
+    assert confirmation.payload_hash is None
+
+
+def test_publish_evidence_unavailable_uses_api_9_contract() -> None:
+    incident_id = UUID("1f21d60c-c077-4fb4-a092-7cbdb5fc5a91")
+    evidence_id = UUID("7f4f9b5d-16c5-495f-8a91-bb7916f17e77")
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=_direct_ack(
+                aggregate_type="EvidenceArtifact",
+                aggregate_id=str(evidence_id),
+                publication_revision=1,
+            ),
+        )
+
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.publish_evidence_unavailable(
+            EvidenceUnavailableRequest(
+                incident_id=incident_id,
+                evidence_id=evidence_id,
+                publication_revision=1,
+                reason=EvidenceUnavailableReason.STORAGE_PRESSURE,
+            ),
+            idempotency_key="EvidenceArtifact:unavailable:1",
+        )
+    finally:
+        client.close()
+
+    sent = captured[0]
+    assert sent.url.path == (
+        f"/api/hw/parking-events/{incident_id}/evidence-unavailable"
+    )
+    assert sent.headers["x-hw-api-key"] == "key"
+    assert sent.headers["idempotency-key"] == (
+        "EvidenceArtifact:unavailable:1"
+    )
+    assert json.loads(sent.content) == {
+        "evidenceId": str(evidence_id),
+        "publicationRevision": 1,
+        "reason": "STORAGE_PRESSURE",
+        "unavailableAt": None,
+        "byteSize": None,
+        "checksum": None,
+    }
+
+
+def test_publish_move_verification_uses_api_13_contract() -> None:
+    incident_id = IncidentId(
+        UUID("1f21d60c-c077-4fb4-a092-7cbdb5fc5a91")
+    )
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=_direct_ack(
+                aggregate_type="MoveVerificationAttempt",
+                aggregate_id="201:1",
+                publication_revision=1,
+            ),
+        )
+
+    client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.publish_move_verification_result(
+            MoveVerificationResultRequest(
+                request_id=201,
+                verification_attempt=1,
+                publication_revision=1,
+                result=MoveVerificationResult.RESOLVED,
+                incident_results=(
+                    MoveVerificationIncidentResult(
+                        incident_id=incident_id,
+                        result=MoveVerificationResult.RESOLVED,
+                        incident_publication_revision=2,
+                    ),
+                ),
+            ),
+            idempotency_key="MoveVerificationAttempt:201:1:1",
+        )
+    finally:
+        client.close()
+
+    sent = captured[0]
+    assert sent.url.path == "/api/hw/move-requests/201/verification"
+    assert sent.headers["x-hw-api-key"] == "key"
+    assert sent.headers["idempotency-key"] == (
+        "MoveVerificationAttempt:201:1:1"
+    )
+    assert json.loads(sent.content) == {
+        "verificationAttempt": 1,
+        "publicationRevision": 1,
+        "result": "RESOLVED",
+        "incidentResults": [
+            {
+                "incidentId": str(incident_id),
+                "result": "RESOLVED",
+                "incidentPublicationRevision": 2,
+            }
+        ],
+        "completedAt": None,
+    }
+
+
 def _publication(
     *,
     aggregate_type: str = "Incident",
@@ -165,18 +393,43 @@ def _publication(
     )
 
 
-def _ack(publication: OutboxRecord) -> dict[str, object]:
+def _ack(
+    publication: OutboxRecord,
+    *,
+    aggregate_type: str | None = None,
+) -> dict[str, object]:
     return {
         "httpStatus": "OK",
         "isSuccess": True,
         "message": "전이가 적용되었습니다.",
         "code": 200,
         "result": {
-            "aggregateType": publication.aggregate_type,
+            "aggregateType": aggregate_type or publication.aggregate_type,
             "aggregateId": publication.aggregate_id,
             "publicationRevision": publication.publication_revision,
             "applicationResult": "APPLIED",
             "payloadHash": f"sha256:{publication.payload_hash}",
             "backendCorrelation": {"eventId": 301},
+        },
+    }
+
+
+def _direct_ack(
+    *,
+    aggregate_type: str,
+    aggregate_id: str,
+    publication_revision: int,
+) -> dict[str, object]:
+    return {
+        "httpStatus": "OK",
+        "isSuccess": True,
+        "message": "적용되었습니다.",
+        "code": 200,
+        "result": {
+            "aggregateType": aggregate_type,
+            "aggregateId": aggregate_id,
+            "publicationRevision": publication_revision,
+            "applicationResult": "APPLIED",
+            "backendCorrelation": {},
         },
     }
