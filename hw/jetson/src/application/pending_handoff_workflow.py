@@ -20,7 +20,10 @@ from datetime import datetime, timedelta
 import sqlite3
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from src.application.physical_presence_workflow import SessionExitTransition
+from src.application.physical_presence_workflow import (
+    ABSENCE_WITHOUT_EXIT_EVIDENCE,
+    SessionExitTransition,
+)
 from src.application.session_observation_workflow import SessionObservationResult
 from src.domain.models import ObservationStatus, require_aware
 from src.parking.models import (
@@ -232,6 +235,12 @@ class PendingHandoffWorkflow:
                     is PhysicalPresenceState.EXITED
                 ):
                     continue
+                if vehicle.termination_reason == ABSENCE_WITHOUT_EXIT_EVIDENCE:
+                    # 출차 구역 통과가 관측되지 않은 부재는 출차가 아니다(565).
+                    # 이 시점에는 ZoneVisit이 이미 종료돼 재계산할 수 없으므로
+                    # departure가 영속한 사유를 그대로 신뢰한다. 확인할 수 없는
+                    # 출차 상태를 mirror에 만들어 두지 않는다.
+                    continue
                 updated = self._historical_mirror(
                     attempt=attempt,
                     vehicle=vehicle,
@@ -249,7 +258,7 @@ class PendingHandoffWorkflow:
                         origin=(
                             PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
                         ),
-                        evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+                        evidence=PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL,
                     )
                 )
                 continue
