@@ -52,10 +52,20 @@ class Settings(BaseSettings):
     # capture·inference stall은 부재 확정 시간으로 보충하지 않는다.
     trusted_sample_max_gap_seconds: float
 
+    # bbox 시간 창에서만 계산하는 ephemeral motion evidence 정책. 거리 임계값은
+    # median bbox diagonal 대비 비율이며, 아래 값은 파일럿 replay로 재조정한다.
+    # 이 owner는 identity·zone·parking lifecycle을 판단하지 않는다.
+    motion_window_seconds: float
+    motion_min_observation_span_seconds: float
+    motion_max_sample_gap_seconds: float
+    motion_stationary_threshold: float
+    motion_moving_threshold: float
+    motion_min_samples: int
+    motion_min_trend_consistency: float
+
     # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
-    # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다 —
-    # motion_estimator에 평활화가 없어 이 값이 잡음으로 인한 주차 종료를 막는
-    # 유일한 방어선이다.
+    # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다.
+    # MotionEstimator의 evidence 임계값과 별개인 ParkingEpisode lifecycle timer다.
     parking_confirm_seconds: float
     parking_move_confirm_seconds: float
 

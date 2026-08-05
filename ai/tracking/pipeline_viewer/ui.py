@@ -134,6 +134,11 @@ def _render_selected_frame(frame: FrameTrace, run: ViewerRun) -> None:
             _identity_resolution_rows(frame, run),
             use_container_width=True,
         )
+        st.caption("MotionEstimator evidence")
+        st.dataframe(
+            _motion_estimate_rows(frame, run),
+            use_container_width=True,
+        )
         st.caption("Resolved PhysicalVehicle observations")
         st.dataframe(_tracking_rows(frame, run), use_container_width=True)
     with tabs[2]:
@@ -254,6 +259,7 @@ def _render_diagnostic_export(run: ViewerRun) -> None:
         detection_threshold=run.detection_confidence_threshold,
         model_path=str(run.model_path),
         tracker_config=run.tracker_config,
+        policy_snapshot_json=run.policy_snapshot_json,
     )
     detection_rows = [row for row in rows if row["rowType"] == "DETECTION"]
     tracked_rows = [row for row in rows if row["rowType"] == "TRACKED_VEHICLE"]
@@ -270,8 +276,9 @@ def _render_diagnostic_export(run: ViewerRun) -> None:
     st.caption(
         "DETECTION은 설정 confidence threshold를 통과한 YOLO 후보이며 tracker 적용 전 값입니다. "
         "IDENTITY_RESOLUTION은 TrackSegment→PhysicalVehicle 결정과 geometry 근거이며, "
+        "MOTION_ESTIMATE는 bbox·관측 시각의 time-window 판정 근거이고, "
         "TRACKED_VEHICLE은 resolver가 physical vehicle로 확정한 관측입니다. "
-        "탐지가 없는 프레임도 FRAME 행으로 항상 기록합니다."
+        "FRAME 행은 실제 실행 policy snapshot을 보존하며 탐지가 없어도 항상 기록합니다."
     )
     metrics = st.columns(5)
     metrics[0].metric(
@@ -358,6 +365,34 @@ def _identity_resolution_rows(
             "areaRatio": item.area_ratio,
         }
         for item in frame.tracking_batch.identity_resolutions
+    ]
+
+
+def _motion_estimate_rows(
+    frame: FrameTrace,
+    run: ViewerRun,
+) -> list[dict[str, Any]]:
+    segment_by_vehicle = {
+        vehicle.physical_vehicle_id: int(vehicle.track_segment_id)
+        for vehicle in frame.tracking_batch.vehicles
+    }
+    return [
+        {
+            "vehicle": _alias(run, item.physical_vehicle_id),
+            "trackSegment": segment_by_vehicle[item.physical_vehicle_id],
+            "signal": item.signal.value,
+            "reason": item.reason.value,
+            "samples": item.sample_count,
+            "windowSpanSeconds": item.window_span_seconds,
+            "latestGapSeconds": item.latest_sample_gap_seconds,
+            "normalizedDisplacement": item.normalized_displacement,
+            "normalizedTrend": item.normalized_trend,
+            "trendConsistency": item.trend_consistency,
+            "referenceBboxDiagonal": item.reference_bbox_diagonal,
+            "stationaryThreshold": item.stationary_threshold,
+            "movingThreshold": item.moving_threshold,
+        }
+        for item in frame.tracking_batch.motion_estimates
     ]
 
 

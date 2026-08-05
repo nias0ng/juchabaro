@@ -106,6 +106,13 @@ def _policy() -> MonitoringPolicy:
         bad_parking_min_primary_overlap_ratio=0.75,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
+        motion_window_seconds=0.75,
+        motion_min_observation_span_seconds=0.20,
+        motion_max_sample_gap_seconds=0.50,
+        motion_stationary_threshold=0.03,
+        motion_moving_threshold=0.10,
+        motion_min_samples=3,
+        motion_min_trend_consistency=0.60,
     )
 
 

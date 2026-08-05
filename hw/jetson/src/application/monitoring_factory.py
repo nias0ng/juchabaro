@@ -62,6 +62,15 @@ class MonitoringPolicy:
     bad_parking_min_primary_overlap_ratio: float
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
+    # MotionEstimator가 소유하는 ephemeral bbox evidence 정책이다. 아래 값은
+    # ParkingEpisode의 주차/이동 확정 시간과 의미가 다르며 서로 대체하지 않는다.
+    motion_window_seconds: float
+    motion_min_observation_span_seconds: float
+    motion_max_sample_gap_seconds: float
+    motion_stationary_threshold: float
+    motion_moving_threshold: float
+    motion_min_samples: int
+    motion_min_trend_consistency: float
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -74,9 +83,8 @@ class MonitoringDependencies:
     publication_preparer: PublicationPreparer
     connection_factory: Callable[[], sqlite3.Connection]
     entity_resolver: EntityResolver | None = None
-    # 리플레이 검증 CLI가 movement_epsilon을 실측으로 바꿔가며 돌릴 수 있게
-    # 열어 둔 자리다(465/T-17). 생략하면 TrackingPipeline이 자기 기본
-    # MotionEstimator를 쓴다 — 배포 경로의 동작은 달라지지 않는다.
+    # 테스트가 estimator double을 주입할 수 있도록 열어 둔 자리다. 실제 배포와
+    # 리플레이는 생략하고 MonitoringPolicy의 명시적 motion 값을 사용한다.
     motion_estimator: MotionEstimator | None = None
     actuator_command_planner: ActuatorCommandPlanner | None = None
     actuator_port: ActuatorPort | None = None
@@ -168,11 +176,24 @@ def build_monitoring_pipeline(
             minimum_score=policy.reidentification_min_score,
             ambiguity_margin=policy.reidentification_ambiguity_margin,
         )
+    motion_estimator = dependencies.motion_estimator
+    if motion_estimator is None:
+        motion_estimator = MotionEstimator(
+            window_seconds=policy.motion_window_seconds,
+            min_observation_span_seconds=(
+                policy.motion_min_observation_span_seconds
+            ),
+            max_sample_gap_seconds=policy.motion_max_sample_gap_seconds,
+            stationary_threshold=policy.motion_stationary_threshold,
+            moving_threshold=policy.motion_moving_threshold,
+            min_samples=policy.motion_min_samples,
+            min_trend_consistency=policy.motion_min_trend_consistency,
+        )
     tracking_pipeline = TrackingPipeline(
         camera_id=dependencies.camera_id,
         detector=dependencies.detector,
         entity_resolver=entity_resolver,
-        motion_estimator=dependencies.motion_estimator,
+        motion_estimator=motion_estimator,
         absence_confirmation_seconds=policy.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=(
             policy.trusted_sample_max_gap_seconds

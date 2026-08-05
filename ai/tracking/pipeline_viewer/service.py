@@ -7,7 +7,7 @@ adapter와 ``build_monitoring_pipeline``으로 처리한다.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import timezone
 import hashlib
 import json
@@ -80,8 +80,10 @@ class ViewerPolicy:
     zone_entry_confirm_seconds: float = 1.0
     zone_exit_confirm_seconds: float = 5.0
     entry_zone_min_overlap_ratio: float = 0.40
-    parking_confirm_seconds: float = 600.0
-    parking_move_confirm_seconds: float = 3.0
+    # Viewer 판정 테스트의 명시적 override다. 일반 배포의 600초 정책은
+    # Settings/배포 계층이 계속 소유하며 이 기본값으로 바꾸지 않는다.
+    parking_confirm_seconds: float = 5.0
+    parking_move_confirm_seconds: float = 0.5
     absence_confirmation_seconds: float = 5.0
     trusted_sample_max_gap_seconds: float = 1.0
     # geometry-only runtime re-identification의 provisional 기준이다. 모델과
@@ -98,7 +100,15 @@ class ViewerPolicy:
     blocking_relation_confirm_seconds: float = 1.0
     blocking_relation_clear_seconds: float = 1.0
     entry_match_window_seconds: float = 10.0
-    movement_epsilon: float = 0.01
+    # bbox diagonal로 정규화한 time-window motion evidence의 provisional 값.
+    # 운영값으로 승격하기 전에 영상별 replay로 재조정한다.
+    motion_window_seconds: float = 0.75
+    motion_min_observation_span_seconds: float = 0.20
+    motion_max_sample_gap_seconds: float = 0.50
+    motion_stationary_threshold: float = 0.03
+    motion_moving_threshold: float = 0.10
+    motion_min_samples: int = 3
+    motion_min_trend_consistency: float = 0.60
     # 모델 confidence 분포를 수집하기 위한 Viewer 진단용 provisional 기본값.
     # 운영 threshold로 승격하기 전 영상별 precision/recall 재평가가 필요하다.
     confidence: float = 0.01
@@ -114,6 +124,15 @@ class ViewerPolicy:
             parking_move_confirm_seconds=self.parking_move_confirm_seconds,
             absence_confirmation_seconds=self.absence_confirmation_seconds,
             trusted_sample_max_gap_seconds=self.trusted_sample_max_gap_seconds,
+            motion_window_seconds=self.motion_window_seconds,
+            motion_min_observation_span_seconds=(
+                self.motion_min_observation_span_seconds
+            ),
+            motion_max_sample_gap_seconds=self.motion_max_sample_gap_seconds,
+            motion_stationary_threshold=self.motion_stationary_threshold,
+            motion_moving_threshold=self.motion_moving_threshold,
+            motion_min_samples=self.motion_min_samples,
+            motion_min_trend_consistency=self.motion_min_trend_consistency,
             reidentification_max_gap_seconds=(
                 self.reidentification_max_gap_seconds
             ),
@@ -169,6 +188,7 @@ class ViewerRun:
     model_path: Path
     detection_confidence_threshold: float
     tracker_config: str
+    policy_snapshot_json: str
     error_type: str | None = None
     error_message: str | None = None
 
@@ -306,7 +326,21 @@ def run_viewer_pipeline(
                     ),
                     connection_factory=connection_factory,
                     motion_estimator=MotionEstimator(
-                        movement_epsilon=request.policy.movement_epsilon
+                        window_seconds=request.policy.motion_window_seconds,
+                        min_observation_span_seconds=(
+                            request.policy.motion_min_observation_span_seconds
+                        ),
+                        max_sample_gap_seconds=(
+                            request.policy.motion_max_sample_gap_seconds
+                        ),
+                        stationary_threshold=(
+                            request.policy.motion_stationary_threshold
+                        ),
+                        moving_threshold=request.policy.motion_moving_threshold,
+                        min_samples=request.policy.motion_min_samples,
+                        min_trend_consistency=(
+                            request.policy.motion_min_trend_consistency
+                        ),
                     ),
                 ),
             )
@@ -352,6 +386,7 @@ def run_viewer_pipeline(
         model_path=request.paths.model,
         detection_confidence_threshold=request.policy.confidence,
         tracker_config=request.policy.tracker_config,
+        policy_snapshot_json=_policy_snapshot_json(request.policy),
         error_type=error_type,
         error_message=error_message,
     )
@@ -403,7 +438,17 @@ def _validate_request(
         )
     # 실제 domain owner의 수치 검증을 실행 전에 한 번 통과시킨다.
     request.policy.to_monitoring_policy()
-    MotionEstimator(movement_epsilon=request.policy.movement_epsilon)
+    MotionEstimator(
+        window_seconds=request.policy.motion_window_seconds,
+        min_observation_span_seconds=(
+            request.policy.motion_min_observation_span_seconds
+        ),
+        max_sample_gap_seconds=request.policy.motion_max_sample_gap_seconds,
+        stationary_threshold=request.policy.motion_stationary_threshold,
+        moving_threshold=request.policy.motion_moving_threshold,
+        min_samples=request.policy.motion_min_samples,
+        min_trend_consistency=request.policy.motion_min_trend_consistency,
+    )
     UltralyticsVehicleTracker(
         model_path=str(request.paths.model),
         tracker_config=request.policy.tracker_config,
@@ -456,3 +501,14 @@ def _request_signature(request: ViewerRunRequest) -> str:
     digest.update(str(request.policy).encode("utf-8"))
     digest.update(str(request.end_seconds).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _policy_snapshot_json(policy: ViewerPolicy) -> str:
+    """실행에 실제 적용한 Viewer policy를 canonical JSON으로 고정한다."""
+
+    return json.dumps(
+        asdict(policy),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )

@@ -293,6 +293,14 @@ STOP_PENDING 중 실제 physical exit가 확인되면 `CANCELED / PHYSICAL_EXIT`
 
 episode는 [직접 설정값](#14-직접-설정값) 중 주차·이동 판단에 실제 적용한 scalar를 생성 시 snapshot한다. UNKNOWN과 downtime을 timer에 합산하지 않으며 진행 중 episode에는 새 설정값을 소급 적용하지 않는다.
 
+MotionEstimator의 첫 sample, 불충분한 history, 허용 범위를 넘은 sample gap과
+ambiguous band는 `MotionSignal.UNKNOWN`이다. 현재 bbox·identity가 정상이어도
+ParkingEpisode에는 `UNKNOWN / DEPENDENCY_UNAVAILABLE`로 전달해 trusted chain을
+끊는다. PARKED에 의존하는 RuleEvaluator도 같은 sample을 `UNKNOWN`으로 평가하며,
+특히 `BAD_PARKING`, `OUT_OF_ZONE`, `AISLE_BLOCK`을 `NOT_MATCHED`로 바꿔
+Incident clear를 시작하지 않는다. ZoneVisit과 현재 assignment geometry는 motion
+dependency가 아니므로 정상 관측을 계속 사용한다.
+
 ParkingAssignment는 다음 최소 값을 가진다.
 
 ```text
@@ -440,6 +448,13 @@ UNKNOWN
 | `reidentificationMaxGapSeconds` | `[제안값] TBD` | 종료 segment history를 새 segment 후보로 사용할 최대 시간; absence confirmation보다 작아야 함 |
 | `reidentificationMinScore` | `[제안값] TBD` | 전역 1:1 geometry 배정 edge의 최소 수락 점수 |
 | `reidentificationAmbiguityMargin` | `[제안값] TBD` | 최적 배정과 선택 edge를 금지한 차선 배정 사이의 최소 점수차 |
+| `motionWindowSeconds` | `[제안값] TBD` | bbox motion evidence를 계산할 시간 창 |
+| `motionMinObservationSpanSeconds` | `[제안값] TBD` | motion 판정에 필요한 최소 관측 span |
+| `motionMaxSampleGapSeconds` | `[제안값] TBD` | motion history를 연속으로 인정할 최대 sample 간격 |
+| `motionStationaryThreshold` | `[제안값] TBD` | median bbox diagonal 대비 정지 evidence 상한 |
+| `motionMovingThreshold` | `[제안값] TBD` | median bbox diagonal 대비 이동 evidence 하한; stationary threshold보다 커야 함 |
+| `motionMinSamples` | `[제안값] TBD` | endpoint 한 표본의 튐과 연속 이동을 구분하기 위한 최소 표본 수; 3 이상 |
+| `motionMinTrendConsistency` | `[제안값] TBD` | 이동 방향·크기 일관성의 최소 비율 |
 | `movementConfirmationDurationSeconds` | `[제안값] TBD` | PARKED 뒤 이동 확정 시간 |
 | zone entry/exit confirmation | `[제안값] TBD` | ZoneVisit 진입·이탈 debounce |
 | incident confirm/clear duration | `[제안값] rule별 TBD` | Incident OPEN·RESOLVE debounce |
@@ -448,13 +463,21 @@ UNKNOWN
 
 설정값을 profile 객체로 감싸지 않는다. 해당 값이 진행 중 판단에 영향을 주면 scope 생성 시 실제 scalar 값을 snapshot한다.
 
+MotionEstimator 설정은 영속 scope profile이 아니다. 각 `MotionEstimate`가 실제
+적용한 stationary/moving threshold와 window 진단 근거를 내보내고, replay
+산출물은 실행 전체 policy snapshot을 함께 보존한다. provisional 수치를 코드의
+숨은 상수만으로 적용해 export와 실제 판정값이 달라지게 해서는 안 된다.
+
 PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `trustedSampleMaxGapSeconds`를 함께 snapshot한다. 배포 설정 변경 뒤에도 기존 차량의 진행 중 부재 판단은 그 값을 사용하고, 새 PhysicalVehicle부터 새 scalar를 적용한다.
 
 `[결정]` 일반 배포의 `parkingConfirmationDurationSeconds`는 600이다. 시연에서는 같은 scalar를 명시적으로 override할 수 있으며 시연 뒤 600으로 복귀한다. 이를 위해 별도 profile 상태를 만들지 않는다.
 
 ## 15. Owner 경계
 
-1. tracking adapter는 TrackSegment만 생성·종료한다.
+1. tracking adapter는 TrackSegment만 생성·종료한다. MotionEstimator는 resolved
+   PhysicalVehicle의 bbox·관측 시각으로 ephemeral motion evidence만 만들며
+   PhysicalVehicle identity, ParkingEpisode 또는 Incident lifecycle을 변경하지
+   않는다.
 2. EntityResolver만 PhysicalVehicle 동일성을 변경하며 frame 전체의 전역 1:1
    결정과 ambiguity 보류를 소유한다. 다른 owner의 결과를 재식별 evidence로
    되먹이지 않는다.

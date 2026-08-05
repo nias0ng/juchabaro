@@ -2,7 +2,8 @@
 
 상태 변경 export와 모델·tracking 진단 export를 분리한다. 진단 export는
 판정 입력을 다시 계산하지 않고, commit된 ``FrameTrace``가 이미 보존한
-pre-track detection과 PhysicalVehicle observation만 평탄화한다.
+pre-track detection, identity·motion projection과 PhysicalVehicle observation을
+평탄화한다.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ DIAGNOSTIC_FIELDS = (
     "videoSeconds",
     "capturedAt",
     "rowType",
+    "diagnosticSchemaVersion",
+    "policySnapshotJson",
     "detectionStage",
     "detectionThreshold",
     "modelPath",
@@ -61,6 +64,16 @@ DIAGNOSTIC_FIELDS = (
     "identityAreaRatio",
     "confidence",
     "motionSignal",
+    "motionReason",
+    "motionSampleCount",
+    "motionWindowSpanSeconds",
+    "motionLatestSampleGapSeconds",
+    "motionNormalizedDisplacement",
+    "motionNormalizedTrend",
+    "motionTrendConsistency",
+    "motionReferenceBboxDiagonal",
+    "motionStationaryThreshold",
+    "motionMovingThreshold",
     "vehicleObservation",
     "bboxX1",
     "bboxY1",
@@ -98,12 +111,14 @@ def diagnostic_rows(
     detection_threshold: float,
     model_path: str,
     tracker_config: str,
+    policy_snapshot_json: str,
 ) -> list[dict[str, Any]]:
     """프레임·pre-track detection·차량 관측을 한 CSV용 테이블로 평탄화한다.
 
     ``FRAME`` 행은 detection이 0건이어도 항상 한 행을 남긴다.
     ``DETECTION``은 threshold 통과 후 ByteTrack 적용 전 후보이고,
     ``IDENTITY_RESOLUTION``은 EntityResolver의 결정과 근거이며,
+    ``MOTION_ESTIMATE``는 MotionEstimator의 시간 창 판정과 근거이고,
     ``TRACKED_VEHICLE``은 ID가 부여돼 도메인에 전달된 관측이다.
     """
 
@@ -139,7 +154,14 @@ def diagnostic_rows(
             ),
             "elapsedMs": frame.elapsed_ms,
         }
-        rows.append({**common, "rowType": "FRAME"})
+        rows.append(
+            {
+                **common,
+                "rowType": "FRAME",
+                "diagnosticSchemaVersion": 2,
+                "policySnapshotJson": policy_snapshot_json,
+            }
+        )
 
         for index, detection in enumerate(batch.detections, start=1):
             rows.append(
@@ -191,6 +213,47 @@ def diagnostic_rows(
                     ),
                     "identityPredictedIou": resolution.predicted_iou,
                     "identityAreaRatio": resolution.area_ratio,
+                }
+            )
+
+        segment_by_vehicle = {
+            vehicle.physical_vehicle_id: vehicle.track_segment_id
+            for vehicle in batch.vehicles
+        }
+        for estimate in batch.motion_estimates:
+            physical_vehicle_id = estimate.physical_vehicle_id
+            rows.append(
+                {
+                    **common,
+                    "rowType": "MOTION_ESTIMATE",
+                    "detectionStage": "POST_IDENTITY_MOTION",
+                    "vehicleAlias": aliases.get(
+                        physical_vehicle_id,
+                        str(physical_vehicle_id)[:8],
+                    ),
+                    "physicalVehicleId": str(physical_vehicle_id),
+                    "trackSegmentId": int(
+                        segment_by_vehicle[physical_vehicle_id]
+                    ),
+                    "motionSignal": estimate.signal.value,
+                    "motionReason": estimate.reason.value,
+                    "motionSampleCount": estimate.sample_count,
+                    "motionWindowSpanSeconds": estimate.window_span_seconds,
+                    "motionLatestSampleGapSeconds": (
+                        estimate.latest_sample_gap_seconds
+                    ),
+                    "motionNormalizedDisplacement": (
+                        estimate.normalized_displacement
+                    ),
+                    "motionNormalizedTrend": estimate.normalized_trend,
+                    "motionTrendConsistency": estimate.trend_consistency,
+                    "motionReferenceBboxDiagonal": (
+                        estimate.reference_bbox_diagonal
+                    ),
+                    "motionStationaryThreshold": (
+                        estimate.stationary_threshold
+                    ),
+                    "motionMovingThreshold": estimate.moving_threshold,
                 }
             )
 

@@ -34,6 +34,16 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
 
     if (
         context.parking_episode is not None
+        and context.parking_episode.observation.state
+        is not ObservationState.OBSERVED
+    ):
+        return tuple(
+            _unknown(context, code, "PARKING_MOTION_DEPENDENCY_UNAVAILABLE")
+            for code in _RULES
+        )
+
+    if (
+        context.parking_episode is not None
         and context.parking_episode.state is ParkingState.MOVE_PENDING
     ):
         return tuple(
@@ -44,7 +54,6 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
     parked = (
         context.parking_episode is not None
         and context.parking_episode.state is ParkingState.PARKED
-        and context.parking_episode.observation.state is ObservationState.OBSERVED
     )
 
     bad_value, out_value = _assignment_predicates(context)

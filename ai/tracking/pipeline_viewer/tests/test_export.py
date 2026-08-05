@@ -23,6 +23,8 @@ from src.tracking.models import (
     IdentityResolution,
     IdentityResolutionOutcome,
     IdentityResolutionReason,
+    MotionEstimate,
+    MotionEstimateReason,
     MotionSignal,
     PhysicalVehicleSnapshot,
     TrackingBatch,
@@ -37,6 +39,21 @@ def _frame(*, with_detection: bool) -> SimpleNamespace:
     observation = ObservationStatus(
         state=ObservationState.OBSERVED,
         last_reliable_observed_at=OBSERVED_AT,
+    )
+    motion_estimate = MotionEstimate(
+        physical_vehicle_id=VEHICLE_ID,
+        signal=MotionSignal.STATIONARY,
+        reason=MotionEstimateReason.STATIONARY_EVIDENCE,
+        observed_at=OBSERVED_AT,
+        sample_count=4,
+        window_span_seconds=0.3,
+        latest_sample_gap_seconds=0.1,
+        normalized_displacement=0.01,
+        normalized_trend=0.008,
+        trend_consistency=0.9,
+        reference_bbox_diagonal=0.22,
+        stationary_threshold=0.03,
+        moving_threshold=0.10,
     )
     if with_detection:
         detections = (
@@ -56,6 +73,7 @@ def _frame(*, with_detection: bool) -> SimpleNamespace:
                 observed_at=OBSERVED_AT,
                 camera_id="PIPELINE-VIEWER",
                 observation=observation,
+                motion_estimate=motion_estimate,
             ),
         )
     else:
@@ -131,19 +149,22 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
         detection_threshold=0.01,
         model_path="hw/jetson/model/yolov8s.pt",
         tracker_config="bytetrack.yaml",
+        policy_snapshot_json='{"parking_confirm_seconds":5.0}',
     )
 
     assert [row["rowType"] for row in rows] == [
         "FRAME",
         "DETECTION",
         "IDENTITY_RESOLUTION",
+        "MOTION_ESTIMATE",
         "TRACKED_VEHICLE",
         "FRAME",
     ]
     detection = rows[1]
     identity = rows[2]
-    tracked = rows[3]
-    empty_frame = rows[4]
+    motion = rows[3]
+    tracked = rows[4]
+    empty_frame = rows[5]
     assert detection["detectionStage"] == "POST_THRESHOLD_PRE_TRACK"
     assert detection["confidence"] == pytest.approx(0.27)
     assert detection["detectionThreshold"] == pytest.approx(0.01)
@@ -153,11 +174,26 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     assert identity["identityOutcome"] == "CREATED"
     assert identity["identityReason"] == "NO_ELIGIBLE_CANDIDATE"
     assert identity["trackSegmentId"] == 7
+    assert motion["detectionStage"] == "POST_IDENTITY_MOTION"
+    assert motion["motionSignal"] == "STATIONARY"
+    assert motion["motionReason"] == "STATIONARY_EVIDENCE"
+    assert motion["motionSampleCount"] == 4
+    assert motion["motionWindowSpanSeconds"] == pytest.approx(0.3)
+    assert motion["motionLatestSampleGapSeconds"] == pytest.approx(0.1)
+    assert motion["motionNormalizedDisplacement"] == pytest.approx(0.01)
+    assert motion["motionNormalizedTrend"] == pytest.approx(0.008)
+    assert motion["motionTrendConsistency"] == pytest.approx(0.9)
+    assert motion["motionReferenceBboxDiagonal"] == pytest.approx(0.22)
+    assert motion["motionStationaryThreshold"] == pytest.approx(0.03)
+    assert motion["motionMovingThreshold"] == pytest.approx(0.10)
     assert tracked["detectionStage"] == "POST_TRACK"
     assert tracked["confidence"] == pytest.approx(0.31)
     assert tracked["vehicleAlias"] == "V1"
     assert empty_frame["pretrackDetectionCount"] == 0
     assert empty_frame["trackedVehicleCount"] == 0
+    assert rows[0]["diagnosticSchemaVersion"] == 2
+    assert rows[0]["policySnapshotJson"] == '{"parking_confirm_seconds":5.0}'
+    assert empty_frame["diagnosticSchemaVersion"] == 2
 
 
 def test_csv_bytes_emits_utf8_bom_and_requested_header() -> None:
@@ -176,5 +212,8 @@ def test_csv_bytes_emits_utf8_bom_and_requested_header() -> None:
             "allIdentitiesResolved",
             "identityOutcome",
             "identityScoreMargin",
+            "policySnapshotJson",
+            "motionReason",
+            "motionNormalizedTrend",
         }
     )

@@ -51,6 +51,71 @@ class MotionSignal(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class MotionEstimateReason(str, Enum):
+    """MotionEstimator가 신호를 선택하거나 보류한 비영속 진단 근거."""
+
+    FIRST_SAMPLE = "FIRST_SAMPLE"
+    INSUFFICIENT_HISTORY = "INSUFFICIENT_HISTORY"
+    SAMPLE_GAP_EXCEEDED = "SAMPLE_GAP_EXCEEDED"
+    STATIONARY_EVIDENCE = "STATIONARY_EVIDENCE"
+    MOVING_EVIDENCE = "MOVING_EVIDENCE"
+    AMBIGUOUS_EVIDENCE = "AMBIGUOUS_EVIDENCE"
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionEstimate:
+    """한 PhysicalVehicle의 이동 여부와 그 판단 근거를 담는 projection.
+
+    이 값은 별도 domain state가 아니다. bbox와 관측 시각만으로 계산한
+    ephemeral evidence이며 parking/incident 상태를 입력이나 근거로 삼지 않는다.
+    거리 계열 지표는 현재 관측 창의 median bbox diagonal로 정규화한다.
+    """
+
+    physical_vehicle_id: PhysicalVehicleId
+    signal: MotionSignal
+    reason: MotionEstimateReason
+    observed_at: datetime
+    sample_count: int
+    window_span_seconds: float
+    latest_sample_gap_seconds: float | None
+    normalized_displacement: float | None
+    normalized_trend: float | None
+    trend_consistency: float | None
+    reference_bbox_diagonal: float | None
+    stationary_threshold: float
+    moving_threshold: float
+
+    def __post_init__(self) -> None:
+        require_aware(self.observed_at, "observed_at")
+        require_positive(self.sample_count, "sample_count")
+        require_non_negative(self.window_span_seconds, "window_span_seconds")
+        for name in (
+            "latest_sample_gap_seconds",
+            "normalized_displacement",
+            "normalized_trend",
+            "reference_bbox_diagonal",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                require_non_negative(value, name)
+        if self.trend_consistency is not None and not 0.0 <= self.trend_consistency <= 1.0:
+            raise ValueError("trend_consistency must be between 0 and 1")
+        require_positive(self.stationary_threshold, "stationary_threshold")
+        require_positive(self.moving_threshold, "moving_threshold")
+        if self.stationary_threshold >= self.moving_threshold:
+            raise ValueError("stationary_threshold must be smaller than moving_threshold")
+
+        expected_signal_by_reason = {
+            MotionEstimateReason.STATIONARY_EVIDENCE: MotionSignal.STATIONARY,
+            MotionEstimateReason.MOVING_EVIDENCE: MotionSignal.MOVING,
+        }
+        expected_signal = expected_signal_by_reason.get(self.reason)
+        if expected_signal is not None and self.signal is not expected_signal:
+            raise ValueError("motion reason must agree with signal")
+        if expected_signal is None and self.signal is not MotionSignal.UNKNOWN:
+            raise ValueError("non-evidence motion reason requires UNKNOWN signal")
+
+
 class IdentityResolutionOutcome(str, Enum):
     """한 frame 안에서 TrackSegment를 PhysicalVehicle에 연결한 결과."""
 
@@ -301,6 +366,8 @@ class PhysicalVehicleSnapshot:
     observed_at: datetime
     camera_id: str
     observation: ObservationStatus
+    # 기존 positional 생성 계약을 보존하면서 Viewer/export에 판단 근거를 제공한다.
+    motion_estimate: MotionEstimate | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")
@@ -308,6 +375,17 @@ class PhysicalVehicleSnapshot:
             raise ValueError("camera_id must not be empty")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
+        if self.motion_estimate is not None:
+            if self.motion_estimate.physical_vehicle_id != self.physical_vehicle_id:
+                raise ValueError(
+                    "motion estimate and snapshot PhysicalVehicle must match"
+                )
+            if self.motion_estimate.signal is not self.motion_signal:
+                raise ValueError("motion estimate and snapshot signal must match")
+            if self.motion_estimate.observed_at != self.observed_at:
+                raise ValueError(
+                    "motion estimate and snapshot observed_at must match"
+                )
 
 
 @dataclass(frozen=True)
@@ -459,3 +537,19 @@ class TrackingBatch:
         # 상위 consistency boundary의 commit ack까지 degraded batch에서도
         # 반복될 수 있다. 이 값 객체는 현재 sample의 신뢰도와 과거에 확정한
         # 사실을 같은 축으로 묶어 다시 거부하지 않는다.
+
+    @property
+    def motion_estimates(self) -> tuple[MotionEstimate, ...]:
+        """현재 resolved vehicle의 계산 가능한 motion 진단만 반환한다.
+
+        partial frame처럼 estimator를 실행하지 않은 snapshot에는 estimate가
+        없으므로 제외한다. authoritative 값은 각 PhysicalVehicleSnapshot이며,
+        이 projection은 Viewer/export가 같은 batch에서 근거를 열거하기 위한
+        편의 계약이다.
+        """
+
+        return tuple(
+            snapshot.motion_estimate
+            for snapshot in self.vehicles
+            if snapshot.motion_estimate is not None
+        )

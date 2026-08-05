@@ -20,6 +20,7 @@ from src.tracking.models import (
     IdentityResolutionBatch,
     IdentityResolutionOutcome,
     IdentityResolutionReason,
+    MotionEstimateReason,
     MotionSignal,
     PhysicalVehicle,
     PhysicalVehicleId,
@@ -118,11 +119,21 @@ class RestartAwareSingleVehicleResolver:
 
 
 class SpyMotionEstimator(MotionEstimator):
-    """PhysicalVehicle 정리 요청만 기록하는 motion estimator."""
+    """PhysicalVehicle별 pause/정리 요청을 기록하는 motion estimator."""
 
     def __init__(self) -> None:
         super().__init__()
         self.forget_calls = []
+        self.pause_calls = []
+        self.pause_all_count = 0
+
+    def pause(self, physical_vehicle_id) -> None:
+        self.pause_calls.append(physical_vehicle_id)
+        super().pause(physical_vehicle_id)
+
+    def pause_all(self) -> None:
+        self.pause_all_count += 1
+        super().pause_all()
 
     def forget(self, physical_vehicle_id) -> None:
         self.forget_calls.append(physical_vehicle_id)
@@ -198,6 +209,7 @@ def _pipeline(
     *,
     absence_seconds: float = 2.0,
     entity_resolver=None,
+    motion_estimator=None,
 ) -> TrackingPipeline:
     return _FullAreaTestTrackingPipeline(
         camera_id="cam-1",
@@ -205,6 +217,7 @@ def _pipeline(
         absence_confirmation_seconds=absence_seconds,
         trusted_sample_max_gap_seconds=1.0,
         entity_resolver=entity_resolver,
+        motion_estimator=motion_estimator,
     )
 
 
@@ -280,7 +293,7 @@ def test_wrong_camera_frame_is_rejected_and_breaks_absence_continuity():
         pipeline.process(wrong_camera_frame)
 
 
-def test_new_vehicle_snapshot_has_no_session_context_and_starts_moving():
+def test_new_vehicle_snapshot_keeps_observed_bbox_while_motion_warms_up():
     detector = FakeDetector()
     detector.results_by_frame_id[1] = _result(_observation(1))
 
@@ -289,19 +302,30 @@ def test_new_vehicle_snapshot_has_no_session_context_and_starts_moving():
     snapshot = batch.vehicles[0]
     assert isinstance(snapshot.physical_vehicle_id, UUID)
     assert not hasattr(snapshot, "context")
-    assert snapshot.motion_signal is MotionSignal.MOVING
+    assert snapshot.observation.state is ObservationState.OBSERVED
+    assert snapshot.motion_signal is MotionSignal.UNKNOWN
+    assert snapshot.motion_estimate is not None
+    assert snapshot.motion_estimate.reason is MotionEstimateReason.FIRST_SAMPLE
+    assert batch.motion_estimates == (snapshot.motion_estimate,)
 
 
-def test_same_segment_with_same_bbox_becomes_stationary():
+def test_same_segment_with_sufficient_same_bbox_history_becomes_stationary():
     detector = FakeDetector()
     detector.results_by_frame_id[1] = _result(_observation(1))
-    detector.results_by_frame_id[2] = _result(_observation(1, seconds=1))
+    detector.results_by_frame_id[2] = _result(_observation(1, seconds=0.1))
+    detector.results_by_frame_id[3] = _result(_observation(1, seconds=0.2))
     pipeline = _pipeline(detector)
 
     pipeline.process(_make_frame(1))
-    second = pipeline.process(_make_frame(2, seconds=1))
+    pipeline.process(_make_frame(2, seconds=0.1))
+    third = pipeline.process(_make_frame(3, seconds=0.2))
 
-    assert second.vehicles[0].motion_signal is MotionSignal.STATIONARY
+    assert third.vehicles[0].motion_signal is MotionSignal.STATIONARY
+    assert third.vehicles[0].motion_estimate is not None
+    assert (
+        third.vehicles[0].motion_estimate.reason
+        is MotionEstimateReason.STATIONARY_EVIDENCE
+    )
 
 
 def test_one_frame_miss_is_unobserved_not_segment_end_or_not_present():
@@ -321,19 +345,51 @@ def test_one_frame_miss_is_unobserved_not_segment_end_or_not_present():
     assert second.not_present_confirmed_vehicle_ids == ()
 
 
-def test_same_segment_reappearing_after_temporary_miss_keeps_physical_identity():
+def test_temporary_miss_keeps_motion_history_within_configured_sample_gap():
     detector = FakeDetector()
     detector.results_by_frame_id[1] = _result(_observation(1))
-    detector.results_by_frame_id[3] = _result(_observation(1, seconds=2))
+    detector.results_by_frame_id[2] = _result(_observation(1, seconds=0.1))
+    detector.results_by_frame_id[4] = _result(_observation(1, seconds=0.2))
+    motion_estimator = SpyMotionEstimator()
+    pipeline = _pipeline(detector, motion_estimator=motion_estimator)
+
+    first = pipeline.process(_make_frame(1))
+    pipeline.process(_make_frame(2, seconds=0.1))
+    pipeline.process(_make_frame(3, seconds=0.15))
+    recovered = pipeline.process(_make_frame(4, seconds=0.2))
+
+    assert recovered.vehicles[0].physical_vehicle_id == (
+        first.vehicles[0].physical_vehicle_id
+    )
+    assert recovered.vehicles[0].motion_signal is MotionSignal.STATIONARY
+    assert recovered.vehicles[0].motion_estimate is not None
+    assert recovered.vehicles[0].motion_estimate.sample_count == 3
+    assert recovered.unobserved_physical_vehicle_ids == ()
+    assert motion_estimator.pause_calls == []
+
+
+def test_reappearance_after_motion_sample_gap_restarts_estimator_history():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    detector.results_by_frame_id[2] = _result(_observation(1, seconds=0.1))
+    detector.results_by_frame_id[4] = _result(_observation(1, seconds=0.8))
     pipeline = _pipeline(detector)
 
     first = pipeline.process(_make_frame(1))
-    pipeline.process(_make_frame(2, seconds=1))
-    third = pipeline.process(_make_frame(3, seconds=2))
+    pipeline.process(_make_frame(2, seconds=0.1))
+    pipeline.process(_make_frame(3, seconds=0.2))
+    recovered = pipeline.process(_make_frame(4, seconds=0.8))
 
-    assert third.vehicles[0].physical_vehicle_id == first.vehicles[0].physical_vehicle_id
-    assert third.vehicles[0].motion_signal is MotionSignal.STATIONARY
-    assert third.unobserved_physical_vehicle_ids == ()
+    assert recovered.vehicles[0].physical_vehicle_id == (
+        first.vehicles[0].physical_vehicle_id
+    )
+    assert recovered.vehicles[0].motion_signal is MotionSignal.UNKNOWN
+    assert recovered.vehicles[0].motion_estimate is not None
+    assert (
+        recovered.vehicles[0].motion_estimate.reason
+        is MotionEstimateReason.SAMPLE_GAP_EXCEEDED
+    )
+    assert recovered.vehicles[0].motion_estimate.sample_count == 1
 
 
 def test_adapter_confirmed_segment_end_only_detaches_segment():
@@ -381,7 +437,13 @@ def test_geometric_segment_switch_preserves_identity_motion_and_presence():
     assert switched.identity_resolutions[0].outcome is (
         IdentityResolutionOutcome.REIDENTIFIED
     )
-    assert switched.vehicles[0].motion_signal is MotionSignal.STATIONARY
+    assert switched.vehicles[0].motion_signal is MotionSignal.UNKNOWN
+    assert switched.vehicles[0].motion_estimate is not None
+    assert switched.vehicles[0].motion_estimate.sample_count == 2
+    assert (
+        switched.vehicles[0].motion_estimate.reason
+        is MotionEstimateReason.INSUFFICIENT_HISTORY
+    )
     assert switched.unobserved_physical_vehicle_ids == ()
     assert switched.absence_progress == ()
 
@@ -399,6 +461,7 @@ def test_ambiguous_identity_marks_unknown_and_freezes_absence():
         _observation(3, seconds=1.0, bbox=middle),
         ended_track_segment_ids=(1, 2),
     )
+    motion_estimator = SpyMotionEstimator()
     pipeline = _pipeline(
         detector,
         entity_resolver=GeometricEntityResolver(
@@ -406,6 +469,7 @@ def test_ambiguous_identity_marks_unknown_and_freezes_absence():
             minimum_score=0.42,
             ambiguity_margin=0.08,
         ),
+        motion_estimator=motion_estimator,
     )
 
     first = pipeline.process(_make_frame(1))
@@ -425,6 +489,7 @@ def test_ambiguous_identity_marks_unknown_and_freezes_absence():
     assert {
         item.trusted_seconds for item in ambiguous.absence_progress
     } == {0.0}
+    assert motion_estimator.pause_all_count == 1
 
 
 def test_pipeline_rejects_identity_result_that_does_not_cover_observations():
@@ -481,6 +546,26 @@ def test_untracked_detection_freezes_absence_for_only_that_frame():
     assert confirmed.not_present_confirmed_vehicle_ids == (vehicle_id,)
 
 
+def test_untracked_detection_flag_does_not_discard_resolved_vehicle_motion():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    detector.results_by_frame_id[2] = _result(_observation(1, seconds=0.1))
+    detector.results_by_frame_id[3] = _result(
+        _observation(1, seconds=0.2),
+        all_detections_tracked=False,
+    )
+    pipeline = _pipeline(detector)
+
+    pipeline.process(_make_frame(1))
+    pipeline.process(_make_frame(2, seconds=0.1))
+    current = pipeline.process(_make_frame(3, seconds=0.2))
+
+    assert current.all_detections_tracked is False
+    assert current.observation.state is ObservationState.OBSERVED
+    assert current.vehicles[0].observation.state is ObservationState.OBSERVED
+    assert current.vehicles[0].motion_signal is MotionSignal.STATIONARY
+
+
 def test_segment_end_does_not_forget_physical_vehicle_motion_anchor():
     detector = FakeDetector()
     detector.results_by_frame_id[1] = _result(_observation(1))
@@ -533,6 +618,31 @@ def test_partial_frame_degrades_snapshots_and_freezes_absence_timer():
     assert observed_in_partial.vehicles[0].observation.state is ObservationState.DEGRADED
     assert observed_in_partial.vehicles[0].motion_signal is MotionSignal.UNKNOWN
     assert first.vehicles[0].physical_vehicle_id not in recovered.not_present_confirmed_vehicle_ids
+
+
+def test_partial_frame_pauses_all_motion_chains_before_recovery():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    detector.results_by_frame_id[2] = _result(_observation(1, seconds=0.1))
+    detector.results_by_frame_id[3] = _result(_observation(1, seconds=0.2))
+    motion_estimator = SpyMotionEstimator()
+    pipeline = _pipeline(detector, motion_estimator=motion_estimator)
+
+    pipeline.process(_make_frame(1))
+    partial = pipeline.process(
+        _make_frame(2, seconds=0.1),
+        full_area_observed=False,
+    )
+    recovered = pipeline.process(_make_frame(3, seconds=0.2))
+
+    assert partial.vehicles[0].motion_signal is MotionSignal.UNKNOWN
+    assert partial.vehicles[0].motion_estimate is None
+    assert motion_estimator.pause_all_count == 1
+    assert recovered.vehicles[0].motion_estimate is not None
+    assert (
+        recovered.vehicles[0].motion_estimate.reason
+        is MotionEstimateReason.FIRST_SAMPLE
+    )
 
 
 def test_confirmed_absence_repeats_in_degraded_batch_until_ack():
@@ -603,7 +713,12 @@ def test_inference_error_automatically_breaks_absence_time_continuity():
 def test_camera_interruption_becomes_untrusted_batch_without_absence_gain():
     detector = FakeDetector()
     detector.results_by_frame_id[1] = _result(_observation(1))
-    pipeline = _pipeline(detector, absence_seconds=2.0)
+    motion_estimator = SpyMotionEstimator()
+    pipeline = _pipeline(
+        detector,
+        absence_seconds=2.0,
+        motion_estimator=motion_estimator,
+    )
     first = pipeline.process(_make_frame(1))
     vehicle_id = first.vehicles[0].physical_vehicle_id
 
@@ -625,6 +740,7 @@ def test_camera_interruption_becomes_untrusted_batch_without_absence_gain():
         interrupted.observation.reason
         is ObservationReason.CAMERA_UNAVAILABLE
     )
+    assert motion_estimator.pause_all_count == 1
 
 
 def test_restore_absence_checkpoint_continues_from_durable_lower_bound():

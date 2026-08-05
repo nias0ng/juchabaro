@@ -115,6 +115,13 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "bad_parking_min_primary_overlap_ratio": 0.75,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
+        "motion_window_seconds": 0.75,
+        "motion_min_observation_span_seconds": 0.20,
+        "motion_max_sample_gap_seconds": 0.50,
+        "motion_stationary_threshold": 0.03,
+        "motion_moving_threshold": 0.10,
+        "motion_min_samples": 3,
+        "motion_min_trend_consistency": 0.60,
     }
     values.update(overrides)
     return MonitoringPolicy(**values)
@@ -150,6 +157,11 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
         pipeline._tracking_pipeline._entity_resolver,
         GeometricEntityResolver,
     )
+    estimator = pipeline._tracking_pipeline._motion_estimator
+    assert estimator._window_seconds == 0.75
+    assert estimator._max_sample_gap_seconds == 0.50
+    assert estimator._stationary_threshold == 0.03
+    assert estimator._moving_threshold == 0.10
 
 
 def test_factory_rejects_reidentification_window_reaching_absence_commit(
@@ -207,6 +219,29 @@ def test_factory_rejects_bad_parking_overlap_below_assignment_overlap(
             policy=_policy(
                 assignment_min_overlap_ratio=0.5,
                 bad_parking_min_primary_overlap_ratio=0.49,
+            ),
+            dependencies=MonitoringDependencies(
+                camera_id="camera-1",
+                frame_source=_FrameSource(),
+                detector=_Detector(),
+                publication_preparer=_PublicationPreparer(),
+                connection_factory=lambda: connect_database(database_path),
+            ),
+        )
+
+
+def test_factory_delegates_invalid_motion_policy_to_motion_owner(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-motion.db"
+    open_database(database_path).close()
+
+    with pytest.raises(ValueError, match="stationary_threshold"):
+        build_monitoring_pipeline(
+            zones=_zones(),
+            policy=_policy(
+                motion_stationary_threshold=0.10,
+                motion_moving_threshold=0.10,
             ),
             dependencies=MonitoringDependencies(
                 camera_id="camera-1",

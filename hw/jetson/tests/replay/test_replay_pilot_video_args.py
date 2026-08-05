@@ -29,6 +29,13 @@ REQUIRED_THRESHOLD_ARGS = [
     "--parking-move-confirm-seconds", "0.5",
     "--absence-confirmation-seconds", "5.0",
     "--trusted-sample-max-gap-seconds", "1.0",
+    "--motion-window-seconds", "0.75",
+    "--motion-min-observation-span-seconds", "0.20",
+    "--motion-max-sample-gap-seconds", "0.50",
+    "--motion-stationary-threshold", "0.03",
+    "--motion-moving-threshold", "0.10",
+    "--motion-min-samples", "3",
+    "--motion-min-trend-consistency", "0.60",
     "--reidentification-max-gap-seconds", "4.0",
     "--reidentification-min-score", "0.42",
     "--reidentification-ambiguity-margin", "0.08",
@@ -89,7 +96,6 @@ def test_defaults_match_documented_baseline_values():
     assert args.tracker_config == "bytetrack.yaml"
     assert args.confidence == 0.5
     assert args.min_overlap_ratio == 0.40
-    assert args.movement_epsilon == 0.01
     assert args.remap_balance == 0.5
 
 
@@ -118,6 +124,13 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.parking_move_confirm_seconds == 0.5
     assert policy.absence_confirmation_seconds == 5.0
     assert policy.trusted_sample_max_gap_seconds == 1.0
+    assert policy.motion_window_seconds == 0.75
+    assert policy.motion_min_observation_span_seconds == 0.20
+    assert policy.motion_max_sample_gap_seconds == 0.50
+    assert policy.motion_stationary_threshold == 0.03
+    assert policy.motion_moving_threshold == 0.10
+    assert policy.motion_min_samples == 3
+    assert policy.motion_min_trend_consistency == 0.60
     assert policy.reidentification_max_gap_seconds == 4.0
     assert policy.reidentification_min_score == 0.42
     assert policy.reidentification_ambiguity_margin == 0.08

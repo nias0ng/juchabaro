@@ -111,10 +111,12 @@ class TrackingPipeline:
             tracker_result.observations
             or not tracker_result.all_detections_tracked
         ):
-            # 현재 기본 resolver는 process 간 re-identification 근거가
-            # 없다. 기존 차량을 새 UUID로 중복 생성하거나
+            # process memory의 geometry anchor는 재시작 뒤 복구되지 않아
+            # resolver가 기존 차량을 재식별할 근거가 없다. 기존 차량을 새
+            # UUID로 중복 생성하거나
             # 존재하는데 출차로 확정하지 않고, 전체 영역이
             # 빌 때까지 보수적 degraded 상태로 멈춘다.
+            self._motion_estimator.pause_all()
             observation = ObservationStatus(
                 state=ObservationState.UNKNOWN,
                 reason=ObservationReason.REIDENTIFICATION_UNCERTAIN,
@@ -187,6 +189,10 @@ class TrackingPipeline:
             full_area_observed=full_area_observed,
             all_identities_resolved=identity_batch.all_resolved,
         )
+        if batch_observation.state is not ObservationState.OBSERVED:
+            # partial frame이나 identity ambiguity는 어떤 PhysicalVehicle의
+            # 시간적 bbox chain이 안전한지 확정할 수 없으므로 전부 끊는다.
+            self._motion_estimator.pause_all()
 
         vehicles: list[PhysicalVehicleSnapshot] = []
         observed_physical_vehicle_ids: set[PhysicalVehicleId] = set()
@@ -199,14 +205,19 @@ class TrackingPipeline:
             if physical_vehicle_id is None:
                 continue
             observed_physical_vehicle_ids.add(physical_vehicle_id)
-            motion_signal = (
+            motion_estimate = (
                 self._motion_estimator.update(
                     physical_vehicle_id=physical_vehicle_id,
                     bbox=observation.bbox,
+                    observed_at=observation.observed_at,
                 )
-                if full_area_observed
-                and batch_observation.state is ObservationState.OBSERVED
-                else MotionSignal.UNKNOWN
+                if batch_observation.state is ObservationState.OBSERVED
+                else None
+            )
+            motion_signal = (
+                MotionSignal.UNKNOWN
+                if motion_estimate is None
+                else motion_estimate.signal
             )
             vehicles.append(
                 PhysicalVehicleSnapshot(
@@ -218,6 +229,7 @@ class TrackingPipeline:
                     observed_at=observation.observed_at,
                     camera_id=self._camera_id,
                     observation=batch_observation,
+                    motion_estimate=motion_estimate,
                 )
             )
 
@@ -229,7 +241,6 @@ class TrackingPipeline:
                 and identity_batch.all_resolved
             ),
         )
-
         return TrackingBatch(
             camera_id=self._camera_id,
             frame_id=frame.frame_id,
@@ -249,14 +260,16 @@ class TrackingPipeline:
         )
 
     def pause_absence_confirmation(self) -> None:
-        """Camera·pipeline 장애 구간을 trusted duration에서 제외한다.
+        """Camera·pipeline 장애 구간을 trusted 시간 chain에서 제외한다.
 
         프레임 캡처 또는 추론 실패로 `process()`가 호출되지 않은 경우
         상위 loop가 이 메서드를 호출해야 다음 정상 frame이 중단 구간의
-        wall-clock을 합산하지 않는다.
+        wall-clock을 합산하지 않는다. 같은 중단 구간을 motion bbox 차이로
+        오인하지 않도록 모든 PhysicalVehicle의 motion chain도 함께 끊는다.
         """
 
         self._presence_confirmer.pause()
+        self._motion_estimator.pause_all()
 
     def interrupt_observation(
         self,
@@ -327,6 +340,9 @@ class TrackingPipeline:
         durable 하한에서 NOT_PRESENT를 재개한다.
         """
 
+        # process downtime 전 bbox를 복원하지 않으므로 첫 정상 관측부터
+        # 신뢰 가능한 motion evidence를 다시 warm-up한다.
+        self._motion_estimator.pause_all()
         identities = tuple(vehicle.physical_vehicle_id for vehicle in vehicles)
         if len(identities) != len(set(identities)):
             raise ValueError("restart checkpoints contain duplicate PhysicalVehicleId")

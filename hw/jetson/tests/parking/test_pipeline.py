@@ -424,6 +424,54 @@ def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     ]
 
 
+def test_unknown_motion_freezes_bad_parking_clear_but_keeps_geometry_observed() -> None:
+    pipeline, _, episode_tracker, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=PROTRUDING_FROM_FIRST)),
+        entry_attempt_ids=attempts,
+    )
+    opened = pipeline.process(
+        batch(1, snapshot(1, bbox=PROTRUDING_FROM_FIRST)),
+        entry_attempt_ids=attempts,
+    )
+    assert transitions_for(opened, BAD_PARKING)[0].transition_type is (
+        IncidentTransitionType.OPEN
+    )
+
+    uncertain = pipeline.process(
+        batch(
+            2,
+            snapshot(
+                2,
+                bbox=ASSIGNED_FIRST,
+                motion=MotionSignal.UNKNOWN,
+            ),
+        ),
+        entry_attempt_ids=attempts,
+    )
+
+    assert transitions_for(uncertain, BAD_PARKING) == ()
+    bad_parking_update = updates_for(uncertain, BAD_PARKING)[-1]
+    assert bad_parking_update.state is IncidentState.OPEN
+    assert bad_parking_update.observation.state is ObservationState.UNKNOWN
+    assert bad_parking_update.observation.reason is (
+        ObservationReason.DEPENDENCY_UNAVAILABLE
+    )
+    assert uncertain.zone_visit_updates[-1].observation.state is (
+        ObservationState.OBSERVED
+    )
+    active_episode = episode_tracker.active_episode(CAR)
+    assert active_episode is not None
+    assert active_episode.state is ParkingState.PARKED
+    assert active_episode.observation.reason is (
+        ObservationReason.DEPENDENCY_UNAVAILABLE
+    )
+
+
 def test_qualified_vehicle_does_not_open_restricted_incident() -> None:
     pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
 
@@ -556,6 +604,46 @@ def test_unobserved_gap_does_not_add_wall_clock_to_parking_timer() -> None:
     parked = pipeline.process(batch(106, snapshot(106)))
     assert parked.parking_episode_updates[-1].state is ParkingState.PARKED
     assert parked.parking_episode_updates[-1].stationary_trusted_seconds == 5.0
+
+
+def test_unknown_motion_only_pauses_parking_episode_dependency() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        entry_seconds=1.0,
+        parking_seconds=5.0,
+    )
+    pipeline.process(batch(0, snapshot(0)))
+
+    uncertain = pipeline.process(
+        batch(1, snapshot(1, motion=MotionSignal.UNKNOWN))
+    )
+
+    assert uncertain.zone_visit_updates[-1].state is ZoneVisitState.INSIDE
+    assert uncertain.zone_visit_updates[-1].observation.state is (
+        ObservationState.OBSERVED
+    )
+    episode = uncertain.parking_episode_updates[-1]
+    assert episode.state is ParkingState.STOP_PENDING
+    assert episode.stationary_trusted_seconds == 0.0
+    assert episode.observation.state is ObservationState.UNKNOWN
+    assert episode.observation.reason is ObservationReason.DEPENDENCY_UNAVAILABLE
+    assert episode.observation.last_reliable_observed_at == at(0)
+
+    resumed = pipeline.process(batch(2, snapshot(2)))
+    assert resumed.parking_episode_updates[-1].stationary_trusted_seconds == 0.0
+
+
+def test_first_unknown_motion_keeps_geometry_without_opening_episode() -> None:
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=0.0)
+
+    result = pipeline.process(
+        batch(0, snapshot(0, motion=MotionSignal.UNKNOWN))
+    )
+
+    assert result.parking_episode_updates == ()
+    assert result.zone_visit_updates[-1].observation.state is (
+        ObservationState.OBSERVED
+    )
 
 
 def test_confirmed_absence_requires_explicit_physical_exit() -> None:
