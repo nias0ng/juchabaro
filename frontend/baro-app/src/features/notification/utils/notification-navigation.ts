@@ -43,6 +43,21 @@ export function navigateFromNotification(
   const type = getNotificationType(data);
   const requestId = getRequestId(data.requestId);
 
+  // 자동 EV 초과 알림은 현재 백엔드에서 MoveRequest 없이 생성되어 requestId가 null이다.
+  // 후속 처리로 이동 요청이 연결된 알림이라면 상세로, 그렇지 않으면 남은 시간/초과 상태를
+  // 보여주는 메인 주차 카드로 이동한다.
+  if (type === 'EV_OVERSTAY') {
+    if (requestId) {
+      router.push({
+        pathname: '/resident/request-detail',
+        params: { requestId },
+      });
+    } else {
+      router.push('/resident');
+    }
+    return true;
+  }
+
   if (type && REQUEST_DETAIL_TYPES.has(type)) {
     if (requestId) {
       router.push({
@@ -52,11 +67,6 @@ export function navigateFromNotification(
     } else {
       router.push('/resident/requests');
     }
-    return true;
-  }
-
-  if (type === 'EV_OVERSTAY') {
-    router.push('/resident');
     return true;
   }
 
