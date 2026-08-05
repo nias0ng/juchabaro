@@ -105,8 +105,8 @@ def test_parses_versioned_snapshot_into_canonical_zone_definitions(tmp_path: Pat
     assert not hasattr(registry.get(3), "allowed_minutes")
 
 
-def test_loads_tracked_pilot_deployment_snapshot() -> None:
-    path = Path(__file__).parents[2] / "config" / "zone_definition.pilot.json"
+def test_loads_tracked_deployment_snapshot() -> None:
+    path = Path(__file__).parents[2] / "config" / "zone_definition.json"
 
     registry = ZoneRegistry.from_file(path)
 
