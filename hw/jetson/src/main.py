@@ -18,6 +18,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 from fastapi import FastAPI
 
@@ -81,7 +82,7 @@ logger = logging.getLogger(__name__)
 
 
 DatabaseConnectionFactory = Callable[[], sqlite3.Connection]
-ShutdownWorker = (
+ShutdownWorker: TypeAlias = (
     MonitoringWorker
     | MoveVerificationExecutorWorker
     | OutboxPublisherWorker
