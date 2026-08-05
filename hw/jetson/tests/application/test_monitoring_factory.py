@@ -135,7 +135,7 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     detector = _Detector()
     pipeline = build_monitoring_pipeline(
         zones=_zones(),
-        policy=_policy(),
+        policy=_policy(parking_move_confirm_seconds=0.5),
         dependencies=MonitoringDependencies(
             camera_id="camera-1",
             frame_source=frame_source,
@@ -162,6 +162,10 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     assert estimator._max_sample_gap_seconds == 0.50
     assert estimator._stationary_threshold == 0.03
     assert estimator._moving_threshold == 0.10
+    episode_tracker = (
+        pipeline._frame_workflow._parking_pipeline._parking_episode_tracker
+    )
+    assert episode_tracker._movement_confirmation_seconds == 0.5
 
 
 def test_factory_rejects_reidentification_window_reaching_absence_commit(

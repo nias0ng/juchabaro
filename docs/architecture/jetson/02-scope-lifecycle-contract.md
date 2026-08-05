@@ -293,6 +293,15 @@ STOP_PENDING 중 실제 physical exit가 확인되면 `CANCELED / PHYSICAL_EXIT`
 
 episode는 [직접 설정값](#14-직접-설정값) 중 주차·이동 판단에 실제 적용한 scalar를 생성 시 snapshot한다. UNKNOWN과 downtime을 timer에 합산하지 않으며 진행 중 episode에는 새 설정값을 소급 적용하지 않는다.
 
+PARKED에서 처음 신뢰할 수 있는 `MOVING` sample은 `MOVE_PENDING`을 열고 movement
+trusted timer를 0에서 시작한다. 그 뒤 신뢰할 수 있는 `MOVING` sample 사이의
+간격만 더하며, 누적값이 episode에 snapshot한
+`movementConfirmationDurationSeconds` 이상(`>=`)이 되는 첫 sample에서
+`ENDED / MOVEMENT_CONFIRMED`로 전이한다. `UNKNOWN`, `DEGRADED`, restart downtime은
+이미 누적한 하한을 보존하되 다음 trusted sample과의 시간 연결을 끊는다.
+`MOVE_PENDING`에서 신뢰할 수 있는 `STATIONARY`가 다시 확인되면 같은 episode의
+`PARKED`로 돌아가며 movement timer와 candidate 시각을 초기화한다.
+
 MotionEstimator의 첫 sample, 불충분한 history, 허용 범위를 넘은 sample gap과
 ambiguous band는 `MotionSignal.UNKNOWN`이다. 현재 bbox·identity가 정상이어도
 ParkingEpisode에는 `UNKNOWN / DEPENDENCY_UNAVAILABLE`로 전달해 trusted chain을

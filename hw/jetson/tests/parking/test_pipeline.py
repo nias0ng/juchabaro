@@ -672,6 +672,7 @@ def test_confirmed_absence_requires_explicit_physical_exit() -> None:
         observed_at=at(2),
         incident_termination_reason="SESSION_EXITED",
     )
+    assert exit_plan.parking_transitions == ()
     assert [visit.state for visit in exit_plan.zone_visit_updates] == [
         ZoneVisitState.ENDED
     ]
@@ -693,7 +694,7 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
         entry_seconds=0.0,
         exit_seconds=0.0,
         parking_seconds=1.0,
-        movement_seconds=1.0,
+        movement_seconds=0.5,
     )
 
     contexts = {CAR: UNAUTHORIZED}
@@ -717,9 +718,22 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
     )
     assert pending.parking_episode_updates[-1].state is ParkingState.MOVE_PENDING
     assert transitions_for(pending, BAD_PARKING) == ()
+    assert updates_for(pending, BAD_PARKING)[-1].state is IncidentState.OPEN
+
+    before_boundary = pipeline.process(
+        batch(
+            2.499999,
+            snapshot(2.499999, bbox=AMBIGUOUS, motion=MotionSignal.MOVING),
+        ),
+        session_contexts=contexts,
+    )
+    assert before_boundary.parking_episode_updates[-1].state is (
+        ParkingState.MOVE_PENDING
+    )
+    assert before_boundary.parking_transitions == ()
 
     movement_ended = pipeline.process(
-        batch(3, snapshot(3, bbox=AMBIGUOUS, motion=MotionSignal.MOVING)),
+        batch(2.5, snapshot(2.5, bbox=AMBIGUOUS, motion=MotionSignal.MOVING)),
         session_contexts=contexts,
     )
     assert movement_ended.parking_episode_updates[-1].state is ParkingState.ENDED
@@ -734,7 +748,7 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
     assert updates_for(movement_ended, BAD_PARKING)[-1].state is IncidentState.OPEN
 
     geometry_cleared = pipeline.process(
-        batch(4, snapshot(4, bbox=ASSIGNED_FIRST, motion=MotionSignal.MOVING)),
+        batch(3, snapshot(3, bbox=ASSIGNED_FIRST, motion=MotionSignal.MOVING)),
         session_contexts=contexts,
     )
     resolved = transitions_for(geometry_cleared, BAD_PARKING)
