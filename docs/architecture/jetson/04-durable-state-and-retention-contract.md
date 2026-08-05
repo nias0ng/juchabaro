@@ -32,11 +32,17 @@ durable domain·workflow state, dedup, outbox와 evidence metadata는 SQLite에
 
 | 등급 | 대상 | 장애 뒤 의미 |
 |---|---|---|
-| Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal | 복구하지 않고 새 관측으로 생성 |
-| Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer, motion anchor | 마지막 안전한 하한부터 재개 |
+| Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal, MotionEstimator window·motion anchor | 복구하지 않고 새 관측으로 생성 |
+| Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer | 마지막 안전한 하한부터 재개 |
 | Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
 
 `[제안값]` dirty checkpoint는 최대 10초마다 하나의 batch transaction으로 기록한다. crash로 잃은 최대 10초의 trusted time은 추정 보충하지 않는다. 확정이 조금 늦어질 수는 있지만 거짓 확정을 만들지 않는다.
+
+초기 schema의 `physical_vehicles.motion_anchor_payload`는 domain model과
+repository read/write 계약이 없는 reserved nullable column이며 현재 항상
+`NULL`이다. 컬럼이 존재한다는 사실을 checkpoint 구현으로 해석하지 않는다.
+좌표·시간 기준, payload schema version, 최소 복구 정보와 개인정보·retention
+경계를 별도 durable motion anchor ADR로 확정하기 전에는 기록하지 않는다.
 
 ## 3. 최소 영속 record
 
@@ -209,6 +215,24 @@ confirmedAt
 9. store가 정상이라면 camera·model을 기동하고 첫 정상 전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존 PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며 새 scope·Candidate는 만들지 않는다.
 
 TrackSegment와 raw frame은 복구하지 않는다. 복구된 OPEN Incident를 새 incidentId로 만들거나 PARKED 차량이 이동했다고 추정하지 않는다.
+
+MotionEstimator history도 재시작 후 복구하지 않는다. 모든 차량은 첫 정상 bbox를
+`UNKNOWN / FIRST_SAMPLE`로 시작하고 최소 sample 수와 관측 span을 새로 충족할
+때까지 ParkingEpisode와 PARKED 의존 규칙의 trusted timer를 멈춘다. restart 전
+bbox와 restart 후 bbox를 직접 비교하거나 downtime을 이동 evidence로 보충하지
+않는다. 이 제한은 아래의 PhysicalVehicle 재식별 anchor와 별개다. 하나는
+movement evidence의 시간 창이고 다른 하나는 identity 연속성 근거이므로,
+geometry를 쓴다는 이유만으로 같은 payload 의미로 합치지 않는다.
+
+현재 `GeometricEntityResolver`의 bbox·velocity history는 process 안에서만 유지되고
+durable PhysicalVehicle snapshot에는 재식별 anchor가 없다. 따라서 process restart
+뒤 기존 ACTIVE 차량이 있는 동안에는 새 segment를 새 PhysicalVehicle로 만들지
+않고 `UNKNOWN / REIDENTIFICATION_UNCERTAIN` barrier를 적용한다. detection이 남아
+있으면 부재 timer도 멈추며, 정상 전체 영역이 빈 trusted sample에서만 기존 차량의
+absence confirmation을 재개한다. 9번의 즉시 재식별을 완성하려면 별도 저장소 ADR로
+정규화 geometry anchor, 관측 시각, schema version과 개인정보·retention 경계를
+정한 뒤 `RestartAwareEntityResolver`에 주입해야 한다. Zone·Parking·Incident나
+session 상태로 이 근거를 대체하지 않는다.
 
 store integrity가 실패하거나 writable하지 않으면 새 durable transition을 확정하거나 ACK가 필요한 delivery를 진행하지 않는다. health는 `NOT_READY / STORAGE_FAILURE`로 표시하고 진단만 수행한다.
 

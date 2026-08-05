@@ -49,14 +49,27 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --calibration ../../ai/tracking/camera_calibration.json \\
         --model-path ../../ai/training/runs/.../weights/best.pt \\
         --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \\
-        --parking-move-confirm-seconds 3.0 \\
+        --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \\
         --absence-confirmation-seconds 5.0 \\
         --trusted-sample-max-gap-seconds 1.0 \\
+        --motion-window-seconds 0.75 \\
+        --motion-min-observation-span-seconds 0.20 \\
+        --motion-max-sample-gap-seconds 0.50 \\
+        --motion-stationary-threshold 0.03 \\
+        --motion-moving-threshold 0.10 \\
+        --motion-min-samples 3 \\
+        --motion-min-trend-consistency 0.60 \\
+        --reidentification-max-gap-seconds 4.0 \\
+        --reidentification-min-score 0.42 \\
+        --reidentification-ambiguity-margin 0.08 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
         --bad-parking-min-primary-overlap-ratio 0.75 \\
         --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
+
+위 5.0초 PARKED와 0.5초 movement 값은 현재 Pipeline Viewer 판정 테스트의
+명시적 override다. 일반 배포의 PARKED 값 600초를 바꾸는 기본값이 아니다.
 
 **실제 실행은 재현되지 않는다.** 위 예시는 결정론 테스트(`tests/replay/`,
 `tests/application/`)처럼 uuid4()를 몽키패치하지 않으므로, 같은 영상으로 두
@@ -95,7 +108,6 @@ from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.replay.zone_visit_publisher import DedupingZoneVisitPublisher, ZoneVisitJsonlPublisher
 from src.storage.database import connect_database, open_database
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
-from src.tracking.motion_estimator import MotionEstimator
 
 LOGGER = logging.getLogger("replay_pilot_video")
 
@@ -146,6 +158,46 @@ def build_parser() -> argparse.ArgumentParser:
         "기본값을 두지 않는다(.env.example의 1.0은 5fps 파일럿 임시값).",
     )
     parser.add_argument(
+        "--motion-window-seconds", type=float, required=True,
+        help="MotionEstimator bbox evidence 시간 창(초). provisional 값을 명시한다.",
+    )
+    parser.add_argument(
+        "--motion-min-observation-span-seconds", type=float, required=True,
+        help="motion 판정에 필요한 최소 관측 span(초).",
+    )
+    parser.add_argument(
+        "--motion-max-sample-gap-seconds", type=float, required=True,
+        help="motion history를 연속으로 인정할 최대 sample 간격(초).",
+    )
+    parser.add_argument(
+        "--motion-stationary-threshold", type=float, required=True,
+        help="STATIONARY 최대 변위. median bbox diagonal 대비 비율이다.",
+    )
+    parser.add_argument(
+        "--motion-moving-threshold", type=float, required=True,
+        help="MOVING 최소 변위. median bbox diagonal 대비 비율이다.",
+    )
+    parser.add_argument(
+        "--motion-min-samples", type=int, required=True,
+        help="motion 판정에 필요한 최소 bbox sample 수.",
+    )
+    parser.add_argument(
+        "--motion-min-trend-consistency", type=float, required=True,
+        help="MOVING에 필요한 displacement/trend 방향·크기 일치도(0~1).",
+    )
+    parser.add_argument(
+        "--reidentification-max-gap-seconds", type=float, required=True,
+        help="끊긴 TrackSegment를 같은 PhysicalVehicle 후보로 볼 최대 시간(초).",
+    )
+    parser.add_argument(
+        "--reidentification-min-score", type=float, required=True,
+        help="EntityResolver geometry 전역 배정의 최소 수락 점수.",
+    )
+    parser.add_argument(
+        "--reidentification-ambiguity-margin", type=float, required=True,
+        help="최적 1:1 identity 배정을 확정할 최소 전역 점수차.",
+    )
+    parser.add_argument(
         "--assignment-min-overlap-ratio", type=float, required=True,
         help="주차 위치 배정 최소 겹침 비율. 코드·설정 어디에도 확립된 기본값이 없어 필수다.",
     )
@@ -182,7 +234,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="사건 해소 지연(초). InMemoryIncidentReducer의 기존 기본값을 그대로 쓴다.",
     )
     parser.add_argument("--min-overlap-ratio", type=float, default=0.40)
-    parser.add_argument("--movement-epsilon", type=float, default=0.01)
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--remap-balance", type=float, default=DEFAULT_REMAP_BALANCE)
@@ -272,6 +323,13 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         parking_move_confirm_seconds=args.parking_move_confirm_seconds,
         absence_confirmation_seconds=args.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=args.trusted_sample_max_gap_seconds,
+        reidentification_max_gap_seconds=(
+            args.reidentification_max_gap_seconds
+        ),
+        reidentification_min_score=args.reidentification_min_score,
+        reidentification_ambiguity_margin=(
+            args.reidentification_ambiguity_margin
+        ),
         incident_confirm_seconds=args.incident_confirm_seconds,
         incident_clear_seconds=args.incident_clear_seconds,
         zone_presence_min_overlap_ratio=args.min_overlap_ratio,
@@ -282,6 +340,15 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         ),
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
+        motion_window_seconds=args.motion_window_seconds,
+        motion_min_observation_span_seconds=(
+            args.motion_min_observation_span_seconds
+        ),
+        motion_max_sample_gap_seconds=args.motion_max_sample_gap_seconds,
+        motion_stationary_threshold=args.motion_stationary_threshold,
+        motion_moving_threshold=args.motion_moving_threshold,
+        motion_min_samples=args.motion_min_samples,
+        motion_min_trend_consistency=args.motion_min_trend_consistency,
     )
 
 
@@ -319,7 +386,6 @@ def build_pipeline(
             detector=detector,
             publication_preparer=JsonlPublicationPreparer(events_handle=events_handle),
             connection_factory=lambda: connect_database(database_path),
-            motion_estimator=MotionEstimator(movement_epsilon=args.movement_epsilon),
         ),
     )
     zone_visit_publisher = ZoneVisitJsonlPublisher(path=args.out_zone_visits)

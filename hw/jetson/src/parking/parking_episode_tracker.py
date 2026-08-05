@@ -67,7 +67,7 @@ class ParkingEpisodeTracker(Protocol):
         observation: ObservationStatus,
         observed_at: datetime,
     ) -> tuple[ParkingEpisode, ...]:
-        """snapshot 없는 관측 공백을 기록하고 trusted timer 연결을 끊는다."""
+        """UNKNOWN·DEGRADED 관측 공백을 기록하고 trusted timer 연결을 끊는다."""
 
         ...
 
@@ -290,7 +290,12 @@ class InMemoryParkingEpisodeTracker:
         observation: ObservationStatus,
         observed_at: datetime,
     ) -> tuple[ParkingEpisode, ...]:
-        """snapshot 없는 공백 동안 active episode를 유지하고 timer만 멈춘다."""
+        """UNKNOWN·DEGRADED 공백 동안 active episode를 유지하고 timer만 멈춘다."""
+
+        if observation.state is ObservationState.OBSERVED:
+            raise ValueError(
+                "pause_physical_vehicle requires UNKNOWN or DEGRADED observation"
+            )
 
         slot = self._slots.get(physical_vehicle_id)
         ensure_forward_observation(

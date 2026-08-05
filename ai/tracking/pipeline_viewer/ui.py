@@ -11,6 +11,13 @@ from uuid import UUID
 
 import streamlit as st
 
+from .export import (
+    DIAGNOSTIC_FIELDS,
+    STATE_CHANGE_FIELDS,
+    csv_bytes,
+    diagnostic_rows,
+    state_change_rows,
+)
 from .service import ViewerRun
 from .tracing import FrameTrace
 
@@ -59,6 +66,7 @@ def render_run(run: ViewerRun) -> None:
     selected = run.frames[selected_index]
     _render_selected_frame(selected, run)
     _render_timeline(run)
+    _render_diagnostic_export(run)
 
 
 def _render_summary(run: ViewerRun) -> None:
@@ -121,6 +129,17 @@ def _render_selected_frame(frame: FrameTrace, run: ViewerRun) -> None:
     with tabs[0]:
         _render_changes(frame)
     with tabs[1]:
+        st.caption("EntityResolver decisions")
+        st.dataframe(
+            _identity_resolution_rows(frame, run),
+            use_container_width=True,
+        )
+        st.caption("MotionEstimator evidence")
+        st.dataframe(
+            _motion_estimate_rows(frame, run),
+            use_container_width=True,
+        )
+        st.caption("Resolved PhysicalVehicle observations")
         st.dataframe(_tracking_rows(frame, run), use_container_width=True)
     with tabs[2]:
         st.dataframe(_zone_visit_rows(frame, run), use_container_width=True)
@@ -165,6 +184,9 @@ def _render_frame_status(frame: FrameTrace, run: ViewerRun) -> None:
         {
             "trackedVehicles": len(frame.tracking_batch.vehicles),
             "allDetectionsTracked": frame.tracking_batch.all_detections_tracked,
+            "allIdentitiesResolved": (
+                frame.tracking_batch.all_identities_resolved
+            ),
             "fullAreaObserved": frame.tracking_batch.full_area_observed,
             "activeIncidents": len(frame.result.active_incidents),
             "elapsedMs": frame.elapsed_ms,
@@ -215,23 +237,83 @@ def _render_changes(frame: FrameTrace) -> None:
 
 def _render_timeline(run: ViewerRun) -> None:
     st.subheader("상태 변경 Timeline")
-    rows = []
-    for frame in run.frames:
-        for change in frame.changes:
-            rows.append(
-                {
-                    "frame": frame.frame_id,
-                    "videoTime": _format_seconds(frame.video_seconds),
-                    "category": change.category,
-                    "scopeId": change.scope_id,
-                    "previous": change.previous_state,
-                    "current": change.current_state,
-                }
-            )
+    rows = state_change_rows(run.frames)
     if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.download_button(
+            "State changes CSV 다운로드",
+            data=csv_bytes(rows, fieldnames=STATE_CHANGE_FIELDS),
+            file_name="pipeline_viewer_state_changes.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
     else:
         st.info("기록된 상태 변경이 없습니다.")
+
+
+def _render_diagnostic_export(run: ViewerRun) -> None:
+    st.subheader("Frame / Detection / Tracking 진단 Export")
+    rows = diagnostic_rows(
+        run.frames,
+        aliases=run.aliases,
+        detection_threshold=run.detection_confidence_threshold,
+        model_path=str(run.model_path),
+        tracker_config=run.tracker_config,
+        policy_snapshot_json=run.policy_snapshot_json,
+    )
+    detection_rows = [row for row in rows if row["rowType"] == "DETECTION"]
+    tracked_rows = [row for row in rows if row["rowType"] == "TRACKED_VEHICLE"]
+    frame_rows = [row for row in rows if row["rowType"] == "FRAME"]
+    detection_confidences = [float(row["confidence"]) for row in detection_rows]
+    tracked_confidences = [float(row["confidence"]) for row in tracked_rows]
+    no_detection_frames = sum(
+        row["pretrackDetectionCount"] == 0 for row in frame_rows
+    )
+    unknown_detection_frames = sum(
+        row["pretrackDetectionCount"] is None for row in frame_rows
+    )
+
+    st.caption(
+        "DETECTION은 설정 confidence threshold를 통과한 YOLO 후보이며 tracker 적용 전 값입니다. "
+        "IDENTITY_RESOLUTION은 TrackSegment→PhysicalVehicle 결정과 geometry 근거이며, "
+        "MOTION_ESTIMATE는 bbox·관측 시각의 time-window 판정 근거이고, "
+        "TRACKED_VEHICLE은 resolver가 physical vehicle로 확정한 관측입니다. "
+        "FRAME 행은 실제 실행 policy snapshot을 보존하며 탐지가 없어도 항상 기록합니다."
+    )
+    metrics = st.columns(5)
+    metrics[0].metric(
+        "Detection threshold", f"{run.detection_confidence_threshold:.4f}"
+    )
+    metrics[1].metric("Detection samples", len(detection_rows))
+    metrics[2].metric(
+        "Avg pre-track confidence",
+        (
+            "N/A"
+            if not detection_confidences
+            else f"{sum(detection_confidences) / len(detection_confidences):.4f}"
+        ),
+    )
+    metrics[3].metric(
+        "Avg tracked confidence",
+        (
+            "N/A"
+            if not tracked_confidences
+            else f"{sum(tracked_confidences) / len(tracked_confidences):.4f}"
+        ),
+    )
+    metrics[4].metric("No-detection frames", no_detection_frames)
+    if unknown_detection_frames:
+        st.warning(
+            "pre-track detection coverage를 읽지 못한 프레임이 "
+            f"{unknown_detection_frames}개 있습니다. 0건 탐지와 구분해 해석하세요."
+        )
+    st.download_button(
+        "Tracking diagnostics CSV 다운로드",
+        data=csv_bytes(rows, fieldnames=DIAGNOSTIC_FIELDS),
+        file_name="pipeline_viewer_tracking_diagnostics.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 
 def _tracking_rows(frame: FrameTrace, run: ViewerRun) -> list[dict[str, Any]]:
@@ -257,6 +339,60 @@ def _tracking_rows(frame: FrameTrace, run: ViewerRun) -> list[dict[str, Any]]:
             ),
         }
         for vehicle in frame.tracking_batch.vehicles
+    ]
+
+
+def _identity_resolution_rows(
+    frame: FrameTrace,
+    run: ViewerRun,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "trackSegment": int(item.track_segment_id),
+            "outcome": item.outcome.value,
+            "vehicle": (
+                None
+                if item.physical_vehicle_id is None
+                else _alias(run, item.physical_vehicle_id)
+            ),
+            "reason": None if item.reason is None else item.reason.value,
+            "candidates": item.candidate_count,
+            "score": item.score,
+            "assignmentMargin": item.score_margin,
+            "gapSeconds": item.gap_seconds,
+            "centerDistanceRatio": item.center_distance_ratio,
+            "predictedIoU": item.predicted_iou,
+            "areaRatio": item.area_ratio,
+        }
+        for item in frame.tracking_batch.identity_resolutions
+    ]
+
+
+def _motion_estimate_rows(
+    frame: FrameTrace,
+    run: ViewerRun,
+) -> list[dict[str, Any]]:
+    segment_by_vehicle = {
+        vehicle.physical_vehicle_id: int(vehicle.track_segment_id)
+        for vehicle in frame.tracking_batch.vehicles
+    }
+    return [
+        {
+            "vehicle": _alias(run, item.physical_vehicle_id),
+            "trackSegment": segment_by_vehicle[item.physical_vehicle_id],
+            "signal": item.signal.value,
+            "reason": item.reason.value,
+            "samples": item.sample_count,
+            "windowSpanSeconds": item.window_span_seconds,
+            "latestGapSeconds": item.latest_sample_gap_seconds,
+            "normalizedDisplacement": item.normalized_displacement,
+            "normalizedTrend": item.normalized_trend,
+            "trendConsistency": item.trend_consistency,
+            "referenceBboxDiagonal": item.reference_bbox_diagonal,
+            "stationaryThreshold": item.stationary_threshold,
+            "movingThreshold": item.moving_threshold,
+        }
+        for item in frame.tracking_batch.motion_estimates
     ]
 
 

@@ -26,9 +26,19 @@ from src.camera.frame_source import calibration_fingerprint
 REQUIRED_THRESHOLD_ARGS = [
     "--zone-entry-confirm-seconds", "3.0",
     "--zone-exit-confirm-seconds", "3.0",
-    "--parking-move-confirm-seconds", "3.0",
+    "--parking-move-confirm-seconds", "0.5",
     "--absence-confirmation-seconds", "5.0",
     "--trusted-sample-max-gap-seconds", "1.0",
+    "--motion-window-seconds", "0.75",
+    "--motion-min-observation-span-seconds", "0.20",
+    "--motion-max-sample-gap-seconds", "0.50",
+    "--motion-stationary-threshold", "0.03",
+    "--motion-moving-threshold", "0.10",
+    "--motion-min-samples", "3",
+    "--motion-min-trend-consistency", "0.60",
+    "--reidentification-max-gap-seconds", "4.0",
+    "--reidentification-min-score", "0.42",
+    "--reidentification-ambiguity-margin", "0.08",
     "--assignment-min-overlap-ratio", "0.5",
     "--assignment-ambiguous-margin", "0.05",
     "--bad-parking-min-primary-overlap-ratio", "0.75",
@@ -86,7 +96,6 @@ def test_defaults_match_documented_baseline_values():
     assert args.tracker_config == "bytetrack.yaml"
     assert args.confidence == 0.5
     assert args.min_overlap_ratio == 0.40
-    assert args.movement_epsilon == 0.01
     assert args.remap_balance == 0.5
     assert args.crop_left_px == 0
     assert args.crop_right_px == 0
@@ -107,16 +116,26 @@ def test_defaults_reuse_existing_codebase_values_only():
 
 
 def test_build_policy_passes_every_cli_value_through_unchanged():
-    """CLI가 MonitoringPolicy의 15개 값을 모두 채운다(숨은 기본값 없음)."""
+    """CLI가 MonitoringPolicy의 모든 값을 채운다(숨은 기본값 없음)."""
 
     args = _parse("--min-overlap-ratio", "0.6")
     policy = build_policy(args)
 
     assert policy.zone_entry_confirm_seconds == 3.0
     assert policy.zone_exit_confirm_seconds == 3.0
-    assert policy.parking_move_confirm_seconds == 3.0
+    assert policy.parking_move_confirm_seconds == 0.5
     assert policy.absence_confirmation_seconds == 5.0
     assert policy.trusted_sample_max_gap_seconds == 1.0
+    assert policy.motion_window_seconds == 0.75
+    assert policy.motion_min_observation_span_seconds == 0.20
+    assert policy.motion_max_sample_gap_seconds == 0.50
+    assert policy.motion_stationary_threshold == 0.03
+    assert policy.motion_moving_threshold == 0.10
+    assert policy.motion_min_samples == 3
+    assert policy.motion_min_trend_consistency == 0.60
+    assert policy.reidentification_max_gap_seconds == 4.0
+    assert policy.reidentification_min_score == 0.42
+    assert policy.reidentification_ambiguity_margin == 0.08
     assert policy.assignment_min_overlap_ratio == 0.5
     assert policy.assignment_ambiguous_margin == 0.05
     assert policy.bad_parking_min_primary_overlap_ratio == 0.75
@@ -169,6 +188,9 @@ def test_valid_args_pass_validation(tmp_path):
         "--parking-move-confirm-seconds",
         "--absence-confirmation-seconds",
         "--trusted-sample-max-gap-seconds",
+        "--reidentification-max-gap-seconds",
+        "--reidentification-min-score",
+        "--reidentification-ambiguity-margin",
         "--assignment-min-overlap-ratio",
         "--assignment-ambiguous-margin",
         "--blocking-relation-confirm-seconds",

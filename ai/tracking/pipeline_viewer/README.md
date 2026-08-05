@@ -63,8 +63,28 @@ PyTorch·TensorRT 설치가 별도로 필요하므로 이 PC용 Conda 절차를 
 - frame slider와 상태 변경 프레임 바로가기
 - EntryMatch, ZoneVisit, ParkingEpisode, BlockingRelation, Incident 상태 변화
 - 실제 `TrackingBatch`와 `FrameObservationResult` JSON 요약
+- 기존 상태 변경 timeline의 명시적 CSV 다운로드
+- 프레임별 YOLO detection·identity·motion evidence·차량 소실 진단 CSV 다운로드
 - 정상 commit 이후의 프레임만 표시하고 오류 발생 시 마지막 정상 프레임과
   원래 예외를 함께 보존
+
+진단 CSV의 `DETECTION` 행은 화면에서 설정한 YOLO confidence threshold를 통과한
+post-NMS, pre-track 후보입니다. `IDENTITY_RESOLUTION`은 EntityResolver 결정,
+`MOTION_ESTIMATE`는 bbox·관측 시각 time-window의 signal·reason·정규화 지표이고,
+`TRACKED_VEHICLE` 행은 ByteTrack ID와 PhysicalVehicle ID가 부여되어 도메인으로
+전달된 관측입니다. detection이 없는 프레임도 `FRAME` 행으로 남고 이 행의
+`policySnapshotJson`은 해당 실행에 실제 적용한 모든 Viewer policy를 canonical
+JSON으로 보존합니다. 따라서 threshold보다 낮아 YOLO 결과에서
+제거된 후보는 export에도 나타나지 않습니다. 낮은 confidence 분포를 확인하려면
+Viewer 실행 전 threshold를 `0.01`처럼 낮추되, 후보 증가에 따른 오탐·처리시간
+증가를 함께 비교해야 합니다. 현재 Viewer의 진단용 provisional 기본값은
+`0.01`이며 운영 threshold를 뜻하지 않습니다.
+
+Viewer 기본의 PARKED 5초와 movement confirmation 0.5초는 판정 테스트용
+override이며 일반 배포의 PARKED 600초를 바꾸지 않습니다. motion window와
+stationary/moving threshold도 provisional 값입니다. motion threshold는 bbox
+diagonal 대비 정규화 이동량이고, movement confirmation은 PARKED 뒤 lifecycle
+확정 시간이므로 서로 대체하지 않습니다.
 
 실행 중 frame 이미지는 session별 임시 workspace에 JPEG로 저장됩니다. 새 실행을
 시작하면 이전 workspace를 정리합니다.
