@@ -87,9 +87,11 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
-기존 `.env`를 계속 사용하는 환경은 `.env.example`의 `MOTION_*` 일곱 값을
-명시적으로 추가해야 한다. 이 값들은 provisional이므로 누락 시 코드 기본값으로
-조용히 대체하지 않고 시작 단계에서 설정 오류로 중단한다.
+기존 `.env`를 계속 사용하는 환경은 `.env.example`과 비교해 카메라·
+calibration·차량 tracking 및 MonitoringPolicy 필수값을 추가해야 한다.
+기본값 없는 항목은 누락하거나 빈 값으로 두면 시작 단계에서 설정 오류로
+중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
+배포 환경에 맞게 명시한다.
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
