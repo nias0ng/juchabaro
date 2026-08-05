@@ -138,23 +138,23 @@ def test_trace_observes_real_entry_match_and_frame_workflow(tmp_path: Path) -> N
     connection = open_database(database_path)
     payload = parse_entry_event(build_allow_example())
     try:
-        created = EntryEventIntake(
+        acceptance = EntryEventIntake(
             EntryMatchCoordinator(zones=zones),
             match_window_seconds=10.0,
         ).receive(
-            payload.to_entry_context(),
+            payload.to_input(),
             idempotency_key="viewer-test",
             connection=connection,
         )
     finally:
         connection.close()
-    assert created is True
+    assert acceptance.created is True
 
     connection_factory = lambda: connect_database(database_path)
     collector = TraceCollector(
         frames_directory=tmp_path / "frames",
         zones=zones.all(),
-        entry_attempt_id=parse_entry_attempt_id(payload.tracking_id),
+        entry_attempt_id=parse_entry_attempt_id(payload.entry_attempt_id),
         connection_factory=connection_factory,
     )
     pipeline = build_monitoring_pipeline(

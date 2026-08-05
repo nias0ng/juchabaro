@@ -204,28 +204,30 @@ def default_paths() -> ViewerPaths:
     return ViewerPaths()
 
 
-def build_allow_example(*, tracking_id: UUID | None = None) -> str:
-    """영상 00:00에 맞춘 현재 legacy wire의 synthetic ALLOW 예시 JSON."""
+def build_allow_example(*, entry_attempt_id: UUID | None = None) -> str:
+    """영상 00:00에 맞춘 현재 EntryDecision wire의 synthetic ALLOW 예시 JSON."""
 
     payload = {
-        "trackingId": str(tracking_id or uuid4()),
-        "recognizedPlateNumber": "12가3456",
-        "entryTime": EPOCH.isoformat(),
+        "entryAttemptId": str(entry_attempt_id or uuid4()),
+        "decisionRevision": 1,
         "accessDecision": "ALLOW",
-        "registered": True,
-        "vehicleId": 1,
-        "isDisabledVehicle": False,
-        "isElectric": False,
-        "vehicleStatus": "REGISTERED",
-        "sessionId": 1,
-        "duplicateRequest": False,
+        "entryTime": EPOCH.isoformat(),
+        "sessionContext": {
+            "sessionId": 1,
+            "vehicleId": 1,
+            "isDisabledVehicle": False,
+            "isElectric": False,
+        },
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def default_idempotency_key(entry_event_json: str) -> str:
     payload = parse_entry_event(entry_event_json)
-    return f"viewer-entry-{payload.tracking_id}-r0"
+    return (
+        f"viewer-entry-{payload.entry_attempt_id}"
+        f"-r{payload.decision_revision}"
+    )
 
 
 def parse_entry_event(raw_json: str) -> EntryEventPayload:
@@ -282,7 +284,7 @@ def run_viewer_pipeline(
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
         raise
-    entry_attempt_id = parse_entry_attempt_id(payload.tracking_id)
+    entry_attempt_id = parse_entry_attempt_id(payload.entry_attempt_id)
     collector = TraceCollector(
         frames_directory=workspace / "frames",
         zones=zones.all(),
@@ -472,10 +474,10 @@ def _receive_entry_event(
     connection = connection_factory()
     try:
         return intake.receive(
-            payload.to_entry_context(),
+            payload.to_input(),
             idempotency_key=idempotency_key,
             connection=connection,
-        )
+        ).created
     finally:
         connection.close()
 

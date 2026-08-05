@@ -97,10 +97,11 @@ def test_allow_example_matches_current_entry_event_wire() -> None:
 
     assert payload.access_decision == "ALLOW"
     assert payload.entry_time == EPOCH
-    assert payload.session_id == 1
-    assert payload.registered is True
-    assert payload.recognized_plate_number == "12가3456"
-    assert default_idempotency_key(raw).endswith("-r0")
+    assert payload.decision_revision == 1
+    assert payload.session_context is not None
+    assert payload.session_context.session_id == 1
+    assert payload.session_context.vehicle_id == 1
+    assert default_idempotency_key(raw).endswith("-r1")
 
 
 def test_entry_event_time_must_match_video_zero() -> None:
