@@ -8,5 +8,10 @@ httpx
 numpy==2.2.6
 opencv-python==4.10.0.84
 
+# sensor 계층: VL53L0X 드라이버, Linux I²C 버스 선택, Jetson XSHUT GPIO 제어
+adafruit-circuitpython-vl53l0x==3.6.19; sys_platform == "linux" and platform_machine == "aarch64"
+adafruit-extended-bus==1.0.2; sys_platform == "linux" and platform_machine == "aarch64"
+Jetson.GPIO==2.1.13; sys_platform == "linux" and platform_machine == "aarch64"
+
 # tracking 계층(436): YOLO + ByteTrack (hw/raspberry-pi와 버전 통일)
 ultralytics==8.4.108
