@@ -39,7 +39,23 @@ Jira 565가 SessionExit 발행 조건을 "5초 부재"에서 **"마지막 관측
 
 **기준선** = `EXIT` 구역 중심을 지나고 외부 방향에 수직인 직선.
 
-**외부측 sub-polygon** = `EXIT` 폴리곤을 그 직선으로 자른 외부 방향 쪽 조각.
+차량이 외부측에 있는지는 **bbox 중심이 기준선의 어느 쪽에 있는지**로 판정한다 — 중심에서 `EXIT` 중심을 뺀 벡터를 외부 방향 단위벡터에 투영한 부호가 양수면 외부측이다.
+
+> **왜 폴리곤을 잘라 겹침으로 판정하지 않는가 (실측 근거)**
+>
+> 초안은 `EXIT` 폴리곤을 기준선으로 잘라 만든 "외부측 조각"과 차량 bbox의 교차 면적이 0보다 크면 외부측 도달로 봤다. 임계값이 없어 깔끔했지만 **실제 축척에서 무력하다.**
+>
+> | | `zone_definition.json` | `zone_definition.pilot.json` |
+> |---|---|---|
+> | 내부측 깊이(외부축 방향) | 0.1048 | 0.1082 |
+> | 실측 차량 bbox 0.11×0.16의 외부축 투영 | 0.1929 | 0.1935 |
+> | 비율 | 1.84배 | 1.79배 |
+>
+> **차량이 반쪽 구역보다 크다.** 출차 구역 방문을 유지할 만큼 겹친 차량은 bbox 전체를 내부측에 둘 수 없으므로 교차 면적 테스트가 사실상 항상 참이 된다. 작은 bbox(0.10×0.12)도 1.46배/1.42배다.
+>
+> 중심 부호 판정은 이 문제가 없고, 부수적으로 반대 방향 취약점도 없앤다 — 차량이 폴리곤 상단을 지나 관측되면 조각과 겹치지 않아 미탐이 되지만, 중심 판정은 그 경우도 외부측으로 읽는다.
+>
+> 교훈: 기하에서 유도한 값이라도 **차량 대 구역 축척 관계를 확인해야 한다.** 이 검사가 없어 초안이 리뷰까지 살아남았다.
 
 배포 중인 두 설정으로 실측한 값이다.
 
@@ -51,22 +67,22 @@ Jira 565가 SessionExit 발행 조건을 "5초 부재"에서 **"마지막 관측
 
 차량이 실제로 화면 **오른쪽 위**로 빠져나간다는 것을 현장 확인으로 검증했고, 위 유도값이 그 방향과 일치한다. 추가 근거로 zone 9는 4개 정점 중 3개를 AISLE 폴리곤과 공유하며, 공유하지 않는 자유 경계가 위·오른쪽이다 — 두 유도 방식이 같은 답을 낸다.
 
-`AISLE` 구역이 없으면 외부 방향을 유도할 수 없다. 이때는 해당 `EXIT` 구역의 외부측 sub-polygon을 만들지 않고, 그 구역으로는 통과를 확정하지 않는다(fail-safe). 구성 시점에 경고 로그를 남긴다.
+`AISLE` 구역이 없으면 외부 방향을 유도할 수 없다. 이때는 해당 `EXIT` 구역의 기준선을 만들지 않고, 그 구역으로는 통과를 확정하지 않는다(fail-safe). 구성 시점에 경고 로그를 남긴다.
 
 `AISLE` 구역이 여러 개면 중심 간 거리가 가장 가까운 것을 쓴다. 결정적이어야 하므로 거리가 같으면 `zone_id`가 작은 것을 쓴다.
 
 ## 결정: 임계값을 새로 만들지 않는다
 
 - **기준선 위치**: 폴리곤 중심을 쓴다. 튜닝 상수가 아니라 기하에서 유도되는 값이다.
-- **접촉 판정**: 차량 bbox와 외부측 sub-polygon의 교차 면적이 **0보다 크면** 접촉으로 본다. 비율 임계값을 두지 않는다. 차량이 기준선을 물리적으로 넘었다는 사실만 요구하는 것이고, 이 스펙의 의미("외부측에 도달했다")와 정확히 일치한다.
+- **외부측 판정**: bbox 중심의 부호 있는 오프셋이 **0보다 크면** 외부측으로 본다. 부호 검사라 임계값이 없다.
 
-`_min_overlap_ratio`를 재사용하지 않는 이유는 그 값이 "구역 안에 있다"를 판정하는 비율이고, sub-polygon은 원래 구역의 절반이라 같은 비율을 요구하면 의미가 달라지기 때문이다.
+`_min_overlap_ratio`를 재사용하지 않는다. 그 값은 "구역 안에 있다"를 판정하는 비율이고, 여기서 묻는 것은 "구역 안 어느 쪽에 있는가"라 다른 질문이다.
 
 ## 판정 규칙
 
 `ParkingPipeline.exit_zone_traversal_observed(physical_vehicle_id)`의 내부를 다음으로 바꾼다.
 
-**통과 = 열려 있는 `EXIT` role ZoneVisit이 있고, 그 차량의 가장 최근 관측 프레임에서 해당 구역의 외부측 sub-polygon과 접촉했다.**
+**통과 = 열려 있는 `EXIT` role ZoneVisit이 있고, 그 차량의 가장 최근 신뢰 관측 프레임에서 bbox 중심이 해당 구역 기준선의 외부측에 있었다.**
 
 565가 만든 이 메서드의 시그니처와 호출 지점은 바뀌지 않는다. `PhysicalPresenceWorkflow`, `ParkingSessionMirror`, `ParkingEpisode`/`Incident` 전파, Outbox는 한 줄도 바뀌지 않는다 — 565가 이 메서드를 확장 지점으로 남겨둔 이유가 이것이다.
 
@@ -86,36 +102,27 @@ Jira 565가 SessionExit 발행 조건을 "5초 부재"에서 **"마지막 관측
 
 ## 변경 사항
 
-### 1. `geometry.py`에 공개 half-plane 클리핑 추가
+### 1. `geometry.py`에 폴리곤 중심 추가
 
-`_clip_half_plane`(이미 존재, private)을 사용하는 공개 함수를 추가한다.
+- `polygon_centroid(points) -> tuple[float, float]` — shoelace 가중 중심. 면적이 `_GEOMETRY_EPSILON` 이하면 `ValueError`(모듈의 기존 degenerate 판정 관례와 동일).
 
-```python
-def clip_polygon_to_half_plane(
-    points: Sequence[tuple[float, float]],
-    origin: tuple[float, float],
-    direction: tuple[float, float],
-) -> list[tuple[float, float]]:
-    """``origin``을 지나 ``direction`` 쪽 반평면으로 polygon을 자른다."""
-```
+기존 `bbox_center`를 차량 중심 계산에 재사용한다 — 새로 만들지 않는다.
 
-`direction`이 영벡터면 `ValueError`. 결과가 3점 미만이면 빈 리스트(면적 0인 조각).
-
-### 2. `geometry.py`에 폴리곤 중심, `zone_registry.py`에 외부측 유도
-
-`geometry.py`에 추가한다.
-
-- `polygon_centroid(points) -> tuple[float, float]` — shoelace 가중 중심. 면적이 0이면 `ValueError`.
+### 2. `zone_registry.py`에 외부측 기준선 유도
 
 `ZoneRegistry`에 추가한다.
 
-- `ZoneRegistry.exit_outward_polygons() -> dict[ZoneId, NormalizedPolygon]` — `EXIT` role 구역별 외부측 sub-polygon. 구성 시 한 번 계산해 캐시한다. `AISLE`이 없거나 조각 면적이 0이면 그 구역을 결과에서 빼고 경고 로그를 남긴다.
+- `ZoneRegistry.exit_outward_baselines() -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]` — `EXIT` role 구역별 `(origin, unit_direction)`. `origin`은 `EXIT` 폴리곤 중심, `unit_direction`은 정규화한 외부 방향이다. 구성 시 한 번 계산해 캐시한다.
+
+유도가 불가능한 경우는 모두 그 구역을 결과에서 빼고 경고 로그를 남긴다 — 절대 raise하지 않는다. `ZoneRegistry`는 프로세스 시작 시 만들어지므로 예외가 나면 구역 하나 때문에 서비스 전체가 뜨지 못한다. 해당하는 경우: `AISLE` 구역 없음, 중심을 구할 수 있는 `AISLE`이 하나도 없음, `AISLE`과 `EXIT` 중심이 일치(영벡터 — 정규화 전에 걸러야 0으로 나누지 않는다), `polygon_centroid`의 `ValueError`.
+
+`AISLE`이 여럿이면 중심 간 거리가 가장 가까운 것을 쓰고, 거리가 같으면 `zone_id`가 작은 것을 쓴다. 실행마다 기준선이 달라지면 안 되므로 이 tie-break는 필수다.
 
 구역 정의는 불변이므로 이 계산은 registry 생성 시 1회다. 매 프레임 비용이 없다.
 
 ### 3. `ParkingPipeline`에 외부측 접촉 추적과 판정 배선
 
-- `process()`의 차량 루프에서, 관측된 차량마다 외부측 sub-polygon과의 교차 면적이 양수인 `EXIT` 구역 id 집합을 계산해 저장한다.
+- `process()`의 차량 루프에서, 신뢰 관측된 차량마다 bbox 중심의 부호 있는 오프셋이 양수인 `EXIT` 구역 id 집합을 계산해 저장한다.
 - `exit_zone_traversal_observed()`가 열린 `EXIT` role visit의 `zone_id`가 그 집합에 있는지 확인한다.
 - `physical_exit()`과 `forget` 경로에서 항목을 정리한다.
 - `checkpoint_state()`/`restore_state()`에 포함한다.
@@ -130,8 +137,10 @@ def clip_polygon_to_half_plane(
 - `AISLE` 구역이 없는 registry → 통과가 확정되지 않고 예외도 나지 않음
 - `physical_exit()` 후 통과 불인정 (565의 읽기 순서 회귀 테스트 유지)
 - `checkpoint_state()`/`restore_state()` 왕복 후 접촉 상태가 보존됨
-- `clip_polygon_to_half_plane` 단위 테스트: 완전 포함, 완전 배제, 부분 절단, 영벡터 거부
+- `polygon_centroid` 단위 테스트: 비대칭 폴리곤으로 **면적 가중 중심이 꼭짓점 평균과 다름을 고정**한다. 정사각형만 쓰면 두 값이 같아 수식을 전혀 고정하지 못한다.
+- `AISLE` 또는 `EXIT` 폴리곤이 degenerate여도 registry 생성이 성공하고 그 구역만 빠짐
 - 실제 배포 설정 두 개(`zone_definition.json`, `zone_definition.pilot.json`)로 외부측 방향이 (+x, −y) 사분면임을 고정
+- **실제 축척 회귀 테스트(필수)**: 배포 설정을 그대로 읽어 실측 차량 크기(약 0.11×0.16)의 bbox로, 내부측 위치는 통과 불인정·외부측 위치는 통과 인정임을 고정한다. fixture 기하는 실제보다 관대해지기 쉬워서 — 초안이 그래서 무력한 채로 리뷰를 통과했다 — 실제 설정으로 도는 테스트가 하나는 있어야 한다.
 
 ## 받아들이는 대가
 
