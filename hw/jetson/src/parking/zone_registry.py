@@ -9,15 +9,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.parking.geometry import (
+    clip_polygon_to_half_plane,
     convex_polygon_intersection_area,
     is_convex_polygon,
     polygon_area,
+    polygon_centroid,
 )
 from src.parking.models import (
     EntryExitRole,
@@ -33,6 +36,8 @@ EV_ZONE_TYPES = frozenset({ZoneType.EV_CHARGING})
 RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
 SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
+
+logger = logging.getLogger(__name__)
 
 # 정규화 좌표의 absolute 면적은 작은 유효 zone을 놓치므로, 더 작은 주차면
 # 면적 대비 비율로 내부 겹침을 판정한다. exact shared edge의 면적 0은 허용한다.
@@ -67,6 +72,7 @@ class ZoneRegistry:
         self._zones = {definition.zone_id: definition for definition in ordered}
         self._zone_definition_version = ordered[0].zone_definition_version
         self._calibration_reference = ordered[0].calibration_reference
+        self._exit_outward_polygons = self._build_exit_outward_polygons()
 
     @property
     def zone_definition_version(self) -> ZoneDefinitionVersion:
@@ -270,6 +276,87 @@ class ZoneRegistry:
                     f"overlapRatio={overlap_ratio:.12f}"
                 )
 
+    def exit_outward_polygons(self) -> dict[ZoneId, NormalizedPolygon]:
+        """EXIT role 구역별 외부측 sub-polygon을 반환한다(571).
+
+        외부 방향을 유도할 수 없거나 조각 면적이 0인 구역은 키에서 빠진다.
+        호출자는 키가 없으면 그 구역으로 통과를 확정하지 않는다.
+        """
+
+        return dict(self._exit_outward_polygons)
+
+    def _build_exit_outward_polygons(self) -> dict[ZoneId, NormalizedPolygon]:
+        """구역 정의는 불변이므로 구성 시 1회만 계산한다.
+
+        외부 방향은 가장 가까운 AISLE 구역 중심에서 EXIT 구역 중심으로
+        향하는 벡터다. 기준선은 EXIT 중심을 지나고 그 방향에 수직인
+        직선이며, 외부측 조각은 그 직선의 외부 방향 쪽이다. 새 설정 필드를
+        도입하지 않으려고 기존 폴리곤에서 유도한다.
+        """
+
+        exits = tuple(
+            definition
+            for definition in self._definitions
+            if definition.zone_type is ZoneType.ENTRY_EXIT
+            and definition.entry_exit_role is EntryExitRole.EXIT
+        )
+        if not exits:
+            return {}
+
+        aisles = tuple(
+            definition
+            for definition in self._definitions
+            if definition.zone_type is ZoneType.AISLE
+        )
+        if not aisles:
+            logger.warning(
+                "AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 없습니다. "
+                "출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
+                [int(definition.zone_id) for definition in exits],
+            )
+            return {}
+
+        aisle_centers = {
+            definition.zone_id: polygon_centroid(definition.polygon)
+            for definition in aisles
+        }
+        outward: dict[ZoneId, NormalizedPolygon] = {}
+        for exit_definition in exits:
+            exit_center = polygon_centroid(exit_definition.polygon)
+            nearest_zone_id = min(
+                aisle_centers,
+                key=lambda zone_id: (
+                    _squared_distance(aisle_centers[zone_id], exit_center),
+                    int(zone_id),
+                ),
+            )
+            aisle_center = aisle_centers[nearest_zone_id]
+            direction = (
+                exit_center[0] - aisle_center[0],
+                exit_center[1] - aisle_center[1],
+            )
+            if direction[0] == 0.0 and direction[1] == 0.0:
+                logger.warning(
+                    "AISLE과 EXIT 구역의 중심이 같아 외부 방향을 유도할 수 "
+                    "없습니다: zone_id=%s",
+                    int(exit_definition.zone_id),
+                )
+                continue
+            piece = clip_polygon_to_half_plane(
+                exit_definition.polygon,
+                exit_center,
+                direction,
+            )
+            if not piece:
+                logger.warning(
+                    "출차 구역 외부측 조각이 비어 외부측 판정을 할 수 "
+                    "없습니다: zone_id=%s",
+                    int(exit_definition.zone_id),
+                )
+                continue
+            outward[exit_definition.zone_id] = tuple(piece)
+        return outward
+
     def all(self) -> tuple[ZoneDefinition, ...]:
         """파일에 기록된 순서대로 모든 구역 정의를 반환한다."""
 
@@ -389,3 +476,10 @@ def _parse_zone_id_array(value: Any, *, field_name: str) -> tuple[ZoneId, ...]:
         ZoneId(_parse_integer(item, field_name=f"{field_name}[{index}]"))
         for index, item in enumerate(value)
     )
+
+
+def _squared_distance(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> float:
+    return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2

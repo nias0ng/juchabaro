@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from src.parking.geometry import polygon_area, polygon_centroid
 from src.parking.models import (
     EntryExitRole,
     ZoneDefinition,
@@ -395,3 +396,102 @@ def test_spot_and_aisle_may_overlap() -> None:
     )
 
     assert len(registry.all()) == 2
+
+
+def _aisle_and_exit_registry() -> ZoneRegistry:
+    """aisle이 아래쪽, exit이 위쪽인 최소 구성. 외부 방향은 -y다."""
+
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+    return ZoneRegistry((aisle, exit_zone))
+
+
+def test_exit_outward_polygon_is_the_half_away_from_the_aisle() -> None:
+    registry = _aisle_and_exit_registry()
+    outward = registry.exit_outward_polygons()
+
+    assert set(outward) == {ZoneId(9)}
+    piece = outward[ZoneId(9)]
+    # exit 구역은 y 0.0~0.4, 중심 y=0.2. aisle이 아래(y 0.5~1.0)이므로
+    # 외부 방향은 -y이고 외부측 조각은 y <= 0.2다.
+    assert polygon_area(piece) == pytest.approx(0.2)
+    assert max(y for _, y in piece) == pytest.approx(0.2)
+
+
+def test_entry_role_zone_gets_no_outward_polygon() -> None:
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    entry_zone = ZoneDefinition(
+        zone_id=ZoneId(8),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.ENTRY,
+    )
+    assert ZoneRegistry((aisle, entry_zone)).exit_outward_polygons() == {}
+
+
+def test_registry_without_aisle_yields_no_outward_polygon() -> None:
+    """외부 방향을 유도할 수 없으면 통과를 확정하지 않는다(fail-safe)."""
+
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+    assert ZoneRegistry((exit_zone,)).exit_outward_polygons() == {}
+
+
+def test_exit_outward_polygons_are_cached_and_identical_across_calls() -> None:
+    registry = _aisle_and_exit_registry()
+    assert registry.exit_outward_polygons() == registry.exit_outward_polygons()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["zone_definition.json", "zone_definition.pilot.json"],
+)
+def test_deployed_configs_derive_outward_direction_into_upper_right(
+    filename: str,
+) -> None:
+    """배포 설정의 외부 방향이 화면 오른쪽 위(+x, -y)임을 고정한다(571).
+
+    현장 확인으로 차량이 화면 오른쪽 위로 빠져나간다는 것을 검증했다.
+    폴리곤이 재작성되어 이 사분면을 벗어나면 판정이 조용히 반대가 되므로
+    여기서 잡는다.
+    """
+
+    # 이 파일의 기존 테스트와 같은 CWD 독립 경로 관례를 쓴다
+    # (`test_loads_tracked_deployment_snapshot` 참고).
+    path = Path(__file__).parents[2] / "config" / filename
+    registry = ZoneRegistry.from_file(path)
+    outward = registry.exit_outward_polygons()
+    assert set(outward) == {ZoneId(9)}
+
+    exit_definition = registry.get(ZoneId(9))
+    exit_center = polygon_centroid(exit_definition.polygon)
+    piece_center = polygon_centroid(outward[ZoneId(9)])
+    assert piece_center[0] > exit_center[0]
+    assert piece_center[1] < exit_center[1]
