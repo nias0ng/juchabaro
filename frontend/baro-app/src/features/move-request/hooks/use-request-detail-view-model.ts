@@ -24,7 +24,7 @@ export function useRequestDetailViewModel(
   requestId: number | null,
   viewMode: RequestDetailViewMode = 'recipient',
 ) {
-  const { detail, isLoading, isRefreshing, error, refetch, applyResponse } = useMoveRequestDetail(requestId);
+  const { detail, isLoading, isRefreshing, error, refetch } = useMoveRequestDetail(requestId);
   const { submit, isSubmitting, errorMessage: submitError } = useMoveRequestResponse(requestId);
   const display = detail ? toRequestDetailDisplay(detail) : null;
 
@@ -83,14 +83,12 @@ export function useRequestDetailViewModel(
 
   const respond = useCallback(
     async (responseType: MoveResponseType, estimatedMinutes: number | null) => {
-      // refetch()로 다시 조회하면 그 왕복 시간만큼 카운트다운이 이미 흐른 채로 시작되니,
-      // 서버가 이 응답 자체에서 돌려준 결과를 바로 반영한다.
+      // 상세 캐시 갱신은 useMoveRequestResponse의 mutation onSuccess가 처리한다(refetch 왕복을 기다리지 않고 즉시 반영).
       const result = await submit({ responseType, estimatedMinutes });
-      if (result) applyResponse(result);
       // 호출한 쪽(request-detail-body)이 성공 여부를 보고 F-02(응답 완료)로 이동할지 판단할 수 있게 그대로 돌려준다.
       return result;
     },
-    [submit, applyResponse],
+    [submit],
   );
 
   return {

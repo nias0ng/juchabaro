@@ -1,15 +1,15 @@
-import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 
 import {
   getNotificationSettings,
   updateNotificationSettings,
 } from '@/features/profile/api/notification-settings-api';
 import type { NotificationSettings, UpdateNotificationSettingsRequest } from '@/features/profile/api/types';
+import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
-import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
+import { queryKeys } from '@/services/query-keys';
 
 const DEFAULT_SETTINGS: NotificationSettings = {
   moveRequestReceive: true,
@@ -30,115 +30,55 @@ function hasUnsavedChanges(draft: NotificationSettings, saved: NotificationSetti
 
 export function useNotificationSettings() {
   const { accessToken, status } = useAuth();
+  const queryClient = useQueryClient();
+
   // savedSettings는 서버에 실제로 저장된 값, draftSettings는 화면에서 편집 중인(아직 저장 전) 값이다.
   const [savedSettings, setSavedSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
   const [draftSettings, setDraftSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [loadErrorMessage, setLoadErrorMessage] = useState<string>();
   const [saveErrorMessage, setSaveErrorMessage] = useState<string>();
-  const mountedRef = useRef(true);
-  const savingRef = useRef(false);
-  const loadingRef = useRef(false);
-  const hasLoadedRef = useRef(false);
-  const dirtyRef = useRef(false);
-  const focusedRef = useRef(false);
-  const appStateRef = useRef(AppState.currentState);
-  dirtyRef.current = hasUnsavedChanges(draftSettings, savedSettings);
+  const dirty = hasUnsavedChanges(draftSettings, savedSettings);
+
+  const query = useQuery({
+    queryKey: queryKeys.notifications.settings(),
+    queryFn: () => getNotificationSettings(accessToken!),
+    enabled: status === 'authenticated' && !!accessToken,
+    refetchOnWindowFocus: !dirty,
+    refetchOnReconnect: !dirty,
+  });
+  useRefetchOnFocus(query.refetch, query.isStale && !dirty);
 
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const loadSettings = useCallback(async (background = false) => {
-    if (status !== 'authenticated' || !accessToken) {
-      setIsLoading(false);
-      return;
+    // dirty 중엔 서버 데이터가 갱신돼도 saved/draft 둘 다 덮어쓰지 않는다.
+    if (!dirty && query.data) {
+      setSavedSettings(query.data);
+      setDraftSettings(query.data);
     }
-    if (loadingRef.current || savingRef.current || dirtyRef.current) return;
+  }, [query.data, dirty]);
 
-    loadingRef.current = true;
-    if (!background) setIsLoading(true);
-    if (!background) setLoadErrorMessage(undefined);
+  const saveMutation = useMutation({
+    mutationFn: (payload: UpdateNotificationSettingsRequest) => updateNotificationSettings(payload, accessToken!),
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKeys.notifications.settings(), result);
+      setSavedSettings(result);
+      setDraftSettings(result);
+      // 별도 dirty 초기화 불필요 — draft === saved가 되어 dirty가 자동으로 false가 된다.
+    },
+    onError: (error) => {
+      setSaveErrorMessage(error instanceof ApiError ? error.message : '알림 설정을 저장하지 못했습니다.');
+    },
+  });
 
-    try {
-      const result = await getNotificationSettings(accessToken);
-      if (mountedRef.current) {
-        setSavedSettings(result);
-        setDraftSettings(result);
-        hasLoadedRef.current = true;
-        setLoadErrorMessage(undefined);
-        refreshAuthenticatedQueries();
-      }
-    } catch (error) {
-      if (!mountedRef.current) return;
-      if (!background) {
-        setLoadErrorMessage(
-          error instanceof ApiError ? error.message : '알림 설정을 불러오지 못했습니다.',
-        );
-      }
-    } finally {
-      loadingRef.current = false;
-      if (mountedRef.current && !background) setIsLoading(false);
-    }
-  }, [accessToken, status]);
+  const save = () => {
+    if (!accessToken || saveMutation.isPending || !dirty) return;
 
-  useEffect(() => {
-    void loadSettings(false);
-  }, [loadSettings]);
-
-  useFocusEffect(
-    useCallback(() => {
-      focusedRef.current = true;
-      if (hasLoadedRef.current && !dirtyRef.current) void loadSettings(true);
-      return () => {
-        focusedRef.current = false;
-      };
-    }, [loadSettings]),
-  );
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      const becameActive = appStateRef.current !== 'active' && nextState === 'active';
-      appStateRef.current = nextState;
-      if (becameActive && focusedRef.current && !dirtyRef.current) void loadSettings(true);
-    });
-    return () => subscription.remove();
-  }, [loadSettings]);
-
-  const save = useCallback(async () => {
-    if (!accessToken || savingRef.current || !hasUnsavedChanges(draftSettings, savedSettings)) return;
-
-    const request: UpdateNotificationSettingsRequest = {
+    setSaveErrorMessage(undefined);
+    saveMutation.mutate({
       responseReminder: draftSettings.responseReminder,
       evOverstay: draftSettings.evOverstay,
       quietHoursStart: draftSettings.quietHoursStart,
       quietHoursEnd: draftSettings.quietHoursEnd,
-    };
-
-    savingRef.current = true;
-    setIsSaving(true);
-    setSaveErrorMessage(undefined);
-
-    try {
-      const result = await updateNotificationSettings(request, accessToken);
-      if (mountedRef.current) {
-        setSavedSettings(result);
-        setDraftSettings(result);
-      }
-    } catch (error) {
-      if (!mountedRef.current) return;
-      setSaveErrorMessage(
-        error instanceof ApiError ? error.message : '알림 설정을 저장하지 못했습니다.',
-      );
-    } finally {
-      savingRef.current = false;
-      if (mountedRef.current) setIsSaving(false);
-    }
-  }, [accessToken, draftSettings, savedSettings]);
+    });
+  };
 
   const setResponseReminder = (value: boolean) =>
     setDraftSettings((current) => ({ ...current, responseReminder: value }));
@@ -151,12 +91,12 @@ export function useNotificationSettings() {
 
   return {
     settings: draftSettings,
-    hasChanges: hasUnsavedChanges(draftSettings, savedSettings),
-    isLoading,
-    isSaving,
-    loadErrorMessage,
+    hasChanges: dirty,
+    isLoading: query.isLoading,
+    isSaving: saveMutation.isPending,
+    loadErrorMessage: query.error instanceof ApiError ? query.error.message : query.error ? '알림 설정을 불러오지 못했습니다.' : undefined,
     saveErrorMessage,
-    reload: () => loadSettings(false),
+    reload: () => query.refetch(),
     save,
     setResponseReminder,
     setEvOverstay,
