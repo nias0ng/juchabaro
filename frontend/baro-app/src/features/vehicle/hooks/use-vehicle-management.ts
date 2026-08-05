@@ -1,10 +1,15 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import { AppState } from 'react-native';
 
 import { getMyParkingSessions } from '@/features/parking/api/parking-api';
 import { formatParkingLocation } from '@/features/parking/utils/parking-session';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
+import {
+  refreshAuthenticatedQueries,
+  subscribeAuthenticatedQueryRefresh,
+} from '@/services/authenticated-query-refresh';
 
 import type { VehicleResult } from '../api/types';
 
@@ -20,12 +25,17 @@ export function useVehicleManagement() {
   const { accessToken, status: authStatus } = useAuth();
 
   const [status, setStatus] = useState<VehicleListStatus>('loading');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [vehicles, setVehicles] = useState<VehicleResult[]>([]);
   const [listErrorMessage, setListErrorMessage] = useState<string>();
 
   const [deleteTargetVehicle, setDeleteTargetVehicle] = useState<VehicleResult | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteErrorMessage, setDeleteErrorMessage] = useState<string>();
+  const hasLoadedRef = useRef(false);
+  const focusedRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+  const fetchingRef = useRef(false);
 
   const fetchVehicles = useCallback(async () => {
     // 세션 복원이 끝나기 전에는 로그인 여부를 알 수 없어 조회를 보류한다.
@@ -37,7 +47,11 @@ export function useVehicleManagement() {
       return;
     }
 
-    setStatus('loading');
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+
+    if (hasLoadedRef.current) setIsRefreshing(true);
+    else setStatus('loading');
     setListErrorMessage(undefined);
 
     try {
@@ -73,16 +87,42 @@ export function useVehicleManagement() {
 
       setVehicles(withDetails);
       setStatus('success');
+      hasLoadedRef.current = true;
     } catch (error) {
-      setListErrorMessage(error instanceof ApiError ? error.message : '차량 목록을 불러오지 못했습니다.');
-      setStatus('error');
+      if (!hasLoadedRef.current) {
+        setListErrorMessage(error instanceof ApiError ? error.message : '차량 목록을 불러오지 못했습니다.');
+        setStatus('error');
+      }
+    } finally {
+      fetchingRef.current = false;
+      setIsRefreshing(false);
     }
   }, [accessToken, authStatus]);
 
   useFocusEffect(
     useCallback(() => {
-      fetchVehicles();
+      focusedRef.current = true;
+      void fetchVehicles();
+      return () => {
+        focusedRef.current = false;
+      };
     }, [fetchVehicles]),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const becameActive = appStateRef.current !== 'active' && nextState === 'active';
+      appStateRef.current = nextState;
+      if (becameActive && focusedRef.current) void fetchVehicles();
+    });
+    return () => subscription.remove();
+  }, [fetchVehicles]);
+
+  useEffect(
+    () => subscribeAuthenticatedQueryRefresh(() => {
+      if (focusedRef.current) void fetchVehicles();
+    }),
+    [fetchVehicles],
   );
 
   const openDeleteModal = useCallback((vehicle: VehicleResult) => {
@@ -107,6 +147,7 @@ export function useVehicleManagement() {
       await deleteVehicle(deleteTargetVehicle.vehicleId, accessToken);
       setVehicles((prev) => prev.filter((vehicle) => vehicle.vehicleId !== deleteTargetVehicle.vehicleId));
       setDeleteTargetVehicle(null);
+      refreshAuthenticatedQueries();
     } catch (error) {
       setDeleteErrorMessage(error instanceof ApiError ? error.message : '차량 삭제에 실패했습니다.');
     } finally {
@@ -116,6 +157,7 @@ export function useVehicleManagement() {
 
   return {
     status,
+    isRefreshing,
     vehicles,
     listErrorMessage,
     refetch: fetchVehicles,

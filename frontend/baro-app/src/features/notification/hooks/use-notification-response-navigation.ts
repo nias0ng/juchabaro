@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 
 import { navigateFromNotification } from '@/features/notification/utils/notification-navigation';
 import { useAuth } from '@/providers/auth-provider';
+import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
 
 export function useNotificationResponseNavigation(): void {
   const { status, user } = useAuth();
@@ -28,6 +29,7 @@ export function useNotificationResponseNavigation(): void {
       if (lastHandledIdentifierRef.current === identifier) return;
 
       lastHandledIdentifierRef.current = identifier;
+      refreshAuthenticatedQueries();
       navigateFromNotification(response.notification.request.content.data);
       await Notifications.clearLastNotificationResponseAsync();
     };

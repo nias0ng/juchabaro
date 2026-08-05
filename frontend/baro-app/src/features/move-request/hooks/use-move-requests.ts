@@ -11,13 +11,16 @@ export function useMoveRequests(scope: MoveRequestScope) {
   const {
     data: moveRequests,
     isLoading,
+    isRefreshing,
     error,
+    refetch,
   } = useAuthenticatedQuery<MoveRequestListItem[]>(
     (accessToken) => fetchMoveRequestListItems(scope, accessToken),
     [],
     '이동 요청 내역을 불러오지 못했습니다.',
     [scope],
+    { pollIntervalMs: 15_000 },
   );
 
-  return { moveRequests, isLoading, error };
+  return { moveRequests, isLoading, isRefreshing, error, refetch };
 }

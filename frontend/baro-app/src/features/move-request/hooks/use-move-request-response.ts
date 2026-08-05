@@ -4,6 +4,7 @@ import { postMoveRequestResponse } from '@/features/move-request/api/move-reques
 import type { MoveResponseRequest, MoveResponseResult } from '@/features/move-request/api/types';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
+import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
 
 export function useMoveRequestResponse(requestId: number | null) {
   const { accessToken } = useAuth();
@@ -18,7 +19,9 @@ export function useMoveRequestResponse(requestId: number | null) {
       setErrorMessage(undefined);
 
       try {
-        return await postMoveRequestResponse(requestId, request, accessToken);
+        const result = await postMoveRequestResponse(requestId, request, accessToken);
+        refreshAuthenticatedQueries();
+        return result;
       } catch (error) {
         setErrorMessage(error instanceof ApiError ? error.message : '응답을 보내지 못했습니다.');
         return null;

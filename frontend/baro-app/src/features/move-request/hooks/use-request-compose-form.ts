@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 import { isPlateNumberValid, toApiPlateNumber } from '@/features/vehicle/validation/register-car';
+import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
 
 import { postMoveRequest } from '../api/move-request-api';
 import type { MoveRequestCreateResult } from '../api/types';
@@ -56,7 +57,7 @@ export function useRequestComposeForm() {
     setSubmitError(undefined);
 
     try {
-      return await postMoveRequest(
+      const result = await postMoveRequest(
         {
           targetPlateNumber: toApiPlateNumber(plateNumber),
           eventType: SITUATION_EVENT_TYPE[situation],
@@ -66,6 +67,8 @@ export function useRequestComposeForm() {
         },
         accessToken,
       );
+      refreshAuthenticatedQueries();
+      return result;
     } catch (error) {
       setSubmitError(error instanceof ApiError ? error.message : '이동 요청을 보내지 못했습니다.');
       return null;

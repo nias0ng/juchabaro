@@ -37,14 +37,24 @@ function goBack() {
 // J-01. 주차 도면 전체 보기
 export default function ParkingFloorOverviewScreen() {
   const [activeFloor, setActiveFloor] = useState<ParkingFloorKey>('B1');
-  const { sessions } = useParkingSessions();
+  const {
+    sessions,
+    isRefreshing: isSessionsRefreshing,
+    refetch: refetchSessions,
+  } = useParkingSessions();
   const myVehicleLocation = sessions
     .map((session) => toParkingFloorKey(session.floor))
     .find((floor): floor is ParkingFloorKey => floor !== null) ?? null;
   const myZoneNumbers = sessions.flatMap((session) =>
     session.zoneNumber ? [session.zoneNumber] : [],
   );
-  const { summary, isLoading, error } = useParkingZoneSummary();
+  const {
+    summary,
+    isLoading,
+    isRefreshing: isSummaryRefreshing,
+    error,
+    refetch: refetchSummary,
+  } = useParkingZoneSummary();
   const parkingStatus = summary
     ? toParkingStatusDisplay(summary, myZoneNumbers, activeFloor)
     : null;
@@ -61,7 +71,10 @@ export default function ParkingFloorOverviewScreen() {
   };
 
   return (
-    <GradientScreenBackground>
+    <GradientScreenBackground
+      refreshing={isSessionsRefreshing || isSummaryRefreshing}
+      onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
+    >
       <ScreenHeader
         title="주차 현황"
         style={styles.header}

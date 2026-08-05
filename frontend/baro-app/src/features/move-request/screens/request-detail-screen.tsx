@@ -50,6 +50,8 @@ export default function RequestDetailScreen() {
       backgroundColor={background ? undefined : Palette.gray50}
       backgroundGradient={background?.gradient}
       backgroundGradientLocations={background?.locations}
+      refreshing={vm.isRefreshing}
+      onRefresh={() => void vm.refetch()}
     >
       <ScreenHeader
         title="이동 요청"

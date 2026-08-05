@@ -18,7 +18,7 @@ const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
 ];
 
 export default function NotificationsScreen() {
-  const { notifications, isLoading, error, tab, setTab } = useNotifications();
+  const { notifications, isLoading, isRefreshing, error, refetch, tab, setTab } = useNotifications();
 
   const handlePressNotification = (notification: NotificationSummary) => {
     navigateFromNotification(
@@ -39,7 +39,7 @@ export default function NotificationsScreen() {
         : undefined;
 
   return (
-    <GradientScreenBackground>
+    <GradientScreenBackground refreshing={isRefreshing} onRefresh={() => void refetch()}>
       <ResponsiveContainer>
         <ScreenHeader title="알림" showBackButton={false} />
 

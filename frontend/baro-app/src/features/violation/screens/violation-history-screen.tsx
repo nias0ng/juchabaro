@@ -61,8 +61,20 @@ function groupByMonth(items: ViolationHistoryItem[]): { monthLabel: string; item
 // J-02. 위반 이력 전체
 export default function ViolationHistoryScreen() {
   const [filter, setFilter] = useState<ViolationFilter>('ALL');
-  const { stats, isLoading: isStatsLoading, error: statsError } = useViolationStats();
-  const { violations, isLoading: isHistoryLoading, error: historyError } = useViolationHistory();
+  const {
+    stats,
+    isLoading: isStatsLoading,
+    isRefreshing: isStatsRefreshing,
+    error: statsError,
+    refetch: refetchStats,
+  } = useViolationStats();
+  const {
+    violations,
+    isLoading: isHistoryLoading,
+    isRefreshing: isHistoryRefreshing,
+    error: historyError,
+    refetch: refetchHistory,
+  } = useViolationHistory();
 
   const monthGroups = useMemo(
     () => groupByMonth(filterByStatus(violations, filter)),
@@ -78,7 +90,10 @@ export default function ViolationHistoryScreen() {
         : undefined;
 
   return (
-    <GradientScreenBackground>
+    <GradientScreenBackground
+      refreshing={isStatsRefreshing || isHistoryRefreshing}
+      onRefresh={() => void Promise.all([refetchStats(), refetchHistory()])}
+    >
       <ScreenHeader title="위반 이력" style={styles.header} onBack={goBack} />
 
       <ResponsiveContainer style={styles.content}>

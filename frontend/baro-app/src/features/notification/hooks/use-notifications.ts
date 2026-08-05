@@ -20,7 +20,9 @@ export function useNotifications() {
   const {
     data: notifications,
     isLoading,
+    isRefreshing,
     error,
+    refetch,
   } = useAuthenticatedQuery<NotificationSummary[]>(fetchNotifications, [], '알림을 불러오지 못했습니다.');
 
   const filteredNotifications = useMemo(
@@ -34,7 +36,9 @@ export function useNotifications() {
   return {
     notifications: filteredNotifications,
     isLoading,
+    isRefreshing,
     error,
+    refetch,
     tab,
     setTab,
   };

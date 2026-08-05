@@ -3,6 +3,7 @@ import { Keyboard } from 'react-native';
 
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
+import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
 
 import { registerVehicle } from '../api/vehicle-api';
 import type {
@@ -138,6 +139,7 @@ export function useRegisterCarForm(onRegistered: () => void, initialCarType: Reg
         );
       }
 
+      refreshAuthenticatedQueries();
       onRegistered();
     } catch (error) {
       setErrorMessage(error instanceof ApiError ? error.message : '차량 등록에 실패했습니다.');

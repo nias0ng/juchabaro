@@ -19,7 +19,7 @@ import { useMoveRequestResponse } from './use-move-request-response';
  * RESPONDED는 dueAt이 지났는지에 따라 대기중/미이동으로 갈림) 여러 값을 조합해서 판단한다.
  */
 export function useRequestDetailViewModel(requestId: number | null) {
-  const { detail, isLoading, error, applyResponse } = useMoveRequestDetail(requestId);
+  const { detail, isLoading, isRefreshing, error, refetch, applyResponse } = useMoveRequestDetail(requestId);
   const { submit, isSubmitting, errorMessage: submitError } = useMoveRequestResponse(requestId);
   const display = detail ? toRequestDetailDisplay(detail) : null;
 
@@ -77,7 +77,9 @@ export function useRequestDetailViewModel(requestId: number | null) {
     detail,
     display,
     isLoading,
+    isRefreshing,
     error,
+    refetch,
     isCompleted,
     isWaiting,
     hasResponded,

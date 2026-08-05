@@ -18,7 +18,7 @@ import { VEHICLES_SCREEN_BACKGROUND, styles } from './vehicles-screen.styles';
  */
 export default function VehiclesScreen() {
   const vehicleManagement = useVehicleManagement();
-  const { status, vehicles, listErrorMessage, refetch } = vehicleManagement;
+  const { status, isRefreshing, vehicles, listErrorMessage, refetch } = vehicleManagement;
 
   const handleAddVehicle = () => {
     router.push('/auth/register-car');
@@ -26,7 +26,13 @@ export default function VehiclesScreen() {
 
   return (
     <View style={styles.flex}>
-      <Screen scroll edges={['top', 'right', 'left']} backgroundColor={VEHICLES_SCREEN_BACKGROUND}>
+      <Screen
+        scroll
+        edges={['top', 'right', 'left']}
+        backgroundColor={VEHICLES_SCREEN_BACKGROUND}
+        refreshing={isRefreshing}
+        onRefresh={() => void refetch()}
+      >
         <ResponsiveContainer>
           <ScreenHeader title="내 차량 관리" onBack={() => router.back()} />
 

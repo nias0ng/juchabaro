@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { ChevronDown, Download, Search } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
+import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -77,19 +78,21 @@ const parkingEventStore = useParkingEventStore()
 
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
-function loadEvents() {
-  void parkingEventStore.fetchEvents({
+function loadEvents(background = false) {
+  return parkingEventStore.fetchEvents({
     date: dateFilter.value ?? undefined,
     eventStatus: statusFilter.value ?? undefined,
     eventType: typeFilter.value ?? undefined,
     size: FETCH_SIZE,
-  })
+  }, { background })
 }
 
 watch([dateFilter, statusFilter, typeFilter], () => {
   page.value = 1
-  loadEvents()
+  void loadEvents()
 }, { immediate: true })
+
+useAutoRefresh(() => loadEvents(true), 15_000)
 
 const selectedRow = computed(
   () => parkingEventStore.events.find((r) => r.eventId === parkingEventStore.selectedEventId) ?? parkingEventStore.events[0] ?? null,

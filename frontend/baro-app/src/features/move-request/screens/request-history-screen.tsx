@@ -9,7 +9,7 @@ import { Spacing } from '@/styles';
 import { styles } from './request-history-screen.styles';
 
 export default function RequestHistoryScreen() {
-  const { moveRequests, isLoading, error } = useMoveRequests('ALL');
+  const { moveRequests, isLoading, isRefreshing, error, refetch } = useMoveRequests('ALL');
 
   const statusMessage = isLoading
     ? '요청 내역을 불러오는 중입니다'
@@ -20,7 +20,11 @@ export default function RequestHistoryScreen() {
         : undefined;
 
   return (
-    <GradientScreenBackground edges={['top', 'right', 'left']}>
+    <GradientScreenBackground
+      edges={['top', 'right', 'left']}
+      refreshing={isRefreshing}
+      onRefresh={() => void refetch()}
+    >
       <ScreenHeader title="요청 내역" style={styles.header} />
 
       <AsyncStateView message={statusMessage} fill={false} style={styles.statusContainer}>

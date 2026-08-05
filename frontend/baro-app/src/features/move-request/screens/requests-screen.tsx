@@ -44,8 +44,16 @@ export default function RequestsScreen() {
     router.push({ pathname: '/resident/request-detail', params: { requestId: String(requestId) } });
   };
 
+  const refreshAll = async () => {
+    await Promise.all([sentQuery.refetch(), receivedQuery.refetch()]);
+  };
+
   return (
-    <GradientScreenBackground contentContainerStyle={styles.content}>
+    <GradientScreenBackground
+      contentContainerStyle={styles.content}
+      refreshing={sentQuery.isRefreshing || receivedQuery.isRefreshing}
+      onRefresh={() => void refreshAll()}
+    >
       <ResponsiveContainer style={styles.container}>
         <ScreenHeader title="요청" showBackButton={false} />
 

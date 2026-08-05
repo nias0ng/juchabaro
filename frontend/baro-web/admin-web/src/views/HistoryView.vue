@@ -11,6 +11,7 @@ import {
 } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
+import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -90,19 +91,21 @@ const parkingEventStore = useParkingEventStore()
 
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
-function loadHistory() {
-  void parkingEventStore.fetchHistory({
+function loadHistory(background = false) {
+  return parkingEventStore.fetchHistory({
     startDate: dateRange.value.start,
     endDate: dateRange.value.end,
     actionType: typeFilter.value ?? undefined,
     size: FETCH_SIZE,
-  })
+  }, { background })
 }
 
 watch([dateRange, typeFilter], () => {
   page.value = 1
-  loadHistory()
+  void loadHistory()
 }, { immediate: true, deep: true })
+
+useAutoRefresh(() => loadHistory(true), 30_000)
 
 // 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘 하루치 전체를 최신순으로
 // 보여주고 넘치는 만큼은 스크롤로 본다. 조회 기간과 무관하게 항상 실제 오늘 기준이다.
