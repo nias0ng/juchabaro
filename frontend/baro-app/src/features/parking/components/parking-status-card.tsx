@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 import type { ParkingFloorKey, ParkingStatusDisplay } from '../utils/parking-zone';
 import { Palette } from '@/styles';
 
+import { ParkingCongestionBadge } from './parking-congestion-badge';
 import { ParkingLegend } from './parking-legend';
 import { ParkingSpotMap } from './parking-spot-map';
 import { styles } from './parking-status-card.styles';
@@ -13,7 +14,6 @@ type ParkingStatusCardProps = {
   isLoading?: boolean;
   hasError?: boolean;
   floor?: ParkingFloorKey;
-  /** 있으면 카드 전체를 눌러서 주차 도면 전체 보기 등으로 이동할 수 있게 된다. */
   onPress?: () => void;
 };
 
@@ -25,13 +25,6 @@ export function ParkingStatusCard({
   floor,
   onPress,
 }: ParkingStatusCardProps) {
-  const congestionColorStyle =
-    status?.congestionLevel === 'LOW'
-      ? styles.congestionTextLow
-      : status?.congestionLevel === 'HIGH'
-        ? styles.congestionTextHigh
-        : styles.congestionTextMedium;
-
   const mapMessage = isLoading
     ? '주차 현황을 불러오는 중입니다'
     : hasError
@@ -53,9 +46,7 @@ export function ParkingStatusCard({
       <View style={styles.card}>
         {status ? (
           <View style={styles.congestionPill}>
-            <Text style={[styles.congestionText, congestionColorStyle]}>
-              {status.congestionLabel}
-            </Text>
+            <ParkingCongestionBadge level={status.congestionLevel} valueLabel={status.congestionValueLabel} />
           </View>
         ) : null}
 
@@ -63,11 +54,11 @@ export function ParkingStatusCard({
 
         <ParkingLegend
           items={[
-            { label: status ? status.occupiedLabel : '주차 중 -', color: Palette.violet300 },
+            { label: '내 차량', color: Palette.yellow100 },
+            { label: '사용중', color: Palette.violet300 },
             { label: status ? status.availableLabel : '비어 있음 -', color: Palette.gray100 },
-            { label: '충전구역', color: Palette.teal100 },
-            { label: '장애인구역', color: Palette.sky100 },
-            { label: status ? status.violationLabel : '위반 -', color: Palette.peach100 },
+            { label: '충전구역', color: Palette.sky100 },
+            { label: '장애인구역', color: Palette.green100 },
           ]}
         />
       </View>

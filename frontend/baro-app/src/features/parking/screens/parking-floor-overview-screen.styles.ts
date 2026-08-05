@@ -28,4 +28,7 @@ export const styles = StyleSheet.create({
     gap: Spacing.base,
     ...Shadows.card,
   },
+  congestionRow: {
+    alignSelf: 'flex-end',
+  },
 });

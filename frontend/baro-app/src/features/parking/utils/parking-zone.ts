@@ -11,8 +11,7 @@ const CONGESTION_LEVEL_LABEL: Record<CongestionLevel, string> = {
   HIGH: '혼잡',
 };
 
-// 지도 컴포넌트 내부에서는 주차면 번호를 spotCode로 표현한다.
-export type SpotCellKind = 'empty' | 'occupied' | 'violation' | 'mine';
+export type SpotCellKind = 'empty' | 'occupied' | 'mine';
 
 export type SpotCell = {
   spotCode: string;
@@ -29,15 +28,13 @@ export type ParkingFloorLayout = {
 
 export type ParkingStatusDisplay = {
   congestionLevel: CongestionLevel;
-  congestionLabel: string;
+  congestionValueLabel: string;
   occupiedLabel: string;
   availableLabel: string;
   violationLabel: string;
   cells: SpotCell[];
 };
 
-// 관리자 웹 주차장 현황과 동일한 물리 배치다. 구역 번호가 추가되거나 변경되면
-// admin-web의 floorZoneLayout과 이 함수를 함께 갱신해야 한다.
 export function floorZoneLayout(floor: ParkingFloorKey): ParkingFloorLayout {
   const floorDigit = floor.slice(1);
   const number = (value: number) => `${floor}-${String(value).padStart(2, '0')}`;
@@ -67,13 +64,11 @@ function floorZoneNumbers(floor: ParkingFloorKey): Set<string> {
 }
 
 function toSpotCellKind(spot: ParkingSpotSummary, myZoneNumbers: ReadonlySet<string>): SpotCellKind {
-  if (spot.occupancyStatus === 'VIOLATION') return 'violation';
   if (myZoneNumbers.has(spot.zoneNumber.trim())) return 'mine';
-  if (spot.occupancyStatus === 'OCCUPIED') return 'occupied';
-  return 'empty';
+  if (spot.occupancyStatus === 'EMPTY') return 'empty';
+  return 'occupied';
 }
 
-// 화면에서 표시할 문자열/칸 상태로 변환
 export function toParkingStatusDisplay(
   summary: ParkingZoneSummary,
   myZoneNumbers: readonly string[],
@@ -93,7 +88,7 @@ export function toParkingStatusDisplay(
 
   return {
     congestionLevel,
-    congestionLabel: `혼잡도 ${CONGESTION_LEVEL_LABEL[congestionLevel]} · ${congestionRate}%`,
+    congestionValueLabel: `${CONGESTION_LEVEL_LABEL[congestionLevel]} · ${congestionRate}%`,
     occupiedLabel: `주차 중 ${occupiedSpots}`,
     availableLabel: `비어 있음 ${availableSpots}`,
     violationLabel: `위반 ${violationCount}`,

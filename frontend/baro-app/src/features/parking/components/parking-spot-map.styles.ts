@@ -96,20 +96,17 @@ export const styles = StyleSheet.create({
     width: 32,
     maxWidth: 32,
   },
-  mapCellOccupied: {
+  mapCellOther: {
     backgroundColor: Palette.violet300,
   },
-  mapCellViolation: {
-    backgroundColor: Palette.peach100,
-  },
   mapCellMine: {
-    backgroundColor: Palette.mint100,
+    backgroundColor: Palette.yellow100,
   },
-  mapCellDisabled: {
+  mapCellEmptyDisabled: {
+    backgroundColor: Palette.green100,
+  },
+  mapCellEmptyEv: {
     backgroundColor: Palette.sky100,
-  },
-  mapCellEv: {
-    backgroundColor: Palette.teal100,
   },
   mapCellSelected: {
     borderWidth: 2,
@@ -119,17 +116,20 @@ export const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: FontWeight.bold,
   },
-  violationLabel: {
-    color: Palette.orange600,
-  },
   mineLabel: {
-    color: Palette.emerald500,
+    color: Palette.yellow700,
+    fontWeight: FontWeight.regular,
+  },  
+  otherLabel: {
+    color: Palette.purple700,
+    fontWeight: FontWeight.regular,
   },
   disabledLabel: {
-    color: Palette.blue600,
+    color: Palette.emerald500,
+    fontWeight: FontWeight.regular,
   },
   evLabel: {
-    color: Palette.teal600,
+    color: Palette.blue600,
     fontWeight: FontWeight.regular,
   },
   spotCodeLabel: {

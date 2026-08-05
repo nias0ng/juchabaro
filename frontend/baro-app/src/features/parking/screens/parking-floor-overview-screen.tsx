@@ -5,6 +5,7 @@ import { Pressable, Text, View } from 'react-native';
 import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
+import { ParkingCongestionBadge } from '../components/parking-congestion-badge';
 import { ParkingFloorLegend } from '../components/parking-floor-legend';
 import { ParkingSpotMap } from '../components/parking-spot-map';
 import { useParkingSessions } from '../hooks/use-parking-sessions';
@@ -83,6 +84,15 @@ export default function ParkingFloorOverviewScreen() {
           <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={setActiveFloor} />
 
           <View style={styles.mapCard}>
+            {parkingStatus ? (
+              <View style={styles.congestionRow}>
+                <ParkingCongestionBadge
+                  level={parkingStatus.congestionLevel}
+                  valueLabel={parkingStatus.congestionValueLabel}
+                />
+              </View>
+            ) : null}
+
             <ParkingSpotMap
               cells={parkingStatus?.cells ?? []}
               floor={activeFloor}

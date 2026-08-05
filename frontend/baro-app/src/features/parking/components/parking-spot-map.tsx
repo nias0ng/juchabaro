@@ -47,33 +47,37 @@ function groupRowsWithLeadingDivider(rows: LayoutRow[]): LayoutRow[][] {
   return groups;
 }
 
-// 위반/내 차가 구역 유형(장애인/전기차) 표시보다 우선한다.
-type CellVariant = 'violation' | 'mine' | 'disabled' | 'ev' | 'occupied' | 'empty';
+type CellVariant = 'mine' | 'other' | 'emptyDisabled' | 'emptyEv' | 'empty';
 
-// pickMode(구역 선택)에서는 위반 여부를 구분해서 보여줄 필요가 없어서 위반도 그냥 "주차중"으로 취급한다.
-function toCellVariant(cell: SpotCell, pickMode: boolean): CellVariant {
-  if (cell.kind === 'violation') return pickMode ? 'occupied' : 'violation';
+function toCellVariant(cell: SpotCell): CellVariant {
   if (cell.kind === 'mine') return 'mine';
-  if (cell.spotType === 'DISABLED') return 'disabled';
-  if (cell.spotType === 'EV_CHARGING') return 'ev';
-  if (cell.kind === 'occupied') return 'occupied';
+  if (cell.kind === 'occupied') return 'other';
+  if (cell.spotType === 'DISABLED') return 'emptyDisabled';
+  if (cell.spotType === 'EV_CHARGING') return 'emptyEv';
   return 'empty';
 }
 
 const CELL_STYLE: Partial<Record<CellVariant, object>> = {
-  violation: styles.mapCellViolation,
   mine: styles.mapCellMine,
-  disabled: styles.mapCellDisabled,
-  ev: styles.mapCellEv,
-  occupied: styles.mapCellOccupied,
+  other: styles.mapCellOther,
+  emptyDisabled: styles.mapCellEmptyDisabled,
+  emptyEv: styles.mapCellEmptyEv,
 };
 
-const CELL_LABEL: Partial<Record<CellVariant, { text: string; style: object }>> = {
-  violation: { text: '위반', style: styles.violationLabel },
-  mine: { text: '내 차', style: styles.mineLabel },
-  disabled: { text: '장애인', style: styles.disabledLabel },
-  ev: { text: 'EV', style: styles.evLabel },
-};
+function toCellLabel(cell: SpotCell): { text: string; style: object } | null {
+  if (cell.kind === 'mine') {
+    const text = cell.spotType === 'DISABLED' ? '장애인' : cell.spotType === 'EV_CHARGING' ? 'EV' : '내 차량';
+    return { text, style: styles.mineLabel };
+  }
+  if (cell.kind === 'occupied') {
+    if (cell.spotType === 'DISABLED') return { text: '장애인', style: styles.otherLabel };
+    if (cell.spotType === 'EV_CHARGING') return { text: 'EV', style: styles.otherLabel };
+    return null;
+  }
+  if (cell.spotType === 'DISABLED') return { text: '장애인', style: styles.disabledLabel };
+  if (cell.spotType === 'EV_CHARGING') return { text: 'EV', style: styles.evLabel };
+  return null;
+}
 
 export function ParkingSpotMap({
   cells,
@@ -101,8 +105,8 @@ export function ParkingSpotMap({
       return <View key={key} style={[styles.mapCell, styles.mapCellMissing, sizeStyle]} />;
     }
 
-    const variant = toCellVariant(cell, Boolean(onPressCell));
-    const label = CELL_LABEL[variant];
+    const variant = toCellVariant(cell);
+    const label = toCellLabel(cell);
     const selected = selectedSpotCode === cell.spotCode;
     // 고르는 화면(onPressCell 있음)에서는 어떤 칸인지 알아야 고를 수 있어서, 상태 라벨 대신 구역 번호를 보여준다.
     const displayText = onPressCell ? cell.spotCode : label?.text;
