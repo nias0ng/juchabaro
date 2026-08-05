@@ -39,7 +39,7 @@ A를 채택한 이유는 오출차의 결과가 되돌릴 수 없기 때문이�
 
 - **새 임계값이 없다.** "최근 N초 안에 방문 기록" 같은 정의는 N을 새로 정해야 한다.
 - **빠르게 지나간 차도 잡힌다.** 출차 구역은 프레임 폭의 15%(x 0.56~0.71)여서 통과 체류가 `ZONE_ENTRY_CONFIRM_SECONDS`(1.0초, `.env.example:37`)에 걸치느냐 마느냐가 경계다. 방문이 `INSIDE`까지 확정되기를 요구하면 빨리 나간 차가 미탐되고, A 규칙상 그 세션은 영구 미결이 된다. 이 정의는 `ENTERING` 상태만으로도 통과로 인정한다.
-- **주차 중 스친 경우는 자동 배제된다.** 조종하다 출차 구역을 살짝 밟은 차는 그 뒤 다른 위치에서 계속 관측되므로, 부재가 시작되는 시점에는 그 방문이 이미 닫혀 있다.
+- **주차 중 스친 경우는 대개 배제되지만, 조건이 있다.** 조종하다 출차 구역을 살짝 밟은 차는 그 뒤 다른 위치에서 계속 관측되므로, 보통 부재가 시작되는 시점에는 그 방문이 이미 닫혀 있다. 다만 이 배제는 그 방문이 종결 상태에 도달했을 때만 성립하며, 종결에는 `ZONE_EXIT_CONFIRM_SECONDS`(5.0초)만큼의 조밀한 trusted 샘플이 필요하다. `ABSENCE_CONFIRMATION_SECONDS`도 5.0초로 같기 때문에, 출차 구역을 스친 뒤 약 5초 이내에 가려지거나 track을 잃은 차량은 방문이 아직 non-terminal로 남아 오탐 통과로 잡힐 수 있는 잔여 구간이 있다.
 
 이 정의가 읽기만으로 구현되는 이유는 미관측 차량의 ZoneVisit이 **종료되지 않고 pause만 되기** 때문이다(`src/parking/pipeline.py:341-356`, 주석에 의도가 명시돼 있음). 실제 종료는 `ParkingPipeline.physical_exit()`(`:487`)가 `ZoneVisitTracker.physical_exit()`을 호출할 때 일어난다(`:506`). 그래서 `plan_departure` 시점에는 마지막 관측 프레임의 방문이 아직 non-terminal이고, `ZoneVisitTracker.active_visits()`가 그대로 반환한다(`src/parking/zone_visit_tracker.py:239-246`). 그 구현이 쓰는 `_NON_TERMINAL_STATES`에 `ENTERING`이 포함돼 있어(`:40-44`) 위 세 번째 항목이 성립한다.
 
