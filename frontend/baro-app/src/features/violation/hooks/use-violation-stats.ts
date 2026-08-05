@@ -1,22 +1,26 @@
-import { useAuthenticatedQuery } from '@/hooks/use-authenticated-query';
+import { useQuery } from '@tanstack/react-query';
+
+import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
+import { useAuth } from '@/providers/auth-provider';
+import { queryKeys } from '@/services/query-keys';
 
 import { getViolationStats } from '../api/violation-api';
-import type { ViolationStats } from '../api/types';
 
 export function useViolationStats() {
-  const { data, isLoading, isRefreshing, error, refetch } = useAuthenticatedQuery<ViolationStats | null>(
-    getViolationStats,
-    null,
-    '위반 통계를 불러오지 못했습니다.',
-    [],
-    { pollIntervalMs: 30_000 },
-  );
+  const { accessToken, status } = useAuth();
+
+  const query = useQuery({
+    queryKey: queryKeys.violation.stats(),
+    queryFn: () => getViolationStats(accessToken!),
+    enabled: status === 'authenticated' && !!accessToken,
+  });
+  useRefetchOnFocus(query.refetch, query.isStale);
 
   return {
-    stats: data,
-    isLoading,
-    isRefreshing,
-    error,
-    refetch,
+    stats: query.data ?? null,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
   };
 }
