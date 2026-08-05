@@ -30,6 +30,11 @@ from src.application.evidence_publication_worker import (
     EvidencePublicationPublisher,
     EvidencePublicationWorker,
 )
+from src.application.monitoring_factory import (
+    MonitoringDependencies,
+    MonitoringPolicy,
+    build_monitoring_pipeline,
+)
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
 from src.application.move_verification_executor import (
@@ -44,6 +49,12 @@ from src.application.outbox_publisher import (
 from src.application.session_context_update_intake import (
     SessionContextUpdateIntake,
 )
+from src.camera.calibration_utils import load_calibration
+from src.camera.frame_source import (
+    OpenCvWebcamFrameSource,
+    RemapFrameSource,
+    calibration_fingerprint,
+)
 from src.communication.backend_client import BackendClient
 from src.communication.backend_publication_preparer import (
     BackendPublicationPreparer,
@@ -54,6 +65,13 @@ from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
+from src.tracking.adapters.side_masking_detector import (
+    SideMaskingDetector,
+    compute_mask_ratios_from_zones,
+)
+from src.tracking.adapters.ultralytics_bytetrack import (
+    UltralyticsVehicleTracker,
+)
 
 
 DatabaseConnectionFactory = Callable[[], sqlite3.Connection]
@@ -71,6 +89,160 @@ class RuntimeContext:
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
+
+
+def _validate_monitoring_assets(
+    settings: Settings,
+    zones: ZoneRegistry,
+) -> None:
+    """운영 camera·model asset을 장치 객체 생성 전에 검증한다."""
+
+    if not settings.calibration_path.is_file():
+        raise ValueError(
+            "calibration_path가 실제 calibration 파일이 아닙니다: "
+            f"{settings.calibration_path}"
+        )
+
+    # K/D/image_size와 fisheye calibration JSON 계약을 기존 parser로 검증한다.
+    load_calibration(str(settings.calibration_path))
+
+    calibration_sha = calibration_fingerprint(
+        settings.calibration_path,
+        settings.remap_balance,
+    )["calibrationSha256"]
+    if calibration_sha != zones.calibration_reference:
+        raise ValueError(
+            "calibration 파일 SHA가 ZoneRegistry.calibration_reference와 "
+            "일치하지 않습니다: "
+            f"calibrationSha256={calibration_sha}, "
+            f"calibrationReference={zones.calibration_reference}"
+        )
+
+    if not settings.vehicle_model_path.is_file():
+        raise ValueError(
+            "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
+            f"{settings.vehicle_model_path}"
+        )
+
+
+def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
+    """Settings의 monitoring 정책을 해석 없이 domain factory로 전달한다."""
+
+    return MonitoringPolicy(
+        zone_entry_confirm_seconds=settings.zone_entry_confirm_seconds,
+        zone_exit_confirm_seconds=settings.zone_exit_confirm_seconds,
+        entry_zone_min_overlap_ratio=(
+            settings.entry_zone_min_overlap_ratio
+        ),
+        parking_confirm_seconds=settings.parking_confirm_seconds,
+        parking_move_confirm_seconds=(
+            settings.parking_move_confirm_seconds
+        ),
+        absence_confirmation_seconds=(
+            settings.absence_confirmation_seconds
+        ),
+        trusted_sample_max_gap_seconds=(
+            settings.trusted_sample_max_gap_seconds
+        ),
+        reidentification_max_gap_seconds=(
+            settings.reidentification_max_gap_seconds
+        ),
+        reidentification_min_score=settings.reidentification_min_score,
+        reidentification_ambiguity_margin=(
+            settings.reidentification_ambiguity_margin
+        ),
+        incident_confirm_seconds=settings.incident_confirm_seconds,
+        incident_clear_seconds=settings.incident_clear_seconds,
+        zone_presence_min_overlap_ratio=(
+            settings.zone_presence_min_overlap_ratio
+        ),
+        assignment_min_overlap_ratio=(
+            settings.assignment_min_overlap_ratio
+        ),
+        assignment_ambiguous_margin=(
+            settings.assignment_ambiguous_margin
+        ),
+        bad_parking_min_primary_overlap_ratio=(
+            settings.bad_parking_min_primary_overlap_ratio
+        ),
+        bad_parking_min_secondary_overlap_ratio=(
+            settings.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=(
+            settings.out_of_zone_min_spot_overlap_ratio
+        ),
+        blocking_relation_confirm_seconds=(
+            settings.blocking_relation_confirm_seconds
+        ),
+        blocking_relation_clear_seconds=(
+            settings.blocking_relation_clear_seconds
+        ),
+        motion_window_seconds=settings.motion_window_seconds,
+        motion_min_observation_span_seconds=(
+            settings.motion_min_observation_span_seconds
+        ),
+        motion_max_sample_gap_seconds=(
+            settings.motion_max_sample_gap_seconds
+        ),
+        motion_stationary_threshold=(
+            settings.motion_stationary_threshold
+        ),
+        motion_moving_threshold=settings.motion_moving_threshold,
+        motion_min_samples=settings.motion_min_samples,
+        motion_min_trend_consistency=(
+            settings.motion_min_trend_consistency
+        ),
+    )
+
+
+def build_runtime_monitoring_pipeline(
+    context: RuntimeContext,
+) -> MonitoringPipeline:
+    """운영 Settings와 RuntimeContext로 camera·tracking pipeline을 조립한다."""
+
+    settings = context.settings
+    _validate_monitoring_assets(settings, context.zones)
+
+    webcam = OpenCvWebcamFrameSource(
+        camera_id=settings.camera_id,
+        camera_index=settings.camera_index,
+        width=settings.camera_width,
+        height=settings.camera_height,
+    )
+    frame_source = RemapFrameSource(
+        inner=webcam,
+        calibration_path=str(settings.calibration_path),
+        balance=settings.remap_balance,
+    )
+
+    tracker = UltralyticsVehicleTracker(
+        model_path=str(settings.vehicle_model_path),
+        tracker_config=settings.vehicle_tracker_config,
+        confidence=settings.vehicle_tracking_confidence,
+    )
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(
+        context.zones.all(),
+        margin_ratio=settings.mask_margin_ratio,
+    )
+    detector = SideMaskingDetector(
+        inner=tracker,
+        left_mask_end_ratio=left_ratio,
+        right_mask_start_ratio=right_ratio,
+    )
+
+    dependencies = MonitoringDependencies(
+        camera_id=settings.camera_id,
+        frame_source=frame_source,
+        detector=detector,
+        publication_preparer=context.publication_preparer,
+        connection_factory=context.connection_factory,
+        evidence_capture_sink=context.evidence_capture_coordinator,
+    )
+    return build_monitoring_pipeline(
+        zones=context.zones,
+        policy=_build_monitoring_policy(settings),
+        dependencies=dependencies,
+    )
 
 
 def configure_logging() -> None:
