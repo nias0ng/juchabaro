@@ -87,9 +87,11 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
-기존 `.env`를 계속 사용하는 환경은 `.env.example`의 `MOTION_*` 일곱 값을
-명시적으로 추가해야 한다. 이 값들은 provisional이므로 누락 시 코드 기본값으로
-조용히 대체하지 않고 시작 단계에서 설정 오류로 중단한다.
+기존 `.env`를 계속 사용하는 환경은 `.env.example`과 비교해 카메라·
+calibration·차량 tracking 및 MonitoringPolicy 필수값을 추가해야 한다.
+기본값 없는 항목은 누락하거나 빈 값으로 두면 시작 단계에서 설정 오류로
+중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
+배포 환경에 맞게 명시한다.
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
@@ -117,6 +119,10 @@ Idempotency-Key를 outbox 저장 전에 한 번만 확정한다. Incident 전송
 `EV_ZONE_UNAUTHORIZED`와 `AISLE_BLOCK`은 현재 Backend enum 계약에 맞춰
 wire `ruleCode=ETC`로 축약하되 local Incident의 ruleCode는 바꾸지 않는다.
 
+`src.main:app`은 운영 `MonitoringPipelineFactory`를 명시적으로 주입해
+camera·model owner를 하나만 기동한다. 테스트나 API-only 실행에서
+`create_app()`을 직접 호출할 때는 factory를 생략할 수 있다.
+
 재시작은 active observation을 `UNKNOWN / PROCESS_RESTARTED`로 끊고
 downtime을 trusted timer에 더하지 않는다. 현재 기본
 `PassthroughEntityResolver`는 process 간 재식별을 지원하지 않으므로,
@@ -128,7 +134,10 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 
 `main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
 outbox publisher, evidence publication worker와 단일 monitoring thread의 시작·정상 종료 생명주기를
-소유한다. `BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
+소유한다. 종료 시 monitoring·MoveVerification producer를 먼저 멈춘 뒤 publication
+worker를 회수한다. 진행 중 작업은 완료까지 기다리지만 queue 전체를 drain하지
+않으며, 남은 durable 작업은 다음 기동의 recovery에서 이어간다.
+`BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
 값이 있으면 `BACKEND_BASE_URL`로 전송하는 두 worker를 기동한다. outbox publisher는
 API 6·7·10·12의 exact JSON bytes를, evidence publication worker는 API 8·9를
 담당한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
@@ -224,7 +233,9 @@ EvidenceUnavailable:{evidenceId}:{publicationRevision}
 전송 시도·다음 재시도 시각·Backend ACK는 SQLite에 보존하므로 process가
 중단돼도 동일 publication identity로 이어서 처리한다. API 8 직전에 파일 손실이나
 checksum 불일치를 발견하면 해당 binary를 `LOST_OR_CORRUPTED`로 확정하고 API 9로
-전환한다. capture를 실제 Incident workflow에 연결하는 작업은 별도 범위다.
+전환한다. `MonitoringPipeline`은 frame transaction commit 후 생성된
+`evidence_capture_intents`를 `EvidenceCaptureCoordinator`에 전달해 JPEG spool과
+SQLite metadata를 기록한다.
 
 `ABSENCE_CONFIRMATION_SECONDS`는
 ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을
@@ -241,6 +252,11 @@ commit 뒤 전체 active Incident projection을 반복 적용한다. `src/sensor
 후속 센서 입력 adapter를 위한 독립 경계이며 현재 실행 pipeline에는 연결하지 않는다.
 
 ## PC 개발 환경에서 실행
+
+`src.main:app`은 FastAPI와 함께 camera·tracking MonitoringWorker를 시작한다.
+따라서 `.env`의 camera·calibration·model 및 MonitoringPolicy 설정이 유효해야
+하며, asset preflight 또는 장치 open이 실패하면 서버 startup도 실패한다.
+PC 개발 환경에서도 접근 가능한 camera와 calibration/model asset이 필요하다.
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.
 
