@@ -16,9 +16,11 @@ from src.camera.models import CapturedFrame
 from src.parking.zone_registry import ZoneRegistry
 from src.tracking.adapters.side_masking_detector import (
     DEFAULT_LEFT_MASK_END_RATIO,
+    DEFAULT_MASK_MARGIN_RATIO,
     DEFAULT_RIGHT_MASK_START_RATIO,
     SideMaskingDetector,
     _mask_bounds_px,
+    compute_mask_ratios_from_zones,
 )
 from src.tracking.models import TrackerFrameResult
 from src.tracking.protocols import ModelInfo, TrackingError
@@ -32,6 +34,13 @@ _REAL_ZONE_DEFINITION_PATH = (
 )
 # 537 인수인계 §5: polygon 최외곽과 마스크 사이의 full-frame 여백은 좌우 각각 0.040이다.
 _EXPECTED_MASK_MARGIN_RATIO = 0.040
+
+
+class _FakeZone:
+    """`compute_mask_ratios_from_zones`가 요구하는 `.polygon` 속성만 흉내내는 stub."""
+
+    def __init__(self, polygon) -> None:
+        self.polygon = polygon
 
 
 class _FakeInnerDetector:
@@ -110,15 +119,18 @@ def test_mask_bounds_px_scales_with_a_non_1920_width():
 
 
 def test_default_mask_bounds_stay_outside_real_zone_definition_polygon_extent():
-    """실제 `zone_definition.json`의 polygon x좌표 범위가 기본 마스크 경계 안쪽에
-    있는지 회귀 가드로 고정한다.
+    """`compute_mask_ratios_from_zones`가 실제 `zone_definition.json` +
+    `DEFAULT_MASK_MARGIN_RATIO`로 계산한 경계가 실제 polygon x좌표 범위를
+    침범하지 않는지 회귀 가드로 고정한다.
 
-    `DEFAULT_LEFT_MASK_END_RATIO`/`DEFAULT_RIGHT_MASK_START_RATIO`는 537 인수인계
-    시점의 `zone_definition.json`(1~9번 전체 polygon x좌표 합집합
-    [0.220, 0.768])에서 계산된 상수다. 이후 구역 추가·재-crop·calibration 변경으로
-    실제 polygon이 이 경계를 넘으면, 아무 예외·로그 없이 YOLO 입력에서 진짜
-    주차면 픽셀이 검정으로 지워진다 — 이 저장소가 반복 겪은 "stale hardcoded wire
-    constant" 실패 패턴이다. 이 테스트는 그 이탈을 실패로 드러낸다.
+    이전에는 `DEFAULT_LEFT_MASK_END_RATIO`/`DEFAULT_RIGHT_MASK_START_RATIO`
+    하드코딩 상수를 직접 pin했다. 이제 최종 경계는 항상 zone 파일에서 자동
+    계산되므로, 이 테스트는 "계산된 값이 실제 zone을 침범하지 않는가"만
+    검증한다 — 계산 산수 자체는 별도 순수 단위 테스트로 분리한다. 이후 구역
+    추가·재-crop·calibration 변경으로 실제 polygon이 이 경계를 넘으면, 아무
+    예외·로그 없이 YOLO 입력에서 진짜 주차면 픽셀이 검정으로 지워진다 — 이
+    저장소가 반복 겪은 "stale hardcoded wire constant" 실패 패턴이다. 이
+    테스트는 그 이탈을 실패로 드러낸다.
     """
 
     registry = ZoneRegistry.from_file(_REAL_ZONE_DEFINITION_PATH)
@@ -127,22 +139,65 @@ def test_default_mask_bounds_stay_outside_real_zone_definition_polygon_extent():
     ]
     min_x, max_x = min(x_coordinates), max(x_coordinates)
 
-    assert DEFAULT_LEFT_MASK_END_RATIO <= min_x, (
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(
+        registry.all(), margin_ratio=DEFAULT_MASK_MARGIN_RATIO
+    )
+
+    assert left_ratio <= min_x, (
         "왼쪽 마스크가 실제 zone polygon을 침범합니다: "
-        f"DEFAULT_LEFT_MASK_END_RATIO={DEFAULT_LEFT_MASK_END_RATIO}, min_x={min_x}"
+        f"left_ratio={left_ratio}, min_x={min_x}"
     )
-    assert DEFAULT_RIGHT_MASK_START_RATIO >= max_x, (
+    assert right_ratio >= max_x, (
         "오른쪽 마스크가 실제 zone polygon을 침범합니다: "
-        f"DEFAULT_RIGHT_MASK_START_RATIO={DEFAULT_RIGHT_MASK_START_RATIO}, max_x={max_x}"
+        f"right_ratio={right_ratio}, max_x={max_x}"
     )
-    # 537 인수인계 §5가 명시한 고정 여백(0.040)도 함께 고정한다 — 여백이 원래
-    # 계약보다 크게 벌어지거나 좁아지는 조용한 변경도 이 테스트로 드러난다.
-    assert min_x - DEFAULT_LEFT_MASK_END_RATIO == pytest.approx(
-        _EXPECTED_MASK_MARGIN_RATIO, abs=1e-6
-    )
-    assert DEFAULT_RIGHT_MASK_START_RATIO - max_x == pytest.approx(
-        _EXPECTED_MASK_MARGIN_RATIO, abs=1e-6
-    )
+
+
+# ---------------------------------------------------------------------------
+# compute_mask_ratios_from_zones: 순수 산수 + fail-closed 검증
+# ---------------------------------------------------------------------------
+
+
+def test_compute_mask_ratios_from_zones_matches_known_synthetic_polygon_arithmetic():
+    zones = [
+        _FakeZone([(0.30, 0.0), (0.60, 0.0), (0.60, 1.0), (0.30, 1.0)]),
+        _FakeZone([(0.25, 0.2), (0.70, 0.2), (0.70, 0.8), (0.25, 0.8)]),
+    ]
+
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(zones, margin_ratio=0.05)
+
+    # min_x=0.25, max_x=0.70 -> (0.25-0.05, 0.70+0.05)
+    assert left_ratio == pytest.approx(0.20, abs=1e-9)
+    assert right_ratio == pytest.approx(0.75, abs=1e-9)
+
+
+def test_compute_mask_ratios_from_zones_with_zero_margin_returns_exact_extent():
+    zones = [_FakeZone([(0.4, 0.0), (0.9, 0.0), (0.9, 1.0), (0.4, 1.0)])]
+
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(zones, margin_ratio=0.0)
+
+    assert (left_ratio, right_ratio) == pytest.approx((0.4, 0.9))
+
+
+@pytest.mark.parametrize(
+    "margin_ratio",
+    [-0.01, -1.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_compute_mask_ratios_from_zones_rejects_invalid_margin(margin_ratio):
+    zones = [_FakeZone([(0.2, 0.0), (0.8, 0.0), (0.8, 1.0), (0.2, 1.0)])]
+
+    with pytest.raises(ValueError):
+        compute_mask_ratios_from_zones(zones, margin_ratio=margin_ratio)
+
+
+def test_compute_mask_ratios_from_zones_rejects_empty_zones():
+    with pytest.raises(ValueError):
+        compute_mask_ratios_from_zones([], margin_ratio=0.04)
+
+
+def test_compute_mask_ratios_from_zones_rejects_zones_with_no_polygon_points():
+    with pytest.raises(ValueError):
+        compute_mask_ratios_from_zones([_FakeZone([])], margin_ratio=0.04)
 
 
 # ---------------------------------------------------------------------------
@@ -340,3 +395,103 @@ def test_rejects_zero_sized_frame():
 
     with pytest.raises(TrackingError):
         detector.track(frame)
+
+
+# ---------------------------------------------------------------------------
+# 내부 마스크 버퍼 재사용 (537 코드리뷰 반영: 프레임마다 새 배열 할당 금지)
+# ---------------------------------------------------------------------------
+
+
+def test_same_size_and_dtype_frames_reuse_the_same_delegate_buffer():
+    """같은 크기/dtype 프레임으로 두 번 연속 호출하면 delegate가 받는 두
+    `CapturedFrame.image`가 같은 객체여야 한다 — 버퍼가 실제로 재사용된다는
+    증거."""
+
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    first = _filled_image(width=1920)
+    second = _filled_image(width=1920)
+
+    detector.track(_make_frame(first, width=1920, height=first.shape[0]))
+    detector.track(_make_frame(second, width=1920, height=second.shape[0]))
+
+    assert len(inner.received_frames) == 2
+    first_received = inner.received_frames[0].image
+    second_received = inner.received_frames[1].image
+    assert first_received is second_received
+
+
+def test_resized_frame_triggers_reallocation_and_still_masks_correctly():
+    """첫 호출과 크기가 다른 프레임으로 두 번째 호출하면 새 버퍼가 할당되고,
+    결과는 여전히 새 크기 기준으로 올바르게 마스킹돼야 한다(`RemapFrameSource`의
+    재할당 케이스와 같은 발상)."""
+
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    first = _filled_image(width=1920)
+    second = _filled_image(width=100)
+
+    detector.track(_make_frame(first, width=1920, height=first.shape[0]))
+    detector.track(_make_frame(second, width=100, height=second.shape[0]))
+
+    second_received = inner.received_frames[1].image
+    assert second_received.shape == second.shape
+    assert np.all(second_received[:, :18] == 0)
+    assert np.all(second_received[:, 81:] == 0)
+    assert np.array_equal(second_received[:, 18:81], second[:, 18:81])
+
+
+def test_dtype_change_triggers_reallocation():
+    """크기는 같지만 dtype이 다른 프레임으로 두 번째 호출하면 새 버퍼가
+    할당돼야 한다(같은 shape이라도 dtype이 다르면 버퍼를 재사용할 수 없다)."""
+
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    first = _filled_image(width=1920)
+    second = np.full((4, 1920, 3), FILL_VALUE, dtype=np.int16)
+
+    detector.track(_make_frame(first, width=1920, height=first.shape[0]))
+    detector.track(_make_frame(second, width=1920, height=second.shape[0]))
+
+    second_received = inner.received_frames[1].image
+    assert second_received.dtype == np.int16
+    assert np.all(second_received[:, :346] == 0)
+    assert np.all(second_received[:, 1551:] == 0)
+
+
+def test_second_call_result_is_not_contaminated_by_first_calls_residual_data():
+    """두 번째 호출의 마스킹 결과가 첫 번째 호출의 잔여 데이터에 오염되지
+    않고, 두 번째 프레임의 가시 영역 내용만 반영해야 한다 — 버퍼 전체를 매
+    프레임 다시 채워 넣는다는 증거."""
+
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    first_value = 111
+    second_value = 222
+    first = np.full((4, 1920, 3), first_value, dtype=np.uint8)
+    second = np.full((4, 1920, 3), second_value, dtype=np.uint8)
+
+    detector.track(_make_frame(first, width=1920, height=first.shape[0]))
+    detector.track(_make_frame(second, width=1920, height=second.shape[0]))
+
+    second_received = inner.received_frames[1].image
+    assert np.all(second_received[:, 346:1551] == second_value)
+    assert not np.any(second_received[:, 346:1551] == first_value)
+
+
+def test_original_input_arrays_are_not_mutated_across_repeated_calls():
+    """버퍼 재사용 구현에서도 원본 배열은 여전히 in-place로 수정되지 않아야
+    한다 — 원본과 버퍼는 서로 다른 객체다."""
+
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    first = _filled_image(width=1920)
+    first_copy = first.copy()
+    second = _filled_image(width=1920)
+    second_copy = second.copy()
+
+    detector.track(_make_frame(first, width=1920, height=first.shape[0]))
+    detector.track(_make_frame(second, width=1920, height=second.shape[0]))
+
+    assert np.array_equal(first, first_copy)
+    assert np.array_equal(second, second_copy)

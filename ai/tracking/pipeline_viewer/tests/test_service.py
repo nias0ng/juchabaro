@@ -54,11 +54,31 @@ def test_entry_event_time_must_match_video_zero() -> None:
         parse_entry_event(json.dumps(raw))
 
 
+class _FakeZone:
+    """`compute_mask_ratios_from_zones`가 요구하는 `.polygon` 속성만 흉내내는 stub."""
+
+    def __init__(self, polygon) -> None:
+        self.polygon = polygon
+
+
+class _FakeZoneRegistry:
+    """`ZoneRegistry.all()`만 흉내내는 최소 fake — 실제 zone 파일 없이 조립을
+    검증한다."""
+
+    def __init__(self, zones) -> None:
+        self._zones = tuple(zones)
+
+    def all(self):
+        return self._zones
+
+
 def test_full_frame_detector_is_wrapped_with_side_masking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """full-frame 경로의 YOLO delegate가 SideMaskingDetector로 조립되는지
-    실제 YOLO 모델·영상 없이 fake raw detector로 확인한다(537)."""
+    실제 YOLO 모델·영상 없이 fake raw detector로 확인한다(537). 계산된 마스크
+    ratio가 실제로 SideMaskingDetector에 전달됐는지도 합성 zone + 알려진
+    margin으로 기대값을 직접 계산해서 대조한다."""
 
     captured_kwargs: dict[str, object] = {}
 
@@ -70,10 +90,17 @@ def test_full_frame_detector_is_wrapped_with_side_masking(
 
     monkeypatch.setattr(service, "UltralyticsVehicleTracker", _FakeRawDetector)
 
+    zones = _FakeZoneRegistry(
+        [_FakeZone([(0.25, 0.0), (0.70, 0.0), (0.70, 1.0), (0.25, 1.0)])]
+    )
+    margin_ratio = 0.05
+
     detector = service._build_detector(
         model_path=Path("fake-model.pt"),
         tracker_config="bytetrack.yaml",
         confidence=0.5,
+        zones=zones,
+        mask_margin_ratio=margin_ratio,
     )
 
     assert isinstance(detector, SideMaskingDetector)
@@ -83,3 +110,6 @@ def test_full_frame_detector_is_wrapped_with_side_masking(
         "tracker_config": "bytetrack.yaml",
         "confidence": 0.5,
     }
+    # min_x=0.25, max_x=0.70 -> (0.25-0.05, 0.70+0.05)
+    assert detector._left_mask_end_ratio == pytest.approx(0.20)
+    assert detector._right_mask_start_ratio == pytest.approx(0.75)

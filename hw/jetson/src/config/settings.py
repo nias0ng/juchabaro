@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.tracking.adapters.side_masking_detector import DEFAULT_MASK_MARGIN_RATIO
+
 
 class Settings(BaseSettings):
     app_name: str = "Smart Parking Jetson API"
@@ -33,6 +35,11 @@ class Settings(BaseSettings):
     # 한 배포의 versioned ZoneDefinition JSON. 실행 중 hot replacement는 하지
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path
+
+    # SideMaskingDetector 마스크 경계가 실제 zone polygon x-범위에 더하는 여백
+    # 비율(537 코드리뷰 반영). 최종 경계는 항상 zone_definition_path에서 자동
+    # 계산하고, 이 값만 배포/검증 환경에서 조정한다.
+    mask_margin_ratio: float = DEFAULT_MASK_MARGIN_RATIO
 
     # 구역 방문 확인시간(초). 기본값을 두지 않는 이유는 스펙 §4.7에 있다 —
     # zone_entry_confirm_seconds가 전용구역 진입 즉시 판정의 유일한 오탐

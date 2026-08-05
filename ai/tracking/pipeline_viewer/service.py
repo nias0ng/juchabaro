@@ -48,7 +48,9 @@ from src.replay.publication_preparer import JsonlPublicationPreparer  # noqa: E4
 from src.session.entry_match_coordinator import EntryMatchCoordinator  # noqa: E402
 from src.storage.database import connect_database, open_database  # noqa: E402
 from src.tracking.adapters.side_masking_detector import (  # noqa: E402
+    DEFAULT_MASK_MARGIN_RATIO,
     SideMaskingDetector,
+    compute_mask_ratios_from_zones,
 )
 from src.tracking.adapters.ultralytics_bytetrack import (  # noqa: E402
     UltralyticsVehicleTracker,
@@ -101,6 +103,7 @@ class ViewerPolicy:
     confidence: float = 0.50
     tracker_config: str = "bytetrack.yaml"
     remap_balance: float = DEFAULT_REMAP_BALANCE
+    mask_margin_ratio: float = DEFAULT_MASK_MARGIN_RATIO
 
     def to_monitoring_policy(self) -> MonitoringPolicy:
         return MonitoringPolicy(
@@ -273,6 +276,8 @@ def run_viewer_pipeline(
         model_path=request.paths.model,
         tracker_config=request.policy.tracker_config,
         confidence=request.policy.confidence,
+        zones=zones,
+        mask_margin_ratio=request.policy.mask_margin_ratio,
     )
 
     error_type: str | None = None
@@ -425,13 +430,16 @@ def _build_detector(
     model_path: Path,
     tracker_config: str,
     confidence: float,
+    zones: ZoneRegistry,
+    mask_margin_ratio: float,
 ) -> Detector:
     """full-frame 경로의 YOLO delegate를 좌우 마스킹 decorator로 감싼다.
 
     `zones`가 full-frame(`DEFAULT_ZONES_PATH`) 좌표계인 이 경로에서만 조립한다
     (537 인수인계 §6). `UltralyticsVehicleTracker` 내부는 건드리지 않는다 —
     같은 tracker가 pilot v6 crop 리플레이 등 다른 좌표계 경로에서도 쓰이기
-    때문이다.
+    때문이다. 마스크 경계는 항상 실제 `zones`에서 자동 계산하고,
+    `mask_margin_ratio`만 조정 가능하다(537 코드리뷰 반영).
     """
 
     raw_detector = UltralyticsVehicleTracker(
@@ -439,7 +447,14 @@ def _build_detector(
         tracker_config=tracker_config,
         confidence=confidence,
     )
-    return SideMaskingDetector(inner=raw_detector)
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(
+        zones.all(), margin_ratio=mask_margin_ratio,
+    )
+    return SideMaskingDetector(
+        inner=raw_detector,
+        left_mask_end_ratio=left_ratio,
+        right_mask_start_ratio=right_ratio,
+    )
 
 
 def _analysis_frame_count(
