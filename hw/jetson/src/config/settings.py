@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     hw_api_key: str = ""
     internal_api_key: str = ""
 
+    # 듀얼 VL53L0X 어댑터의 Linux I²C bus와 생명주기 시간값.
+    # 물리 헤더 핀 번호로 bus를 추정하지 않고 배포 환경이 명시한다.
+    tof_i2c_bus: int
+    tof_shutdown_settle_seconds: float
+    tof_boot_settle_seconds: float
+    tof_io_timeout_seconds: float
+
     # Jetson local durable state. 요청 thread와 tracking worker는 각자
     # connection을 열고 SQLite file만 공유한다.
     database_path: Path
