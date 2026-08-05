@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 import { useAuthenticatedQuery } from '@/hooks/use-authenticated-query';
 
 import { getParkingZoneSummary } from '../api/parking-api';
@@ -11,6 +13,13 @@ export function useParkingZoneSummary() {
     [],
     { pollIntervalMs: 30_000 },
   );
+
+  // TODO(#임시): 실제 zoneNumber 포맷 확인용. 원인 파악되면 제거한다.
+  useEffect(() => {
+    if (summary) {
+      console.info('[DEBUG] zoneNumbers =', summary.spots.map((spot) => `${spot.zoneNumber} (${spot.zoneType})`));
+    }
+  }, [summary]);
 
   return { summary, isLoading, isRefreshing, error, refetch };
 }
