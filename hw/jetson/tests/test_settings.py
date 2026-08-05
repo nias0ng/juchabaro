@@ -15,6 +15,18 @@ def test_tof_settings_parse_environment_variable_types(
     monkeypatch.setenv("TOF_SHUTDOWN_SETTLE_SECONDS", "0.01")
     monkeypatch.setenv("TOF_BOOT_SETTLE_SECONDS", "0.02")
     monkeypatch.setenv("TOF_IO_TIMEOUT_SECONDS", "1.0")
+    monkeypatch.setenv("TOF_DISABLED_ZONE_ID", "4")
+    monkeypatch.setenv("TOF_EV_CHARGING_ZONE_ID", "5")
+    monkeypatch.setenv("TOF_POLL_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("TOF_ENTER_DISTANCE_MM", "150")
+    monkeypatch.setenv("TOF_EXIT_DISTANCE_MM", "220")
+    monkeypatch.setenv("TOF_ENTER_CONFIRM_SECONDS", "0")
+    monkeypatch.setenv("TOF_EXIT_CONFIRM_SECONDS", "0")
+    monkeypatch.setenv(
+        "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS",
+        "1.0",
+    )
+    monkeypatch.setenv("TOF_STALE_AFTER_SECONDS", "2.0")
 
     settings = Settings(_env_file=None)
 
@@ -26,6 +38,31 @@ def test_tof_settings_parse_environment_variable_types(
     assert isinstance(settings.tof_shutdown_settle_seconds, float)
     assert isinstance(settings.tof_boot_settle_seconds, float)
     assert isinstance(settings.tof_io_timeout_seconds, float)
+    assert settings.tof_disabled_zone_id == 4
+    assert settings.tof_ev_charging_zone_id == 5
+    assert isinstance(settings.tof_disabled_zone_id, int)
+    assert isinstance(settings.tof_ev_charging_zone_id, int)
+
+    float_fields = (
+        "tof_poll_interval_seconds",
+        "tof_enter_distance_mm",
+        "tof_exit_distance_mm",
+        "tof_enter_confirm_seconds",
+        "tof_exit_confirm_seconds",
+        "tof_trusted_sample_max_gap_seconds",
+        "tof_stale_after_seconds",
+    )
+    assert all(
+        isinstance(getattr(settings, field_name), float)
+        for field_name in float_fields
+    )
+    assert settings.tof_poll_interval_seconds == 0.05
+    assert settings.tof_enter_distance_mm == 150.0
+    assert settings.tof_exit_distance_mm == 220.0
+    assert settings.tof_enter_confirm_seconds == 0.0
+    assert settings.tof_exit_confirm_seconds == 0.0
+    assert settings.tof_trusted_sample_max_gap_seconds == 1.0
+    assert settings.tof_stale_after_seconds == 2.0
 
 
 @pytest.mark.parametrize(
@@ -43,6 +80,39 @@ def test_tof_settings_parse_environment_variable_types(
         (
             "TOF_IO_TIMEOUT_SECONDS",
             "tof_io_timeout_seconds",
+        ),
+        ("TOF_DISABLED_ZONE_ID", "tof_disabled_zone_id"),
+        (
+            "TOF_EV_CHARGING_ZONE_ID",
+            "tof_ev_charging_zone_id",
+        ),
+        (
+            "TOF_POLL_INTERVAL_SECONDS",
+            "tof_poll_interval_seconds",
+        ),
+        (
+            "TOF_ENTER_DISTANCE_MM",
+            "tof_enter_distance_mm",
+        ),
+        (
+            "TOF_EXIT_DISTANCE_MM",
+            "tof_exit_distance_mm",
+        ),
+        (
+            "TOF_ENTER_CONFIRM_SECONDS",
+            "tof_enter_confirm_seconds",
+        ),
+        (
+            "TOF_EXIT_CONFIRM_SECONDS",
+            "tof_exit_confirm_seconds",
+        ),
+        (
+            "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS",
+            "tof_trusted_sample_max_gap_seconds",
+        ),
+        (
+            "TOF_STALE_AFTER_SECONDS",
+            "tof_stale_after_seconds",
         ),
     ],
 )

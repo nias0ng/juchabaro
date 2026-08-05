@@ -32,6 +32,9 @@ from src.sensors.ports import (
 )
 
 
+DISABLED_ZONE_SENSOR_ID = "tof_disabled_zone"
+EV_CHARGING_ZONE_SENSOR_ID = "tof_ev_charging_zone"
+
 _DEFAULT_I2C_ADDRESS = 0x29
 _MIN_DISTANCE_MM = 20.0
 _MAX_DISTANCE_MM = 2000.0
@@ -48,12 +51,12 @@ class _SensorDefinition:
 
 _SENSOR_DEFINITIONS = (
     _SensorDefinition(
-        sensor_id="tof_disabled_zone",
+        sensor_id=DISABLED_ZONE_SENSOR_ID,
         shutdown_pin=15,
         address=0x30,
     ),
     _SensorDefinition(
-        sensor_id="tof_ev_charging_zone",
+        sensor_id=EV_CHARGING_ZONE_SENSOR_ID,
         shutdown_pin=29,
         address=0x31,
     ),
