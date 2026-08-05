@@ -32,8 +32,6 @@ FILL_VALUE = 200  # 0이 아닌 값이어야 "마스킹으로 0이 됐다"를 �
 _REAL_ZONE_DEFINITION_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "zone_definition.json"
 )
-# 537 인수인계 §5: polygon 최외곽과 마스크 사이의 full-frame 여백은 좌우 각각 0.040이다.
-_EXPECTED_MASK_MARGIN_RATIO = 0.040
 
 
 class _FakeZone:
