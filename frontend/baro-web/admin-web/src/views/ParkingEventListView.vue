@@ -31,7 +31,7 @@ const PAGE_SIZE = 10
 const FETCH_SIZE = 200
 
 function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
-  const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', 'AI 신뢰도', '상태', '날짜']
+  const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', '상태', '날짜']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
   // 날짜를 선택하지 않았으면(전체 조회) 행마다 실제 발생 날짜를 넣고, 선택했으면 필터 날짜를 그대로 쓴다.
   // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
@@ -44,8 +44,7 @@ function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
         eventTypeLabel(r.eventType),
         r.zoneNumber ?? '-',
         formatTime(r.detectedAt),
-        r.violationRatio !== null ? `${r.violationRatio}%` : '-',
-        eventStatusLabel(r.eventStatus),
+        eventStatusLabel(r.eventStatus, r.requestType),
         `'${dateFilter ?? localDateString(r.detectedAt)}`,
       ].map(escapeCsv).join(','),
     ),
@@ -241,20 +240,20 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
             <table>
               <thead>
                 <tr>
-                  <th v-for="h in ['ID', '차량 번호', '유형', '위치', '발생 시간', 'AI 신뢰도', '상태', '조치']" :key="h">
+                  <th v-for="h in ['ID', '차량 번호', '유형', '위치', '발생 시간', '상태', '조치']" :key="h">
                     {{ h }}
                   </th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="parkingEventStore.eventsLoading">
-                  <td colspan="8" class="empty">불러오는 중입니다…</td>
+                  <td colspan="7" class="empty">불러오는 중입니다…</td>
                 </tr>
                 <tr v-else-if="parkingEventStore.eventsError">
-                  <td colspan="8" class="empty error">{{ parkingEventStore.eventsError }}</td>
+                  <td colspan="7" class="empty error">{{ parkingEventStore.eventsError }}</td>
                 </tr>
                 <tr v-else-if="pagedRows.length === 0">
-                  <td colspan="8" class="empty">조건에 맞는 사건이 없습니다.</td>
+                  <td colspan="7" class="empty">조건에 맞는 사건이 없습니다.</td>
                 </tr>
                 <tr
                   v-for="r in pagedRows"
@@ -269,8 +268,7 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
                   <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
                   <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
                   <td class="muted">{{ formatTime(r.detectedAt) }}</td>
-                  <td class="muted">{{ r.violationRatio !== null ? `${r.violationRatio}%` : '-' }}</td>
-                  <td><StatusTag :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus) }}</StatusTag></td>
+                  <td><StatusTag :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag></td>
                   <td>
                     <div class="row-actions">
                       <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
