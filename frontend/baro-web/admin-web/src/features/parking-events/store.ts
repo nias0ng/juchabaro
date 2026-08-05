@@ -17,6 +17,7 @@ import type {
   AdminHistoryItem,
   AdminHistoryParams,
 } from '@/features/parking-events/api/types';
+import { dateStringDaysAgo } from '@/features/parking-events/data';
 import { useAuthStore } from '@/stores/auth-store';
 
 function requireAccessToken(): string {
@@ -24,6 +25,10 @@ function requireAccessToken(): string {
   if (!accessToken) throw new Error('로그인이 필요합니다.');
   return accessToken;
 }
+
+// 날짜 필터를 고르지 않았을 때, 오늘 데이터가 없으면 이 안쪽으로 하루씩 과거를 훑는다.
+// 그래도 없으면 실제로 최근 사건이 없는 것으로 보고 빈 목록을 보여준다(무한정 훑지 않음).
+const MAX_LOOKBACK_DAYS = 14;
 
 // 사건 목록(ParkingEventListView)의 '사건 상세' 패널과 사건 상세 페이지(ParkingEventDetailView)가
 // 같은 사건에 대해 목록·상세·처리 이력을 공유해야 해서 Pinia로 끌어올렸다.
@@ -56,10 +61,27 @@ export const useParkingEventStore = defineStore('parking-event', () => {
     eventsLoading.value = true;
     eventsError.value = null;
     try {
-      const result = await getParkingEvents(params, requireAccessToken());
-      events.value = result.events;
-      if (selectedEventId.value === null && result.events.length > 0) {
-        selectedEventId.value = result.events[0]!.eventId;
+      const accessToken = requireAccessToken();
+      let found: AdminEventSummary[];
+
+      if (params.date) {
+        // 날짜를 직접 골랐으면 그 하루치만 조회한다(서버가 이미 detectedAt 내림차순으로 정렬해 줌).
+        found = (await getParkingEvents(params, accessToken)).events;
+      } else {
+        // 날짜를 안 골랐으면 오늘부터 하루씩 과거로 거슬러 올라가며 사건이 있는 가장 최근 날을 찾는다.
+        found = [];
+        for (let daysAgo = 0; daysAgo <= MAX_LOOKBACK_DAYS; daysAgo++) {
+          const result = await getParkingEvents({ ...params, date: dateStringDaysAgo(daysAgo) }, accessToken);
+          if (result.events.length > 0) {
+            found = result.events;
+            break;
+          }
+        }
+      }
+
+      events.value = found;
+      if (selectedEventId.value === null && found.length > 0) {
+        selectedEventId.value = found[0]!.eventId;
       }
     } catch (error) {
       eventsError.value = error instanceof Error ? error.message : '사건 목록을 불러오지 못했습니다.';

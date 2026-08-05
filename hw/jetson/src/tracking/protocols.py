@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 
 from src.camera.models import CapturedFrame
 from src.tracking.models import (
+    IdentityResolutionBatch,
     PhysicalVehicle,
     PhysicalVehicleId,
     TrackerFrameResult,
@@ -53,13 +54,18 @@ class Detector(Protocol):
 class EntityResolver(Protocol):
     """일시적인 track_segment_id를 Jetson 내부 physical_vehicle_id로 묶는 계약.
 
-    현재 기본 구현은 segment를 1:1로 매핑한다. 후속 재식별
-    구현이 bbox·confidence·observedAt을 근거로 쓸 수 있도록
-    숫자 ID가 아닌 전체 ``TrackObservation``을 받는다.
+    한 frame의 관측 전체를 함께 받아 입력 순서와 무관한 1:1 결정을 내린다.
+    tracker가 확정한 segment 종료는 연결만 해제하며 PhysicalVehicle 종료를
+    뜻하지 않는다.
     """
 
-    def resolve(self, observation: TrackObservation) -> PhysicalVehicleId:
-        """이번 관측 segment의 physical_vehicle_id를 반환한다."""
+    def resolve_frame(
+        self,
+        observations: tuple[TrackObservation, ...],
+        *,
+        ended_track_segment_ids: set[TrackSegmentId],
+    ) -> IdentityResolutionBatch:
+        """이번 frame의 segment 종료와 PhysicalVehicle 연결을 함께 결정한다."""
 
     def end_track_segments(
         self,
@@ -85,4 +91,4 @@ class RestartAwareEntityResolver(EntityResolver, Protocol):
         self,
         vehicles: tuple[PhysicalVehicle, ...],
     ) -> None:
-        """후속 ``resolve()``가 복구 identity를 반환하도록 후보를 복원한다."""
+        """후속 ``resolve_frame()``이 복구 identity를 반환하도록 후보를 복원한다."""

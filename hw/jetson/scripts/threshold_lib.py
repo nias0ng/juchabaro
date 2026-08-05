@@ -5,9 +5,9 @@ CLI(scripts/replay_pilot_video.py)를 문턱값마다 재실행하지 않는다 
 entry_confirm_seconds<=0/exit_confirm_seconds<=0 경로), 임의의 문턱값에 대해
 "이 방문이 그 문턱값에서도 확정됐을까"를 dwellSeconds >= threshold로 계산할 수 있다.
 
-측정 대상은 zone_entry_confirm_seconds/zone_exit_confirm_seconds뿐이다. movement_epsilon은
-측정 당시 파이프라인에서 관측 가능한 효과가 없어 범위 밖이었다(설계 문서 참고) — 464가
-ParkingEpisodeTracker를 배선해 지금은 효과가 관측되지만, 그 재측정은 이 티켓 범위가 아니다.
+측정 대상은 zone_entry_confirm_seconds/zone_exit_confirm_seconds뿐이다. motion evidence의
+시간 창·정규화 변위·추세 임계값은 별도 MotionEstimator replay/export로 검증한다. 이 helper가
+서로 다른 owner의 threshold를 한 번에 최적화하지 않는 것은 의도적이다.
 
 **입력 포맷은 464 기준이다.** 방문 종료 상태는 ENDED(옛 OUTSIDE), 종료 시각 필드는
 endedAt(옛 exitedAt)이다.

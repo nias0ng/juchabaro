@@ -305,6 +305,13 @@ def test_pause_without_active_episode_returns_empty_tuple() -> None:
     assert tracker.pause_physical_vehicle(CAR, unknown(), at(0)) == ()
 
 
+def test_pause_rejects_observed_status_even_without_active_episode() -> None:
+    tracker = make_tracker()
+
+    with pytest.raises(ValueError, match="UNKNOWN or DEGRADED"):
+        tracker.pause_physical_vehicle(CAR, observed(0), at(0))
+
+
 def test_long_unknown_pause_never_terminates_parked_episode() -> None:
     tracker = make_tracker(parking=1)
     parked = park(tracker, confirmed=1)
@@ -438,6 +445,58 @@ def test_confirmed_movement_ends_episode_at_confirmation_time() -> None:
     assert tracker._slots == {}
 
 
+def test_fractional_movement_threshold_ends_at_greater_or_equal_boundary() -> None:
+    tracker = make_tracker(parking=1, movement=0.5)
+    park(tracker, confirmed=1)
+    feed(tracker, MotionSignal.MOVING, 2)
+
+    before_boundary = feed(tracker, MotionSignal.MOVING, 2.499999)
+    at_boundary = feed(tracker, MotionSignal.MOVING, 2.5)
+
+    assert before_boundary.state is ParkingState.MOVE_PENDING
+    assert before_boundary.movement_trusted_seconds == pytest.approx(0.499999)
+    assert at_boundary.state is ParkingState.ENDED
+    assert at_boundary.movement_trusted_seconds == pytest.approx(0.5)
+    assert at_boundary.ended_at == at(2.5)
+    assert at_boundary.termination_reason == MOVEMENT_CONFIRMED
+
+
+def test_restored_move_pending_preserves_only_pre_restart_trusted_time() -> None:
+    original = make_tracker(parking=1, movement=0.5)
+    park(original, confirmed=1)
+    feed(original, MotionSignal.MOVING, 2)
+    checkpoint = feed(original, MotionSignal.MOVING, 2.2)
+
+    restored = make_tracker(parking=99, movement=99)
+    restored.restore_active((checkpoint,))
+
+    resumed = feed(restored, MotionSignal.MOVING, 100)
+    before_boundary = feed(restored, MotionSignal.MOVING, 100.299999)
+    at_boundary = feed(restored, MotionSignal.MOVING, 100.3)
+
+    assert resumed.state is ParkingState.MOVE_PENDING
+    assert resumed.movement_trusted_seconds == pytest.approx(0.2)
+    assert before_boundary.state is ParkingState.MOVE_PENDING
+    assert before_boundary.movement_trusted_seconds == pytest.approx(0.499999)
+    assert at_boundary.state is ParkingState.ENDED
+    assert at_boundary.movement_trusted_seconds == pytest.approx(0.5)
+
+
+def test_restored_move_pending_stationary_returns_to_same_parked_episode() -> None:
+    original = make_tracker(parking=1, movement=0.5)
+    parked = park(original, confirmed=1)
+    checkpoint = feed(original, MotionSignal.MOVING, 2)
+
+    restored = make_tracker()
+    restored.restore_active((checkpoint,))
+    returned = feed(restored, MotionSignal.STATIONARY, 100)
+
+    assert returned.state is ParkingState.PARKED
+    assert returned.episode_id == parked.episode_id
+    assert returned.movement_trusted_seconds == 0.0
+    assert returned.movement_candidate_at is None
+
+
 def test_local_only_movement_end_keeps_publication_revision_zero() -> None:
     tracker = make_tracker(parking=1, movement=1)
     park(tracker, confirmed=1, session=None)
@@ -457,16 +516,48 @@ def test_zero_movement_threshold_ends_on_first_moving_sample() -> None:
 
 
 def test_unknown_pause_preserves_movement_timer_lower_bound() -> None:
-    tracker = make_tracker(parking=1, movement=2)
+    tracker = make_tracker(parking=1, movement=0.5)
     park(tracker, confirmed=1)
     feed(tracker, MotionSignal.MOVING, 2)
-    feed(tracker, MotionSignal.MOVING, 3)
-    tracker.pause_physical_vehicle(CAR, unknown(last_reliable=3), at(100))
+    feed(tracker, MotionSignal.MOVING, 2.2)
+    tracker.pause_physical_vehicle(CAR, unknown(last_reliable=2.2), at(100))
     resumed = feed(tracker, MotionSignal.MOVING, 101)
+    before_boundary = feed(tracker, MotionSignal.MOVING, 101.299999)
+    ended = feed(tracker, MotionSignal.MOVING, 101.3)
 
     assert resumed.state is ParkingState.MOVE_PENDING
-    assert resumed.movement_trusted_seconds == pytest.approx(1.0)
-    assert feed(tracker, MotionSignal.MOVING, 102).state is ParkingState.ENDED
+    assert resumed.movement_trusted_seconds == pytest.approx(0.2)
+    assert before_boundary.state is ParkingState.MOVE_PENDING
+    assert before_boundary.movement_trusted_seconds == pytest.approx(0.499999)
+    assert ended.state is ParkingState.ENDED
+    assert ended.movement_trusted_seconds == pytest.approx(0.5)
+
+
+def test_unknown_motion_update_preserves_movement_timer_lower_bound() -> None:
+    tracker = make_tracker(parking=1, movement=0.5)
+    park(tracker, confirmed=1)
+    feed(tracker, MotionSignal.MOVING, 2)
+    feed(tracker, MotionSignal.MOVING, 2.2)
+
+    paused = feed(
+        tracker,
+        MotionSignal.UNKNOWN,
+        100,
+        observation=ObservationStatus(
+            state=ObservationState.UNKNOWN,
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            last_reliable_observed_at=at(2.2),
+        ),
+    )
+    resumed = feed(tracker, MotionSignal.MOVING, 101)
+    ended = feed(tracker, MotionSignal.MOVING, 101.3)
+
+    assert paused.state is ParkingState.MOVE_PENDING
+    assert paused.movement_trusted_seconds == pytest.approx(0.2)
+    assert paused.observation.reason is ObservationReason.DEPENDENCY_UNAVAILABLE
+    assert resumed.movement_trusted_seconds == pytest.approx(0.2)
+    assert ended.state is ParkingState.ENDED
+    assert ended.movement_trusted_seconds == pytest.approx(0.5)
 
 
 def test_long_gap_between_observed_samples_does_not_advance_stationary_timer() -> None:

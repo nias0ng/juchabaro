@@ -241,10 +241,14 @@ class TraceCollector:
             projection[scope_id] = update
 
 
-def parse_entry_attempt_id(tracking_id: str) -> EntryAttemptId:
-    """현재 legacy ``trackingId``를 실제 domain identity로 변환한다."""
+def parse_entry_attempt_id(entry_attempt_id: UUID | str) -> EntryAttemptId:
+    """현재 wire ``entryAttemptId``를 실제 domain identity로 변환한다."""
 
-    return EntryAttemptId(UUID(tracking_id))
+    return EntryAttemptId(
+        entry_attempt_id
+        if isinstance(entry_attempt_id, UUID)
+        else UUID(entry_attempt_id)
+    )
 
 
 def _ordered_values(projection: dict[str, object]) -> tuple:

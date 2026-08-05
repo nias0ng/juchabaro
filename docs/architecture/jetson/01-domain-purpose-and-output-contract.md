@@ -36,8 +36,8 @@ flowchart LR
 
 | 계층 | 결과 | 책임 |
 |---|---|---|
-| 관측 | detection, track, frame health | 보이는 것을 보고하며 종료를 추정하지 않음 |
-| 동일성 | `PhysicalVehicle` | 여러 track segment의 물리적 연속성 |
+| 관측 | detection, track, frame health, `MotionEstimate` | 보이는 것과 시간적 bbox evidence를 보고하며 scope 수명이나 종료를 추정하지 않음 |
+| 동일성 | `PhysicalVehicle` | `EntityResolver`가 한 frame 전체의 시공간 geometry를 전역 1:1로 비교해 여러 track segment의 물리적 연속성을 결정 |
 | 시간적 사실 | `ZoneVisit`, `ParkingEpisode`, `BlockingRelation` | 공간·정지·관계의 confirmation |
 | 규칙 평가 | `MATCHED / NOT_MATCHED / UNKNOWN` | 현재 규칙 술어만 계산하며 상태를 소유하지 않음 |
 | 사건 | `Incident` | 후보·OPEN·clear·RESOLVED와 중복 억제 |
@@ -80,6 +80,22 @@ UNKNOWN
 ```
 
 `NOT_PRESENT_CONFIRMED`의 구체적인 confirmation 시간은 설정값이며, 단순 tracker timeout과 같지 않다.
+
+`IdentityResolution(CONTINUED / REIDENTIFIED / CREATED / UNRESOLVED)`과
+`allIdentitiesResolved`는 이 세 상태축에 추가되는 영속 상태가 아니다. 이는
+EntityResolver의 이번 frame 결정을 설명하는 ephemeral projection이다. 결정이
+`UNRESOLVED`이면 observation은 `UNKNOWN / REIDENTIFICATION_UNCERTAIN`이고,
+Domain state와 Delivery state를 바꾸지 않은 채 trusted timer만 멈춘다.
+
+`MotionEstimate(MOVING / STATIONARY / UNKNOWN)`와 그 reason·window 지표도
+새 상태축이나 영속 scope가 아니다. MotionEstimator가 resolved
+PhysicalVehicle의 bbox와 관측 시각만으로 만든 ephemeral evidence다. bbox와
+identity는 정상인데 표본 수·관측 span이 부족하거나 sample gap·dead band 때문에
+motion만 `UNKNOWN`일 수 있다. 이때 PhysicalVehicle, ZoneVisit과 현재 assignment
+geometry의 observation은 `OBSERVED`를 유지하고, ParkingEpisode와 PARKED에
+의존하는 규칙처럼 motion을 필수 입력으로 쓰는 scope만
+`UNKNOWN / DEPENDENCY_UNAVAILABLE`로 timer를 멈춘다. motion 불확실성을
+`UNPARKED`, `RESOLVED` 또는 차량 부재로 번역하지 않는다.
 
 ### 3.3 Delivery state
 

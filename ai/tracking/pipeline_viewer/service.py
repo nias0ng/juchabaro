@@ -7,7 +7,7 @@ adapter와 ``build_monitoring_pipeline``으로 처리한다.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import timezone
 import hashlib
 import json
@@ -80,10 +80,17 @@ class ViewerPolicy:
     zone_entry_confirm_seconds: float = 1.0
     zone_exit_confirm_seconds: float = 5.0
     entry_zone_min_overlap_ratio: float = 0.40
-    parking_confirm_seconds: float = 600.0
-    parking_move_confirm_seconds: float = 3.0
+    # Viewer 판정 테스트의 명시적 override다. 일반 배포의 600초 정책은
+    # Settings/배포 계층이 계속 소유하며 이 기본값으로 바꾸지 않는다.
+    parking_confirm_seconds: float = 5.0
+    parking_move_confirm_seconds: float = 0.5
     absence_confirmation_seconds: float = 5.0
     trusted_sample_max_gap_seconds: float = 1.0
+    # geometry-only runtime re-identification의 provisional 기준이다. 모델과
+    # zone/parking 결론은 이 점수에 포함하지 않으며 replay로 재조정한다.
+    reidentification_max_gap_seconds: float = 4.0
+    reidentification_min_score: float = 0.42
+    reidentification_ambiguity_margin: float = 0.08
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
     zone_presence_min_overlap_ratio: float = 0.40
@@ -93,8 +100,18 @@ class ViewerPolicy:
     blocking_relation_confirm_seconds: float = 1.0
     blocking_relation_clear_seconds: float = 1.0
     entry_match_window_seconds: float = 10.0
-    movement_epsilon: float = 0.01
-    confidence: float = 0.50
+    # bbox diagonal로 정규화한 time-window motion evidence의 provisional 값.
+    # 운영값으로 승격하기 전에 영상별 replay로 재조정한다.
+    motion_window_seconds: float = 0.75
+    motion_min_observation_span_seconds: float = 0.20
+    motion_max_sample_gap_seconds: float = 0.50
+    motion_stationary_threshold: float = 0.03
+    motion_moving_threshold: float = 0.10
+    motion_min_samples: int = 3
+    motion_min_trend_consistency: float = 0.60
+    # 모델 confidence 분포를 수집하기 위한 Viewer 진단용 provisional 기본값.
+    # 운영 threshold로 승격하기 전 영상별 precision/recall 재평가가 필요하다.
+    confidence: float = 0.01
     tracker_config: str = "bytetrack.yaml"
     remap_balance: float = DEFAULT_REMAP_BALANCE
 
@@ -107,6 +124,22 @@ class ViewerPolicy:
             parking_move_confirm_seconds=self.parking_move_confirm_seconds,
             absence_confirmation_seconds=self.absence_confirmation_seconds,
             trusted_sample_max_gap_seconds=self.trusted_sample_max_gap_seconds,
+            motion_window_seconds=self.motion_window_seconds,
+            motion_min_observation_span_seconds=(
+                self.motion_min_observation_span_seconds
+            ),
+            motion_max_sample_gap_seconds=self.motion_max_sample_gap_seconds,
+            motion_stationary_threshold=self.motion_stationary_threshold,
+            motion_moving_threshold=self.motion_moving_threshold,
+            motion_min_samples=self.motion_min_samples,
+            motion_min_trend_consistency=self.motion_min_trend_consistency,
+            reidentification_max_gap_seconds=(
+                self.reidentification_max_gap_seconds
+            ),
+            reidentification_min_score=self.reidentification_min_score,
+            reidentification_ambiguity_margin=(
+                self.reidentification_ambiguity_margin
+            ),
             incident_confirm_seconds=self.incident_confirm_seconds,
             incident_clear_seconds=self.incident_clear_seconds,
             zone_presence_min_overlap_ratio=self.zone_presence_min_overlap_ratio,
@@ -153,6 +186,9 @@ class ViewerRun:
     video_duration_seconds: float
     zones: tuple[Any, ...]
     model_path: Path
+    detection_confidence_threshold: float
+    tracker_config: str
+    policy_snapshot_json: str
     error_type: str | None = None
     error_message: str | None = None
 
@@ -168,28 +204,30 @@ def default_paths() -> ViewerPaths:
     return ViewerPaths()
 
 
-def build_allow_example(*, tracking_id: UUID | None = None) -> str:
-    """영상 00:00에 맞춘 현재 legacy wire의 synthetic ALLOW 예시 JSON."""
+def build_allow_example(*, entry_attempt_id: UUID | None = None) -> str:
+    """영상 00:00에 맞춘 현재 EntryDecision wire의 synthetic ALLOW 예시 JSON."""
 
     payload = {
-        "trackingId": str(tracking_id or uuid4()),
-        "recognizedPlateNumber": "12가3456",
-        "entryTime": EPOCH.isoformat(),
+        "entryAttemptId": str(entry_attempt_id or uuid4()),
+        "decisionRevision": 1,
         "accessDecision": "ALLOW",
-        "registered": True,
-        "vehicleId": 1,
-        "isDisabledVehicle": False,
-        "isElectric": False,
-        "vehicleStatus": "REGISTERED",
-        "sessionId": 1,
-        "duplicateRequest": False,
+        "entryTime": EPOCH.isoformat(),
+        "sessionContext": {
+            "sessionId": 1,
+            "vehicleId": 1,
+            "isDisabledVehicle": False,
+            "isElectric": False,
+        },
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def default_idempotency_key(entry_event_json: str) -> str:
     payload = parse_entry_event(entry_event_json)
-    return f"viewer-entry-{payload.tracking_id}-r0"
+    return (
+        f"viewer-entry-{payload.entry_attempt_id}"
+        f"-r{payload.decision_revision}"
+    )
 
 
 def parse_entry_event(raw_json: str) -> EntryEventPayload:
@@ -246,7 +284,7 @@ def run_viewer_pipeline(
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
         raise
-    entry_attempt_id = parse_entry_attempt_id(payload.tracking_id)
+    entry_attempt_id = parse_entry_attempt_id(payload.entry_attempt_id)
     collector = TraceCollector(
         frames_directory=workspace / "frames",
         zones=zones.all(),
@@ -269,6 +307,7 @@ def run_viewer_pipeline(
         model_path=str(request.paths.model),
         tracker_config=request.policy.tracker_config,
         confidence=request.policy.confidence,
+        capture_detections=True,
     )
 
     error_type: str | None = None
@@ -289,7 +328,21 @@ def run_viewer_pipeline(
                     ),
                     connection_factory=connection_factory,
                     motion_estimator=MotionEstimator(
-                        movement_epsilon=request.policy.movement_epsilon
+                        window_seconds=request.policy.motion_window_seconds,
+                        min_observation_span_seconds=(
+                            request.policy.motion_min_observation_span_seconds
+                        ),
+                        max_sample_gap_seconds=(
+                            request.policy.motion_max_sample_gap_seconds
+                        ),
+                        stationary_threshold=(
+                            request.policy.motion_stationary_threshold
+                        ),
+                        moving_threshold=request.policy.motion_moving_threshold,
+                        min_samples=request.policy.motion_min_samples,
+                        min_trend_consistency=(
+                            request.policy.motion_min_trend_consistency
+                        ),
                     ),
                 ),
             )
@@ -333,6 +386,9 @@ def run_viewer_pipeline(
         video_duration_seconds=inner.duration_seconds,
         zones=zones.all(),
         model_path=request.paths.model,
+        detection_confidence_threshold=request.policy.confidence,
+        tracker_config=request.policy.tracker_config,
+        policy_snapshot_json=_policy_snapshot_json(request.policy),
         error_type=error_type,
         error_message=error_message,
     )
@@ -384,7 +440,17 @@ def _validate_request(
         )
     # 실제 domain owner의 수치 검증을 실행 전에 한 번 통과시킨다.
     request.policy.to_monitoring_policy()
-    MotionEstimator(movement_epsilon=request.policy.movement_epsilon)
+    MotionEstimator(
+        window_seconds=request.policy.motion_window_seconds,
+        min_observation_span_seconds=(
+            request.policy.motion_min_observation_span_seconds
+        ),
+        max_sample_gap_seconds=request.policy.motion_max_sample_gap_seconds,
+        stationary_threshold=request.policy.motion_stationary_threshold,
+        moving_threshold=request.policy.motion_moving_threshold,
+        min_samples=request.policy.motion_min_samples,
+        min_trend_consistency=request.policy.motion_min_trend_consistency,
+    )
     UltralyticsVehicleTracker(
         model_path=str(request.paths.model),
         tracker_config=request.policy.tracker_config,
@@ -408,10 +474,10 @@ def _receive_entry_event(
     connection = connection_factory()
     try:
         return intake.receive(
-            payload.to_entry_context(),
+            payload.to_input(),
             idempotency_key=idempotency_key,
             connection=connection,
-        )
+        ).created
     finally:
         connection.close()
 
@@ -437,3 +503,14 @@ def _request_signature(request: ViewerRunRequest) -> str:
     digest.update(str(request.policy).encode("utf-8"))
     digest.update(str(request.end_seconds).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _policy_snapshot_json(policy: ViewerPolicy) -> str:
+    """실행에 실제 적용한 Viewer policy를 canonical JSON으로 고정한다."""
+
+    return json.dumps(
+        asdict(policy),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )

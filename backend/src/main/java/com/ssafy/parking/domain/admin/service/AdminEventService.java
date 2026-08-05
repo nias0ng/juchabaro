@@ -65,10 +65,10 @@ public class AdminEventService {
                     e.getId(),
                     e.getVehicle().getPlateNumber(),
                     e.getEventType().name(),
+                    (mr != null) ? mr.getRequestType().name() : null,     // ← requestType
                     (mr != null) ? mr.getRequestStatus().name() : null,
                     (e.getZone() != null) ? e.getZone().getZoneNumber() : null,
                     kst(e.getDetectedAt()),
-                    e.getViolationRatio(),
                     e.getEventStatus().name());
         }).toList();
 
@@ -101,11 +101,13 @@ public class AdminEventService {
 
         return new AdminEventDetailResponse(
                 e.getId(), e.getVehicle().getPlateNumber(), e.getEventType().name(),
-                e.getEventStatus().name(), (mr != null) ? mr.getRequestStatus().name() : null,
+                e.getEventStatus().name(),
+                (mr != null) ? mr.getRequestType().name() : null,
+                (mr != null) ? mr.getRequestStatus().name() : null,
                 (e.getZone() != null) ? e.getZone().getZoneNumber() : null,
                 (e.getZone() != null) ? e.getZone().getFloor() : null,
                 kst(e.getDetectedAt()), kst(e.getResolvedAt()),
-                e.getViolationRatio(), e.getReason(),
+                e.getReason(),
                 (mr != null) ? mr.getReminderCount() : null,
                 (mr != null) ? kst(mr.getRequestedAt()) : null,
                 images, responses, logs);

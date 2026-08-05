@@ -530,10 +530,10 @@ class PlateOcrPipelineTests(unittest.TestCase):
 
     def test_pipeline_continues_with_one_detected_anchor(self) -> None:
         cases = (
-            ({1: (_detection(1),), 5: ()}, (1,)),
-            ({1: (), 5: (_detection(5),)}, (5,)),
+            ({1: (_detection(1),), 5: ()}, (1,), [1, 5]),
+            ({1: (), 5: (_detection(5),)}, (5,), [1, 0, 5]),
         )
-        for responses, expected_indices in cases:
+        for responses, expected_indices, expected_calls in cases:
             with self.subTest(detected_indices=expected_indices):
                 geometry = FakeGeometry()
                 pipeline, _, detector, _, _ = _pipeline(
@@ -544,11 +544,30 @@ class PlateOcrPipelineTests(unittest.TestCase):
                 result = pipeline.read_plate(_frames())
 
                 self.assertEqual(result.status, ReadStatus.SUCCESS)
-                self.assertEqual(detector.calls, [1, 5])
+                self.assertEqual(detector.calls, expected_calls)
                 self.assertEqual(
                     geometry.estimate_calls,
                     [expected_indices],
                 )
+
+    def test_failed_earlier_frame_one_falls_back_to_zero(self) -> None:
+        geometry = FakeGeometry()
+        pipeline, _, detector, _, _ = _pipeline(
+            detector=FakeDetector(
+                {
+                    1: (),
+                    0: (_detection(0),),
+                    5: (),
+                }
+            ),
+            geometry=geometry,
+        )
+
+        result = pipeline.read_plate(_frames())
+
+        self.assertEqual(result.status, ReadStatus.SUCCESS)
+        self.assertEqual(detector.calls, [1, 0, 5])
+        self.assertEqual(geometry.estimate_calls, [(0,)])
 
     def test_geometry_can_omit_one_frame(self) -> None:
         pipeline, _, _, _, reader = _pipeline(
@@ -631,7 +650,7 @@ class PlateOcrPipelineTests(unittest.TestCase):
         self.assertEqual(result.status, ReadStatus.NO_PLATE_REGION)
         self.assertIsNone(result.plate_number)
         self.assertFalse(result.succeeded)
-        self.assertEqual(detector.calls, [1, 5])
+        self.assertEqual(detector.calls, [1, 0, 5])
         self.assertEqual(geometry.estimate_calls, [])
 
     def test_later_single_anchor_succeeds_with_matching_frames(
