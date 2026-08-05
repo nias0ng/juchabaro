@@ -3,6 +3,8 @@
 from pathlib import Path
 from threading import Event
 
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.config.settings import Settings
@@ -53,6 +55,40 @@ def _settings(tmp_path: Path) -> Settings:
         parking_confirm_seconds=600.0,
         parking_move_confirm_seconds=3.0,
     )
+
+
+def test_create_runtime_app_binds_concrete_monitoring_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main
+
+    expected_app = FastAPI()
+    received: dict[str, object] = {}
+
+    def fake_create_app(
+        *,
+        settings: Settings | None = None,
+        monitoring_pipeline_factory: (
+            main.MonitoringPipelineFactory | None
+        ) = None,
+    ) -> FastAPI:
+        received["settings"] = settings
+        received["monitoring_pipeline_factory"] = (
+            monitoring_pipeline_factory
+        )
+        return expected_app
+
+    monkeypatch.setattr(main, "create_app", fake_create_app)
+
+    application = main._create_runtime_app()
+
+    assert application is expected_app
+    assert received == {
+        "settings": None,
+        "monitoring_pipeline_factory": (
+            main.build_runtime_monitoring_pipeline
+        ),
+    }
 
 
 def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None:

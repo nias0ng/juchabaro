@@ -1,10 +1,12 @@
-"""Jetson API와 단일 monitoring owner의 process 생명주기를 조립한다.
+"""Jetson FastAPI application composition root.
 
-DB migration·ZoneDefinition 검증·inbound application 조립은 항상 수행한다.
-Camera·model pipeline은 exact Backend publication wire와 장치 adapter를 소유한
-배포 계층이 ``MonitoringPipelineFactory``를 제공했을 때만 기동한다.
-이 경계 덕분에 API 계약 확정 전에 임시 serializer나 no-op publisher를
-실행 경로에 넣지 않는다.
+DB, zones, evidence, publication, monitoring lifecycle을 하나의 lifespan에서
+소유한다. module-level ``src.main:app``은 운영 camera·tracking factory와
+정확한 Backend publication wire를 결속해 단일 MonitoringWorker를 기동한다.
+
+``create_app()``의 optional factory 경계는 API-only 테스트와 명시적
+dependency injection을 위해 유지하며, 운영 경로에 임시 serializer나
+no-op publisher가 섞이지 않도록 한다.
 """
 
 from __future__ import annotations
@@ -261,9 +263,9 @@ def create_app(
 ) -> FastAPI:
     """FastAPI app을 만들고 process-local 자원 생명주기를 소유한다.
 
-    module-level app은 inbound API와 설정된 Backend outbox publisher를 조립한다.
-    camera·model 배포 entrypoint는 factory를 주입해 같은 process에서 monitoring을
-    단 하나만 실행한다.
+    module-level app은 운영 concrete factory를 전달해 camera·tracking
+    monitoring을 함께 기동한다. 직접 호출하는 API-only 테스트는 factory를
+    생략하거나 별도 test double을 주입할 수 있다.
     """
 
     resolved_settings = settings or get_settings()
@@ -423,6 +425,14 @@ def create_app(
     return application
 
 
+def _create_runtime_app() -> FastAPI:
+    """운영 camera·tracking factory가 결속된 ASGI app을 생성한다."""
+
+    return create_app(
+        monitoring_pipeline_factory=build_runtime_monitoring_pipeline,
+    )
+
+
 def _prepare_database_path(database_path: Path) -> None:
     """File DB의 부모 디렉터리만 기동 시 준비한다."""
 
@@ -431,4 +441,4 @@ def _prepare_database_path(database_path: Path) -> None:
 
 
 configure_logging()
-app = create_app()
+app = _create_runtime_app()

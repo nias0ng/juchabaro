@@ -119,6 +119,10 @@ Idempotency-Key를 outbox 저장 전에 한 번만 확정한다. Incident 전송
 `EV_ZONE_UNAUTHORIZED`와 `AISLE_BLOCK`은 현재 Backend enum 계약에 맞춰
 wire `ruleCode=ETC`로 축약하되 local Incident의 ruleCode는 바꾸지 않는다.
 
+`src.main:app`은 운영 `MonitoringPipelineFactory`를 명시적으로 주입해
+camera·model owner를 하나만 기동한다. 테스트나 API-only 실행에서
+`create_app()`을 직접 호출할 때는 factory를 생략할 수 있다.
+
 재시작은 active observation을 `UNKNOWN / PROCESS_RESTARTED`로 끊고
 downtime을 trusted timer에 더하지 않는다. 현재 기본
 `PassthroughEntityResolver`는 process 간 재식별을 지원하지 않으므로,
@@ -243,6 +247,11 @@ commit 뒤 전체 active Incident projection을 반복 적용한다. `src/sensor
 후속 센서 입력 adapter를 위한 독립 경계이며 현재 실행 pipeline에는 연결하지 않는다.
 
 ## PC 개발 환경에서 실행
+
+`src.main:app`은 FastAPI와 함께 camera·tracking MonitoringWorker를 시작한다.
+따라서 `.env`의 camera·calibration·model 및 MonitoringPolicy 설정이 유효해야
+하며, asset preflight 또는 장치 open이 실패하면 서버 startup도 실패한다.
+PC 개발 환경에서도 접근 가능한 camera와 calibration/model asset이 필요하다.
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.
 
