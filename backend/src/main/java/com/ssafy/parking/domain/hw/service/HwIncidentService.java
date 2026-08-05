@@ -18,6 +18,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ssafy.parking.domain.move.entity.MoveRequest;
+import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
+import com.ssafy.parking.domain.move.entity.MoveRequestType;
+import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
+
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -34,6 +39,8 @@ public class HwIncidentService {
 
     private final NotificationDispatcher notificationDispatcher;
     private final InboundIdempotencyService inboundIdempotencyService;
+
+    private final MoveRequestRepository moveRequestRepository;
 
     @Transactional
     public HwPublicationAck handle(HwIncidentTransitionRequest req) {
@@ -74,14 +81,29 @@ public class HwIncidentService {
                 .build();
         parkingEventRepository.save(event);
 
-        if ("EV_OVERSTAY".equals(req.ruleCode())) {
-            notificationDispatcher.dispatch(
-                    session.getVehicle().getUser(),
-                    NotificationType.EV_OVERSTAY,
-                    "전기차 충전구역 초과",
-                    "충전구역 허용 시간을 초과했습니다. 차량 이동을 부탁드립니다.",
-                    event, null, toKst(req.occurredAt()));
-        }
+        // 위반 사건 → 차주에게 자동 이동요청 (전 유형 공통)
+        LocalDateTime requestedAt = toKst(req.occurredAt());
+        event.changeStatus(ParkingEventStatus.REQUESTED);
+
+        AutoMoveRequestMessage msg = AutoMoveRequestMessage.of(event.getEventType());
+
+        MoveRequest moveRequest = moveRequestRepository.save(MoveRequest.builder()
+                .event(event)
+                .requester(null)
+                .targetVehicle(session.getVehicle())
+                .requestType(MoveRequestType.AUTO)
+                .requestStatus(MoveRequestStatus.SENT)
+                .message(msg.requestMessage())
+                .requestedAt(requestedAt)
+                .dueAt(null)
+                .build());
+
+        notificationDispatcher.dispatch(
+                session.getVehicle().getUser(),
+                msg.notificationType(),
+                msg.title(),
+                msg.body(),
+                event, moveRequest, requestedAt);
 
         return ack(req, event, "APPLIED");
     }
@@ -93,7 +115,14 @@ public class HwIncidentService {
                 || event.getEventStatus() == ParkingEventStatus.DISMISSED) {
             return ack(req, event, "ALREADY_APPLIED");
         }
+
         event.resolve(toKst(req.occurredAt()));
+
+        moveRequestRepository.findByEvent_Id(event.getId())
+                .filter(mr -> mr.getRequestStatus() != MoveRequestStatus.COMPLETED
+                        && mr.getRequestStatus() != MoveRequestStatus.CANCELLED)
+                .ifPresent(MoveRequest::markCompleted);
+
         return ack(req, event, "APPLIED");
     }
 

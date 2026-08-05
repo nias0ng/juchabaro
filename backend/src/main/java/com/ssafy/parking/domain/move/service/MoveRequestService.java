@@ -187,6 +187,10 @@ public class MoveRequestService {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_NOT_ALLOWED);
         }
 
+        if (mr.getEvent().getEventType() == ParkingEventType.EV_OVERSTAY) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_NOT_ALLOWED);
+        }
+
         MoveResponseType type = request.responseType();
         if (type == null) {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_INVALID);

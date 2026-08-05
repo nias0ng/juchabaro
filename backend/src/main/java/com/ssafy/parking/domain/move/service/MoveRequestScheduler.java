@@ -5,6 +5,7 @@ import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
 import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.repository.NotificationRepository;
+import com.ssafy.parking.domain.hw.outbox.MoveVerificationNotifier;
 import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,6 +25,7 @@ public class MoveRequestScheduler {
 
     private final MoveRequestRepository moveRequestRepository;
     private final NotificationDispatcher notificationDispatcher;
+    private final MoveVerificationNotifier moveVerificationNotifier;
 
     @Scheduled(fixedDelay = 60_000) // 1분 주기
     @Transactional
@@ -46,6 +48,7 @@ public class MoveRequestScheduler {
                     "차량 이동 재요청",
                     "아직 이동이 확인되지 않았습니다. 차량 이동을 다시 요청드립니다.",
                     mr.getEvent(), mr, now);
+            moveVerificationNotifier.publish(mr);
         }
     }
 

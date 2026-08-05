@@ -49,9 +49,8 @@ public class AdminEventService {
     @Transactional(readOnly = true)
     public AdminEventListResponse getEvents(LocalDate date, ParkingEventStatus status,
                                             ParkingEventType type, int page, int size) {
-        LocalDate d = (date != null) ? date : LocalDate.now();
-        LocalDateTime from = d.atStartOfDay();
-        LocalDateTime to = d.plusDays(1).atStartOfDay();
+        LocalDateTime from = (date != null) ? date.atStartOfDay() : null;
+        LocalDateTime to   = (date != null) ? date.plusDays(1).atStartOfDay() : null;
         Pageable pageable = PageRequest.of(page, size);
 
         Page<ParkingEvent> events = parkingEventRepository.findForAdmin(from, to, status, type, pageable);
