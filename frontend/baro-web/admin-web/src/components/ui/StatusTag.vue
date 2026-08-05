@@ -1,5 +1,5 @@
 <script setup lang="ts">
-export type TagTone = 'danger' | 'info' | 'success' | 'warning' | 'neutral' | 'primary';
+export type TagTone = 'danger' | 'info' | 'success' | 'warning' | 'sky' | 'neutral' | 'primary';
 
 withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
 </script>
@@ -29,6 +29,11 @@ withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
 .tone-info {
   background: var(--panel-info-soft);
   color: var(--panel-info);
+}
+
+.tone-sky {
+  background: var(--panel-sky-soft);
+  color: var(--panel-sky-foreground);
 }
 
 .tone-success {
