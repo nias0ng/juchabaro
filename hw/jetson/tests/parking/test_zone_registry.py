@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from src.parking.geometry import bbox_center, polygon_centroid
+from src.parking.geometry import bbox_center
 from src.parking.models import (
     EntryExitRole,
     ZoneDefinition,
