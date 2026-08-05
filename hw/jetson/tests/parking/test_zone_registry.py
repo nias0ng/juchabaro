@@ -495,3 +495,62 @@ def test_deployed_configs_derive_outward_direction_into_upper_right(
     piece_center = polygon_centroid(outward[ZoneId(9)])
     assert piece_center[0] > exit_center[0]
     assert piece_center[1] < exit_center[1]
+
+
+_DEGENERATE_POLYGON = ((0.1, 0.1), (0.2, 0.2), (0.3, 0.3))
+
+
+def test_degenerate_aisle_polygon_is_skipped_without_raising() -> None:
+    """면적이 0인 AISLE polygon(CVAT 라벨링 실수 등)이 있어도 registry 구성이
+
+    죽지 않아야 한다(fail-safe, 571). 중심을 계산할 수 없는 AISLE은
+    외부 방향 유도에서 제외되고, 유효한 AISLE이 남지 않으면 그 EXIT 구역은
+    결과에서 빠진다.
+    """
+
+    degenerate_aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=_DEGENERATE_POLYGON,
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+
+    registry = ZoneRegistry((degenerate_aisle, exit_zone))
+
+    assert registry.exit_outward_polygons() == {}
+
+
+def test_degenerate_exit_polygon_is_skipped_without_raising() -> None:
+    """면적이 0인 EXIT polygon이 있어도 registry 구성이 죽지 않아야 한다
+
+    (fail-safe, 571). 중심을 계산할 수 없는 EXIT 구역은 결과에서 빠진다.
+    """
+
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    degenerate_exit = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=_DEGENERATE_POLYGON,
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+
+    registry = ZoneRegistry((aisle, degenerate_exit))
+
+    assert registry.exit_outward_polygons() == {}

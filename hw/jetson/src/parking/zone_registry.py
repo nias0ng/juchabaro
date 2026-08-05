@@ -316,13 +316,36 @@ class ZoneRegistry:
             )
             return {}
 
-        aisle_centers = {
-            definition.zone_id: polygon_centroid(definition.polygon)
-            for definition in aisles
-        }
+        aisle_centers: dict[ZoneId, tuple[float, float]] = {}
+        for definition in aisles:
+            try:
+                aisle_centers[definition.zone_id] = polygon_centroid(definition.polygon)
+            except ValueError:
+                logger.warning(
+                    "AISLE 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
+                    "없습니다. 이 구역은 외부 방향 유도에서 제외됩니다: "
+                    "zone_id=%s",
+                    int(definition.zone_id),
+                )
+        if not aisle_centers:
+            logger.warning(
+                "유효한 AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 "
+                "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
+                [int(definition.zone_id) for definition in exits],
+            )
+            return {}
+
         outward: dict[ZoneId, NormalizedPolygon] = {}
         for exit_definition in exits:
-            exit_center = polygon_centroid(exit_definition.polygon)
+            try:
+                exit_center = polygon_centroid(exit_definition.polygon)
+            except ValueError:
+                logger.warning(
+                    "EXIT 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
+                    "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_id=%s",
+                    int(exit_definition.zone_id),
+                )
+                continue
             nearest_zone_id = min(
                 aisle_centers,
                 key=lambda zone_id: (
