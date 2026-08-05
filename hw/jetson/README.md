@@ -134,7 +134,10 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 
 `main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
 outbox publisher, evidence publication worker와 단일 monitoring thread의 시작·정상 종료 생명주기를
-소유한다. `BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
+소유한다. 종료 시 monitoring·MoveVerification producer를 먼저 멈춘 뒤 publication
+worker를 회수한다. 진행 중 작업은 완료까지 기다리지만 queue 전체를 drain하지
+않으며, 남은 durable 작업은 다음 기동의 recovery에서 이어간다.
+`BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
 값이 있으면 `BACKEND_BASE_URL`로 전송하는 두 worker를 기동한다. outbox publisher는
 API 6·7·10·12의 exact JSON bytes를, evidence publication worker는 API 8·9를
 담당한다. 네트워크·5xx는 지수 backoff로 재시도하고 4xx·ACK 계약 위반·payload
@@ -230,7 +233,9 @@ EvidenceUnavailable:{evidenceId}:{publicationRevision}
 전송 시도·다음 재시도 시각·Backend ACK는 SQLite에 보존하므로 process가
 중단돼도 동일 publication identity로 이어서 처리한다. API 8 직전에 파일 손실이나
 checksum 불일치를 발견하면 해당 binary를 `LOST_OR_CORRUPTED`로 확정하고 API 9로
-전환한다. capture를 실제 Incident workflow에 연결하는 작업은 별도 범위다.
+전환한다. `MonitoringPipeline`은 frame transaction commit 후 생성된
+`evidence_capture_intents`를 `EvidenceCaptureCoordinator`에 전달해 JPEG spool과
+SQLite metadata를 기록한다.
 
 `ABSENCE_CONFIRMATION_SECONDS`는
 ByteTrack timeout이 아니라 정상 전체 구역 관측에서 PhysicalVehicle 미관측을
