@@ -155,12 +155,22 @@ class _ParkingPipeline:
         self.exit_reasons: list[str] = []
         self.exit_zone_traversal = True
         self.restored_episodes: tuple[ParkingEpisode, ...] = ()
+        self._terminated_traversal_vehicle_ids: set[PhysicalVehicleId] = set()
 
     def checkpoint_state(self):
-        return self.runtime_revision, self.restored_episodes
+        return (
+            self.runtime_revision,
+            self.restored_episodes,
+            frozenset(self._terminated_traversal_vehicle_ids),
+        )
 
     def restore_state(self, checkpoint) -> None:
-        self.runtime_revision, self.restored_episodes = checkpoint
+        (
+            self.runtime_revision,
+            self.restored_episodes,
+            terminated,
+        ) = checkpoint
+        self._terminated_traversal_vehicle_ids = set(terminated)
 
     def restore_active(
         self,
@@ -179,6 +189,12 @@ class _ParkingPipeline:
 
     def exit_zone_traversal_observed(self, physical_vehicle_id) -> bool:
         assert physical_vehicle_id == VEHICLE_ID
+        if physical_vehicle_id in self._terminated_traversal_vehicle_ids:
+            # 실제 ParkingPipeline과 마찬가지로, physical_exit()이 이 차량의
+            # zone visit을 이미 종료시켰다면 더 이상 통과를 관측할 수 없다.
+            # 프로덕션이 읽기/physical_exit 호출 순서를 뒤집으면 이 double도
+            # False를 반환해 회귀를 드러낸다.
+            return False
         return self.exit_zone_traversal
 
     def physical_exit(
@@ -191,6 +207,7 @@ class _ParkingPipeline:
         assert physical_vehicle_id == VEHICLE_ID
         assert observed_at == T1
         self.runtime_revision += 1
+        self._terminated_traversal_vehicle_ids.add(physical_vehicle_id)
         self.exit_reasons.append(incident_termination_reason)
         restored = next(
             (
@@ -834,6 +851,42 @@ def test_admin_closed_session_keeps_admin_end_and_still_records_physical_exit(
         assert repeated.retired_physical_vehicle_ids == (VEHICLE_ID,)
         assert _outbox_count(connection) == 1
         assert parking.exit_reasons == [SESSION_EXITED]
+    finally:
+        connection.close()
+
+
+def test_traversal_read_must_happen_before_physical_exit_terminates_it(
+    tmp_path: Path,
+) -> None:
+    """읽기 순서 회귀 고정(565).
+
+    ``exit_zone_traversal_observed()``는 ``physical_exit()``이 zone visit을
+    종료시키기 **전에** 호출돼야 한다. ``_ParkingPipeline`` double은
+    ``physical_exit()``이 호출된 차량에 대해 이후 ``exit_zone_traversal_observed``가
+    False를 반환하도록 실제 파이프라인의 동작을 그대로 모사한다. 그래서
+    ``PhysicalPresenceWorkflow.plan_departure``가 이 순서를 뒤집으면(먼저
+    ``physical_exit``을 호출한 뒤 통과 여부를 읽으면) 이 테스트가 실패한다 —
+    SessionExit이 전혀 발행되지 않고 mirror가 EXITED로 갱신되지 않는다.
+    """
+
+    connection = open_database(tmp_path / "traversal-read-order.db")
+    session = _SessionWorkflow(ensure_vehicle=False)
+    parking = _ParkingPipeline(process_result=_empty_result())
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    try:
+        _seed_bound_departure(connection)
+
+        committed = workflow.process(_batch(departure=True), connection=connection)
+
+        vehicle = PhysicalVehicleRepository(connection).get(VEHICLE_ID)
+        mirror = ParkingSessionMirrorRepository(connection).get(SESSION_ID)
+        assert committed.retired_physical_vehicle_ids == (VEHICLE_ID,)
+        assert vehicle.termination_reason == SESSION_EXITED
+        assert mirror.physical_presence_state is PhysicalPresenceState.EXITED
+        assert (
+            mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
+        )
+        assert _outbox_count(connection) == 1
     finally:
         connection.close()
 
