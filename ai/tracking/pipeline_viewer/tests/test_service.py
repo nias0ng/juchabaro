@@ -1,11 +1,14 @@
 """Viewer 입력 계약과 기본 경로 테스트."""
 
 import json
+from pathlib import Path
 
 import pytest
 
+from pipeline_viewer import service
 from pipeline_viewer.service import (
     EPOCH,
+    SideMaskingDetector,
     ViewerInputError,
     ViewerPolicy,
     _policy_snapshot_json,
@@ -110,3 +113,69 @@ def test_entry_event_time_must_match_video_zero() -> None:
 
     with pytest.raises(ViewerInputError, match="영상 첫 프레임"):
         parse_entry_event(json.dumps(raw))
+
+
+class _FakeZone:
+    """`compute_mask_ratios_from_zones`가 요구하는 `.polygon` 속성만 흉내내는 stub."""
+
+    def __init__(self, polygon) -> None:
+        self.polygon = polygon
+
+
+class _FakeZoneRegistry:
+    """`ZoneRegistry.all()`만 흉내내는 최소 fake — 실제 zone 파일 없이 조립을
+    검증한다."""
+
+    def __init__(self, zones) -> None:
+        self._zones = tuple(zones)
+
+    def all(self):
+        return self._zones
+
+
+def test_full_frame_detector_is_wrapped_with_side_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """full-frame 경로의 YOLO delegate가 SideMaskingDetector로 조립되는지
+    실제 YOLO 모델·영상 없이 fake raw detector로 확인한다(537). 계산된 마스크
+    ratio가 실제로 SideMaskingDetector에 전달됐는지도 합성 zone + 알려진
+    margin으로 기대값을 직접 계산해서 대조한다."""
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeRawDetector:
+        def __init__(
+            self, *, model_path, tracker_config, confidence, capture_detections
+        ) -> None:
+            captured_kwargs["model_path"] = model_path
+            captured_kwargs["tracker_config"] = tracker_config
+            captured_kwargs["confidence"] = confidence
+            captured_kwargs["capture_detections"] = capture_detections
+
+    monkeypatch.setattr(service, "UltralyticsVehicleTracker", _FakeRawDetector)
+
+    zones = _FakeZoneRegistry(
+        [_FakeZone([(0.25, 0.0), (0.70, 0.0), (0.70, 1.0), (0.25, 1.0)])]
+    )
+    margin_ratio = 0.05
+
+    detector = service._build_detector(
+        model_path=Path("fake-model.pt"),
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+        capture_detections=True,
+        zones=zones,
+        mask_margin_ratio=margin_ratio,
+    )
+
+    assert isinstance(detector, SideMaskingDetector)
+    assert isinstance(detector._inner, _FakeRawDetector)
+    assert captured_kwargs == {
+        "model_path": "fake-model.pt",
+        "tracker_config": "bytetrack.yaml",
+        "confidence": 0.5,
+        "capture_detections": True,
+    }
+    # min_x=0.25, max_x=0.70 -> (0.25-0.05, 0.70+0.05)
+    assert detector._left_mask_end_ratio == pytest.approx(0.20)
+    assert detector._right_mask_start_ratio == pytest.approx(0.75)
