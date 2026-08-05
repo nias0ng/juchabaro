@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import json
 import math
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.parking.geometry import (
+    convex_polygon_intersection_area,
+    is_convex_polygon,
+    polygon_area,
+)
 from src.parking.models import (
     EntryExitRole,
     NormalizedPolygon,
@@ -27,6 +33,10 @@ EV_ZONE_TYPES = frozenset({ZoneType.EV_CHARGING})
 RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
 SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
+
+# 정규화 좌표의 absolute 면적은 작은 유효 zone을 놓치므로, 더 작은 주차면
+# 면적 대비 비율로 내부 겹침을 판정한다. exact shared edge의 면적 0은 허용한다.
+_MATERIAL_SPOT_OVERLAP_RATIO = 1e-9
 
 _SNAPSHOT_FIELDS = frozenset({"zoneDefinitionVersion", "calibrationReference", "zones"})
 _ZONE_REQUIRED_FIELDS = frozenset({"zoneId", "zoneType", "polygon"})
@@ -225,6 +235,40 @@ class ZoneRegistry:
                     raise ZoneRegistryError(
                         f"zoneId {definition.zone_id}의 egress zoneId {egress_zone_id}는 AISLE이어야 합니다"
                     )
+
+        spot_zones = tuple(
+            sorted(
+                (
+                    definition
+                    for definition in definitions
+                    if definition.zone_type in SPOT_ZONE_TYPES
+                ),
+                key=lambda definition: int(definition.zone_id),
+            )
+        )
+        for definition in spot_zones:
+            if not is_convex_polygon(definition.polygon):
+                raise ZoneRegistryError(
+                    f"zoneId {definition.zone_id}: assignment 대상 주차면 polygon은 "
+                    "non-degenerate convex polygon이어야 합니다"
+                )
+        for first, second in combinations(spot_zones, 2):
+            overlap_area = convex_polygon_intersection_area(
+                first.polygon,
+                second.polygon,
+            )
+            smaller_area = min(
+                polygon_area(first.polygon),
+                polygon_area(second.polygon),
+            )
+            overlap_ratio = overlap_area / smaller_area
+            if overlap_ratio > _MATERIAL_SPOT_OVERLAP_RATIO:
+                raise ZoneRegistryError(
+                    "assignment 대상 주차면 polygon 내부가 겹칩니다: "
+                    f"zoneId {first.zone_id}, zoneId {second.zone_id}, "
+                    f"overlapArea={overlap_area:.12f}, "
+                    f"overlapRatio={overlap_ratio:.12f}"
+                )
 
     def all(self) -> tuple[ZoneDefinition, ...]:
         """파일에 기록된 순서대로 모든 구역 정의를 반환한다."""

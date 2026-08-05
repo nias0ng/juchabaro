@@ -25,14 +25,16 @@ def test_default_model_path_uses_jetson_model_directory() -> None:
     )
 
 
-def test_bad_parking_overlap_default_is_forwarded_to_monitoring_policy() -> None:
+def test_placement_defaults_are_forwarded_to_monitoring_policy() -> None:
     viewer_policy = ViewerPolicy()
+    monitoring = viewer_policy.to_monitoring_policy()
 
     assert viewer_policy.bad_parking_min_primary_overlap_ratio == 0.75
-    assert (
-        viewer_policy.to_monitoring_policy().bad_parking_min_primary_overlap_ratio
-        == 0.75
-    )
+    assert viewer_policy.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert viewer_policy.out_of_zone_min_spot_overlap_ratio == 0.50
+    assert monitoring.bad_parking_min_primary_overlap_ratio == 0.75
+    assert monitoring.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert monitoring.out_of_zone_min_spot_overlap_ratio == 0.50
 
 
 def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:

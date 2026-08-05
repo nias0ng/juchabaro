@@ -13,10 +13,12 @@ from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     AssignmentState,
     BlockingRelationState,
+    IncidentSignalValue,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
     ParkingTransitionType,
+    PlacementEvidenceSource,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -28,7 +30,7 @@ from src.parking.parking_episode_tracker import (
     InMemoryParkingEpisodeTracker,
 )
 from src.parking.pipeline import ParkingPipeline
-from src.parking.rules.bad_parking import BAD_PARKING
+from src.parking.rules.bad_parking import BAD_PARKING, OUT_OF_ZONE
 from src.parking.rules.double_parking import DOUBLE_PARKING
 from src.parking.rules.ev_overstay import EV_OVERSTAY
 from src.parking.rules.restricted_zone import (
@@ -61,13 +63,15 @@ ATTEMPT = EntryAttemptId(UUID(int=102))
 
 INSIDE = BoundingBox(0.15, 0.15, 0.25, 0.25)
 OUTSIDE = BoundingBox(0.70, 0.70, 0.80, 0.80)
-AMBIGUOUS = BoundingBox(0.20, 0.12, 0.30, 0.28)
+AMBIGUOUS = BoundingBox(0.20, 0.12, 0.40, 0.28)
+TWO_SPOT_51_49 = BoundingBox(0.198, 0.12, 0.398, 0.28)
+TWO_SPOT_70_30 = BoundingBox(0.16, 0.12, 0.36, 0.28)
 ASSIGNED_FIRST = BoundingBox(0.11, 0.12, 0.19, 0.28)
 PROTRUDING_FROM_FIRST = BoundingBox(0.18, 0.12, 0.38, 0.28)
 
 SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
-SECOND_SPOT = ((0.20, 0.10), (0.40, 0.10), (0.40, 0.30), (0.20, 0.30))
+SECOND_SPOT = ((0.30, 0.10), (0.50, 0.10), (0.50, 0.30), (0.30, 0.30))
 
 
 def at(seconds: float) -> datetime:
@@ -205,6 +209,8 @@ def make_pipeline(
     assignment_overlap_ratio: float = 0.5,
     ambiguous_margin: float = 0.05,
     bad_parking_overlap_ratio: float = 0.75,
+    bad_parking_secondary_overlap_ratio: float = 0.25,
+    out_of_zone_overlap_ratio: float = 0.50,
     blocking_confirm_seconds: float = 0.0,
     blocking_clear_seconds: float = 0.0,
 ):
@@ -240,6 +246,10 @@ def make_pipeline(
         assignment_min_overlap_ratio=assignment_overlap_ratio,
         assignment_ambiguous_margin=ambiguous_margin,
         bad_parking_min_primary_overlap_ratio=bad_parking_overlap_ratio,
+        bad_parking_min_secondary_overlap_ratio=(
+            bad_parking_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap_ratio,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
 
@@ -280,6 +290,63 @@ def test_runtime_checkpoint_restores_all_parking_owners() -> None:
     assert visit_tracker.active_visits(CAR) == ()
     assert episode_tracker.active_episode(CAR) is None
     assert reducer.active_snapshot() == ()
+
+
+@pytest.mark.parametrize(
+    ("parking_seconds", "sample_times", "expected_state"),
+    (
+        (10.0, (0.0,), ParkingState.STOP_PENDING),
+        (1.0, (0.0, 1.0), ParkingState.PARKED),
+    ),
+)
+def test_restore_active_rejects_assigned_episode_when_zone_is_missing(
+    parking_seconds: float,
+    sample_times: tuple[float, ...],
+    expected_state: ParkingState,
+) -> None:
+    old_pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=parking_seconds,
+    )
+    result = None
+    for seconds in sample_times:
+        result = old_pipeline.process(
+            batch(seconds, snapshot(seconds, bbox=ASSIGNED_FIRST))
+        )
+    assert result is not None
+    episode = result.parking_episode_updates[-1]
+    assert episode.state is expected_state
+    assert episode.assignment is not None
+    assert episode.assignment.zone_id == GENERAL_A.zone_id
+
+    replacement_zone = ZoneDefinition(
+        zone_id=ZoneId(30),
+        zone_type=ZoneType.GENERAL,
+        polygon=SQUARE,
+        zone_definition_version=ZoneDefinitionVersion(8),
+        calibration_reference="cam-1-v2",
+    )
+    (
+        new_pipeline,
+        new_visit_tracker,
+        new_episode_tracker,
+        _,
+        _,
+    ) = make_pipeline((replacement_zone,))
+
+    with pytest.raises(
+        ValueError,
+        match=r"ParkingEpisode assignment.*zoneId=3",
+    ):
+        new_pipeline.restore_active(
+            zone_visits=(),
+            parking_episodes=(episode,),
+            incidents=(),
+        )
+
+    # Cross-owner reference validation happens before any owner is mutated.
+    assert new_visit_tracker.active_visits(CAR) == ()
+    assert new_episode_tracker.active_episode(CAR) is None
 
 
 def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident() -> None:
@@ -398,6 +465,47 @@ def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
     assert result.parking_transitions == ()
 
 
+@pytest.mark.parametrize(
+    ("bbox", "expected_assignment", "primary", "secondary"),
+    (
+        (TWO_SPOT_51_49, AssignmentState.AMBIGUOUS, 0.51, 0.49),
+        (TWO_SPOT_70_30, AssignmentState.ASSIGNED, 0.70, 0.30),
+    ),
+)
+def test_two_spot_placement_opens_bad_parking_independent_of_assignment(
+    bbox: BoundingBox,
+    expected_assignment: AssignmentState,
+    primary: float,
+    secondary: float,
+) -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, GENERAL_B),
+        parking_seconds=1.0,
+    )
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    assignment = result.parking_episode_updates[-1].assignment
+    assert assignment is not None
+    assert assignment.state is expected_assignment
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(primary)
+    assert diagnostic.evidence.secondary_overlap_ratio == pytest.approx(secondary)
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(1.0)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
+    assert [
+        item.transition_type for item in transitions_for(result, BAD_PARKING)
+    ] == [IncidentTransitionType.OPEN]
+
+
 def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A,),
@@ -422,6 +530,71 @@ def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     assert [item.transition_type for item in opened] == [
         IncidentTransitionType.OPEN
     ]
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(0.60)
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(0.60)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
+    assert diagnostic.bad_parking_signal.confirmable is True
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.NOT_MATCHED
+
+
+def test_spot_union_below_threshold_opens_out_of_zone_not_bad_parking() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=OUTSIDE)),
+        entry_attempt_ids=attempts,
+    )
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=OUTSIDE)),
+        entry_attempt_ids=attempts,
+    )
+
+    assert transitions_for(result, BAD_PARKING) == ()
+    opened = transitions_for(result, OUT_OF_ZONE)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(0.0)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.MATCHED
+    assert diagnostic.out_of_zone_signal.confirmable is True
+
+
+def test_parked_snapshot_ignores_final_frame_geometry_jitter() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=2.0,
+    )
+
+    pipeline.process(batch(0, snapshot(0, bbox=ASSIGNED_FIRST)))
+    pipeline.process(batch(1, snapshot(1, bbox=ASSIGNED_FIRST)))
+    result = pipeline.process(batch(2, snapshot(2, bbox=OUTSIDE)))
+
+    episode = result.parking_episode_updates[-1]
+    assert episode.state is ParkingState.PARKED
+    assert episode.assignment is not None
+    assert episode.assignment.zone_id == GENERAL_A.zone_id
+    assert episode.assignment.last_stable_at == at(0)
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.representative_footprint == (
+        (ASSIGNED_FIRST.x1, ASSIGNED_FIRST.y1),
+        (ASSIGNED_FIRST.x2, ASSIGNED_FIRST.y1),
+        (ASSIGNED_FIRST.x2, ASSIGNED_FIRST.y2),
+        (ASSIGNED_FIRST.x1, ASSIGNED_FIRST.y2),
+    )
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert transitions_for(result, BAD_PARKING) == ()
+    assert transitions_for(result, OUT_OF_ZONE) == ()
 
 
 def test_unknown_motion_freezes_bad_parking_clear_but_keeps_geometry_observed() -> None:
@@ -746,6 +919,22 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
     ] == [ParkingTransitionType.UNPARKED]
     assert transitions_for(movement_ended, BAD_PARKING) == ()
     assert updates_for(movement_ended, BAD_PARKING)[-1].state is IncidentState.OPEN
+
+    # terminal episode가 slot에서 제거된 다음에도 motion dependency가 UNKNOWN이면
+    # 새 geometry로 기존 Incident의 clear timer를 진행하지 않는다.
+    motion_unknown = pipeline.process(
+        batch(
+            2.75,
+            snapshot(2.75, bbox=ASSIGNED_FIRST, motion=MotionSignal.UNKNOWN),
+        ),
+        session_contexts=contexts,
+    )
+    assert transitions_for(motion_unknown, BAD_PARKING) == ()
+    assert updates_for(motion_unknown, BAD_PARKING)[-1].state is IncidentState.OPEN
+    assert (
+        motion_unknown.placement_diagnostics[0].bad_parking_signal.value
+        is IncidentSignalValue.UNKNOWN
+    )
 
     geometry_cleared = pipeline.process(
         batch(3, snapshot(3, bbox=ASSIGNED_FIRST, motion=MotionSignal.MOVING)),

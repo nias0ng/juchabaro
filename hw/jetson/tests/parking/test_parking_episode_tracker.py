@@ -62,14 +62,23 @@ def degraded(*, last_reliable: float | None = None) -> ObservationStatus:
     )
 
 
-def parking_assignment(seconds: float, *, zone_id: ZoneId = ZONE) -> ParkingAssignment:
+def parking_assignment(
+    seconds: float,
+    *,
+    zone_id: ZoneId = ZONE,
+    footprint=None,
+) -> ParkingAssignment:
     return ParkingAssignment(
         state=AssignmentState.ASSIGNED,
         representative_footprint=(
-            (0.1, 0.1),
-            (0.3, 0.1),
-            (0.3, 0.4),
-            (0.1, 0.4),
+            (
+                (0.1, 0.1),
+                (0.3, 0.1),
+                (0.3, 0.4),
+                (0.1, 0.4),
+            )
+            if footprint is None
+            else footprint
         ),
         confidence=0.9,
         last_stable_at=at(seconds),
@@ -177,7 +186,7 @@ def test_first_stationary_creates_complete_stop_pending_snapshot() -> None:
     assert episode.state is ParkingState.STOP_PENDING
     assert isinstance(episode.episode_id, UUID)
     assert episode.parking_session_id == SESSION
-    assert episode.assignment is None
+    assert episode.assignment == parking_assignment(0)
     assert episode.parked_at is None
     assert episode.stationary_trusted_seconds == 0.0
     assert episode.movement_trusted_seconds == 0.0
@@ -201,7 +210,8 @@ def test_stationary_confirmation_attaches_assignment_and_becomes_parked() -> Non
     assert parked.episode_id == candidate.episode_id
     assert parked.stationary_trusted_seconds == pytest.approx(3.0)
     assert parked.parked_at == at(3)
-    assert parked.assignment == parking_assignment(3)
+    assert pending.assignment == parking_assignment(0)
+    assert parked.assignment == pending.assignment
     assert parked.publication_revision == 1
 
 
@@ -390,6 +400,85 @@ def test_parked_assignment_is_frozen_for_late_publication() -> None:
     assert returned.assignment == parked.assignment
     assert returned.parking_session_id == SESSION
     assert returned.publication_revision == 1
+
+
+def test_parked_assignment_latches_first_trusted_candidate_across_later_jitter() -> None:
+    tracker = make_tracker(parking=2)
+    first = parking_assignment(
+        0,
+        footprint=((0.10, 0.1), (0.30, 0.1), (0.30, 0.4), (0.10, 0.4)),
+    )
+    representative = parking_assignment(
+        1,
+        footprint=((0.11, 0.1), (0.31, 0.1), (0.31, 0.4), (0.11, 0.4)),
+    )
+    final_jitter = parking_assignment(
+        2,
+        zone_id=OTHER_ZONE,
+        footprint=((0.70, 0.1), (0.90, 0.1), (0.90, 0.4), (0.70, 0.4)),
+    )
+
+    feed(tracker, MotionSignal.STATIONARY, 0, assignment=first)
+    feed(tracker, MotionSignal.STATIONARY, 1, assignment=representative)
+    parked = feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        2,
+        assignment=final_jitter,
+    )
+
+    assert parked.state is ParkingState.PARKED
+    assert parked.assignment == first
+
+
+def test_restored_stop_pending_preserves_durable_placement_candidate() -> None:
+    original = make_tracker(parking=2)
+    representative = parking_assignment(
+        0,
+        footprint=((0.11, 0.1), (0.31, 0.1), (0.31, 0.4), (0.11, 0.4)),
+    )
+    feed(
+        original,
+        MotionSignal.STATIONARY,
+        0,
+        assignment=representative,
+    )
+    checkpoint = feed(
+        original,
+        MotionSignal.STATIONARY,
+        1,
+        assignment=parking_assignment(1),
+    )
+
+    restored = make_tracker(parking=99)
+    restored.restore_active((checkpoint,))
+
+    assert restored.active_episode(CAR) == checkpoint
+    assert restored.active_episode(CAR).assignment == representative
+
+    # downtime은 timer에 더하지 않고, resumed frame과 경계 frame의 jitter도
+    # restart 전에 latch한 최초 trusted placement를 바꾸지 않는다.
+    resumed = feed(
+        restored,
+        MotionSignal.STATIONARY,
+        100,
+        assignment=representative,
+    )
+    final_jitter = parking_assignment(
+        101,
+        zone_id=OTHER_ZONE,
+        footprint=((0.70, 0.1), (0.90, 0.1), (0.90, 0.4), (0.70, 0.4)),
+    )
+    parked = feed(
+        restored,
+        MotionSignal.STATIONARY,
+        101,
+        assignment=final_jitter,
+    )
+
+    assert resumed.state is ParkingState.STOP_PENDING
+    assert parked.state is ParkingState.PARKED
+    assert parked.assignment == representative
 
 
 def test_late_session_binding_during_move_pending_publishes_parked_fact() -> None:

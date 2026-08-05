@@ -113,6 +113,8 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "assignment_min_overlap_ratio": 0.5,
         "assignment_ambiguous_margin": 0.05,
         "bad_parking_min_primary_overlap_ratio": 0.75,
+        "bad_parking_min_secondary_overlap_ratio": 0.25,
+        "out_of_zone_min_spot_overlap_ratio": 0.50,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
         "motion_window_seconds": 0.75,
@@ -210,28 +212,31 @@ def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> Non
         )
 
 
-def test_factory_rejects_bad_parking_overlap_below_assignment_overlap(
+def test_factory_keeps_assignment_and_violation_thresholds_independent(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "invalid-overlap.db"
     connection = open_database(database_path)
     connection.close()
 
-    with pytest.raises(ValueError, match="bad_parking_min_primary_overlap_ratio"):
-        build_monitoring_pipeline(
-            zones=_zones(),
-            policy=_policy(
-                assignment_min_overlap_ratio=0.5,
-                bad_parking_min_primary_overlap_ratio=0.49,
-            ),
-            dependencies=MonitoringDependencies(
-                camera_id="camera-1",
-                frame_source=_FrameSource(),
-                detector=_Detector(),
-                publication_preparer=_PublicationPreparer(),
-                connection_factory=lambda: connect_database(database_path),
-            ),
-        )
+    pipeline = build_monitoring_pipeline(
+        zones=_zones(),
+        policy=_policy(
+            assignment_min_overlap_ratio=0.5,
+            bad_parking_min_primary_overlap_ratio=0.49,
+            bad_parking_min_secondary_overlap_ratio=0.33,
+            out_of_zone_min_spot_overlap_ratio=0.61,
+        ),
+        dependencies=MonitoringDependencies(
+            camera_id="camera-1",
+            frame_source=_FrameSource(),
+            detector=_Detector(),
+            publication_preparer=_PublicationPreparer(),
+            connection_factory=lambda: connect_database(database_path),
+        ),
+    )
+
+    assert pipeline is not None
 
 
 def test_factory_delegates_invalid_motion_policy_to_motion_owner(

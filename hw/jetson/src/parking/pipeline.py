@@ -46,6 +46,7 @@ from src.parking.models import (
     Incident,
     IncidentKeyScope,
     IncidentReduction,
+    IncidentSignal,
     IncidentTransition,
     ParkingAssignment,
     ParkingEpisode,
@@ -53,6 +54,9 @@ from src.parking.models import (
     ParkingState,
     ParkingTransition,
     ParkingTransitionType,
+    PlacementDiagnostic,
+    PlacementEvidence,
+    PlacementEvidenceSource,
     PresenceSignal,
     ZoneDefinition,
     ZoneId,
@@ -89,7 +93,10 @@ class _VehicleFrame:
     context: SessionContext | None
     entry_attempt_id: EntryAttemptId | None
     observation: ObservationStatus
-    assignment: ParkingAssignment | None
+    parking_motion_observation: ObservationStatus
+    assignment: ParkingAssignment
+    placement_evidence: PlacementEvidence
+    placement_evidence_source: PlacementEvidenceSource
     active_visits: tuple[ZoneVisit, ...]
     episode: ParkingEpisode | None
 
@@ -117,6 +124,8 @@ class ParkingPipeline:
         assignment_min_overlap_ratio: float,
         assignment_ambiguous_margin: float,
         bad_parking_min_primary_overlap_ratio: float,
+        bad_parking_min_secondary_overlap_ratio: float,
+        out_of_zone_min_spot_overlap_ratio: float,
     ) -> None:
         _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
         _validate_ratio(
@@ -131,11 +140,14 @@ class ParkingPipeline:
             bad_parking_min_primary_overlap_ratio,
             "bad_parking_min_primary_overlap_ratio",
         )
-        if bad_parking_min_primary_overlap_ratio < assignment_min_overlap_ratio:
-            raise ValueError(
-                "bad_parking_min_primary_overlap_ratio must be greater than "
-                "or equal to assignment_min_overlap_ratio"
-            )
+        _validate_ratio(
+            bad_parking_min_secondary_overlap_ratio,
+            "bad_parking_min_secondary_overlap_ratio",
+        )
+        _validate_ratio(
+            out_of_zone_min_spot_overlap_ratio,
+            "out_of_zone_min_spot_overlap_ratio",
+        )
         self._zones = zones
         self._zone_visit_tracker = zone_visit_tracker
         self._parking_episode_tracker = parking_episode_tracker
@@ -146,6 +158,12 @@ class ParkingPipeline:
         self._assignment_ambiguous_margin = assignment_ambiguous_margin
         self._bad_parking_min_primary_overlap_ratio = (
             bad_parking_min_primary_overlap_ratio
+        )
+        self._bad_parking_min_secondary_overlap_ratio = (
+            bad_parking_min_secondary_overlap_ratio
+        )
+        self._out_of_zone_min_spot_overlap_ratio = (
+            out_of_zone_min_spot_overlap_ratio
         )
 
     def checkpoint_state(self) -> tuple[object, object, object, object]:
@@ -187,10 +205,36 @@ class ParkingPipeline:
         CANDIDATE로 재시작한다.
         """
 
+        self._validate_restore_parking_assignment_zones(parking_episodes)
         self._zone_visit_tracker.restore_active(zone_visits)
         self._parking_episode_tracker.restore_active(parking_episodes)
         self._incident_reducer.restore_active(incidents)
         self._blocking_relation_tracker.restore_active(blocking_relations)
+
+    def _validate_restore_parking_assignment_zones(
+        self,
+        parking_episodes: tuple[ParkingEpisode, ...],
+    ) -> None:
+        """복원 assignment의 zone 참조가 현재 registry에 속하는지 검증한다.
+
+        ZoneVisit은 자신의 versioned scalar를 tracker가 검증하지만,
+        ParkingAssignment에는 아직 zone definition version이 없다. 따라서
+        조합 owner가 최소한 현재 registry의 zone 존재 여부를 먼저 확인해
+        복원 뒤 blocking 계산에서 늦게 실패하는 일을 막는다.
+        """
+
+        for episode in parking_episodes:
+            assignment = episode.assignment
+            if (
+                assignment is not None
+                and assignment.zone_id is not None
+                and self._zones.get_or_none(assignment.zone_id) is None
+            ):
+                raise ValueError(
+                    "active ParkingEpisode assignment references a zone absent "
+                    "from the current registry: "
+                    f"zoneId={int(assignment.zone_id)}"
+                )
 
     def process(
         self,
@@ -217,6 +261,7 @@ class ParkingPipeline:
         parking_transitions: list[ParkingTransition] = []
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
+        placement_diagnostics: list[PlacementDiagnostic] = []
         frames: dict[PhysicalVehicleId, _VehicleFrame] = {}
 
         # pass 1: 차량별 geometry·scope 갱신. BlockingRelation 후보는 모든
@@ -225,9 +270,12 @@ class ParkingPipeline:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
             observation = _effective_observation(batch, vehicle)
-            assignment = assignment_resolver.resolve(
+            ephemeral_evidence = assignment_resolver.analyze(
                 vehicle,
                 self._zones,
+            )
+            assignment = assignment_resolver.assignment_from_evidence(
+                ephemeral_evidence,
                 min_overlap_ratio=self._assignment_min_overlap_ratio,
                 ambiguous_margin=self._assignment_ambiguous_margin,
             )
@@ -292,12 +340,31 @@ class ParkingPipeline:
                     vehicle.physical_vehicle_id
                 )
             )
+            effective_assignment = assignment
+            effective_evidence = ephemeral_evidence
+            evidence_source = PlacementEvidenceSource.EPHEMERAL_FRAME
+            if (
+                current_episode is not None
+                and current_episode.state
+                in {ParkingState.PARKED, ParkingState.MOVE_PENDING}
+                and current_episode.assignment is not None
+            ):
+                effective_assignment = current_episode.assignment
+                effective_evidence = assignment_resolver.analyze_footprint(
+                    current_episode.assignment.representative_footprint,
+                    observed_at=current_episode.assignment.last_stable_at,
+                    zones=self._zones,
+                )
+                evidence_source = PlacementEvidenceSource.PARKED_SNAPSHOT
             frames[vehicle.physical_vehicle_id] = _VehicleFrame(
                 vehicle=vehicle,
                 context=context,
                 entry_attempt_id=entry_attempt_id,
                 observation=observation,
-                assignment=assignment,
+                parking_motion_observation=motion_observation,
+                assignment=effective_assignment,
+                placement_evidence=effective_evidence,
+                placement_evidence_source=evidence_source,
                 active_visits=active_visits,
                 episode=current_episode,
             )
@@ -317,10 +384,13 @@ class ParkingPipeline:
             rule_context = RuleContext(
                 vehicle=frame.vehicle,
                 observation=batch.observation,
+                parking_motion_observation=frame.parking_motion_observation,
                 session_context=frame.context,
                 active_zone_visits=frame.active_visits,
                 parking_episode=frame.episode,
                 parking_assignment=frame.assignment,
+                placement_evidence=frame.placement_evidence,
+                placement_evidence_source=frame.placement_evidence_source,
                 blocking_relations=self._blocking_relation_tracker.active_relations(
                     vehicle_id
                 ),
@@ -328,14 +398,35 @@ class ParkingPipeline:
                 bad_parking_min_primary_overlap_ratio=(
                     self._bad_parking_min_primary_overlap_ratio
                 ),
+                bad_parking_min_secondary_overlap_ratio=(
+                    self._bad_parking_min_secondary_overlap_ratio
+                ),
+                out_of_zone_min_spot_overlap_ratio=(
+                    self._out_of_zone_min_spot_overlap_ratio
+                ),
                 observed_at=frame.vehicle.observed_at,
             )
-            self._evaluate_rules(
+            signals = self._evaluate_rules(
                 rule_context,
                 observation=frame.observation,
                 entry_attempt_id=frame.entry_attempt_id,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
+            )
+            signals_by_code = {signal.key.rule_code: signal for signal in signals}
+            placement_diagnostics.append(
+                PlacementDiagnostic(
+                    physical_vehicle_id=vehicle_id,
+                    track_segment_id=frame.vehicle.track_segment_id,
+                    source=frame.placement_evidence_source,
+                    evidence=frame.placement_evidence,
+                    assignment=frame.assignment,
+                    parking_state=(
+                        None if frame.episode is None else frame.episode.state
+                    ),
+                    bad_parking_signal=signals_by_code[bad_parking.BAD_PARKING],
+                    out_of_zone_signal=signals_by_code[bad_parking.OUT_OF_ZONE],
+                )
             )
 
         # TrackSegment 종료는 의도적으로 사용하지 않는다. PhysicalVehicle의
@@ -378,6 +469,7 @@ class ParkingPipeline:
             incident_updates=tuple(incident_updates),
             incident_transitions=tuple(incident_transitions),
             blocking_relation_updates=blocking_relation_updates,
+            placement_diagnostics=tuple(placement_diagnostics),
         )
 
     def _process_blocking_relations(
@@ -567,7 +659,7 @@ class ParkingPipeline:
         entry_attempt_id: EntryAttemptId | None,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
-    ) -> None:
+    ) -> tuple[IncidentSignal, ...]:
         zone_id_by_visit_id = {
             visit.visit_id: visit.zone_id for visit in context.active_zone_visits
         }
@@ -580,8 +672,10 @@ class ParkingPipeline:
             if context.session_context is None
             else context.session_context.parking_session_id
         )
+        evaluated_signals: list[IncidentSignal] = []
         for evaluate in _RULE_EVALUATORS:
             for signal in evaluate(context):
+                evaluated_signals.append(signal)
                 zone_id: ZoneId | None = None
                 victim_physical_vehicle_id: PhysicalVehicleId | None = None
                 if signal.key.scope_type is IncidentKeyScope.ZONE_VISIT:
@@ -605,6 +699,7 @@ class ParkingPipeline:
                         incident_updates,
                         incident_transitions,
                     )
+        return tuple(evaluated_signals)
 
     @staticmethod
     def _collect_reductions(

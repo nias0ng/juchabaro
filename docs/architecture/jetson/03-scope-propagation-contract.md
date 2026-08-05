@@ -36,6 +36,10 @@ flowchart TD
 ```
 
 화살표는 입력 또는 조회 관계다. 자동 lifecycle 종속성을 뜻하지 않는다.
+`PlacementEvidence`는 scope가 아니므로 관계도에 별도 node로 그리지
+않는다. AssignmentResolver가 PhysicalVehicle footprint와 ZoneDefinition snapshot에서
+만드는 immutable ephemeral 계산값이고, ParkingEpisode·RuleEvaluator가 같은
+값을 서로 다른 책임으로 읽는다.
 
 ## 3. 관측과 tracking
 
@@ -104,12 +108,17 @@ binding 전에 PARKED와 후속 UNPARKED가 모두 발생했더라도 retention 
 
 ZoneVisit ENDED는 이미 이탈 confirmation을 마친 사실이므로 해당 visit 기반 Incident의 직접 종료 입력이다. 같은 사건에 별도 NOT_MATCHED·clear timer를 다시 적용하지 않는다. IncidentReducer가 동일 `incidentId`의 RESOLVE publication을 만들며 다른 rule에는 전파하지 않는다.
 
+ZoneRegistry는 적용 전에 assignment 대상 주차면 polygon의 convex·positive
+area와 pairwise interior non-overlap을 검증한다. 이 검증 실패는 개별
+frame의 주차 판정 실패가 아니라 ZoneDefinition snapshot 적용 실패다.
+공유 경계는 넓이가 0이므로 허용한다.
+
 ## 6. ParkingEpisode, assignment와 movement
 
 | 변화 | ParkingEpisode·assignment | BlockingRelation | Incident | 외부 출력 |
 |---|---|---|---|---|
 | 정지 후보 | STOP_PENDING | 필요하면 후보 geometry 계산 | parking rule 후보는 `confirmable=false` | 없음 |
-| PARKED 확정 | PARKED + 안정된 assignment | 차단 후보 평가 가능 | parking rule 평가 | PARKED eligibility 생성 |
+| PARKED 확정 | PARKED + 안정된 assignment·`PARKED_SNAPSHOT` PlacementEvidence | 차단 후보 평가 가능 | parking rule 평가 | PARKED eligibility 생성 |
 | movement 후보 | MOVE_PENDING | 현재 관계 유지 | 기존 상태 유지 | 없음 |
 | motion 판단 불가 | 현재 lifecycle 유지, observation UNKNOWN·timer 정지 | geometry 관측은 유지하되 motion 의존 전이 금지 | PARKED 의존 규칙은 UNKNOWN, clear 금지 | 없음 |
 | movement 취소 | PARKED 복귀 | 필요하면 재평가 | 필요하면 재평가 | 없음 |
@@ -128,6 +137,24 @@ ParkingEpisode ENDED와 UNPARKED publication 계획
 ```
 
 parking rule이 PARKED를 OPEN 조건으로 삼더라도 movement 자체나 episode 공백을 `NOT_MATCHED`로 해석하지 않는다. 한 신뢰 가능한 sample에서 규칙별 필수 geometry·assignment가 유효하고 위반 술어가 false이면 `NOT_MATCHED`다. IncidentReducer가 이후 clear 시간을 누적하며, 필수 입력이 불확실하면 `UNKNOWN / confirmable=false`다.
+
+placement 재평가의 source 선택은 다음 순서를 따른다.
+
+```text
+정상 현재 bbox
+→ AssignmentResolver가 EPHEMERAL_FRAME PlacementEvidence 계산
+→ STOP_PENDING: 현재 후보를 rule signal에 쓰고 최초 trusted 후보를 episode에 미공개 latch·영속, confirmable=false
+→ PARKED: latch한 최초 trusted 후보에서 PARKED_SNAPSHOT을 계산·고정
+→ PARKED: assignment와 BAD_PARKING·OUT_OF_ZONE이 같은 snapshot을 사용
+→ MOVE_PENDING 또는 motion UNKNOWN: snapshot 유지, PARKED 의존 signal은 UNKNOWN
+→ MOVEMENT_CONFIRMED 종료: 최신 EPHEMERAL_FRAME evidence로 재평가
+```
+
+Assignment 해석과 BAD_PARKING·OUT_OF_ZONE 해석은 동일 PlacementEvidence를
+사용하지만 서로의 결과를 입력으로 삼지 않는다. 정확한 overlap
+정의·임계 경계·OUT_OF_ZONE 우선 truth table은
+[도메인 목적 및 출력 계약](./01-domain-purpose-and-output-contract.md#91-placementevidence와-판정-알고리즘)을
+따른다.
 
 새 위치에서 계속 불량 주차하거나 AISLE을 막는다면 새 Incident를 OPEN하지 않고 기존 Incident를 유지한다. clear confirmation 뒤 다시 성립한 경우에만 새 Incident다.
 

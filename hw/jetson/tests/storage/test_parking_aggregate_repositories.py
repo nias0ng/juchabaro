@@ -120,6 +120,7 @@ def _episode() -> ParkingEpisode:
         publication_revision=0,
         created_at=NOW,
         updated_at=NOW,
+        assignment=_assignment(NOW),
     )
 
 
@@ -271,6 +272,9 @@ def test_parking_episode_round_trips_assignment_and_guards_session_correlation(
         with UnitOfWork(connection):
             PhysicalVehicleRepository(connection).ensure(_vehicle())
             repository.add(episode)
+
+        assert repository.get(EPISODE_ID) == episode
+        assert repository.get_active(VEHICLE_ID).assignment == _assignment(NOW)
 
         duplicate = replace(
             episode,

@@ -66,11 +66,16 @@ def definition(
     calibration_reference: str = "camera-1:v2",
     egress_zone_ids: tuple[ZoneId, ...] = (),
     entry_exit_role: EntryExitRole | None = None,
+    polygon: tuple[tuple[float, float], ...] | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
         zone_type=zone_type,
-        polygon=tuple(tuple(point) for point in SQUARE),
+        polygon=(
+            tuple(tuple(point) for point in SQUARE)
+            if polygon is None
+            else polygon
+        ),
         zone_definition_version=ZoneDefinitionVersion(version),
         calibration_reference=calibration_reference,
         egress_zone_ids=egress_zone_ids,
@@ -87,6 +92,12 @@ def test_parses_versioned_snapshot_into_canonical_zone_definitions(tmp_path: Pat
             zone(
                 3,
                 "EV_CHARGING",
+                polygon=[
+                    [0.28, 0.20],
+                    [0.46, 0.20],
+                    [0.46, 0.55],
+                    [0.28, 0.55],
+                ],
                 allowedDurationSeconds=7200,
                 chargerClass="FAST",
                 egressZoneIds=[2],
@@ -124,7 +135,16 @@ def test_loads_tracked_deployment_snapshot() -> None:
 
 
 def test_accepts_all_canonical_zone_types(tmp_path: Path) -> None:
-    zones = [zone(index, zone_type.value) for index, zone_type in enumerate(ZoneType, start=1)]
+    zones = []
+    for index, zone_type in enumerate(ZoneType, start=1):
+        left = 0.05 * index
+        polygon = [
+            [left, 0.20],
+            [left + 0.04, 0.20],
+            [left + 0.04, 0.55],
+            [left, 0.55],
+        ]
+        zones.append(zone(index, zone_type.value, polygon=polygon))
 
     registry = ZoneRegistry.from_file(write_snapshot(tmp_path, zones))
 
@@ -321,3 +341,57 @@ def test_zone_type_classifications_use_canonical_types() -> None:
         ZoneType.EV_CHARGING,
     }
     assert not hasattr(ZoneType, "EV_FAST")
+
+
+def test_spot_polygons_may_share_boundary_without_overlapping_area() -> None:
+    left = ((0.1, 0.1), (0.2, 0.1), (0.2, 0.3), (0.1, 0.3))
+    right = ((0.2, 0.1), (0.3, 0.1), (0.3, 0.3), (0.2, 0.3))
+
+    registry = ZoneRegistry(
+        (definition(1, polygon=left), definition(2, polygon=right))
+    )
+
+    assert tuple(item.zone_id for item in registry.all()) == (ZoneId(1), ZoneId(2))
+
+
+def test_spot_polygons_reject_material_interior_overlap() -> None:
+    first = ((0.1, 0.1), (0.25, 0.1), (0.25, 0.3), (0.1, 0.3))
+    second = ((0.2, 0.1), (0.3, 0.1), (0.3, 0.3), (0.2, 0.3))
+
+    with pytest.raises(ZoneRegistryError, match="overlapArea"):
+        ZoneRegistry(
+            (definition(2, polygon=second), definition(1, polygon=first))
+        )
+
+
+def test_small_identical_spot_polygons_are_still_rejected() -> None:
+    tiny = (
+        (0.50000, 0.50000),
+        (0.50002, 0.50000),
+        (0.50002, 0.50002),
+        (0.50000, 0.50002),
+    )
+
+    with pytest.raises(ZoneRegistryError, match="overlapRatio"):
+        ZoneRegistry((definition(1, polygon=tiny), definition(2, polygon=tiny)))
+
+
+def test_spot_polygon_must_be_non_degenerate_and_convex() -> None:
+    concave = (
+        (0.1, 0.1),
+        (0.3, 0.1),
+        (0.2, 0.2),
+        (0.3, 0.3),
+        (0.1, 0.3),
+    )
+
+    with pytest.raises(ZoneRegistryError, match="convex"):
+        ZoneRegistry((definition(1, polygon=concave),))
+
+
+def test_spot_and_aisle_may_overlap() -> None:
+    registry = ZoneRegistry(
+        (definition(1), definition(2, zone_type=ZoneType.AISLE))
+    )
+
+    assert len(registry.all()) == 2

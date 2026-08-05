@@ -114,7 +114,11 @@ Observation reason이나 지속 시간 자체는 termination reason이 아니다
 | `Incident` | `IncidentReducer` | 규칙 후보부터 해소·취소까지 |
 | `MoveVerificationAttempt` | `MoveVerificationCoordinator` | command 수락부터 immutable 결과까지 |
 
-ParkingAssignment는 ParkingEpisode 안의 값이다. Evidence와 outbox는 domain scope가 아니라 저장·전달 workflow이며 `04`에서 정의한다.
+ParkingAssignment는 ParkingEpisode 안의 값이다. `PlacementEvidence`는
+AssignmentResolver가 현재 footprint와 ZoneDefinition snapshot으로 만드는
+immutable ephemeral value이며 domain scope, lifecycle, timer가 아니다.
+EvidenceArtifact와 outbox는 domain scope가 아니라 저장·전달 workflow이며
+`04`에서 정의한다.
 
 ## 5. TrackSegment
 
@@ -321,6 +325,25 @@ lastStableAt
 
 assignment의 `zoneId`는 `GENERAL / DISABLED / EV_CHARGING`만 가리킬 수 있다. AISLE과 ENTRY_EXIT은 assignment 대상이 아니다.
 
+STOP_PENDING에서는 신뢰 가능한 `STATIONARY` sample의 footprint와 그 sample에서
+해석한 assignment 중 **최초 trusted placement 후보**를 episode에 미공개로 latch한다.
+이 후보는 기존 ParkingEpisode assignment 저장 열에 함께 영속하므로 restart를
+별도 상태축이나 비영속 sample window로 만들지 않는다. Motion owner가 이미
+`STATIONARY`로 신뢰한 최초 실제 표본을 고정해, 확인 시간 동안 이어지는 여러
+frame의 detector bbox jitter가 최종 배치를 바꾸지 않게 한다. 최초 sample에
+assignment가 없었던 tracker 직접 호출만 이후 첫 non-null sample을 fallback으로
+latch한다. 고정된 실제 sample의
+footprint가 `representativeFootprint`, 시각이 `lastStableAt`이 된다. STOP_PENDING
+assignment는 publication 근거가 아니며 CANCELED로 끝날 때 폐기한다.
+
+AssignmentResolver는 이 representativeFootprint에서 PlacementEvidence를 다시
+계산하여 `PARKED_SNAPSHOT` source로 표시한다. PARKED와 MOVE_PENDING
+동안에는 새 frame의 bbox 진동으로 snapshot assignment·PlacementEvidence를
+바꾸지 않는다. STOP_PENDING 또는 movement 확정 뒤 재평가에서는 현재
+frame의 `EPHEMERAL_FRAME` evidence를 사용한다. MOVE_PENDING·motion
+UNKNOWN에서는 snapshot을 보존하되 PARKED에 의존하는 RuleEvaluator signal은
+`UNKNOWN / confirmable=false`로 멈춰 Incident clear를 시작하지 않는다.
+
 ParkingEpisode가 `MOVEMENT_CONFIRMED`로 종료되면 assignment를 끝내고 관련 BlockingRelation·Incident에 `REEVALUATE`를 전달한다. 계속 위반이면 기존 Incident를 유지한다. `PHYSICAL_EXIT` 종료는 departure의 직접 종료 경로를 사용한다.
 
 PhysicalVehicle당 non-terminal ParkingEpisode는 하나만 허용한다.
@@ -360,7 +383,11 @@ RuleEvaluator는 상태 없는 삼상태 signal만 만든다.
 | `NOT_MATCHED` | 필요한 입력을 모두 정상 관측했고 술어 불성립 | 후보 취소 또는 clear 진행 |
 | `UNKNOWN` | 성립·불성립 모두 확정 불가 | lifecycle 유지, timer 정지 |
 
-Signal은 IncidentKey, 관측 시각, confirmable 여부와 근거 참조를 가진다. ParkingEpisode와 ParkingAssignment는 parking rule의 평가 근거이지 Incident 수명이 아니다.
+Signal은 IncidentKey, 관측 시각, confirmable 여부와 근거 참조를 가진다.
+ParkingEpisode, ParkingAssignment와 PlacementEvidence는 parking rule의 평가
+근거이지 Incident 수명이 아니다. RuleEvaluator는 PlacementEvidence에서
+BAD_PARKING·OUT_OF_ZONE 술어를 계산하지만 signal 이전의 상태를
+기억하지 않는다.
 
 PARKED가 OPEN 조건인 규칙에서 movement와 ParkingEpisode의 MOVEMENT_CONFIRMED 종료만으로 `NOT_MATCHED`를 만들지 않는다. 한 신뢰 가능한 sample에서 규칙별 필수 geometry·assignment가 유효하고 위반 술어가 false이면 `NOT_MATCHED`를 만들며 IncidentReducer만 clear 시간을 누적한다. 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 기존 OPEN Incident를 유지한다.
 
@@ -466,11 +493,26 @@ UNKNOWN
 | `motionMinTrendConsistency` | `[제안값] TBD` | 이동 방향·크기 일관성의 최소 비율 |
 | `movementConfirmationDurationSeconds` | `[제안값] TBD` | PARKED 뒤 이동 확정 시간 |
 | zone entry/exit confirmation | `[제안값] TBD` | ZoneVisit 진입·이탈 debounce |
+| `assignmentMinOverlap` | `[제안값] TBD` | primary overlap을 assignment 후보로 인정할 하한 |
+| `assignmentAmbiguityMargin` | `[제안값] TBD` | primary·secondary dominance gap의 ambiguity 포함 상한 |
+| `badParkingMinPrimaryOverlap` | `[제안값] TBD` | OUT_OF_ZONE이 아닌 sample에서 단일 주차면이 확보해야 할 최소 overlap |
+| `badParkingMinSecondaryOverlap` | `[제안값] TBD` | 두 번째 주차면 침범으로 BAD_PARKING을 시작하는 overlap |
+| `outOfZoneMinSpotOverlap` | `[제안값] TBD` | 전체 주차면 합집합 안에 있음을 인정할 최소 overlap |
 | incident confirm/clear duration | `[제안값] rule별 TBD` | Incident OPEN·RESOLVE debounce |
 | entry match deadline | `[후속 계약] TBD` | 입차 문맥과 차량 매칭 제한 시간 |
 | EV allowed duration·clock | `[후속 계약] 법령 근거 필요` | EV_OVERSTAY 값과 UNKNOWN 중 wall-clock 처리 |
 
 설정값을 profile 객체로 감싸지 않는다. 해당 값이 진행 중 판단에 영향을 주면 scope 생성 시 실제 scalar 값을 snapshot한다.
+
+현재 reference implementation의 assignment·placement 다섯 threshold
+(`assignmentMinOverlap`, `assignmentAmbiguityMargin`,
+`badParkingMinPrimaryOverlap`, `badParkingMinSecondaryOverlap`,
+`outOfZoneMinSpotOverlap`)는 한 pipeline 실행 동안 불변인 run policy다. active
+PhysicalVehicle·ParkingEpisode·Incident를 복원하면서 이 값을 바꾸는 배포는
+지원하지 않는다. 값을 바꿀 때는 active scope가 없는 통제된 새 실행(Replay는
+새 DB)이어야 하고, export가 실행 전체 policy snapshot을 보존한다. 향후 hot
+reload나 active scope를 유지한 policy 교체를 지원하려면 이 제한을 제거하기 전에
+적용 scalar의 durable scope snapshot을 먼저 추가해야 한다.
 
 MotionEstimator 설정은 영속 scope profile이 아니다. 각 `MotionEstimate`가 실제
 적용한 stationary/moving threshold와 window 진단 근거를 내보내고, replay
@@ -492,6 +534,9 @@ PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `tru
    되먹이지 않는다.
 3. EntryMatchCoordinator는 물리 매칭 결과를 만들고 ContextBindingCoordinator만 binding을 변경한다.
 4. ZoneVisitTracker와 ParkingEpisodeTracker는 각자의 시간적 사실만 소유한다.
+   AssignmentResolver는 ZoneRegistry가 검증한 snapshot과 footprint에서
+   PlacementEvidence·ParkingAssignment 값을 순수 계산하며 어떤 lifecycle도
+   소유하지 않는다.
 5. RuleEvaluator는 Incident를 저장하지 않는다.
 6. IncidentReducer만 Incident를 생성·OPEN·RESOLVE한다.
 7. PhysicalPresenceCoordinator만 bound·unbound physical departure의 다중-scope 종료 transaction을 조정한다.

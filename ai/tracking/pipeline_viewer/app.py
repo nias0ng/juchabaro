@@ -128,21 +128,43 @@ def _render_policy_inputs() -> ViewerPolicy:
 
         columns = st.columns(4)
         bad_parking_overlap = columns[0].number_input(
-            "Bad parking min spot overlap", min_value=0.0, max_value=1.0,
+            "Bad parking min primary overlap", min_value=0.0, max_value=1.0,
             value=defaults.bad_parking_min_primary_overlap_ratio,
             help=(
                 "1위 주차면에 포함된 차량 bbox 비율이 이 값 미만이면 "
                 "ASSIGNED 상태여도 BAD_PARKING으로 판정합니다."
             ),
         )
-        blocking_confirm = columns[1].number_input(
-            "Blocking confirm (s)", min_value=0.0, value=defaults.blocking_relation_confirm_seconds
+        bad_parking_secondary_overlap = columns[1].number_input(
+            "Bad parking min secondary overlap",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.bad_parking_min_secondary_overlap_ratio,
+            help=(
+                "두 번째 주차면 overlap이 이 값 이상이면 "
+                "두 칸 점유 BAD_PARKING으로 판정합니다."
+            ),
         )
-        blocking_clear = columns[2].number_input(
-            "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
+        out_of_zone_overlap = columns[2].number_input(
+            "Out-of-zone min spot union overlap",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.out_of_zone_min_spot_overlap_ratio,
+            help=(
+                "모든 주차면 union 안의 차량 비율이 이 값 미만이면 "
+                "OUT_OF_ZONE으로 판정합니다."
+            ),
         )
         match_window = columns[3].number_input(
             "Entry match window (s)", min_value=0.001, value=defaults.entry_match_window_seconds
+        )
+
+        columns = st.columns(4)
+        blocking_confirm = columns[0].number_input(
+            "Blocking confirm (s)", min_value=0.0, value=defaults.blocking_relation_confirm_seconds
+        )
+        blocking_clear = columns[1].number_input(
+            "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
         )
 
         columns = st.columns(4)
@@ -233,6 +255,10 @@ def _render_policy_inputs() -> ViewerPolicy:
         assignment_min_overlap_ratio=assignment_overlap,
         assignment_ambiguous_margin=ambiguous_margin,
         bad_parking_min_primary_overlap_ratio=bad_parking_overlap,
+        bad_parking_min_secondary_overlap_ratio=(
+            bad_parking_secondary_overlap
+        ),
+        out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap,
         blocking_relation_confirm_seconds=blocking_confirm,
         blocking_relation_clear_seconds=blocking_clear,
         entry_match_window_seconds=match_window,
