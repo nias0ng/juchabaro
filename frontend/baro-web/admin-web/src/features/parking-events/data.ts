@@ -1,4 +1,4 @@
-import type { ActionType, EventStatus, EventType } from './api/types';
+import type { ActionType, EventStatus, EventType, RequestType } from './api/types';
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {
   BAD_PARKING: '불법 주차',
@@ -24,6 +24,11 @@ export const ACTION_TYPE_LABELS: Record<ActionType, string> = {
   REMINDER: '재알림 전송',
 };
 
+export const REQUEST_TYPE_LABELS: Record<RequestType, string> = {
+  AUTO: '자동',
+  MANUAL: '수동',
+};
+
 export const EVENT_TYPE_OPTIONS = Object.keys(EVENT_TYPE_LABELS) as EventType[];
 export const EVENT_STATUS_OPTIONS = Object.keys(EVENT_STATUS_LABELS) as EventStatus[];
 export const ACTION_TYPE_OPTIONS = Object.keys(ACTION_TYPE_LABELS) as ActionType[];
@@ -32,12 +37,22 @@ export function eventTypeLabel(type: EventType): string {
   return EVENT_TYPE_LABELS[type];
 }
 
-export function eventStatusLabel(status: EventStatus): string {
+// REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동 이동 요청"/"수동 이동 요청"으로
+// 세분화해서 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은
+// 기존 "이동 요청됨" 문구를 그대로 쓴다.
+export function eventStatusLabel(status: EventStatus, requestType?: RequestType): string {
+  if (status === 'REQUESTED' && requestType) {
+    return `${requestTypeLabel(requestType)} 이동 요청`;
+  }
   return EVENT_STATUS_LABELS[status];
 }
 
 export function actionTypeLabel(action: ActionType): string {
   return ACTION_TYPE_LABELS[action];
+}
+
+export function requestTypeLabel(type: RequestType): string {
+  return REQUEST_TYPE_LABELS[type];
 }
 
 export function typeTone(type: EventType) {

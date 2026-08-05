@@ -1,10 +1,20 @@
-# Pilot 구역 정의
+# 구역 정의
 
-`zone_definition.pilot.json`은 `스크린샷 2026-08-03 오후 7.20.12.png`의
+메인 배포와 Pipeline Viewer는 `zone_definition.json` version 1을 정본으로
+사용한다. 이 파일은 `zone_definition.pilot.json` version 5의 물리 구역을
+crop하지 않은 full-frame 좌표계로 복원한 것이다.
+
+`zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`CropFrameSource`, `replay_pilot_video.py`, `watch_live_stream.py` 전용이다.
+두 파일을 서로 바꿔 사용하면 정규화된 x좌표와 실제 frame 폭이 어긋난다.
+
+`zone_definition.json`은 `스크린샷 2026-08-03 오후 7.20.12.png`의
 카메라 영상 구간(3024×1702)에 `ai/tracking/camera_calibration.json`과
 `remap balance=0.5`를 적용한 frame을 기준으로 잡은 배포 설정이다. 원본
 스크린샷의 위·아래 검은 레터박스는 remap 전에 제외했다. 좌표는
 보정 frame 너비와 높이로 나눈 0~1 정규화 값이다.
+version 1의 꼭짓점은 crop 도입 전 `zone_definition.pilot.json` version 5의
+full-frame 폴리곤을 그대로 복원한다.
 
 | zoneId | 임시 위치 | zoneType | entryExitRole |
 |---:|---|---|---|

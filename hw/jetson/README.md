@@ -92,9 +92,14 @@ cp .env.example .env
 조용히 대체하지 않고 시작 단계에서 설정 오류로 중단한다.
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
-구역 JSON 경로를 지정한다. 개발용 예시는
-`config/zone_definition.pilot.json`이다. 구역 정보는 SQLite가 아니라 이 정적
-JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
+구역 JSON 경로를 지정한다. 기본 운영 정본은
+`config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
+full-frame 좌표계를 사용한다. 구역 정보는 SQLite가 아니라 이 정적 JSON을
+원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
+
+`config/zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`replay_pilot_video.py`와 `watch_live_stream.py`용 설정이다. 메인 배포와
+Pipeline Viewer의 full-frame 입력에는 사용하지 않는다.
 
 `DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
 Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을

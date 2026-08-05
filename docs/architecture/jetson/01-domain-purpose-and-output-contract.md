@@ -180,7 +180,7 @@ optional egressZoneIds
 
 ### 5.3 정적 JSON 배포 형식
 
-Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기동 시 읽는다. JSON은 SQLite로 옮기지 않으며, 일부 구역만 적용하거나 오류 항목을 건너뛰지 않는다.
+Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기동 시 읽는다. JSON은 SQLite로 옮기지 않으며, 일부 구역만 적용하거나 오류 항목을 건너뛰지 않는다. 현재 메인 배포 정본은 crop하지 않은 full-frame 좌표계의 `config/zone_definition.json` version 1이다. 좌측 crop 실험용 `config/zone_definition.pilot.json` version 6은 메인 배포 정본이 아니다.
 
 ```json
 {
