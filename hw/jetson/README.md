@@ -207,6 +207,110 @@ PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 �
 python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+## Jetson ToF 센서 실행 전 GPIO pinmux 설정
+
+VL53L0X 두 센서의 XSHUT은 물리 Pin 15와 Pin 29에 연결한다. 어댑터는
+XSHUT을 push-pull LOW/HIGH 출력 방식으로 제어하지만 Jetson의 기본 pinmux
+상태에서는 두 핀이 GPIO 출력으로 준비되지 않을 수 있다. 애플리케이션에서
+PADCTL을 직접 변경하지 않으므로 Jetson 재부팅 후 최초 ToF 실행 전에 운영자가
+한 번 설정해야 한다.
+
+### 검증 환경과 배선
+
+아래 절차는 다음 환경에서 실물 검증한 보드 전용 임시 설정이다.
+
+```text
+Jetson Orin Nano Engineering Reference Developer Kit Super
+Module: P3767-0005
+Carrier: P3768-0000
+Jetson Linux: R36.4.7
+JetPack: 6.2.1
+```
+
+XSHUT 배선은 다음과 같다.
+
+```text
+물리 Pin 15: 장애인 구역 센서 XSHUT
+물리 Pin 29: 전기차 구역 센서 XSHUT
+```
+
+검증한 SoC 핀과 PADCTL 정보는 다음과 같다.
+
+```text
+Pin 15: PN.01 / GP88_PWM1 / PADCTL 0x2440020 / 출력 설정값 0x5
+Pin 29: PQ.05 / GP65 / PADCTL 0x2430068 / 출력 설정값 0x8
+```
+
+### BusyBox 확인
+
+`devmem` 실행에 사용할 BusyBox가 설치되어 있는지 확인한다.
+
+```bash
+command -v busybox
+```
+
+설치되어 있지 않다면 다음 명령으로 설치해야 한다.
+
+```bash
+sudo apt install busybox
+```
+
+### 재부팅 후 pinmux 설정
+
+Jetson을 재부팅한 뒤 ToF 어댑터나 진단 스크립트를 처음 실행하기 전에 다음
+명령을 한 번 수행한다.
+
+```bash
+sudo busybox devmem 0x2440020 w 0x5
+sudo busybox devmem 0x2430068 w 0x8
+```
+
+이 설정은 같은 부팅 세션에서 스크립트를 실행할 때마다 반복할 필요가 없다.
+재부팅하면 사라지므로 다음 부팅 세션의 최초 ToF 실행 전에 다시 적용한다.
+
+### 적용값 확인
+
+다음 명령으로 현재 PADCTL 값을 확인한다.
+
+```bash
+sudo busybox devmem 0x2440020
+sudo busybox devmem 0x2430068
+```
+
+명령 순서대로 예상되는 값은 다음과 같다.
+
+```text
+0x00000005
+0x00000008
+```
+
+### ToF 진단 실행
+
+다음은 실물 진단에 사용한 별도 가상환경을 활성화하고 센서를 세 번 측정하는
+예시다. `.venv-tof`는 이 진단 환경의 이름이며 프로젝트 공통 가상환경 이름은
+아니다.
+
+```bash
+source .venv-tof/bin/activate
+python -m scripts.check_vl53l0x --count 3 --interval-seconds 0.5
+```
+
+### 제한 및 주의 사항
+
+- 위 PADCTL 주소와 값은 명시한 Orin Nano Developer Kit Super 및 Jetson Linux
+  R36.4.7 환경에서 실물 검증한 값이다.
+- 다른 Jetson 모델, 캐리어 보드 또는 Jetson Linux 버전에 그대로 적용하지
+  않는다.
+- JetPack 또는 Jetson Linux 업데이트 후에는 PADCTL 주소와 설정값을 다시
+  확인해야 한다.
+- Jetson-IO에서 `pwm1 (15)` 또는 `extperiph3_clk (29)`를 선택하면 GPIO가
+  아니라 특수 기능으로 설정된다.
+- 애플리케이션과 `check_vl53l0x.py`는 `sudo` 또는 `devmem`을 자동으로
+  실행하지 않는다.
+- 운영 자동화가 필요하면 후속 배포 작업에서 systemd 사전 서비스 또는 정식
+  MB1 pinmux 설정으로 분리한다.
+- XSHUT에 5V를 직접 연결하지 않는다.
+
 ## Jetson에서 실행
 
 현재 절차는 Jetson에서 FastAPI 기본 서버를 수동으로 실행하고 동작을 확인하기 위한 것이다.
