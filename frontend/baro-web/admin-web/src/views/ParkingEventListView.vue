@@ -18,6 +18,7 @@ import {
   eventTypeLabel,
   formatDate,
   formatTime,
+  localDateString,
   statusTone,
   todayDateString,
   typeTone,
@@ -29,9 +30,10 @@ const PAGE_SIZE = 10
 // 조건에 맞는 사건을 넉넉히 받아온 뒤 차량 번호 검색과 페이지네이션은 화면에서 처리한다.
 const FETCH_SIZE = 200
 
-function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string) {
+function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
   const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', 'AI 신뢰도', '상태', '날짜']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
+  // 날짜를 선택하지 않았으면(전체 조회) 행마다 실제 발생 날짜를 넣고, 선택했으면 필터 날짜를 그대로 쓴다.
   // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
   const lines = [
     headers.map(escapeCsv).join(','),
@@ -44,14 +46,14 @@ function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string) {
         formatTime(r.detectedAt),
         r.violationRatio !== null ? `${r.violationRatio}%` : '-',
         eventStatusLabel(r.eventStatus),
-        `'${dateFilter}`,
+        `'${dateFilter ?? localDateString(r.detectedAt)}`,
       ].map(escapeCsv).join(','),
     ),
   ]
   // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
-  const stamp = dateFilter.replaceAll('-', '')
+  const stamp = (dateFilter ?? todayDateString()).replaceAll('-', '')
 
   const link = document.createElement('a')
   link.href = url
@@ -66,7 +68,8 @@ type DropdownName = 'status' | 'type' | 'date'
 
 const statusFilter = ref<EventStatus | null>(null)
 const typeFilter = ref<EventType | null>(null)
-const dateFilter = ref(todayDateString())
+// 날짜를 고르지 않으면(null) 전체 날짜를 최근 발생 순으로 보여준다.
+const dateFilter = ref<string | null>(null)
 const carQuery = ref('')
 const page = ref(1)
 
@@ -76,7 +79,7 @@ const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<Dropdow
 
 function loadEvents() {
   void parkingEventStore.fetchEvents({
-    date: dateFilter.value,
+    date: dateFilter.value ?? undefined,
     eventStatus: statusFilter.value ?? undefined,
     eventType: typeFilter.value ?? undefined,
     size: FETCH_SIZE,
@@ -201,11 +204,23 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
           </div>
 
           <div class="dropdown-wrap">
-            <button type="button" class="chip" @click="toggleDropdown('date')">
-              {{ formatDate(dateFilter) }} <ChevronDown :size="14" />
+            <button type="button" class="chip" :class="{ active: !!dateFilter }" @click="toggleDropdown('date')">
+              {{ dateFilter ? formatDate(dateFilter) : '날짜' }} <ChevronDown :size="14" />
             </button>
             <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
-              <input v-model="dateFilter" type="date">
+              <button
+                type="button"
+                class="dropdown-item"
+                :class="{ selected: dateFilter === null }"
+                @click="dateFilter = null; openDropdown = null"
+              >
+                전체
+              </button>
+              <input
+                :value="dateFilter ?? ''"
+                type="date"
+                @change="dateFilter = ($event.target as HTMLInputElement).value || null; openDropdown = null"
+              >
             </div>
           </div>
 
@@ -366,6 +381,9 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
 }
 
 .dropdown-menu.date-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   width: auto;
   padding: var(--spacing-base);
 }

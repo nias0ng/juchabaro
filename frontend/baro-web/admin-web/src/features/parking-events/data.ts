@@ -76,6 +76,15 @@ export function todayDateString(): string {
   return toDateString(new Date());
 }
 
+// 관리자 사건 목록 API(GET /api/admin/parking-events)는 date를 안 보내도 "전체 기간"이 아니라
+// 서버가 오늘 하루로 채워서 그 하루치만 돌려준다. 날짜 필터를 고르지 않았을 때 오늘 데이터가
+// 없으면 이 함수로 하루씩 과거로 거슬러 올라가며 데이터가 있는 날을 찾는 데 쓴다.
+export function dateStringDaysAgo(daysAgo: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  return toDateString(date);
+}
+
 // ISO 시각을 yyyy-MM-dd 로컬 날짜로 변환(같은 날짜의 항목만 모아 보여줄 때 사용).
 export function localDateString(iso: string): string {
   return toDateString(new Date(iso));
