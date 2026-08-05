@@ -63,6 +63,21 @@ public class ParkingEvent extends BaseEntity {
     @Column(name = "resolved_at")
     private LocalDateTime resolvedAt;
 
+    @Column(name = "incident_id", unique = true, length = 36)
+    private String incidentId;
+
+    @Column(name = "publication_revision")
+    private Integer publicationRevision;
+
+    @Column(name = "rule_code", length = 40)
+    private String ruleCode;
+
+    @Column(name = "physical_vehicle_id", length = 36)
+    private String physicalVehicleId;
+
+    @Column(name = "entry_attempt_id", length = 100)
+    private String entryAttemptId;
+
     @Builder
     private ParkingEvent(
             ParkingSession session,
@@ -73,7 +88,12 @@ public class ParkingEvent extends BaseEntity {
             Integer violationRatio,
             ParkingEventStatus eventStatus,
             LocalDateTime detectedAt,
-            LocalDateTime resolvedAt
+            LocalDateTime resolvedAt,
+            String incidentId,
+            Integer publicationRevision,
+            String ruleCode,
+            String physicalVehicleId,
+            String entryAttemptId
     ) {
         this.session = session;
         this.vehicle = vehicle;
@@ -84,9 +104,19 @@ public class ParkingEvent extends BaseEntity {
         this.eventStatus = eventStatus;
         this.detectedAt = detectedAt;
         this.resolvedAt = resolvedAt;
+        this.incidentId = incidentId;
+        this.publicationRevision = publicationRevision;
+        this.ruleCode = ruleCode;
+        this.physicalVehicleId = physicalVehicleId;
+        this.entryAttemptId = entryAttemptId;
     }
 
     public void changeStatus(ParkingEventStatus eventStatus) {
         this.eventStatus = eventStatus;
+    }
+
+    public void resolve(LocalDateTime resolvedAt) {
+        this.eventStatus = ParkingEventStatus.RESOLVED;
+        this.resolvedAt = resolvedAt;
     }
 }

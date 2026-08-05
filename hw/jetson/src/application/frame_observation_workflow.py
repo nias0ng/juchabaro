@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import sqlite3
 from typing import Protocol
+from uuid import uuid4
 
 from src.application.physical_presence_workflow import (
     PhysicalDeparturePlan,
@@ -26,9 +27,12 @@ from src.application.session_observation_workflow import (
 )
 from src.communication.outbox import PreparedPublication, SQLiteOutboxWriter
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.evidence.capture_models import EvidenceCaptureIntent, EvidenceCropKind
+from src.evidence.models import EvidenceArtifact, EvidenceId, EvidenceState
 from src.parking.models import (
     Incident,
     IncidentId,
+    IncidentTransitionType,
     IncidentTransition,
     ParkingEpisode,
     ParkingEpisodeId,
@@ -44,6 +48,7 @@ from src.storage.aggregate_repositories import (
     ParkingEpisodeRepository,
     ZoneVisitRepository,
 )
+from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.repositories import (
     OutboxRepository,
     ParkingSessionMirrorRepository,
@@ -85,6 +90,7 @@ class FrameObservationResult:
     parking_result: ParkingPipelineResult
     retired_physical_vehicle_ids: tuple[PhysicalVehicleId, ...]
     active_incidents: tuple[Incident, ...] = ()
+    evidence_capture_intents: tuple[EvidenceCaptureIntent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -367,7 +373,17 @@ class FrameObservationWorkflow:
                     parking_result,
                     *(plan.parking_result for plan in departure_plans),
                 )
+                newly_opened_incidents = _newly_opened_incidents(
+                    combined_result,
+                    connection=connection,
+                )
                 _ParkingAggregateWriter(connection).save(combined_result)
+                evidence_capture_intents = self._reserve_evidence_captures(
+                    newly_opened_incidents,
+                    parking_result=combined_result,
+                    captured_at=batch.observed_at,
+                    connection=connection,
+                )
                 self._pending_handoff_workflow.capture(
                     combined_result,
                     connection=connection,
@@ -421,7 +437,66 @@ class FrameObservationWorkflow:
                 plan.physical_vehicle_id for plan in departure_plans
             ),
             active_incidents=active_incidents,
+            evidence_capture_intents=evidence_capture_intents,
         )
+
+    @staticmethod
+    def _reserve_evidence_captures(
+        incidents: tuple[Incident, ...],
+        *,
+        parking_result: ParkingPipelineResult,
+        captured_at: datetime,
+        connection: sqlite3.Connection,
+    ) -> tuple[EvidenceCaptureIntent, ...]:
+        """새 OPEN과 같은 transaction에서 capture identity를 먼저 예약한다."""
+
+        repository = EvidenceArtifactRepository(connection)
+        open_revisions = {
+            transition.incident.incident_id: transition.incident.publication_revision
+            for transition in parking_result.incident_transitions
+            if transition.transition_type is IncidentTransitionType.OPEN
+        }
+        intents: list[EvidenceCaptureIntent] = []
+        for incident in incidents:
+            if repository.count_for_incident(incident.incident_id) > 0:
+                continue
+            crop_kinds = (
+                (EvidenceCropKind.CONTEXT, EvidenceCropKind.DETAIL)
+                if incident.key.rule_code == "DOUBLE_PARKING"
+                else (EvidenceCropKind.CONTEXT,)
+            )
+            for crop_kind in crop_kinds:
+                evidence_id = EvidenceId(uuid4())
+                repository.add(
+                    EvidenceArtifact(
+                        evidence_id=evidence_id,
+                        incident_id=incident.incident_id,
+                        publication_revision=open_revisions.get(
+                            incident.incident_id
+                        ),
+                        captured_at=captured_at,
+                        image_type="image/jpeg",
+                        state=EvidenceState.RESERVED,
+                        record_version=1,
+                        created_at=captured_at,
+                        updated_at=captured_at,
+                    )
+                )
+                intents.append(
+                    EvidenceCaptureIntent(
+                        evidence_id=evidence_id,
+                        incident_id=incident.incident_id,
+                        rule_code=incident.key.rule_code,
+                        physical_vehicle_id=incident.physical_vehicle_id,
+                        victim_physical_vehicle_id=(
+                            incident.victim_physical_vehicle_id
+                        ),
+                        zone_id=incident.zone_id,
+                        captured_at=captured_at,
+                        crop_kind=crop_kind,
+                    )
+                )
+        return tuple(intents)
 
     def _enqueue_publications(
         self,
@@ -488,6 +563,16 @@ class FrameObservationWorkflow:
                 )
                 continue
             if isinstance(transition, IncidentTransition):
+                if transition.transition_type is IncidentTransitionType.OPEN:
+                    EvidenceArtifactRepository(
+                        connection
+                    ).bind_publication_revision_for_incident(
+                        transition.incident.incident_id,
+                        publication_revision=(
+                            transition.incident.publication_revision
+                        ),
+                        bound_at=_incident_transition_occurred_at(transition),
+                    )
                 prepared = _validate_prepared_publication(
                     self._publication_preparer.prepare_incident(transition),
                     aggregate_type="Incident",
@@ -618,6 +703,32 @@ class _ParkingAggregateWriter:
                     incident,
                     expected_record_version=existing.record_version,
                 )
+
+
+def _newly_opened_incidents(
+    result: ParkingPipelineResult,
+    *,
+    connection: sqlite3.Connection,
+) -> tuple[Incident, ...]:
+    """이번 Unit of Work에서 처음 confirmed 상태가 되는 Incident를 찾는다."""
+
+    repository = IncidentRepository(connection)
+    opened = _latest_by_id(
+        tuple(
+            incident
+            for incident in result.incident_updates
+            if incident.confirmed_at is not None
+        ),
+        "incident_id",
+    )
+    return tuple(
+        incident
+        for incident in opened.values()
+        if (
+            (existing := repository.get(incident.incident_id)) is None
+            or existing.confirmed_at is None
+        )
+    )
 
 
 def _combine_parking_results(

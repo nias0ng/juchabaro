@@ -9,11 +9,10 @@ export type UserRole = 'RESIDENT' | 'ADMIN';
 // POST /api/auth/login 응답의 result.
 export type LoginResult = {
   accessToken: string;
-  refreshToken: string;
   tokenType: string;
   expiresIn: number;
   userId: number;
-  nickname: string;
+  name: string;
   role: UserRole;
 };
 

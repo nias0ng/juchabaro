@@ -4,8 +4,8 @@ Raspberry Pi 입차 감지 서비스의 객체 생명주기와 실행 흐름을 
 초음파 센서 측정값으로 입차 확정 신호를 확인하고 해당 시점에 카메라
 촬영, 번호판 OCR과 Backend 입차 등록을 수행한다. 입차 판단 세부 로직,
 카메라 내부 제어와 HTTP 통신 세부 구현은 담당하지 않는다. Backend HTTP
-통신은 BackendClient에 위임하고, 이 모듈은 요청 실행 순서와 오류 경계를
-조율한다.
+통신은 BackendClient에 위임하고 LED GPIO 세부 제어는 GreenLed에 위임한다.
+이 모듈은 요청 실행 순서, ALLOW 표시와 오류 경계를 조율한다.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -32,6 +32,7 @@ from src.config.settings import (
     BACKEND_BASE_URL,
     BACKEND_HW_API_KEY,
     CAPTURE_FRAME_COUNT,
+    GREEN_LED_DURATION_SECONDS,
     MEASUREMENT_INTERVAL_SECONDS,
     OCR_DETECTOR_MODEL_PATH,
     OCR_DEVICE,
@@ -40,6 +41,7 @@ from src.config.settings import (
 )
 from src.entry.entry_controller import EntryController, EntrySignal
 from src.entry.entry_event import EntryEvent
+from src.indicators.green_led import GreenLed
 from src.ocr import (
     InvalidBurstError,
     OcrPipelinePolicy,
@@ -169,6 +171,7 @@ def process_entry_event(
     camera: EntryCamera,
     ocr_pipeline: PlateOcrPipeline,
     backend_client: BackendClient,
+    green_led: GreenLed,
     logger: logging.Logger,
 ) -> None:
     """한 번의 입차 이벤트를 촬영하고 OCR 결과를 Backend에 등록한다."""
@@ -249,6 +252,18 @@ def process_entry_event(
 
     log_backend_entry_result(backend_result, logger)
 
+    if backend_result.access_decision is not AccessDecision.ALLOW:
+        return
+
+    try:
+        green_led.indicate_allow(GREEN_LED_DURATION_SECONDS)
+    except Exception:
+        logger.exception(
+            "Green LED allow indication failed. entry_attempt_id=%s",
+            event.entry_attempt_id,
+        )
+        raise
+
 
 def main() -> None:
     configure_logging()
@@ -278,6 +293,7 @@ def main() -> None:
     controller = EntryController()
     sensor: UltrasonicSensor | None = None
     camera: EntryCamera | None = None
+    green_led: GreenLed | None = None
     service_started = False
 
     try:
@@ -287,6 +303,12 @@ def main() -> None:
             camera = EntryCamera()
         except (CameraInitializationError, ValueError):
             logger.exception("Raspberry Pi entry camera initialization failed.")
+            raise
+
+        try:
+            green_led = GreenLed()
+        except Exception:
+            logger.exception("Raspberry Pi green LED initialization failed.")
             raise
 
         logger.info("Raspberry Pi entry service started.")
@@ -305,6 +327,7 @@ def main() -> None:
                         camera=camera,
                         ocr_pipeline=ocr_pipeline,
                         backend_client=backend_client,
+                        green_led=green_led,
                         logger=logger,
                     )
 
@@ -314,11 +337,22 @@ def main() -> None:
     finally:
         cleanup_termination: KeyboardInterrupt | SystemExit | None = None
 
+        if green_led is not None:
+            try:
+                green_led.cleanup()
+            except (KeyboardInterrupt, SystemExit) as exc:
+                cleanup_termination = exc
+            except Exception:
+                logger.exception(
+                    "Raspberry Pi green LED cleanup failed."
+                )
+
         if camera is not None:
             try:
                 camera.cleanup()
             except (KeyboardInterrupt, SystemExit) as exc:
-                cleanup_termination = exc
+                if cleanup_termination is None:
+                    cleanup_termination = exc
             except Exception:
                 logger.exception(
                     "Raspberry Pi entry camera cleanup failed."

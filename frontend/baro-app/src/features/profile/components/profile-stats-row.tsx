@@ -1,23 +1,40 @@
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import { styles } from './profile-stats-row.styles';
 
 type ProfileStatsRowProps = {
   vehicleCount: number;
+  violationCount: number | null;
+  isViolationLoading: boolean;
+  onPressVehicles: () => void;
+  onPressViolations: () => void;
 };
 
-// "누적 위반"은 대응하는 위반 집계 API가 없어 숫자 대신 준비 중으로만 표시한다.
-export function ProfileStatsRow({ vehicleCount }: ProfileStatsRowProps) {
+export function ProfileStatsRow({
+  vehicleCount,
+  violationCount,
+  isViolationLoading,
+  onPressVehicles,
+  onPressViolations,
+}: ProfileStatsRowProps) {
   return (
     <View style={styles.row}>
-      <View style={styles.card}>
+      <Pressable
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+        onPress={onPressVehicles}
+      >
         <Text style={styles.label}>등록 차량</Text>
         <Text style={styles.value}>{vehicleCount}</Text>
-      </View>
-      <View style={[styles.card, styles.cardDisabled]}>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+        onPress={onPressViolations}
+      >
         <Text style={styles.label}>누적 위반</Text>
-        <Text style={styles.valueDisabled}>준비 중</Text>
-      </View>
+        <Text style={styles.value}>{isViolationLoading ? '-' : (violationCount ?? '-')}</Text>
+      </Pressable>
     </View>
   );
 }

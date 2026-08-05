@@ -125,8 +125,8 @@ class BackendEntryRequest:
 
     entry_attempt_id: str
     recognized_plate_number: str
-    confidence: float
     entry_time: datetime
+    ocr_confidence: float | None = None
 
     def __post_init__(self) -> None:
         _require_uuid(self.entry_attempt_id, "entry_attempt_id")
@@ -134,21 +134,23 @@ class BackendEntryRequest:
             raise TypeError("recognized_plate_number는 문자열이어야 합니다.")
         if not self.recognized_plate_number.strip():
             raise ValueError("recognized_plate_number는 비어 있을 수 없습니다.")
-        if (
-            isinstance(self.confidence, bool)
-            or not isinstance(self.confidence, (int, float))
-            or not 0.0 <= self.confidence <= 1.0
+        if self.ocr_confidence is not None and (
+            isinstance(self.ocr_confidence, bool)
+            or not isinstance(self.ocr_confidence, (int, float))
+            or not 0.0 <= self.ocr_confidence <= 1.0
         ):
-            raise ValueError("confidence는 0.0~1.0 범위여야 합니다.")
+            raise ValueError("ocr_confidence는 0.0~1.0 범위여야 합니다.")
         _require_aware(self.entry_time, "entry_time")
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "entryAttemptId": self.entry_attempt_id,
             "recognizedPlateNumber": self.recognized_plate_number,
-            "confidence": float(self.confidence),
             "entryTime": _to_iso8601(self.entry_time, "entry_time"),
         }
+        if self.ocr_confidence is not None:
+            payload["ocrConfidence"] = float(self.ocr_confidence)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

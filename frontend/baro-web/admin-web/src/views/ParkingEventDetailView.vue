@@ -9,7 +9,7 @@ import EventDetailCard from '@/features/parking-events/components/EventDetailCar
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
 
 const route = useRoute()
-const eventId = computed(() => route.params.eventId as string)
+const eventId = computed(() => Number(route.params.eventId))
 </script>
 
 <template>
@@ -22,12 +22,12 @@ const eventId = computed(() => route.params.eventId as string)
 
     <div class="layout">
       <section class="panel detail-panel">
-        <EventDetailCard :event-id="eventId ?? ''" />
+        <EventDetailCard :event-id="eventId" />
       </section>
 
       <section class="panel timeline-panel">
         <h3>사건 진행 이력</h3>
-        <EventTimeline :event-id="eventId ?? ''" />
+        <EventTimeline :event-id="eventId" />
       </section>
     </div>
   </AppShell>

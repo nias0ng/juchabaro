@@ -15,6 +15,17 @@
         "--strictPort"
       ],
       "port": 5174
+    },
+    {
+      "name": "baro-app-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--prefix",
+        "C:\\Users\\SSAFY\\Desktop\\2학기\\S15P11E202\\frontend\\baro-app"
+      ],
+      "port": 8081
     }
   ]
 }

@@ -88,4 +88,10 @@ public class ParkingZone extends BaseEntity {
         this.geometryData = geometryData;
         this.floor = floor;
     }
+
+    public void applyAdminEdit(String zoneNumber, ParkingZoneType zoneType, Integer allowedMinutes) {
+        if (zoneNumber != null && !zoneNumber.isBlank()) this.zoneNumber = zoneNumber;
+        if (zoneType != null) this.zoneType = zoneType;
+        if (allowedMinutes != null) this.allowedMinutes = allowedMinutes;
+    }
 }

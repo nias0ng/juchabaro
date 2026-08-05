@@ -5,18 +5,24 @@ import { Pressable, Text, View } from 'react-native';
 import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
-import { ParkingFloorGrid } from '../components/parking-floor-grid';
 import { ParkingFloorLegend } from '../components/parking-floor-legend';
-import {
-  MOCK_PARKING_FLOORS,
-  getMyVehicleLocation,
-  type ParkingFloorKey,
-} from '../mocks/parking-floor-overview.mock';
+import { ParkingSpotMap } from '../components/parking-spot-map';
 import { useParkingSessions } from '../hooks/use-parking-sessions';
+import { useParkingZoneSummary } from '../hooks/use-parking-zone-summary';
+import { toParkingStatusDisplay, type ParkingFloorKey } from '../utils/parking-zone';
 
 import { styles } from './parking-floor-overview-screen.styles';
 
-const FLOOR_TAB_OPTIONS = MOCK_PARKING_FLOORS.map((floor) => ({ key: floor.key, label: floor.label }));
+const FLOOR_TAB_OPTIONS: { key: ParkingFloorKey; label: string }[] = [
+  { key: 'B1', label: '지하 1층' },
+  { key: 'B2', label: '지하 2층' },
+  { key: 'B3', label: '지하 3층' },
+];
+
+function toParkingFloorKey(floor: string | null): ParkingFloorKey | null {
+  const normalized = floor?.trim().toUpperCase();
+  return normalized === 'B1' || normalized === 'B2' || normalized === 'B3' ? normalized : null;
+}
 
 /** 직접 URL로 들어와 뒤로 갈 히스토리가 없을 때는 입주민 홈으로 대체 이동한다. */
 function goBack() {
@@ -29,15 +35,28 @@ function goBack() {
 
 // J-01. 주차 도면 전체 보기
 export default function ParkingFloorOverviewScreen() {
-  const [activeFloor, setActiveFloor] = useState<ParkingFloorKey>(MOCK_PARKING_FLOORS[0].key);
+  const [activeFloor, setActiveFloor] = useState<ParkingFloorKey>('B1');
   const { sessions } = useParkingSessions();
-  const myVehicleLocation = getMyVehicleLocation(sessions);
-
-  const currentFloor =
-    MOCK_PARKING_FLOORS.find((floor) => floor.key === activeFloor) ?? MOCK_PARKING_FLOORS[0];
+  const myVehicleLocation = sessions
+    .map((session) => toParkingFloorKey(session.floor))
+    .find((floor): floor is ParkingFloorKey => floor !== null) ?? null;
+  const myZoneNumbers = sessions.flatMap((session) =>
+    session.zoneNumber ? [session.zoneNumber] : [],
+  );
+  const { summary, isLoading, error } = useParkingZoneSummary();
+  const parkingStatus = summary
+    ? toParkingStatusDisplay(summary, myZoneNumbers, activeFloor)
+    : null;
+  const mapMessage = isLoading
+    ? '주차 현황을 불러오는 중입니다.'
+    : error
+      ? '주차 현황을 불러오지 못했습니다.'
+      : !parkingStatus || parkingStatus.cells.length === 0
+        ? '해당 층의 주차 현황이 없습니다.'
+        : undefined;
 
   const handlePressMyCarLocation = () => {
-    if (myVehicleLocation) setActiveFloor(myVehicleLocation.floorKey);
+    if (myVehicleLocation) setActiveFloor(myVehicleLocation);
   };
 
   return (
@@ -47,8 +66,14 @@ export default function ParkingFloorOverviewScreen() {
         style={styles.header}
         onBack={goBack}
         right={
-          <Pressable accessibilityRole="button" onPress={handlePressMyCarLocation}>
-            <Text style={styles.headerAction}>내 차 위치</Text>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!myVehicleLocation}
+            onPress={handlePressMyCarLocation}
+          >
+            <Text style={[styles.headerAction, !myVehicleLocation && styles.headerActionDisabled]}>
+              내 차 위치
+            </Text>
           </Pressable>
         }
       />
@@ -58,8 +83,11 @@ export default function ParkingFloorOverviewScreen() {
           <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={setActiveFloor} />
 
           <View style={styles.mapCard}>
-            {/* TODO: 주차 구역 API 및 DB 구축 후 실제 주차 현황 데이터로 교체 */}
-            <ParkingFloorGrid spots={currentFloor.spots} sideSpots={currentFloor.sideSpots} />
+            <ParkingSpotMap
+              cells={parkingStatus?.cells ?? []}
+              floor={activeFloor}
+              message={mapMessage}
+            />
             <ParkingFloorLegend />
           </View>
         </Stack>

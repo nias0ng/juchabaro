@@ -17,7 +17,6 @@ export type RequestListItemDisplay = {
   closedSummary?: string;
   // RESPONDED일 때만 채워진다. dueAt이 있어야 카운트다운 박스를 보여준다.
   dueAt?: string | null;
-  respondedAt?: string | null;
   estimatedMinutes?: number | null;
 };
 
@@ -46,11 +45,7 @@ export function RequestListCard({ item, onPress }: RequestListCardProps) {
       </View>
 
       {item.status === 'RESPONDED' && item.dueAt ? (
-        <RequestListCountdownBox
-          dueAt={item.dueAt}
-          respondedAt={item.respondedAt ?? null}
-          estimatedMinutes={item.estimatedMinutes ?? null}
-        />
+        <RequestListCountdownBox dueAt={item.dueAt} estimatedMinutes={item.estimatedMinutes ?? null} />
       ) : null}
 
       {item.closedSummary ? <Text style={styles.closedSummary}>{item.closedSummary}</Text> : null}
@@ -60,13 +55,13 @@ export function RequestListCard({ item, onPress }: RequestListCardProps) {
 
 type RequestListCountdownBoxProps = {
   dueAt: string;
-  respondedAt: string | null;
   estimatedMinutes: number | null;
 };
 
 // 카드 여러 개가 각자 다른 dueAt으로 매초 갱신되어야 해서, 카운트다운은 카드 안에서 직접 계산한다.
-function RequestListCountdownBox({ dueAt, respondedAt, estimatedMinutes }: RequestListCountdownBoxProps) {
-  const countdown = useCountdown(dueAt, respondedAt);
+// 진행률 링(progress)은 목록 카드에서 쓰지 않으므로 startAt(respondedAt)은 넘기지 않는다.
+function RequestListCountdownBox({ dueAt, estimatedMinutes }: RequestListCountdownBoxProps) {
+  const countdown = useCountdown(dueAt);
   const message = estimatedMinutes ? `${formatMinutesLabel(estimatedMinutes)} 이내 이동 예정` : '이동 예정';
 
   return (

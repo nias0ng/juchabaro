@@ -134,20 +134,83 @@ public enum ErrorCode {
 
     USER_UPDATE_INVALID(
             HttpStatus.BAD_REQUEST,
-            "회원 정보 수정 요청 값이 올바르지 않습니다."),
+            "회원 정보 수정 요청 값이 올바르지 않습니다."
+    ),
 
     CURRENT_PASSWORD_MISMATCH(
             HttpStatus.BAD_REQUEST,
-            "현재 비밀번호가 일치하지 않습니다."),
+            "현재 비밀번호가 일치하지 않습니다."
+    ),
 
     PARKING_SESSION_NOT_FOUND(
-            HttpStatus.NOT_FOUND, "주차 세션을 찾을 수 없습니다."),
+            HttpStatus.NOT_FOUND,
+            "주차 세션을 찾을 수 없습니다."
+    ),
 
     HW_ZONE_NOT_FOUND(
-            HttpStatus.NOT_FOUND, "해당 zoneId의 주차 구역을 찾을 수 없습니다."),
+            HttpStatus.NOT_FOUND,
+            "해당 zoneId의 주차 구역을 찾을 수 없습니다."
+    ),
 
     HW_TRANSITION_INVALID(
-            HttpStatus.UNPROCESSABLE_ENTITY, "지원하지 않는 전이 타입입니다."),
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            "지원하지 않는 전이 타입입니다."
+    ),
+
+    HW_INCIDENT_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "해당 사건을 찾을 수 없습니다."
+    ),
+
+    HW_INCIDENT_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            "사건 전이 요청이 올바르지 않습니다."
+    ),
+
+    HW_EVIDENCE_INVALID(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            "증거 이미지 요청이 올바르지 않습니다."
+    ),
+
+    HW_EVIDENCE_TOO_LARGE(
+            HttpStatus.PAYLOAD_TOO_LARGE,
+            "증거 이미지 용량이 허용 범위를 초과했습니다."
+    ),
+
+    HW_EVIDENCE_CHECKSUM_MISMATCH(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            "증거 이미지 체크섬이 일치하지 않습니다."
+    ),
+
+    HW_ENTRY_CONFLICT(
+            HttpStatus.CONFLICT,
+            "동일한 Idempotency-Key로 다른 입차 요청이 이미 처리되었습니다."
+    ),
+
+    PARKING_EVENT_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "주차 사건을 찾을 수 없습니다."
+    ),
+
+    ZONE_NOT_FOUND(
+            HttpStatus.NOT_FOUND,
+            "주차 구역을 찾을 수 없습니다."
+    ),
+
+    ADMIN_REMINDER_NOT_APPLICABLE(
+            HttpStatus.CONFLICT,
+            "재알림을 보낼 이동 요청이 없습니다."
+    ),
+
+    HW_IDEMPOTENCY_CONFLICT(
+            HttpStatus.CONFLICT,
+            "동일한 Idempotency-Key로 다른 요청이 이미 처리되었습니다."
+    ),
+
+    HW_IDEMPOTENCY_IN_PROGRESS(
+            HttpStatus.CONFLICT,
+            "동시에 처리 중인 요청입니다. 잠시 후 다시 시도해 주세요."
+    ),
 
     INTERNAL_SERVER_ERROR(
             HttpStatus.INTERNAL_SERVER_ERROR,

@@ -91,6 +91,8 @@ def test_defaults_match_documented_baseline_values():
     assert args.min_overlap_ratio == 0.40
     assert args.movement_epsilon == 0.01
     assert args.remap_balance == 0.5
+    assert args.crop_left_px == 0
+    assert args.crop_right_px == 0
 
 
 def test_defaults_reuse_existing_codebase_values_only():

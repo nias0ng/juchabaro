@@ -1,8 +1,8 @@
 package com.ssafy.parking.domain.parking.service;
 
-import com.ssafy.parking.domain.parking.dto.ZoneImportRequest;
-import com.ssafy.parking.domain.parking.dto.ZoneImportResult;
-import com.ssafy.parking.domain.parking.dto.ZoneListResponse;
+import com.ssafy.parking.common.exception.BusinessException;
+import com.ssafy.parking.common.exception.ErrorCode;
+import com.ssafy.parking.domain.parking.dto.*;
 import com.ssafy.parking.domain.parking.entity.ParkingZone;
 import com.ssafy.parking.domain.parking.entity.ParkingZoneStatus;
 import com.ssafy.parking.domain.parking.repository.ParkingZoneRepository;
@@ -133,5 +133,13 @@ public class ZoneService {
     private String jsonString(String v) {
         if (v == null) return "null";
         return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    @Transactional
+    public ZoneResponse updateZone(Long zoneId, ZoneUpdateRequest request) {
+        ParkingZone zone = parkingZoneRepository.findById(zoneId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ZONE_NOT_FOUND));
+        zone.applyAdminEdit(request.zoneNumber(), request.zoneType(), request.allowedMinutes());
+        return ZoneResponse.from(zone);
     }
 }

@@ -1,30 +1,20 @@
 package com.ssafy.parking.domain.hw.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.ssafy.parking.domain.vehicle.entity.Vehicle;
 
+@JsonInclude(JsonInclude.Include.ALWAYS)
 public record HwEntryResponse(
-        String accessDecision,
-        boolean registered,
-        Long vehicleId,
-        @JsonProperty("isDisabledVehicle") Boolean isDisabledVehicle,
-        @JsonProperty("isElectric") Boolean isElectric,
-        String vehicleStatus,
+        String accessDecision,          // ALLOW | REVIEW | DENY
         String entryAttemptId,
-        Long sessionId,
-        boolean duplicateRequest
+        int decisionRevision,
+        boolean duplicateRequest,
+        SessionContext sessionContext   // ALLOW만 값, REVIEW/DENY는 null
 ) {
-    public static HwEntryResponse matched(AccessDecision decision, Vehicle v,
-                                          String entryAttemptId, Long sessionId, boolean duplicate) {
-        return new HwEntryResponse(
-                decision.name(), true, v.getId(),
-                v.isDisabledVehicle(), v.isElectric(), v.getStatus().name(),
-                entryAttemptId, sessionId, duplicate);
-    }
-
-    public static HwEntryResponse denied(String entryAttemptId) {
-        return new HwEntryResponse(
-                AccessDecision.DENY.name(), false, null, null, null, null,
-                entryAttemptId, null, false);
-    }
+    public record SessionContext(
+            Long sessionId,
+            Long vehicleId,
+            @JsonProperty("isDisabledVehicle") boolean isDisabledVehicle,
+            @JsonProperty("isElectric") boolean isElectric
+    ) {}
 }

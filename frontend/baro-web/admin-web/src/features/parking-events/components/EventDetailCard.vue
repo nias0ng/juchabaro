@@ -1,152 +1,204 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { CheckCircle2, Eye, Send } from '@lucide/vue'
+import { Ban, CheckCircle2, Eye, Send } from '@lucide/vue'
 
 import StatusTag from '@/components/ui/StatusTag.vue'
-import { findEventRow, normalizeEventId, statusTone, typeTone } from '@/features/parking-events/data'
+import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, statusTone, typeTone } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
 // 사건 목록(아래쪽 "사건 상세" 패널)과 사건 상세 페이지가 완전히 동일한 내용(상태 배지,
 // 필드 목록, 이미지, 오탐 처리·재알림, 처리 메모 입력/이력)을 보여줘야 해서 공통 컴포넌트로 뺐다.
-const props = defineProps<{ eventId: string }>()
+const props = defineProps<{ eventId: number }>()
 
 const parkingEventStore = useParkingEventStore()
 
-const key = computed(() => normalizeEventId(props.eventId))
-const row = computed(() => findEventRow(props.eventId))
-const displayedType = computed(() =>
-  row.value ? (parkingEventStore.oTamIds[key.value] ? '오탐' : row.value.type) : '-',
-)
-const displayedStatus = computed(() =>
-  parkingEventStore.completedIds[key.value] ? '완료' : (row.value?.st ?? '알 수 없음'),
-)
+const detail = computed(() => parkingEventStore.eventDetails[props.eventId])
+const loading = computed(() => Boolean(parkingEventStore.detailLoading[props.eventId]))
+const loadError = computed(() => parkingEventStore.detailError[props.eventId] ?? null)
 
-const detailFields = computed(
-  () =>
-    [
-      ['사건 ID', `#${key.value}`],
-      ['차량 번호', row.value?.car ?? '-'],
-      ['유형', displayedType.value],
-      ['위치', row.value?.loc ?? '-'],
-      ['발생 시간', row.value?.time ?? '-'],
-      ['이동 요청', '10분 경과'],
-      ['차주 응답', '응답 없음'],
-    ] as [string, string][],
-)
+function load() {
+  void parkingEventStore.fetchEventDetail(props.eventId)
+}
 
-// 완료 처리·관리자 확인은 사유(메모)를 직접 남겨야 하는 수동 개입이라 별도 입력창을 둔다.
+watch(() => props.eventId, load, { immediate: true })
+
+const isResolved = computed(() => detail.value?.eventStatus === 'RESOLVED')
+const isDismissed = computed(() => detail.value?.eventStatus === 'DISMISSED')
+// 완료·오탐은 둘 다 종결 상태라 그 이후로는 추가 처리를 할 수 없다.
+const isTerminal = computed(() => isResolved.value || isDismissed.value)
+const hasLinkedRequest = computed(() => Boolean(detail.value?.requestedAt))
+
+const latestResponse = computed(() => {
+  const responses = detail.value?.responses ?? []
+  return responses.length > 0 ? responses[responses.length - 1] : null
+})
+
+const detailFields = computed(() => {
+  if (!detail.value) return [] as [string, string][]
+  const d = detail.value
+  const location = [d.floor, d.zoneNumber].filter(Boolean).join(' ')
+  return [
+    ['사건 ID', formatEventId(d.eventId)],
+    ['차량 번호', d.plateNumber],
+    ['유형', eventTypeLabel(d.eventType)],
+    ['위치', location || '-'],
+    ['발생 시간', formatDateTime(d.detectedAt)],
+    ['AI 신뢰도', d.violationRatio !== null ? `${d.violationRatio}%` : '-'],
+    ['이동 요청', d.requestedAt ? `${formatDateTime(d.requestedAt)} (재알림 ${d.reminderCount ?? 0}회)` : '이동 요청 없음'],
+    ['차주 응답', latestResponse.value ? latestResponse.value.responseType : '응답 없음'],
+  ] as [string, string][]
+})
+
 const memoText = ref('')
-const isCompleted = computed(() => displayedStatus.value === '완료')
-const isReviewed = computed(() => Boolean(parkingEventStore.reviewedIds[key.value]))
+const actionError = ref<string | null>(null)
+const submitting = ref<'complete' | 'dismiss' | 'acknowledge' | 'reminder' | null>(null)
 
-// 이 사건에 남긴 완료 처리·관리자 확인 메모만 최신순으로 모아 보여준다(history는 이미
-// 최신 항목이 앞에 오도록 쌓이므로 필터만 하면 순서가 그대로 유지된다).
-const memoLog = computed(() =>
-  parkingEventStore.history.filter(
-    (entry) =>
-      normalizeEventId(entry.eventId) === key.value &&
-      (entry.actionType === '관리자 확인' || entry.actionType === '완료 처리'),
-  ),
-)
-
-// 다른 사건으로 바뀌면(선택 행 변경, 라우트 파라미터 변경 등) 이전에 쓰던 메모가 새 사건에
-// 잘못 제출되지 않도록 비운다.
+// 다른 사건으로 바뀌면(선택 행 변경, 라우트 파라미터 변경 등) 이전에 쓰던 메모나 에러가 새
+// 사건에 잘못 남지 않도록 비운다.
 watch(
   () => props.eventId,
   () => {
     memoText.value = ''
+    actionError.value = null
   },
 )
+
+// 최신 처리 이력이 먼저 보이도록 정렬한다(백엔드가 순서를 보장하지 않음).
+const sortedActionLogs = computed(() =>
+  [...(detail.value?.actionLogs ?? [])].sort((a, b) => (a.actedAt < b.actedAt ? 1 : -1)),
+)
+
+async function runAction(kind: 'complete' | 'dismiss' | 'acknowledge' | 'reminder', run: () => Promise<void>) {
+  submitting.value = kind
+  actionError.value = null
+  try {
+    await run()
+    if (kind !== 'reminder') memoText.value = ''
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '처리에 실패했습니다.'
+  } finally {
+    submitting.value = null
+  }
+}
 
 function handleCompleteClick() {
   const memo = memoText.value.trim()
   if (!memo) return
-  parkingEventStore.completeEvent(props.eventId, memo)
-  memoText.value = ''
+  void runAction('complete', () => parkingEventStore.completeEvent(props.eventId, memo))
+}
+
+function handleDismissClick() {
+  const memo = memoText.value.trim()
+  if (!memo) return
+  void runAction('dismiss', () => parkingEventStore.dismissEvent(props.eventId, memo))
 }
 
 function handleAcknowledgeClick() {
   const memo = memoText.value.trim()
   if (!memo) return
-  parkingEventStore.acknowledgeEvent(props.eventId, memo)
-  memoText.value = ''
+  void runAction('acknowledge', () => parkingEventStore.acknowledgeEvent(props.eventId, memo))
+}
+
+function handleReminderClick() {
+  void runAction('reminder', () => parkingEventStore.sendReminder(props.eventId))
 }
 </script>
 
 <template>
   <div class="detail-header">
     <h3>사건 상세</h3>
-    <StatusTag :tone="row ? statusTone(displayedStatus) : 'neutral'">{{ displayedStatus }}</StatusTag>
+    <StatusTag :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
+      {{ detail ? eventStatusLabel(detail.eventStatus) : '-' }}
+    </StatusTag>
   </div>
-  <dl class="detail-list">
-    <div v-for="[k, v] in detailFields" :key="k" class="detail-row">
-      <dt>{{ k }}</dt>
-      <dd>
-        <StatusTag v-if="k === '유형'" :tone="typeTone(v)">{{ v }}</StatusTag>
-        <template v-else>{{ v }}</template>
-      </dd>
+
+  <p v-if="loading" class="state-text">불러오는 중입니다…</p>
+  <div v-else-if="loadError" class="state-text error">
+    {{ loadError }}
+    <button type="button" class="retry-btn" @click="load">다시 시도</button>
+  </div>
+
+  <template v-else-if="detail">
+    <dl class="detail-list">
+      <div v-for="[k, v] in detailFields" :key="k" class="detail-row">
+        <dt>{{ k }}</dt>
+        <dd>
+          <StatusTag v-if="k === '유형'" :tone="typeTone(detail.eventType)">{{ v }}</StatusTag>
+          <template v-else>{{ v }}</template>
+        </dd>
+      </div>
+    </dl>
+
+    <div class="image-grid">
+      <div v-if="detail.images.length === 0" class="image-card">
+        <p class="image-label">증거 이미지</p>
+        <div class="image-placeholder">등록된 이미지가 없습니다</div>
+      </div>
+      <div v-for="image in detail.images" :key="image.imageId" class="image-card">
+        <p class="image-label">{{ formatDateTime(image.capturedAt) }}</p>
+        <img class="image-photo" :src="image.imageUrl" alt="증거 이미지">
+      </div>
     </div>
-  </dl>
 
-  <div class="image-grid">
-    <div v-for="label in ['번호판 이미지', '주차 상태 이미지']" :key="label" class="image-card">
-      <p class="image-label">{{ label }}</p>
-      <div class="image-placeholder">이미지 준비 중</div>
-    </div>
-  </div>
-
-  <div class="actions">
-    <button
-      type="button"
-      class="outline-btn"
-      :class="{ active: parkingEventStore.oTamIds[key] }"
-      @click="parkingEventStore.markOtam(eventId)"
-    >
-      {{ parkingEventStore.oTamIds[key] ? '오탐 해제' : '오탐 처리' }}
-    </button>
-    <button type="button" class="primary-btn" @click="parkingEventStore.resend(eventId)">
-      <Send :size="16" /> 이동 요청 재전송
-    </button>
-  </div>
-
-  <div class="memo-section">
-    <label class="memo-label" :for="`event-memo-${key}`">처리 메모</label>
-    <textarea
-      :id="`event-memo-${key}`"
-      v-model="memoText"
-      class="memo-input"
-      rows="2"
-      placeholder="완료 처리 또는 관리자 확인 사유를 입력하세요."
-    />
-    <div class="memo-actions">
+    <div class="actions">
       <button
         type="button"
         class="outline-btn"
-        :disabled="isReviewed || !memoText.trim()"
-        @click="handleAcknowledgeClick"
+        :disabled="isTerminal || !memoText.trim() || submitting !== null"
+        @click="handleDismissClick"
       >
-        <Eye :size="16" /> {{ isReviewed ? '확인함' : '관리자 확인' }}
+        <Ban :size="16" /> {{ isDismissed ? '오탐 종결됨' : '오탐 처리' }}
       </button>
       <button
         type="button"
         class="primary-btn"
-        :disabled="isCompleted || !memoText.trim()"
-        @click="handleCompleteClick"
+        :disabled="isTerminal || !hasLinkedRequest || submitting !== null"
+        @click="handleReminderClick"
       >
-        <CheckCircle2 :size="16" /> {{ isCompleted ? '완료됨' : '완료 처리' }}
+        <Send :size="16" /> 이동 요청 재전송
       </button>
     </div>
 
-    <ul v-if="memoLog.length" class="memo-log">
-      <li v-for="entry in memoLog" :key="entry.logId" class="memo-log-item">
-        <div class="memo-log-head">
-          <StatusTag tone="primary">{{ entry.actionType }}</StatusTag>
-          <span class="memo-log-time">{{ entry.time }}</span>
-        </div>
-        <p class="memo-log-text">{{ entry.memo }}</p>
-      </li>
-    </ul>
-  </div>
+    <div class="memo-section">
+      <label class="memo-label" :for="`event-memo-${eventId}`">처리 메모</label>
+      <textarea
+        :id="`event-memo-${eventId}`"
+        v-model="memoText"
+        class="memo-input"
+        rows="2"
+        placeholder="완료 처리, 오탐 처리 또는 관리자 확인 사유를 입력하세요."
+      />
+      <p v-if="actionError" class="action-error">{{ actionError }}</p>
+      <div class="memo-actions">
+        <button
+          type="button"
+          class="outline-btn"
+          :disabled="isTerminal || !memoText.trim() || submitting !== null"
+          @click="handleAcknowledgeClick"
+        >
+          <Eye :size="16" /> 관리자 확인
+        </button>
+        <button
+          type="button"
+          class="primary-btn"
+          :disabled="isTerminal || !memoText.trim() || submitting !== null"
+          @click="handleCompleteClick"
+        >
+          <CheckCircle2 :size="16" /> {{ isResolved ? '완료됨' : '완료 처리' }}
+        </button>
+      </div>
+
+      <ul v-if="sortedActionLogs.length" class="memo-log">
+        <li v-for="entry in sortedActionLogs" :key="entry.logId" class="memo-log-item">
+          <div class="memo-log-head">
+            <StatusTag tone="primary">{{ entry.actionType }}</StatusTag>
+            <span class="memo-log-time">{{ formatDateTime(entry.actedAt) }}</span>
+          </div>
+          <p class="memo-log-text">{{ entry.memo || '-' }} · {{ entry.adminName }}</p>
+        </li>
+      </ul>
+    </div>
+  </template>
 </template>
 
 <style scoped>
@@ -162,6 +214,27 @@ function handleAcknowledgeClick() {
   font-weight: 700;
 }
 
+.state-text {
+  padding: var(--spacing-md) 0;
+  font-size: var(--font-size-sm);
+  color: var(--panel-muted-foreground);
+}
+
+.state-text.error {
+  color: var(--panel-danger);
+}
+
+.retry-btn {
+  margin-left: var(--spacing-sm);
+  border: none;
+  background: none;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--panel-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .detail-list {
   font-size: var(--font-size-sm);
 }
@@ -170,6 +243,7 @@ function handleAcknowledgeClick() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--spacing-base);
   padding: 10px 0;
   border-bottom: 1px solid var(--panel-border);
 }
@@ -179,10 +253,12 @@ function handleAcknowledgeClick() {
 }
 
 .detail-row dt {
+  flex-shrink: 0;
   color: var(--panel-muted-foreground);
 }
 
 .detail-row dd {
+  text-align: right;
   font-weight: 500;
 }
 
@@ -218,6 +294,13 @@ function handleAcknowledgeClick() {
   color: var(--panel-muted-foreground);
 }
 
+.image-photo {
+  display: block;
+  width: 100%;
+  height: 128px;
+  object-fit: cover;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -248,13 +331,6 @@ function handleAcknowledgeClick() {
 
 .outline-btn:hover:not(:disabled) {
   background: var(--panel-muted);
-}
-
-.outline-btn.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 600;
 }
 
 .primary-btn {
@@ -299,6 +375,12 @@ function handleAcknowledgeClick() {
 .memo-input:focus {
   outline: none;
   border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
+}
+
+.action-error {
+  margin-top: var(--spacing-sm);
+  font-size: 12px;
+  color: var(--panel-danger);
 }
 
 .memo-actions {

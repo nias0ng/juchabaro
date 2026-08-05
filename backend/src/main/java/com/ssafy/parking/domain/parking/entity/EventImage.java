@@ -34,7 +34,7 @@ public class EventImage extends BaseCreatedEntity {
     @JoinColumn(name = "event_id", nullable = false)
     private ParkingEvent event;
 
-    @Column(name = "image_url", nullable = false, length = 500)
+    @Column(name = "image_url", length = 500)
     private String imageUrl;
 
     @Enumerated(EnumType.STRING)
@@ -44,16 +44,47 @@ public class EventImage extends BaseCreatedEntity {
     @Column(name = "captured_at")
     private LocalDateTime capturedAt;
 
+    @Column(name = "evidence_id", unique = true, length = 36)
+    private String evidenceId;
+
+    @Column(name = "publication_revision")
+    private Integer publicationRevision;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "availability", length = 20)
+    private EvidenceAvailability availability;
+
+    @Column(name = "unavailable_reason", length = 40)
+    private String unavailableReason;
+
+    @Column(name = "checksum", length = 100)
+    private String checksum;
+
+    @Column(name = "byte_size")
+    private Long byteSize;
+
     @Builder
     private EventImage(
             ParkingEvent event,
             String imageUrl,
             EventImageType imageType,
-            LocalDateTime capturedAt
+            LocalDateTime capturedAt,
+            String evidenceId,
+            Integer publicationRevision,
+            EvidenceAvailability availability,
+            String unavailableReason,
+            String checksum,
+            Long byteSize
     ) {
         this.event = event;
         this.imageUrl = imageUrl;
         this.imageType = imageType;
         this.capturedAt = capturedAt;
+        this.evidenceId = evidenceId;
+        this.publicationRevision = publicationRevision;
+        this.availability = availability;
+        this.unavailableReason = unavailableReason;
+        this.checksum = checksum;
+        this.byteSize = byteSize;
     }
 }

@@ -4,6 +4,7 @@ import type { NotificationType } from '../api/types';
 
 export const NOTIFICATION_ICON_COLORS: Record<NotificationType, { bg: string; dot: string }> = {
   MOVE_REQUEST: { bg: Palette.peach100, dot: Palette.orange400 },
+  MOVE_RESPONSE: { bg: Palette.mint100, dot: Palette.emerald500 },
   REMINDER: { bg: Palette.sky100, dot: Palette.blue500 },
   EV_OVERSTAY: { bg: Palette.lavender100, dot: Palette.violet500 },
   EVENT_RESOLVED: { bg: Palette.mint100, dot: Palette.emerald500 },

@@ -1,9 +1,7 @@
 package com.ssafy.parking.domain.parking.controller;
 
 import com.ssafy.parking.common.response.ApiResponse;
-import com.ssafy.parking.domain.parking.dto.ZoneImportRequest;
-import com.ssafy.parking.domain.parking.dto.ZoneImportResult;
-import com.ssafy.parking.domain.parking.dto.ZoneListResponse;
+import com.ssafy.parking.domain.parking.dto.*;
 import com.ssafy.parking.domain.parking.service.ZoneService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -11,11 +9,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 @Tag(name = "주차 구역", description = "주차 구역(zone) 카탈로그 및 정의 관리 API")
 @RestController
@@ -43,5 +37,15 @@ public class ZoneController {
         ZoneImportResult result = zoneService.importZones(request);
         return ResponseEntity.ok(
                 ApiResponse.success(HttpStatus.OK, "구역 정의를 반영했습니다.", result));
+    }
+
+    @Operation(summary = "구역 수정", description = "관리자가 구역 번호/유형/허용시간을 부분 수정합니다.")
+    @SecurityRequirement(name = "bearerAuth")
+    @PatchMapping("/{zoneId}")
+    public ResponseEntity<ApiResponse<ZoneResponse>> updateZone(
+            @PathVariable Long zoneId,
+            @RequestBody ZoneUpdateRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(HttpStatus.OK, "구역을 수정했습니다.",
+                zoneService.updateZone(zoneId, request)));
     }
 }

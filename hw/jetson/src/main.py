@@ -18,13 +18,40 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import router as entry_events_router
 from src.api.health_router import router as health_router
+from src.api.internal_commands_router import router as internal_commands_router
 from src.application.entry_event_intake import EntryEventIntake
+from src.application.entry_review_resolution_intake import (
+    EntryReviewResolutionIntake,
+)
+from src.application.evidence_publication_worker import (
+    EvidencePublicationPublisher,
+    EvidencePublicationWorker,
+)
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.application.monitoring_worker import MonitoringWorker
+from src.application.move_verification_executor import (
+    MoveVerificationExecutor,
+    MoveVerificationExecutorWorker,
+)
+from src.application.move_verification_intake import MoveVerificationIntake
+from src.application.outbox_publisher import (
+    OutboxPublisher,
+    OutboxPublisherWorker,
+)
+from src.application.session_context_update_intake import (
+    SessionContextUpdateIntake,
+)
+from src.communication.backend_client import BackendClient
+from src.communication.backend_publication_preparer import (
+    BackendPublicationPreparer,
+)
 from src.config.settings import Settings, get_settings
+from src.evidence.capture import EvidenceCaptureCoordinator
 from src.parking.zone_registry import ZoneRegistry
+from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
 
@@ -34,11 +61,13 @@ DatabaseConnectionFactory = Callable[[], sqlite3.Connection]
 
 @dataclass(frozen=True)
 class RuntimeContext:
-    """확정된 기동 설정·구역·DB connection 경계."""
+    """확정된 기동 설정·구역·DB·outbound wire adapter 경계."""
 
     settings: Settings
     zones: ZoneRegistry
     connection_factory: DatabaseConnectionFactory
+    publication_preparer: BackendPublicationPreparer
+    evidence_capture_coordinator: EvidenceCaptureCoordinator
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
@@ -60,9 +89,9 @@ def create_app(
 ) -> FastAPI:
     """FastAPI app을 만들고 process-local 자원 생명주기를 소유한다.
 
-    module-level app은 inbound API만 조립한다. 후속 Backend·hardware
-    계약을 구현한 배포 entrypoint는 factory를 주입해 같은 process에서
-    monitoring을 단 하나만 실행한다.
+    module-level app은 inbound API와 설정된 Backend outbox publisher를 조립한다.
+    camera·model 배포 entrypoint는 factory를 주입해 같은 process에서 monitoring을
+    단 하나만 실행한다.
     """
 
     resolved_settings = settings or get_settings()
@@ -91,7 +120,31 @@ def create_app(
                 resolved_settings.entry_match_window_seconds
             ),
         )
+        application.state.entry_review_resolution_intake = (
+            EntryReviewResolutionIntake(entry_match_coordinator)
+        )
+        application.state.session_context_update_intake = (
+            SessionContextUpdateIntake(ContextBindingCoordinator())
+        )
+        application.state.move_verification_intake = MoveVerificationIntake()
         application.state.database_connection_factory = connection_factory
+        publication_preparer = BackendPublicationPreparer()
+        application.state.publication_preparer = publication_preparer
+        evidence_capture_coordinator = EvidenceCaptureCoordinator(
+            connection_factory=connection_factory,
+            zones=zones,
+            spool_path=resolved_settings.evidence_spool_path,
+            spool_cap_bytes=resolved_settings.evidence_spool_cap_bytes,
+            filesystem_floor_ratio=(
+                resolved_settings.evidence_filesystem_floor_ratio
+            ),
+            capture_stop_free_ratio=(
+                resolved_settings.evidence_capture_stop_free_ratio
+            ),
+        )
+        application.state.evidence_capture_coordinator = (
+            evidence_capture_coordinator
+        )
 
         monitoring_worker: MonitoringWorker | None = None
         if monitoring_pipeline_factory is not None:
@@ -100,14 +153,86 @@ def create_app(
                     settings=resolved_settings,
                     zones=zones,
                     connection_factory=connection_factory,
+                    publication_preparer=publication_preparer,
+                    evidence_capture_coordinator=(
+                        evidence_capture_coordinator
+                    ),
                 )
             )
+            if (
+                isinstance(pipeline, MonitoringPipeline)
+                and not pipeline.has_evidence_capture_sink
+            ):
+                pipeline.bind_evidence_capture_sink(
+                    evidence_capture_coordinator
+                )
             monitoring_worker = MonitoringWorker(pipeline)
-            monitoring_worker.start()
         application.state.monitoring_worker = monitoring_worker
+
+        move_verification_worker = MoveVerificationExecutorWorker(
+            MoveVerificationExecutor(
+                connection_factory=connection_factory,
+                publication_preparer=publication_preparer,
+            )
+        )
+        application.state.move_verification_worker = move_verification_worker
+
+        evidence_publication_worker: EvidencePublicationWorker | None = None
+        outbox_publisher_worker: OutboxPublisherWorker | None = None
+        if resolved_settings.backend_hw_api_key.strip():
+            evidence_publication_worker = EvidencePublicationWorker(
+                EvidencePublicationPublisher(
+                    connection_factory=connection_factory,
+                    client=BackendClient(
+                        base_url=resolved_settings.backend_base_url,
+                        hw_api_key=resolved_settings.backend_hw_api_key,
+                    ),
+                    spool_path=resolved_settings.evidence_spool_path,
+                    spool_cap_bytes=(
+                        resolved_settings.evidence_spool_cap_bytes
+                    ),
+                    filesystem_floor_ratio=(
+                        resolved_settings.evidence_filesystem_floor_ratio
+                    ),
+                    capture_stop_free_ratio=(
+                        resolved_settings.evidence_capture_stop_free_ratio
+                    ),
+                )
+            )
+            outbox_publisher_worker = OutboxPublisherWorker(
+                OutboxPublisher(
+                    connection_factory=connection_factory,
+                    client=BackendClient(
+                        base_url=resolved_settings.backend_base_url,
+                        hw_api_key=resolved_settings.backend_hw_api_key,
+                    ),
+                )
+            )
+        application.state.evidence_publication_worker = (
+            evidence_publication_worker
+        )
+        application.state.outbox_publisher_worker = outbox_publisher_worker
         try:
+            # MonitoringPipeline.open()이 durable recovery를 끝낸 뒤 기존·신규
+            # publication을 보내기 시작한다.
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.start()
+            else:
+                # Backend key가 없어 publisher를 끈 현장도 interrupted local
+                # JPEG를 다음 capture 전 일관된 FAILED/READY 상태로 만든다.
+                evidence_capture_coordinator.recover()
+            if monitoring_worker is not None:
+                monitoring_worker.start()
+            move_verification_worker.start()
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.start()
             yield
         finally:
+            move_verification_worker.stop()
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.stop()
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.stop()
             if monitoring_worker is not None:
                 monitoring_worker.stop()
 
@@ -117,9 +242,11 @@ def create_app(
         description="Smart Parking Jetson hardware interface",
         lifespan=lifespan,
     )
+    register_error_handlers(application)
 
     application.include_router(health_router)
     application.include_router(entry_events_router)
+    application.include_router(internal_commands_router)
 
     return application
 
