@@ -204,7 +204,7 @@ class Vl53l0xArray:
                 tuple[_SensorDefinition, Any]
             ] = []
             for definition in _SENSOR_DEFINITIONS:
-                gpio.setup(definition.shutdown_pin, gpio.IN)
+                gpio.output(definition.shutdown_pin, gpio.HIGH)
                 _sleep(self._boot_settle_seconds)
                 sensor = _create_sensor(
                     sensor_factory=sensor_factory,

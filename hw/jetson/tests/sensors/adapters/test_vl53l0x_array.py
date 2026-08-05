@@ -35,6 +35,7 @@ class FakeGPIO:
     OUT = "OUT"
     IN = "IN"
     LOW = 0
+    HIGH = 1
 
     def __init__(
         self,
@@ -45,12 +46,21 @@ class FakeGPIO:
             list[Exception | None],
         ]
         | None = None,
+        output_errors: dict[
+            tuple[int, int],
+            list[Exception | None],
+        ]
+        | None = None,
         cleanup_error: Exception | None = None,
     ) -> None:
         self.events = events
         self.setup_errors = {
             key: list(errors)
             for key, errors in (setup_errors or {}).items()
+        }
+        self.output_errors = {
+            key: list(errors)
+            for key, errors in (output_errors or {}).items()
         }
         self.cleanup_error = cleanup_error
 
@@ -67,6 +77,14 @@ class FakeGPIO:
             ("gpio", "setup", pin, direction, initial)
         )
         errors = self.setup_errors.get((pin, direction))
+        if errors:
+            error = errors.pop(0)
+            if error is not None:
+                raise error
+
+    def output(self, pin: int, value: int) -> None:
+        self.events.append(("gpio", "output", pin, value))
+        errors = self.output_errors.get((pin, value))
         if errors:
             error = errors.pop(0)
             if error is not None:
@@ -363,7 +381,7 @@ def test_open_initializes_sensors_in_hardware_order(
             (i2c.name, "try_lock"),
             (i2c.name, "scan"),
             (i2c.name, "unlock"),
-            ("gpio", "setup", 15, gpio.IN, None),
+            ("gpio", "output", 15, gpio.HIGH),
             ("sleep", 0.02),
             (
                 "sensor",
@@ -374,7 +392,7 @@ def test_open_initializes_sensors_in_hardware_order(
                 1.0,
             ),
             (sensors[0].name, "set_address", 0x30),
-            ("gpio", "setup", 29, gpio.IN, None),
+            ("gpio", "output", 29, gpio.HIGH),
             ("sleep", 0.02),
             (
                 "sensor",
@@ -390,9 +408,92 @@ def test_open_initializes_sensors_in_hardware_order(
             (i2c.name, "unlock"),
         ),
     )
+    assert not any(
+        event[0:2] == ("gpio", "setup") and event[3] == gpio.IN
+        for event in events
+    )
 
     result = adapter.read_all()
     assert len(result.observations) == 2
+
+
+@pytest.mark.parametrize(
+    "failing_pin",
+    [15, 29],
+    ids=["disabled-zone", "ev-zone"],
+)
+def test_open_recovers_when_xshut_high_output_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_pin: int,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    output_error = RuntimeError(
+        f"pin {failing_pin} high output failed"
+    )
+    gpio = FakeGPIO(
+        events,
+        output_errors={
+            (failing_pin, FakeGPIO.HIGH): [output_error],
+        },
+    )
+    failed_i2c = FakeI2C(
+        "i2c-failed",
+        events,
+        scan_results=[set()],
+    )
+    successful_i2c = FakeI2C(
+        "i2c-success",
+        events,
+        scan_results=[set(), {0x30, 0x31}],
+    )
+    sensors: list[FakeSensor] = []
+    if failing_pin == 29:
+        sensors.append(
+            FakeSensor(
+                "failed-attempt-sensor-1",
+                events,
+                reading=420,
+            )
+        )
+    sensors.extend(
+        [
+            FakeSensor("retry-sensor-1", events, reading=420),
+            FakeSensor("retry-sensor-2", events, reading=840),
+        ]
+    )
+    _install_hardware(
+        monkeypatch,
+        events=events,
+        gpio=gpio,
+        i2cs=[failed_i2c, successful_i2c],
+        sensors=sensors,
+    )
+    adapter = _make_adapter()
+
+    with pytest.raises(
+        SensorArrayInitializationError
+    ) as exc_info:
+        adapter.open()
+
+    assert exc_info.value.__cause__ is output_error
+    _assert_occurs_in_order(
+        events,
+        (
+            ("gpio", "output", failing_pin, gpio.HIGH),
+            ("gpio", "setup", 15, gpio.OUT, gpio.LOW),
+            ("gpio", "setup", 29, gpio.OUT, gpio.LOW),
+            (failed_i2c.name, "deinit"),
+            ("gpio", "cleanup", (15, 29)),
+        ),
+    )
+    _assert_closed(adapter)
+
+    adapter.open()
+    batch = adapter.read_all()
+
+    assert len(batch.observations) == 2
+    assert batch.failures == ()
+    assert events.count(("i2c", "create", 7)) == 2
 
 
 def test_open_is_idempotent(
