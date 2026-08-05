@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "50925007889",
+    "project_id": "baro-parking-de07d",
+    "storage_bucket": "baro-parking-de07d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:50925007889:android:4075b631d58a243ddf2db0",
+        "android_client_info": {
+          "package_name": "com.chaewon105steam.baroapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCpkLkL9fErlSzkhQaRsskqSeooCG1wNhg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

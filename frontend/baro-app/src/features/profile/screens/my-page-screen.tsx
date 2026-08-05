@@ -8,6 +8,7 @@ import { ProfileStatsRow } from '@/features/profile/components/profile-stats-row
 import { ProfileSummaryCard } from '@/features/profile/components/profile-summary-card';
 import { VehicleShortcutCard } from '@/features/profile/components/vehicle-shortcut-card';
 import { useVehicleSummary } from '@/features/profile/hooks/use-vehicle-summary';
+import { useViolationStats } from '@/features/violation/hooks/use-violation-stats';
 import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
 
@@ -20,6 +21,7 @@ const STATUS_LABEL: Partial<Record<string, string>> = {
 export default function MyPageScreen() {
   const { user } = useAuth();
   const { isLoading: isVehicleLoading, vehicleCount, primaryVehicle } = useVehicleSummary();
+  const { stats: violationStats, isLoading: isViolationLoading } = useViolationStats();
 
   const meta = user?.buildingNumber && user?.unitNumber ? `${user.buildingNumber}동 ${user.unitNumber}호` : '';
 
@@ -36,12 +38,18 @@ export default function MyPageScreen() {
 
         <Stack gap={Spacing.base + 2}>
           <ProfileSummaryCard
-            name={user?.nickname ?? ''}
+            name={user?.name ?? ''}
             meta={meta}
             statusLabel={user ? STATUS_LABEL[user.status] : undefined}
           />
 
-          <ProfileStatsRow vehicleCount={vehicleCount} />
+          <ProfileStatsRow
+            vehicleCount={vehicleCount}
+            violationCount={violationStats?.totalCount ?? null}
+            isViolationLoading={isViolationLoading}
+            onPressVehicles={() => router.push('/resident/vehicles')}
+            onPressViolations={() => router.push('/resident/violation-history')}
+          />
 
           <VehicleShortcutCard
             subtitle={vehicleSubtitle}

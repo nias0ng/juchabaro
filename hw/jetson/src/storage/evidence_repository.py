@@ -8,9 +8,11 @@ crash recovery에 필요한 workflow state만 보존한다. 쓰기는 반드시
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from src.domain.models import DeliveryState, require_aware
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
@@ -72,6 +74,7 @@ def _optional_datetime(value: object) -> datetime | None:
 
 def _artifact_from_row(row: sqlite3.Row) -> EvidenceArtifact:
     disposition = row["retention_disposition"]
+    delivery_state = row["delivery_state"]
     return EvidenceArtifact(
         evidence_id=EvidenceId(uuid_from_text(str(row["evidence_id"]))),
         incident_id=IncidentId(uuid_from_text(str(row["incident_id"]))),
@@ -98,6 +101,20 @@ def _artifact_from_row(row: sqlite3.Row) -> EvidenceArtifact:
             else None
         ),
         evicted_at=_optional_datetime(row["evicted_at_us"]),
+        delivery_state=(
+            DeliveryState(str(delivery_state))
+            if delivery_state is not None
+            else None
+        ),
+        delivery_attempt_count=int(row["delivery_attempt_count"]),
+        next_delivery_attempt_at=_optional_datetime(
+            row["next_delivery_attempt_at_us"]
+        ),
+        last_delivery_error=(
+            str(row["last_delivery_error"])
+            if row["last_delivery_error"] is not None
+            else None
+        ),
         record_version=int(row["record_version"]),
         created_at=datetime_from_epoch_microseconds(int(row["created_at_us"])),
         updated_at=datetime_from_epoch_microseconds(int(row["updated_at_us"])),
@@ -151,6 +168,62 @@ class EvidenceArtifactRepository:
             (uuid_to_text(incident_id),),
         ).fetchone()
         return int(row[0])
+
+    def list_for_incident(
+        self,
+        incident_id: IncidentId,
+    ) -> tuple[EvidenceArtifact, ...]:
+        """한 Incident에 예약된 artifact를 capture 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM evidence_artifacts
+            WHERE incident_id = ?
+            ORDER BY captured_at_us, evidence_id
+            """,
+            (uuid_to_text(incident_id),),
+        ).fetchall()
+        return tuple(_artifact_from_row(row) for row in rows)
+
+    def bind_publication_revision_for_incident(
+        self,
+        incident_id: IncidentId,
+        *,
+        publication_revision: int,
+        bound_at: datetime,
+    ) -> int:
+        """아직 local-only인 evidence를 Incident OPEN revision에 결속한다.
+
+        correlation이 늦은 Incident는 정지 이미지를 먼저 보관하고 API 7 OPEN이
+        materialize되는 transaction에서 revision을 확정한다. 이미 결속된 artifact는
+        같은 호출을 반복해도 변경하지 않는다.
+        """
+
+        require_write_transaction(self._connection)
+        if publication_revision < 1:
+            raise ValueError("publication_revision must be positive")
+        require_aware(bound_at, "bound_at")
+
+        bound = 0
+        for artifact in self.list_for_incident(incident_id):
+            if artifact.publication_revision is not None:
+                if artifact.publication_revision != publication_revision:
+                    raise EvidenceArtifactConflictError(
+                        "Incident evidence is already bound to another publication revision"
+                    )
+                continue
+            replacement = replace(
+                artifact,
+                publication_revision=publication_revision,
+                record_version=artifact.record_version + 1,
+                updated_at=max(artifact.updated_at, bound_at),
+            )
+            self.save(
+                replacement,
+                expected_record_version=artifact.record_version,
+            )
+            bound += 1
+        return bound
 
     def byte_size_for_incident(
         self,
@@ -225,6 +298,240 @@ class EvidenceArtifactRepository:
         ).fetchall()
         return tuple(_artifact_from_row(row) for row in rows)
 
+    def claim_next_delivery(self, *, now: datetime) -> EvidenceArtifact | None:
+        """전송 가능한 API 8·9 대상 하나를 ``IN_FLIGHT``으로 claim한다."""
+
+        require_write_transaction(self._connection)
+        now_us = datetime_to_epoch_microseconds(now)
+        row = self._connection.execute(
+            """
+            SELECT * FROM evidence_artifacts
+            WHERE publication_revision IS NOT NULL
+              AND backend_acked_at_us IS NULL
+              AND workflow_state IN ('READY', 'FAILED', 'EVICTED')
+              AND (
+                    delivery_state IS NULL
+                    OR delivery_state IN ('PENDING', 'RETRY_WAIT')
+              )
+              AND (
+                    next_delivery_attempt_at_us IS NULL
+                    OR next_delivery_attempt_at_us <= ?
+              )
+            ORDER BY
+                COALESCE(next_delivery_attempt_at_us, updated_at_us),
+                updated_at_us,
+                evidence_id
+            LIMIT 1
+            """,
+            (now_us,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        current = _artifact_from_row(row)
+        claimed = replace(
+            current,
+            state=(
+                EvidenceState.UPLOADING
+                if current.state is EvidenceState.READY
+                else current.state
+            ),
+            delivery_state=DeliveryState.IN_FLIGHT,
+            delivery_attempt_count=current.delivery_attempt_count + 1,
+            next_delivery_attempt_at=None,
+            record_version=current.record_version + 1,
+        )
+        self.save(claimed, expected_record_version=current.record_version)
+        persisted = self.get(current.evidence_id)
+        if persisted is None:  # pragma: no cover
+            raise RuntimeError("claimed EvidenceArtifact disappeared")
+        return persisted
+
+    def recover_in_flight(self, *, now: datetime) -> int:
+        """process 중단 시 남은 API 8·9 전송을 즉시 재시도 가능하게 만든다."""
+
+        require_write_transaction(self._connection)
+        rows = self._connection.execute(
+            """
+            SELECT * FROM evidence_artifacts
+            WHERE delivery_state = 'IN_FLIGHT'
+            ORDER BY updated_at_us, evidence_id
+            """
+        ).fetchall()
+        for row in rows:
+            current = _artifact_from_row(row)
+            recovered = replace(
+                current,
+                state=(
+                    EvidenceState.READY
+                    if current.state is EvidenceState.UPLOADING
+                    else current.state
+                ),
+                delivery_state=DeliveryState.RETRY_WAIT,
+                next_delivery_attempt_at=now,
+                last_delivery_error="PROCESS_RESTARTED",
+                record_version=current.record_version + 1,
+            )
+            self.save(
+                recovered,
+                expected_record_version=current.record_version,
+            )
+        return len(rows)
+
+    def schedule_retry(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+        next_attempt_at: datetime,
+        error: str,
+    ) -> EvidenceArtifact:
+        """일시적 실패를 기록하고 동일 API publication을 재시도 대기시킨다."""
+
+        require_write_transaction(self._connection)
+        current = self._require_in_flight(
+            evidence_id,
+            expected_record_version=expected_record_version,
+        )
+        retried = replace(
+            current,
+            state=(
+                EvidenceState.READY
+                if current.state is EvidenceState.UPLOADING
+                else current.state
+            ),
+            delivery_state=DeliveryState.RETRY_WAIT,
+            next_delivery_attempt_at=next_attempt_at,
+            last_delivery_error=error,
+            record_version=current.record_version + 1,
+        )
+        self.save(retried, expected_record_version=current.record_version)
+        return retried
+
+    def mark_delivered(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+        acknowledged_at: datetime,
+        backend_ack_payload: bytes,
+    ) -> EvidenceArtifact:
+        """Backend ACK를 API 8·9 공통 terminal delivery 상태로 기록한다."""
+
+        require_write_transaction(self._connection)
+        current = self._require_in_flight(
+            evidence_id,
+            expected_record_version=expected_record_version,
+        )
+        delivered = replace(
+            current,
+            state=(
+                EvidenceState.ACKNOWLEDGED
+                if current.state is EvidenceState.UPLOADING
+                else current.state
+            ),
+            backend_acked_at=acknowledged_at,
+            delivery_state=DeliveryState.DELIVERED,
+            next_delivery_attempt_at=None,
+            record_version=current.record_version + 1,
+        )
+        self.save(delivered, expected_record_version=current.record_version)
+        self._connection.execute(
+            """
+            UPDATE evidence_artifacts
+            SET backend_ack_payload = ?
+            WHERE evidence_id = ? AND record_version = ?
+            """,
+            (
+                backend_ack_payload,
+                uuid_to_text(evidence_id),
+                delivered.record_version,
+            ),
+        )
+        return delivered
+
+    def mark_failed_terminal(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+        error: str,
+    ) -> EvidenceArtifact:
+        """4xx·계약 오류를 자동 재시도하지 않는 상태로 격리한다."""
+
+        require_write_transaction(self._connection)
+        current = self._require_in_flight(
+            evidence_id,
+            expected_record_version=expected_record_version,
+        )
+        failed = replace(
+            current,
+            state=(
+                EvidenceState.READY
+                if current.state is EvidenceState.UPLOADING
+                else current.state
+            ),
+            delivery_state=DeliveryState.FAILED_TERMINAL,
+            next_delivery_attempt_at=None,
+            last_delivery_error=error,
+            record_version=current.record_version + 1,
+        )
+        self.save(failed, expected_record_version=current.record_version)
+        return failed
+
+    def mark_upload_unavailable(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+        failed_at: datetime,
+        error: str,
+    ) -> EvidenceArtifact:
+        """읽을 수 없는 API 8 binary를 API 9 제공 불가 대상으로 전환한다."""
+
+        require_write_transaction(self._connection)
+        current = self._require_in_flight(
+            evidence_id,
+            expected_record_version=expected_record_version,
+        )
+        if current.state is not EvidenceState.UPLOADING:
+            raise EvidenceArtifactConflictError(
+                "only UPLOADING evidence can become unavailable"
+            )
+        failed = replace(
+            current,
+            state=EvidenceState.FAILED,
+            local_path=None,
+            last_error=error,
+            retention_disposition=(
+                EvidenceRetentionDisposition.LOST_OR_CORRUPTED
+            ),
+            delivery_state=DeliveryState.PENDING,
+            next_delivery_attempt_at=None,
+            last_delivery_error=error,
+            updated_at=failed_at,
+            record_version=current.record_version + 1,
+        )
+        self.save(failed, expected_record_version=current.record_version)
+        return failed
+
+    def _require_in_flight(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+    ) -> EvidenceArtifact:
+        current = self.get(evidence_id)
+        if current is None or current.record_version != expected_record_version:
+            raise OptimisticConcurrencyError(
+                f"EvidenceArtifact is missing or stale: {evidence_id}"
+            )
+        if current.delivery_state is not DeliveryState.IN_FLIGHT:
+            raise EvidenceArtifactConflictError(
+                f"evidence delivery is not IN_FLIGHT: {evidence_id}"
+            )
+        return current
+
     def add(self, artifact: EvidenceArtifact) -> None:
         """Capture identity를 추가한다. 초기 state는 RESERVED여야 한다."""
 
@@ -260,8 +567,13 @@ class EvidenceArtifactRepository:
                     captured_at_us, image_type, local_path, byte_size, checksum,
                     workflow_state, last_error, backend_ack_payload,
                     backend_acked_at_us, retention_disposition, evicted_at_us,
+                    delivery_state, delivery_attempt_count,
+                    next_delivery_attempt_at_us, last_delivery_error,
                     record_version, created_at_us, updated_at_us
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     uuid_to_text(artifact.evidence_id),
@@ -289,6 +601,20 @@ class EvidenceArtifactRepository:
                         if artifact.evicted_at is not None
                         else None
                     ),
+                    (
+                        artifact.delivery_state.value
+                        if artifact.delivery_state is not None
+                        else None
+                    ),
+                    artifact.delivery_attempt_count,
+                    (
+                        datetime_to_epoch_microseconds(
+                            artifact.next_delivery_attempt_at
+                        )
+                        if artifact.next_delivery_attempt_at is not None
+                        else None
+                    ),
+                    artifact.last_delivery_error,
                     artifact.record_version,
                     datetime_to_epoch_microseconds(artifact.created_at),
                     datetime_to_epoch_microseconds(artifact.updated_at),
@@ -351,6 +677,20 @@ class EvidenceArtifactRepository:
                         if artifact.evicted_at is not None
                         else None
                     ),
+                    "delivery_state": (
+                        artifact.delivery_state.value
+                        if artifact.delivery_state is not None
+                        else None
+                    ),
+                    "delivery_attempt_count": artifact.delivery_attempt_count,
+                    "next_delivery_attempt_at_us": (
+                        datetime_to_epoch_microseconds(
+                            artifact.next_delivery_attempt_at
+                        )
+                        if artifact.next_delivery_attempt_at is not None
+                        else None
+                    ),
+                    "last_delivery_error": artifact.last_delivery_error,
                     "updated_at_us": datetime_to_epoch_microseconds(
                         artifact.updated_at
                     ),
@@ -416,6 +756,21 @@ class EvidenceArtifactRepository:
         ):
             raise EvidenceArtifactConflictError(
                 "retention_disposition is immutable once selected"
+            )
+        if replacement.delivery_attempt_count < existing.delivery_attempt_count:
+            raise EvidenceArtifactConflictError(
+                "delivery_attempt_count cannot decrease"
+            )
+        terminal_delivery_states = {
+            DeliveryState.DELIVERED,
+            DeliveryState.FAILED_TERMINAL,
+        }
+        if (
+            existing.delivery_state in terminal_delivery_states
+            and replacement.delivery_state is not existing.delivery_state
+        ):
+            raise EvidenceArtifactConflictError(
+                "terminal evidence delivery state cannot change"
             )
 
         if existing.local_path is not None and replacement.local_path not in {

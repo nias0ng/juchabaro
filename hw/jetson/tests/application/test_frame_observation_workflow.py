@@ -25,7 +25,12 @@ from src.domain.models import (
 )
 from src.parking.models import (
     AssignmentState,
+    Incident,
+    IncidentId,
+    IncidentKey,
+    IncidentState,
     IncidentTransition,
+    IncidentTransitionType,
     ParkingAssignment,
     ParkingEpisode,
     ParkingEpisodeId,
@@ -54,6 +59,7 @@ from src.session.models import (
 )
 from src.storage.aggregate_repositories import ParkingEpisodeRepository
 from src.storage.database import open_database
+from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.repositories import (
     ContextBindingRepository,
     EntryMatchAttemptRepository,
@@ -89,6 +95,9 @@ EPISODE_ID = ParkingEpisodeId(
     UUID("40000000-0000-4000-8000-000000000011")
 )
 SESSION_ID = ParkingSessionId(55)
+INCIDENT_ID = IncidentId(
+    UUID("50000000-0000-4000-8000-000000000011")
+)
 
 OBSERVED_T0 = ObservationStatus(
     state=ObservationState.OBSERVED,
@@ -433,6 +442,84 @@ def test_frame_rolls_back_session_parking_outbox_and_runtime_then_retries(
         assert _outbox_count(connection) == 1
         assert session.runtime_revision == 1
         assert parking.runtime_revision == 1
+    finally:
+        connection.close()
+
+
+def test_local_incident_open_reserves_evidence_then_late_publication_binds_it(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "incident-evidence.db")
+    local_open = Incident(
+        incident_id=INCIDENT_ID,
+        key=IncidentKey.for_physical_vehicle(VEHICLE_ID, "AISLE_BLOCK"),
+        physical_vehicle_id=VEHICLE_ID,
+        state=IncidentState.OPEN,
+        observation=OBSERVED_T1,
+        confirm_trusted_seconds=5.0,
+        clear_trusted_seconds=0.0,
+        confirm_duration_seconds=5.0,
+        clear_duration_seconds=3.0,
+        record_version=1,
+        publication_revision=0,
+        first_observed_at=T0,
+        confirmed_at=T1,
+        created_at=T0,
+        updated_at=T1,
+        trusted_sample_max_gap_seconds=1.0,
+    )
+    parking = _ParkingPipeline(
+        process_result=ParkingPipelineResult(
+            zone_visit_updates=(),
+            parking_episode_updates=(),
+            incident_updates=(local_open,),
+            incident_transitions=(),
+        )
+    )
+    workflow = _workflow(
+        _SessionWorkflow(ensure_vehicle=True),
+        parking,
+        _PublicationPreparer(),
+    )
+    try:
+        first_result = workflow.process(_batch(), connection=connection)
+
+        assert len(first_result.evidence_capture_intents) == 1
+        artifacts = EvidenceArtifactRepository(connection).list_for_incident(
+            INCIDENT_ID
+        )
+        assert len(artifacts) == 1
+        assert artifacts[0].publication_revision is None
+
+        published_open = replace(
+            local_open,
+            entry_attempt_id=ATTEMPT_ID,
+            publication_revision=1,
+            record_version=2,
+            updated_at=T1 + timedelta(seconds=1),
+        )
+        parking.process_result = ParkingPipelineResult(
+            zone_visit_updates=(),
+            parking_episode_updates=(),
+            incident_updates=(published_open,),
+            incident_transitions=(
+                IncidentTransition(
+                    transition_type=IncidentTransitionType.OPEN,
+                    incident=published_open,
+                ),
+            ),
+        )
+
+        second_result = workflow.process(_batch(), connection=connection)
+
+        rebound = EvidenceArtifactRepository(connection).list_for_incident(
+            INCIDENT_ID
+        )
+        assert second_result.evidence_capture_intents == ()
+        assert len(rebound) == 1
+        assert rebound[0].evidence_id == artifacts[0].evidence_id
+        assert rebound[0].publication_revision == 1
+        assert _outbox_count(connection) == 1
     finally:
         connection.close()
 

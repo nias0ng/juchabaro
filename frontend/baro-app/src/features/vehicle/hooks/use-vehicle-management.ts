@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { getMyParkingSessions } from '@/features/parking/api/parking-api';
+import { formatParkingLocation } from '@/features/parking/utils/parking-session';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 
@@ -48,7 +49,11 @@ export function useVehicleManagement() {
       ]);
 
       const parkingSpotByVehicleId = new Map(
-        parkingSessions.map((session) => [session.vehicleId, `${session.floor} · ${session.zoneNumber}`]),
+        parkingSessions.flatMap((session) =>
+          session.floor || session.zoneNumber
+            ? [[session.vehicleId, formatParkingLocation(session.floor, session.zoneNumber)] as const]
+            : [],
+        ),
       );
 
       // 목록 조회엔 등록일(createdAt) 등이 없어서, 카드에 채워 보여주려고 차량별로 상세를 추가 조회한다.

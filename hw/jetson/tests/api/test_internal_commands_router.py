@@ -22,6 +22,7 @@ from src.application.move_verification_intake import MoveVerificationIntake
 from src.application.session_context_update_intake import (
     SessionContextUpdateIntake,
 )
+from src.communication.models import BACKEND_INTEGER_MAX, BACKEND_LONG_MAX
 from src.domain.models import ObservationState, ObservationStatus
 from src.parking.models import (
     EntryExitRole,
@@ -487,7 +488,7 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
             "BAD_PARKING",
         ),
         physical_vehicle_id=PHYSICAL_VEHICLE_ID,
-        state=IncidentState.CANDIDATE,
+        state=IncidentState.OPEN,
         observation=observation,
         confirm_trusted_seconds=0.0,
         clear_trusted_seconds=0.0,
@@ -495,10 +496,12 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
         clear_duration_seconds=3.0,
         trusted_sample_max_gap_seconds=1.0,
         record_version=1,
-        publication_revision=0,
+        publication_revision=1,
         first_observed_at=ENTRY_TIME,
         created_at=ENTRY_TIME,
         updated_at=ENTRY_TIME,
+        entry_attempt_id=EntryAttemptId(ENTRY_ATTEMPT_ID),
+        confirmed_at=ENTRY_TIME,
     )
     connection = connect_database(database_path)
     try:
@@ -578,3 +581,36 @@ def test_api_11_persists_one_command_scope_and_does_not_return_a_result(
     assert attempt.target_incident_ids == (incident_id,)
     assert attempt.result is None
     assert expired_attempt is None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("requestId", BACKEND_LONG_MAX + 1),
+        ("verificationAttempt", BACKEND_INTEGER_MAX + 1),
+    ],
+)
+def test_api_11_rejects_values_outside_backend_types(
+    tmp_path: Path,
+    field_name: str,
+    value: int,
+) -> None:
+    client, _database_path = make_client(tmp_path)
+    payload = {
+        "requestId": 201,
+        "verificationAttempt": 1,
+        "targetIncidentIds": [
+            "1f21d60c-c077-4fb4-a092-7cbdb5fc5a91"
+        ],
+        "requestedAt": ENTRY_TIME.isoformat(),
+        "deadlineAt": (ENTRY_TIME + timedelta(seconds=30)).isoformat(),
+    }
+    payload[field_name] = value
+
+    response = client.post(
+        "/internal/move-verifications",
+        headers=_headers(f"MoveVerification:{value}:1"),
+        json=payload,
+    )
+
+    assert response.status_code == 422

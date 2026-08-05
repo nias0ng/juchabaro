@@ -35,20 +35,78 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  mapCellOccupied: {
+  mapCellMissing: {
+    backgroundColor: Palette.violet50,
+  },
+  floorLayout: {
+    alignSelf: 'center',
+    gap: Spacing.sm,
+  },
+  layoutRowGroup: {
+    gap: Spacing.sm,
+  },
+  layoutDivider: {
+    height: 22,
+    backgroundColor: Palette.violet50,
+  },
+  layoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sideCell: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    width: 40,
+    maxWidth: 40,
+    height: 32,
+    aspectRatio: undefined,
+  },
+  gapSlot: {
+    width: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accessBlock: {
+    width: 40,
+    height: 32,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitBlock: {
+    backgroundColor: Palette.blue500,
+  },
+  entryBlock: {
+    backgroundColor: Palette.emerald500,
+  },
+  accessBlockText: {
+    color: Palette.white,
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+  },
+  mainCells: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  mainCell: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    width: 32,
+    maxWidth: 32,
+  },
+  mapCellOther: {
     backgroundColor: Palette.violet300,
   },
-  mapCellViolation: {
-    backgroundColor: Palette.peach100,
-  },
   mapCellMine: {
-    backgroundColor: Palette.mint100,
+    backgroundColor: Palette.yellow100,
   },
-  mapCellDisabled: {
+  mapCellEmptyDisabled: {
+    backgroundColor: Palette.green100,
+  },
+  mapCellEmptyEv: {
     backgroundColor: Palette.sky100,
-  },
-  mapCellEv: {
-    backgroundColor: Palette.teal100,
   },
   mapCellSelected: {
     borderWidth: 2,
@@ -58,17 +116,20 @@ export const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: FontWeight.bold,
   },
-  violationLabel: {
-    color: Palette.orange600,
-  },
   mineLabel: {
-    color: Palette.emerald500,
+    color: Palette.yellow700,
+    fontWeight: FontWeight.regular,
+  },  
+  otherLabel: {
+    color: Palette.purple700,
+    fontWeight: FontWeight.regular,
   },
   disabledLabel: {
-    color: Palette.blue600,
+    color: Palette.emerald500,
+    fontWeight: FontWeight.regular,
   },
   evLabel: {
-    color: Palette.teal600,
+    color: Palette.blue600,
     fontWeight: FontWeight.regular,
   },
   spotCodeLabel: {

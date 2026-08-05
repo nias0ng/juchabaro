@@ -17,7 +17,7 @@ export const SITUATION_EVENT_TYPE: Record<RequestSituation, MoveEventType> = {
   '주차선 침범': 'BAD_PARKING',
   '통로 점유': 'OUT_OF_ZONE',
   '충전구역 점유': 'EV_OVERSTAY',
-  기타: 'ECT',
+  기타: 'ETC',
 };
 
 type RequestComposeSituationSelectorProps = {

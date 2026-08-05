@@ -1,198 +1,161 @@
-import type { CellVariant, FloorKey, ParkingSpot, SpotStatus, SpotType } from './types';
+import type { CellVariant, CongestionLevel, FloorKey, OccupancyStatus, ParkingSpotSummary, ZoneType } from './types';
 
-const FLOOR_LABELS: Record<FloorKey, string> = {
-  B1: '지하 1층',
-  B2: '지하 2층',
-  B3: '지하 3층',
+export const ZONE_TYPE_LABELS: Record<ZoneType, string> = {
+  GENERAL: '일반',
+  DISABLED: '장애인 구역',
+  EV_CHARGING: '전기차 구역',
+  AISLE: '통로',
+  ENTRY_EXIT: '입출구',
 };
 
-export const FLOOR_KEYS: FloorKey[] = ['B1', 'B2', 'B3'];
+export const ZONE_TYPE_OPTIONS = Object.keys(ZONE_TYPE_LABELS) as ZoneType[];
 
-export function floorLabel(floor: FloorKey): string {
-  return FLOOR_LABELS[floor];
+export function zoneTypeLabel(type: ZoneType): string {
+  return ZONE_TYPE_LABELS[type];
 }
 
-// baro-app(frontend/baro-app/src/features/parking/mocks/parking-floor-overview.mock.ts)의
-// 층별 주차 칸 번호·위치·유형·상태를 그대로 가져온다. 자리(배열 인덱스=그리드 위치)는
-// 고정이며, 실제 칸이 없는 자리는 null로 남겨 그 자리만 빈 배경으로 표시한다.
-type RawSpot = { code: string; status: SpotStatus; type: SpotType } | null;
-
-function spot(code: string, status: SpotStatus, type: SpotType = 'GENERAL'): RawSpot {
-  return { code, status, type };
+export function zoneTypeTone(type: ZoneType) {
+  if (type === 'EV_CHARGING') return 'success' as const;
+  if (type === 'DISABLED') return 'info' as const;
+  if (type === 'AISLE' || type === 'ENTRY_EXIT') return 'primary' as const;
+  return 'neutral' as const;
 }
 
-export const MAIN_SPOTS_PER_FLOOR = 24;
-export const SIDE_SPOTS_PER_FLOOR = 6;
-export const SLOTS_PER_FLOOR = MAIN_SPOTS_PER_FLOOR + SIDE_SPOTS_PER_FLOOR;
-
-const B1_MAIN: RawSpot[] = [
-  spot('B1-01', 'OCCUPIED'),
-  spot('B1-02', 'VIOLATION'),
-  spot('B1-03', 'OCCUPIED'),
-  spot('B1-04', 'OCCUPIED'),
-  spot('B1-05', 'OCCUPIED'),
-  spot('B1-06', 'EMPTY'),
-  spot('B1-07', 'OCCUPIED'),
-  spot('B1-08', 'OCCUPIED'),
-  spot('B1-09', 'EMPTY'),
-  spot('B1-10', 'OCCUPIED'),
-  spot('B1-11', 'EMPTY'),
-  spot('B1-12', 'OCCUPIED'),
-  spot('B1-13', 'EMPTY'),
-  spot('B1-14', 'OCCUPIED'),
-  spot('B1-15', 'EMPTY'),
-  spot('B1-16', 'OCCUPIED'),
-  spot('B1-EV1', 'OCCUPIED', 'EV_CHARGING'),
-  spot('B1-EV2', 'OCCUPIED', 'EV_CHARGING'),
-  spot('B1-17', 'EMPTY'),
-  spot('B1-18', 'VIOLATION'),
-  spot('B1-D1', 'OCCUPIED', 'DISABLED'),
-  spot('B1-D2', 'OCCUPIED', 'DISABLED'),
-  spot('B1-19', 'OCCUPIED'),
-  spot('B1-20', 'MINE'),
-];
-
-const B1_SIDE: RawSpot[] = [
-  spot('B1-S1', 'OCCUPIED'),
-  spot('B1-S2', 'EMPTY'),
-  spot('B1-S3', 'OCCUPIED'),
-  spot('B1-S4', 'OCCUPIED'),
-  null,
-  null,
-];
-
-const B2_MAIN: RawSpot[] = [
-  spot('B2-01', 'OCCUPIED'),
-  spot('B2-02', 'EMPTY'),
-  spot('B2-03', 'OCCUPIED'),
-  spot('B2-04', 'EMPTY'),
-  spot('B2-05', 'EMPTY'),
-  spot('B2-06', 'OCCUPIED'),
-  spot('B2-07', 'EMPTY'),
-  spot('B2-08', 'OCCUPIED'),
-  spot('B2-09', 'EMPTY'),
-  spot('B2-10', 'EMPTY'),
-  spot('B2-11', 'OCCUPIED'),
-  spot('B2-12', 'EMPTY'),
-  spot('B2-13', 'OCCUPIED'),
-  spot('B2-14', 'EMPTY'),
-  spot('B2-15', 'OCCUPIED'),
-  spot('B2-16', 'EMPTY'),
-  spot('B2-EV1', 'EMPTY', 'EV_CHARGING'),
-  spot('B2-EV2', 'EMPTY', 'EV_CHARGING'),
-  spot('B2-17', 'OCCUPIED'),
-  spot('B2-18', 'EMPTY'),
-  spot('B2-D1', 'EMPTY', 'DISABLED'),
-  spot('B2-D2', 'OCCUPIED', 'DISABLED'),
-  spot('B2-19', 'EMPTY'),
-  spot('B2-20', 'OCCUPIED'),
-];
-
-const B2_SIDE: RawSpot[] = [
-  spot('B2-S1', 'OCCUPIED'),
-  spot('B2-S2', 'OCCUPIED'),
-  spot('B2-S3', 'VIOLATION'),
-  spot('B2-S4', 'VIOLATION'),
-  spot('B2-S5', 'EMPTY'),
-  spot('B2-S6', 'OCCUPIED'),
-];
-
-const B3_MAIN: RawSpot[] = [
-  spot('B3-01', 'EMPTY'),
-  spot('B3-02', 'EMPTY'),
-  spot('B3-03', 'OCCUPIED'),
-  spot('B3-04', 'EMPTY'),
-  spot('B3-05', 'OCCUPIED'),
-  spot('B3-06', 'EMPTY'),
-  spot('B3-07', 'EMPTY'),
-  spot('B3-08', 'OCCUPIED'),
-  spot('B3-09', 'EMPTY'),
-  spot('B3-10', 'EMPTY'),
-  spot('B3-11', 'OCCUPIED'),
-  spot('B3-12', 'EMPTY'),
-  spot('B3-13', 'EMPTY'),
-  spot('B3-14', 'OCCUPIED'),
-  spot('B3-15', 'EMPTY'),
-  spot('B3-16', 'EMPTY'),
-  spot('B3-EV1', 'OCCUPIED', 'EV_CHARGING'),
-  spot('B3-EV2', 'EMPTY', 'EV_CHARGING'),
-  spot('B3-17', 'EMPTY'),
-  spot('B3-18', 'OCCUPIED'),
-  spot('B3-D2', 'EMPTY', 'DISABLED'),
-  spot('B3-D1', 'EMPTY', 'DISABLED'),
-  spot('B3-19', 'EMPTY'),
-  spot('B3-20', 'EMPTY'),
-];
-
-const B3_SIDE: RawSpot[] = [
-  spot('B3-S1', 'EMPTY'),
-  spot('B3-S2', 'OCCUPIED'),
-  spot('B3-S3', 'EMPTY'),
-  spot('B3-S4', 'EMPTY'),
-  spot('B3-S5', 'EMPTY'),
-  spot('B3-S6', 'EMPTY'),
-];
-
-const RAW_FLOORS: Record<FloorKey, { main: RawSpot[]; side: RawSpot[] }> = {
-  B1: { main: B1_MAIN, side: B1_SIDE },
-  B2: { main: B2_MAIN, side: B2_SIDE },
-  B3: { main: B3_MAIN, side: B3_SIDE },
+export const OCCUPANCY_LABELS: Record<OccupancyStatus, string> = {
+  EMPTY: '사용 가능',
+  OCCUPIED: '사용 중',
+  VIOLATION: '위반',
 };
 
-function toParkingSpot(raw: RawSpot, floor: FloorKey, isSide: boolean): ParkingSpot | null {
-  if (!raw) return null;
-  return {
-    ...raw,
-    floor,
-    isSide,
-    lastOccupiedAt: raw.status === 'EMPTY' ? '-' : '2026.07.22 10:15',
-  };
+export const OCCUPANCY_OPTIONS = Object.keys(OCCUPANCY_LABELS) as OccupancyStatus[];
+
+export function occupancyLabel(status: OccupancyStatus): string {
+  return OCCUPANCY_LABELS[status];
 }
 
-export type ParkingFloor = {
-  key: FloorKey;
-  label: string;
-  main: (ParkingSpot | null)[];
-  side: (ParkingSpot | null)[];
-};
-
-export const FLOORS: ParkingFloor[] = FLOOR_KEYS.map((key) => ({
-  key,
-  label: floorLabel(key),
-  main: RAW_FLOORS[key].main.map((raw) => toParkingSpot(raw, key, false)),
-  side: RAW_FLOORS[key].side.map((raw) => toParkingSpot(raw, key, true)),
-}));
-
-// 층별로 항상 main 24칸 + side 6칸 = 30자리 순서로 이어 붙인다(일부 자리는 null).
-// 이 고정 순서 덕분에 층 인덱스만으로 해당 층의 30자리를 그대로 잘라낼 수 있다.
-export const INITIAL_SPOTS: (ParkingSpot | null)[] = FLOORS.flatMap((floor) => [...floor.main, ...floor.side]);
-
-export function computeZoneStats(spots: ParkingSpot[]) {
-  return {
-    total: spots.length,
-    general: spots.filter((s) => s.type === 'GENERAL').length,
-    disabled: spots.filter((s) => s.type === 'DISABLED').length,
-    ev: spots.filter((s) => s.type === 'EV_CHARGING').length,
-  };
+export function occupancyTone(status: OccupancyStatus) {
+  if (status === 'VIOLATION') return 'danger' as const;
+  if (status === 'EMPTY') return 'success' as const;
+  return 'warning' as const;
 }
 
-// 위반 > 장애인 구역 > 전기차 구역 > 사용 중(MINE 포함) > 비어 있음 순으로 우선한다(baro-app과 동일한 우선순위,
-// 다만 관리자 웹에서는 MINE을 별도 표시 없이 OCCUPIED와 동일하게 그린다).
-export function toCellVariant(spot: ParkingSpot): CellVariant {
-  if (spot.status === 'VIOLATION') return 'violation';
-  if (spot.type === 'DISABLED') return 'disabled';
-  if (spot.type === 'EV_CHARGING') return 'ev';
-  if (spot.status === 'OCCUPIED' || spot.status === 'MINE') return 'occupied';
+// 위반 > 장애인 구역 > 전기차 구역 > 사용 중 > 비어 있음 순으로 우선한다(baro-app과 동일한 우선순위).
+export function toCellVariant(spot: { zoneType: ZoneType; occupancyStatus: OccupancyStatus }): CellVariant {
+  if (spot.occupancyStatus === 'VIOLATION') return 'violation';
+  if (spot.zoneType === 'DISABLED') return 'disabled';
+  if (spot.zoneType === 'EV_CHARGING') return 'ev';
+  if (spot.occupancyStatus === 'OCCUPIED') return 'occupied';
   return 'empty';
 }
 
-export function statusLabel(status: SpotStatus): string {
-  if (status === 'VIOLATION') return '위반';
-  if (status === 'EMPTY') return '사용 가능';
-  return '사용 중';
+// 백엔드는 분(allowedMinutes) 단위로 주고받지만, 화면에는 시간 단위로 보여준다.
+export function allowedTimeLabel(allowedMinutes: number | null): string {
+  if (allowedMinutes === null) return '무제한';
+  const hours = allowedMinutes / 60;
+  const formatted = Number.isInteger(hours) ? String(hours) : hours.toFixed(1);
+  return `${formatted}시간`;
 }
 
-// 허용 시간은 구역별로 따로 입력받는 값이 아니라 유형에서 그대로 정해진다.
-export function allowedTimeLabel(type: SpotType): string {
-  return type === 'EV_CHARGING' ? '최대 14시간' : '-';
+export function minutesToHours(allowedMinutes: number | null): number | '' {
+  return allowedMinutes !== null ? allowedMinutes / 60 : '';
+}
+
+export function hoursToMinutes(hours: number): number {
+  return Math.round(hours * 60);
+}
+
+export function findSpotSummary(spots: ParkingSpotSummary[], zoneId: number): ParkingSpotSummary | undefined {
+  return spots.find((s) => s.zoneId === zoneId);
+}
+
+export const CONGESTION_LABELS: Record<CongestionLevel, string> = {
+  LOW: '여유',
+  MEDIUM: '보통',
+  HIGH: '혼잡',
+};
+
+export function congestionLabel(level: CongestionLevel): string {
+  return CONGESTION_LABELS[level];
+}
+
+export function congestionTone(level: CongestionLevel) {
+  if (level === 'HIGH') return 'danger' as const;
+  if (level === 'MEDIUM') return 'warning' as const;
+  return 'success' as const;
+}
+
+// B1 실제 물리 배치를 그대로 복제해 B2/B3에 등록했다. 번호칸은 "{층}-01".."{층}-24",
+// 특수 구역(장애인/EV)은 "D{층 번호}-01"처럼 층 번호를 붙인다(D1-01=B1, D2-01=B2, D3-01=B3).
+export function floorZoneLayout(floor: FloorKey): { mainLayout: (string | null)[][]; sideByRow: (string | null)[] } {
+  const floorDigit = floor.slice(1);
+  const num = (n: number) => `${floor}-${String(n).padStart(2, '0')}`;
+  const special = (type: string, seq: number) => `${type}${floorDigit}-${String(seq).padStart(2, '0')}`;
+
+  const mainLayout: (string | null)[][] = [
+    [num(17), num(18), num(19), num(20)],
+    [num(13), num(14), num(15), num(16)],
+    [num(9), num(10), num(11), num(12)],
+    [special('D', 2), special('EV', 2), num(7), num(8)],
+    [special('D', 1), special('EV', 1), num(5), num(6)],
+    [num(1), num(2), num(3), num(4)],
+  ];
+  const sideByRow: (string | null)[] = [null, num(21), num(22), num(23), num(24), null];
+  return { mainLayout, sideByRow };
+}
+
+export function floorZoneNumbers(floor: FloorKey): string[] {
+  const { mainLayout, sideByRow } = floorZoneLayout(floor);
+  return [...mainLayout.flat(), ...sideByRow].filter((v): v is string => v !== null);
+}
+
+// GET /api/zones 응답에 floor 필드가 오지 않아서(백엔드 미구현), zoneNumber 패턴으로 층을
+// 역추론한다. "B2-07"처럼 번호칸이면 그 층, "D3-01"/"EV2-01"/"AISLE1-01"/"ENTRY3-01"/
+// "EXIT2-01"처럼 특수 구역이면 이름 뒤에 붙은 층 번호로 판단한다.
+export function zoneFloorOf(zoneNumber: string): FloorKey | null {
+  const trimmed = zoneNumber.trim();
+  const mainMatch = /^B([123])-\d{2}$/.exec(trimmed);
+  if (mainMatch) return `B${mainMatch[1]}` as FloorKey;
+
+  const specialMatch = /^(?:D|EV|AISLE|ENTRY|EXIT)([123])-\d{2}$/.exec(trimmed);
+  if (specialMatch) return `B${specialMatch[1]}` as FloorKey;
+
+  return null;
+}
+
+// 구역 목록은 물리 배치 순서(번호칸 B{층}-01..24 → 장애인 D{층}-01,02 → 전기차
+// EV{층}-01,02 → 입구 ENTRY{층}-01 → 출구 EXIT{층}-01)로 보여준다. 백엔드가 이 순서로
+// 정렬해서 내려준다는 보장이 없어 화면에서 직접 정렬한다.
+const ZONE_PREFIX_ORDER = ['B', 'D', 'EV', 'ENTRY', 'EXIT'] as const;
+
+function zoneSortKey(zoneNumber: string): [number, number, string] {
+  const trimmed = zoneNumber.trim();
+  const match = /^([A-Z]+)\d*-(\d+)$/.exec(trimmed);
+  if (!match) return [ZONE_PREFIX_ORDER.length, 0, trimmed];
+  const [, prefix, seq] = match;
+  const prefixIndex = ZONE_PREFIX_ORDER.indexOf(prefix as (typeof ZONE_PREFIX_ORDER)[number]);
+  return [prefixIndex === -1 ? ZONE_PREFIX_ORDER.length : prefixIndex, Number(seq), trimmed];
+}
+
+export function compareZoneNumbers(a: string, b: string): number {
+  const [rankA, seqA, strA] = zoneSortKey(a);
+  const [rankB, seqB, strB] = zoneSortKey(b);
+  if (rankA !== rankB) return rankA - rankB;
+  if (seqA !== seqB) return seqA - seqB;
+  return strA.localeCompare(strB);
+}
+
+// 백엔드 GET /api/parking-zones/summary가 층 구분 없이 전체를 한 번에 반환하기 때문에,
+// 혼잡도는 응답의 최상위 값을 그대로 쓰지 않고 해당 층 구역만 걸러서 화면에서 직접 계산한다.
+export function computeFloorCongestion(
+  floor: FloorKey,
+  spots: ParkingSpotSummary[],
+): { rate: number; level: CongestionLevel } | null {
+  const zoneNumbers = new Set(floorZoneNumbers(floor));
+  const floorSpots = spots.filter((s) => zoneNumbers.has(s.zoneNumber.trim()));
+  if (floorSpots.length === 0) return null;
+
+  const occupied = floorSpots.filter((s) => s.occupancyStatus !== 'EMPTY').length;
+  const rate = Math.round((occupied / floorSpots.length) * 100);
+  const level: CongestionLevel = rate >= 70 ? 'HIGH' : rate >= 40 ? 'MEDIUM' : 'LOW';
+  return { rate, level };
 }

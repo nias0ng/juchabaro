@@ -1,0 +1,1 @@
+ALTER TABLE parking_sessions ADD COLUMN context_revision INT NOT NULL DEFAULT 0;
