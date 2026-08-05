@@ -1,4 +1,4 @@
-import type { ActionType, EventStatus, EventType, RequestType } from './api/types';
+import type { ActionType, EventStatus, EventType, RequestStatus, RequestType } from './api/types';
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {
   BAD_PARKING: '불법 주차',
@@ -29,6 +29,16 @@ export const REQUEST_TYPE_LABELS: Record<RequestType, string> = {
   MANUAL: '수동',
 };
 
+// ERD(move_requests.request_status) 정의 문구 그대로. 사건 상세의 "관리자 확인 내용" 칸에 쓴다.
+export const REQUEST_STATUS_DESCRIPTIONS: Record<RequestStatus, string> = {
+  SENT: '요청 발송됨',
+  RESPONDED: '차주 응답함',
+  REMINDER_SENT: '1차 확인에서 미이동이 확인되어 재알림을 보냄',
+  COMPLETED: '처리 완료',
+  NEED_ADMIN: '관리자 확인 필요 (미응답, 이동 어려움, 2차 미이동)',
+  CANCELLED: '사건이 오탐 처리되거나 요청이 취소됨',
+};
+
 export const EVENT_TYPE_OPTIONS = Object.keys(EVENT_TYPE_LABELS) as EventType[];
 export const EVENT_STATUS_OPTIONS = Object.keys(EVENT_STATUS_LABELS) as EventStatus[];
 export const ACTION_TYPE_OPTIONS = Object.keys(ACTION_TYPE_LABELS) as ActionType[];
@@ -53,6 +63,11 @@ export function actionTypeLabel(action: ActionType): string {
 
 export function requestTypeLabel(type: RequestType): string {
   return REQUEST_TYPE_LABELS[type];
+}
+
+export function requestStatusDescription(status: RequestStatus | null): string {
+  if (!status) return '연결된 이동 요청 없음';
+  return REQUEST_STATUS_DESCRIPTIONS[status];
 }
 
 export function typeTone(type: EventType) {

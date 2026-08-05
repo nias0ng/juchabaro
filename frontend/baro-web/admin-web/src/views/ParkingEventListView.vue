@@ -110,26 +110,13 @@ const pagedRows = computed(() =>
 const rangeStart = computed(() => (filteredRows.value.length === 0 ? 0 : (safePage.value - 1) * PAGE_SIZE + 1))
 const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRows.value.length))
 
-// 연결된 이동요청이 없으면(requestStatus === null) 백엔드가 재알림을 409로 거부하므로
-// 미리 버튼을 막는다. 완료·오탐으로 이미 종결된 사건도 다시 보낼 수 없다.
-function canRemind(row: AdminEventSummary): boolean {
-  return row.requestStatus !== null && row.eventStatus !== 'RESOLVED' && row.eventStatus !== 'DISMISSED'
-}
+// "관리자 확인" 버튼: 켜면 상태 필터를 NEED_ADMIN으로 고정해 관리자 확인이 필요한 사건만
+// 보여주고, 상태 드롭다운은 그동안 손대지 못하게 비활성화한다. 끄면 전체 상태로 되돌린다.
+const needAdminOnly = ref(false)
 
-const submittingReminderId = ref<number | null>(null)
-const reminderError = ref<string | null>(null)
-
-async function handleResendClick(event: MouseEvent, eventId: number) {
-  event.stopPropagation()
-  submittingReminderId.value = eventId
-  reminderError.value = null
-  try {
-    await parkingEventStore.sendReminder(eventId)
-  } catch (error) {
-    reminderError.value = error instanceof Error ? error.message : '재알림 전송에 실패했습니다.'
-  } finally {
-    submittingReminderId.value = null
-  }
+function toggleNeedAdminOnly() {
+  needAdminOnly.value = !needAdminOnly.value
+  statusFilter.value = needAdminOnly.value ? 'NEED_ADMIN' : null
 }
 </script>
 
@@ -145,6 +132,7 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
               type="button"
               class="chip"
               :class="{ active: !!statusFilter }"
+              :disabled="needAdminOnly"
               @click="toggleDropdown('status')"
             >
               {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
@@ -223,6 +211,15 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
             </div>
           </div>
 
+          <button
+            type="button"
+            class="chip"
+            :class="{ active: needAdminOnly }"
+            @click="toggleNeedAdminOnly"
+          >
+            관리자 확인
+          </button>
+
           <div class="search-box">
             <Search :size="16" />
             <input v-model="carQuery" type="text" placeholder="차량 번호 검색">
@@ -232,8 +229,6 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
             <Download :size="16" /> 내보내기
           </button>
         </div>
-
-        <p v-if="reminderError" class="banner-error">{{ reminderError }}</p>
 
         <div class="panel table-panel">
           <div class="table-scroll">
@@ -272,14 +267,7 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
                   <td>
                     <div class="row-actions">
                       <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                      <button
-                        type="button"
-                        class="outline-btn"
-                        :disabled="!canRemind(r) || submittingReminderId === r.eventId"
-                        @click="handleResendClick($event, r.eventId)"
-                      >
-                        재알림
-                      </button>
+                      <StatusTag v-if="r.eventStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
                     </div>
                   </td>
                 </tr>
@@ -358,6 +346,11 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
   background: var(--panel-primary-soft);
   color: var(--panel-primary);
   font-weight: 500;
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .dropdown-menu {
@@ -444,12 +437,6 @@ async function handleResendClick(event: MouseEvent, eventId: number) {
   cursor: pointer;
 }
 
-.banner-error {
-  margin-bottom: var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-danger);
-}
-
 .table-panel {
   padding: var(--spacing-md);
 }
@@ -522,11 +509,11 @@ td {
 
 .row-actions {
   display: flex;
+  align-items: center;
   gap: var(--spacing-sm);
 }
 
-.link-btn,
-.outline-btn {
+.link-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -544,14 +531,8 @@ td {
   transition: background-color 0.15s ease;
 }
 
-.link-btn:hover,
-.outline-btn:hover:not(:disabled) {
+.link-btn:hover {
   background: var(--panel-muted);
-}
-
-.outline-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .footer {
