@@ -177,6 +177,8 @@ def test_zone_visit_round_trip_active_cardinality_and_optimistic_save(
         assert repository.get_active(VEHICLE_ID, ZoneId(7)) == visit
         assert repository.list_active() == (visit,)
         assert repository.list_active_by_physical_vehicle(VEHICLE_ID) == (visit,)
+        assert repository.list_active_by_zone(ZoneId(7)) == (visit,)
+        assert repository.list_active_by_zone(ZoneId(999)) == ()
 
         duplicate = replace(
             visit,
@@ -236,6 +238,7 @@ def test_zone_visit_round_trip_active_cardinality_and_optimistic_save(
             repository.save(ended, expected_record_version=2)
         assert repository.get_active(VEHICLE_ID, ZoneId(7)) is None
         assert repository.list_active() == ()
+        assert repository.list_active_by_zone(ZoneId(7)) == ()
 
         reactivated = replace(
             ended,
@@ -258,6 +261,116 @@ def test_zone_visit_round_trip_active_cardinality_and_optimistic_save(
         with pytest.raises(ZoneVisitConflictError, match="change terminal state"):
             with UnitOfWork(connection):
                 repository.save(changed_terminal, expected_record_version=3)
+    finally:
+        connection.close()
+
+
+def test_zone_visit_list_active_by_zone_filters_state_and_orders_candidates(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    repository = ZoneVisitRepository(connection)
+    vehicle_a = PhysicalVehicleId(UUID(int=1))
+    vehicle_b = PhysicalVehicleId(UUID(int=2))
+    vehicle_c = PhysicalVehicleId(UUID(int=3))
+    vehicle_d = PhysicalVehicleId(UUID(int=4))
+    vehicle_e = PhysicalVehicleId(UUID(int=5))
+    vehicle_f = PhysicalVehicleId(UUID(int=6))
+
+    entering = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=104)),
+        physical_vehicle_id=vehicle_a,
+        state=ZoneVisitState.ENTERING,
+        entered_candidate_at=NOW + timedelta(seconds=2),
+        created_at=NOW + timedelta(seconds=2),
+        updated_at=NOW + timedelta(seconds=2),
+    )
+    inside = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=102)),
+        physical_vehicle_id=vehicle_b,
+        state=ZoneVisitState.INSIDE,
+        entered_candidate_at=NOW + timedelta(seconds=1),
+        entered_at=NOW + timedelta(seconds=1),
+        created_at=NOW + timedelta(seconds=1),
+        updated_at=NOW + timedelta(seconds=1),
+    )
+    exiting = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=103)),
+        physical_vehicle_id=vehicle_c,
+        state=ZoneVisitState.EXITING,
+        entered_candidate_at=NOW + timedelta(seconds=1),
+        entered_at=NOW + timedelta(seconds=1),
+        exit_candidate_at=NOW + timedelta(seconds=1),
+        created_at=NOW + timedelta(seconds=1),
+        updated_at=NOW + timedelta(seconds=1),
+    )
+    other_zone = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=105)),
+        physical_vehicle_id=vehicle_d,
+        zone_id=ZoneId(8),
+        state=ZoneVisitState.INSIDE,
+        entered_at=NOW,
+    )
+    ended = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=106)),
+        physical_vehicle_id=vehicle_e,
+        state=ZoneVisitState.ENDED,
+        entered_at=NOW,
+        ended_at=NOW + timedelta(seconds=3),
+        termination_reason="ZONE_EXIT_CONFIRMED",
+        updated_at=NOW + timedelta(seconds=3),
+    )
+    canceled = replace(
+        _visit(),
+        visit_id=ZoneVisitId(UUID(int=107)),
+        physical_vehicle_id=vehicle_f,
+        state=ZoneVisitState.CANCELED,
+        ended_at=NOW + timedelta(seconds=3),
+        termination_reason="VISIT_CANCELED",
+        updated_at=NOW + timedelta(seconds=3),
+    )
+
+    try:
+        with UnitOfWork(connection):
+            vehicle_repository = PhysicalVehicleRepository(connection)
+            for physical_vehicle_id in (
+                vehicle_a,
+                vehicle_b,
+                vehicle_c,
+                vehicle_d,
+                vehicle_e,
+                vehicle_f,
+            ):
+                vehicle_repository.ensure(
+                    replace(
+                        _vehicle(),
+                        physical_vehicle_id=physical_vehicle_id,
+                    )
+                )
+
+            # 저장 순서와 반환 순서를 다르게 해 SQL 정렬 계약을 검증한다.
+            for visit in (
+                entering,
+                exiting,
+                other_zone,
+                ended,
+                canceled,
+                inside,
+            ):
+                repository.add(visit)
+
+        assert repository.list_active_by_zone(ZoneId(7)) == (
+            inside,
+            exiting,
+            entering,
+        )
+        assert repository.list_active_by_zone(ZoneId(8)) == (other_zone,)
+        assert repository.list_active_by_zone(ZoneId(999)) == ()
     finally:
         connection.close()
 
