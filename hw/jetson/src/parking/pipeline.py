@@ -43,6 +43,7 @@ from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
     BlockingRelation,
     BlockingRelationState,
+    EntryExitRole,
     Incident,
     IncidentKeyScope,
     IncidentReduction,
@@ -60,6 +61,7 @@ from src.parking.models import (
     PresenceSignal,
     ZoneDefinition,
     ZoneId,
+    ZoneType,
     ZoneVisit,
     ZoneVisitState,
 )
@@ -575,6 +577,36 @@ class ParkingPipeline:
                 )
 
         return tuple(updates)
+
+    def exit_zone_traversal_observed(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> bool:
+        """마지막 관측에서 출차 구역 방문이 열려 있었는지 반환한다(565).
+
+        미관측 차량의 ZoneVisit은 종료되지 않고 pause만 되므로(``process()``의
+        unobserved 처리 참고), 부재가 확정된 시점에도 마지막 관측 프레임의
+        방문이 non-terminal로 남아 있다. 따라서 이 읽기는 "마지막으로 관측된
+        위치가 출차 구역이었나"와 같다. 주차 중 출차 구역을 스쳤다가 다른
+        위치에서 계속 관측된 차량은 그 방문이 이미 닫혀 있어 False가 된다.
+
+        ``physical_exit()``이 방문을 종료시키기 **전에** 호출해야 한다 —
+        종료 뒤에는 항상 False다. 상태를 변경하지 않는 순수 읽기다.
+        """
+
+        for visit in self._zone_visit_tracker.active_visits(physical_vehicle_id):
+            definition = self._zones.get_or_none(visit.zone_id)
+            if definition is None:
+                # 설정 교체로 사라진 zone의 방문은 통과 근거로 쓰지 않는다.
+                # 이 경로는 departure commit 중에 실행되므로 예외를 던지면
+                # 차량 종료 자체가 실패한다.
+                continue
+            if (
+                definition.zone_type is ZoneType.ENTRY_EXIT
+                and definition.entry_exit_role is EntryExitRole.EXIT
+            ):
+                return True
+        return False
 
     def physical_exit(
         self,
