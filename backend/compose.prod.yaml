@@ -43,6 +43,7 @@ services:
       TZ: Asia/Seoul
     ports:
       - "127.0.0.1:8080:8080"
+      - "100.85.234.102:8080:8080"
     volumes:
       - upload_data:/app/uploads
     healthcheck:
