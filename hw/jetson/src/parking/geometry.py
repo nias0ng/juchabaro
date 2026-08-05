@@ -125,6 +125,9 @@ def clip_polygon_to_half_plane(
     ) -> tuple[float, float]:
         first_offset = offset(first)
         span = first_offset - offset(second)
+        # span == 0.0 is unreachable: _clip_half_plane only calls this when
+        # inside(first) != inside(second), meaning one offset < 0 and the other >= 0,
+        # so their difference is never exactly zero. Guard kept for safety.
         if span == 0.0:
             return second
         ratio = first_offset / span
