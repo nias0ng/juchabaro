@@ -10,6 +10,8 @@ load_dotenv(ENV_PATH)
 # [환경 변수]
 BACKEND_BASE_URL: Final[str] = os.getenv("BACKEND_BASE_URL", "")
 BACKEND_HW_API_KEY: Final[str] = os.getenv("BACKEND_HW_API_KEY", "")
+JETSON_BASE_URL: Final[str] = os.getenv("JETSON_BASE_URL", "")
+INTERNAL_API_KEY: Final[str] = os.getenv("INTERNAL_API_KEY", "")
 
 # [GPIO 설정]
 
