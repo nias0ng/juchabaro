@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   Bell,
-  CalendarCheck,
   CheckCircle2,
   ChevronDown,
   Crosshair,
   Download,
+  Eye,
   Search,
-  Settings,
 } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
@@ -16,36 +15,52 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import AppPagination from '@/components/ui/AppPagination.vue'
-import { HISTORY_ACTION_OPTIONS, MOCK_TODAY } from '@/features/parking-events/data'
+import type { ActionType, AdminHistoryItem } from '@/features/parking-events/api/types'
+import {
+  ACTION_TYPE_OPTIONS,
+  actionTone,
+  actionTypeLabel,
+  formatDateTime,
+  localDateString,
+  todayDateString,
+} from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-import type { HistoryLogEntry } from '@/features/parking-events/types'
 
 const PAGE_SIZE = 10
+const FETCH_SIZE = 200
 
 // 로그 ID, 사건 ID, 차량 번호, 처리 유형, 처리자, 처리 시간 순(메모 제외).
 // 메모는 줄바꿈을 허용하는 유일한 열이라 폭을 고정하지 않고, 이 여섯 열이 줄바꿈 없이
 // 들어갈 최소 폭만 차지한 뒤 나머지 공간을 전부 메모가 가져가게 한다.
-const COLUMN_WIDTHS = [71, 66, 85, 100, 71, 126]
+const COLUMN_WIDTHS = [71, 66, 85, 100, 71, 150]
 // 창이 좁아 남는 공간이 이 값보다 작아지면(메모가 읽을 수 없이 눌리는 대신) 표 전체가
 // 넘치면서 가로 스크롤로 전환된다.
 const MEMO_MIN_WIDTH = 200
 
-const SUMMARY = [
-  { label: '오늘 처리', value: 24, icon: CalendarCheck, tone: 'info' },
-  { label: '오탐 처리', value: 3, icon: Crosshair, tone: 'primary' },
-  { label: '재알림', value: 7, icon: Bell, tone: 'primary' },
-  { label: '설정 변경', value: 4, icon: Settings, tone: 'success' },
-]
+const SUMMARY_ICONS: Record<ActionType, typeof CheckCircle2> = {
+  COMPLETE: CheckCircle2,
+  DISMISS: Crosshair,
+  REMINDER: Bell,
+  ACKNOWLEDGE: Eye,
+}
 
-function exportRowsToCsv(rows: HistoryLogEntry[], dateRange: { start: string; end: string }) {
+function exportRowsToCsv(rows: AdminHistoryItem[], dateRange: { start: string; end: string }) {
   const headers = ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
-  // 처리 시간 앞에 작은따옴표를 붙이면 엑셀이 이 칸(날짜가 포함된 문자열)을 날짜로
-  // 자동 변환하지 않고 텍스트 그대로 표시한다.
   const lines = [
     headers.map(escapeCsv).join(','),
     ...rows.map((r) =>
-      [r.logId, r.eventId, r.car, r.actionType, r.handler, `'${r.time}`, r.memo].map(escapeCsv).join(','),
+      [
+        `#L-${r.logId}`,
+        `#${r.eventId}`,
+        r.plateNumber,
+        actionTypeLabel(r.actionType),
+        r.adminName,
+        // 처리 시간 앞에 작은따옴표를 붙이면 엑셀이 이 칸(날짜가 포함된 문자열)을 날짜로
+        // 자동 변환하지 않고 텍스트 그대로 표시한다.
+        `'${formatDateTime(r.actedAt)}`,
+        r.memo ?? '',
+      ].map(escapeCsv).join(','),
     ),
   ]
   // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
@@ -64,20 +79,10 @@ function exportRowsToCsv(rows: HistoryLogEntry[], dateRange: { start: string; en
   URL.revokeObjectURL(url)
 }
 
-function actionTone(a = ''): 'success' | 'info' | 'primary' {
-  if (a === '완료 처리') return 'success'
-  if (a === '오탐 처리' || a === '관리자 확인') return 'info'
-  return 'primary'
-}
-
-function rowDate(row: HistoryLogEntry) {
-  return row.time.split(' ')[0]!.replaceAll('.', '-')
-}
-
 type DropdownName = 'date' | 'type'
 
-const dateRange = ref({ start: MOCK_TODAY, end: MOCK_TODAY })
-const typeFilter = ref<string | null>(null)
+const dateRange = ref({ start: todayDateString(), end: todayDateString() })
+const typeFilter = ref<ActionType | null>(null)
 const query = ref('')
 const page = ref(1)
 
@@ -85,24 +90,45 @@ const parkingEventStore = useParkingEventStore()
 
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
-// 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘(MOCK_TODAY) 하루치 전체를
-// 최신순으로 보여주고 넘치는 만큼은 스크롤로 본다(history는 이미 최신 항목이 앞에 온다).
-const todayTimeline = computed(() => parkingEventStore.history.filter((entry) => rowDate(entry) === MOCK_TODAY))
+function loadHistory() {
+  void parkingEventStore.fetchHistory({
+    startDate: dateRange.value.start,
+    endDate: dateRange.value.end,
+    actionType: typeFilter.value ?? undefined,
+    size: FETCH_SIZE,
+  })
+}
+
+watch([dateRange, typeFilter], () => {
+  page.value = 1
+  loadHistory()
+}, { immediate: true, deep: true })
+
+// 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘 하루치 전체를 최신순으로
+// 보여주고 넘치는 만큼은 스크롤로 본다. 조회 기간과 무관하게 항상 실제 오늘 기준이다.
+const todayTimeline = computed(() =>
+  parkingEventStore.history.filter((entry) => localDateString(entry.actedAt) === todayDateString()),
+)
 
 const filteredRows = computed(() => {
   const q = query.value.trim().replaceAll(' ', '').toUpperCase()
+  if (!q) return parkingEventStore.history
   return parkingEventStore.history.filter((r) => {
-    const d = rowDate(r)
-    if (d < dateRange.value.start || d > dateRange.value.end) return false
-    if (typeFilter.value && r.actionType !== typeFilter.value) return false
-    if (q) {
-      const car = r.car.replaceAll(' ', '').toUpperCase()
-      const eventId = r.eventId.toUpperCase()
-      if (!car.includes(q) && !eventId.includes(q)) return false
-    }
-    return true
+    const car = r.plateNumber.replaceAll(' ', '').toUpperCase()
+    const eventId = `#${r.eventId}`.toUpperCase()
+    return car.includes(q) || eventId.includes(q)
   })
 })
+
+const summary = computed(() =>
+  ACTION_TYPE_OPTIONS.map((type) => ({
+    type,
+    label: actionTypeLabel(type),
+    value: parkingEventStore.history.filter((r) => r.actionType === type).length,
+    icon: SUMMARY_ICONS[type],
+    tone: actionTone(type),
+  })),
+)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
 // 필터가 바뀌어 결과 수가 줄면 이미 지나간 페이지 번호가 남아있을 수 있어 화면에는
@@ -133,7 +159,7 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
 
       <div class="dropdown-wrap">
         <button type="button" class="chip" :class="{ active: !!typeFilter }" @click="toggleDropdown('type')">
-          {{ typeFilter ?? '처리 유형' }} <ChevronDown :size="14" />
+          {{ typeFilter ? actionTypeLabel(typeFilter) : '처리 유형' }} <ChevronDown :size="14" />
         </button>
         <div v-if="openDropdown === 'type'" class="dropdown-menu">
           <button
@@ -145,14 +171,14 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
             전체
           </button>
           <button
-            v-for="opt in HISTORY_ACTION_OPTIONS"
+            v-for="opt in ACTION_TYPE_OPTIONS"
             :key="opt"
             type="button"
             class="dropdown-item"
             :class="{ selected: typeFilter === opt }"
             @click="typeFilter = opt; openDropdown = null"
           >
-            {{ opt }}
+            {{ actionTypeLabel(opt) }}
           </button>
         </div>
       </div>
@@ -187,17 +213,23 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
               </tr>
             </thead>
             <tbody>
-              <tr v-if="pagedRows.length === 0">
+              <tr v-if="parkingEventStore.historyLoading">
+                <td colspan="7" class="empty">불러오는 중입니다…</td>
+              </tr>
+              <tr v-else-if="parkingEventStore.historyError">
+                <td colspan="7" class="empty error">{{ parkingEventStore.historyError }}</td>
+              </tr>
+              <tr v-else-if="pagedRows.length === 0">
                 <td colspan="7" class="empty">조건에 맞는 이력이 없습니다.</td>
               </tr>
               <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
-                <td class="strong nowrap">{{ r.logId }}</td>
-                <td class="muted nowrap">{{ r.eventId }}</td>
-                <td class="nowrap">{{ r.car }}</td>
-                <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ r.actionType }}</StatusTag></td>
-                <td class="muted nowrap">{{ r.handler }}</td>
-                <td class="muted nowrap">{{ r.time }}</td>
-                <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo }}</td>
+                <td class="strong nowrap">#L-{{ r.logId }}</td>
+                <td class="muted nowrap">#{{ r.eventId }}</td>
+                <td class="nowrap">{{ r.plateNumber }}</td>
+                <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ actionTypeLabel(r.actionType) }}</StatusTag></td>
+                <td class="muted nowrap">{{ r.adminName }}</td>
+                <td class="muted nowrap">{{ formatDateTime(r.actedAt) }}</td>
+                <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo || '-' }}</td>
               </tr>
             </tbody>
           </table>
@@ -214,7 +246,7 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
         <section class="panel summary-panel">
           <h3>이력 요약</h3>
           <div class="summary-grid">
-            <div v-for="s in SUMMARY" :key="s.label" class="summary-card">
+            <div v-for="s in summary" :key="s.type" class="summary-card">
               <div class="summary-head">
                 <span class="summary-icon" :class="`tone-${s.tone}`">
                   <component :is="s.icon" :size="16" />
@@ -239,10 +271,10 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
                 </span>
                 <div>
                   <p class="timeline-title-row">
-                    <span class="timeline-time">{{ entry.time.split(' ')[1] }}</span>
-                    <span class="timeline-title">{{ entry.handler }}가 {{ entry.eventId }} 사건을 {{ entry.actionType }}</span>
+                    <span class="timeline-time">{{ formatDateTime(entry.actedAt).split(' ')[1] }}</span>
+                    <span class="timeline-title">{{ entry.adminName }}가 #{{ entry.eventId }} 사건을 {{ actionTypeLabel(entry.actionType) }}</span>
                   </p>
-                  <p class="timeline-desc">{{ entry.memo }}</p>
+                  <p class="timeline-desc">{{ entry.memo || '-' }}</p>
                 </div>
               </li>
             </ol>
@@ -439,6 +471,10 @@ td {
   color: var(--panel-muted-foreground);
 }
 
+.empty.error {
+  color: var(--panel-danger);
+}
+
 .row {
   border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
 }
@@ -531,6 +567,11 @@ td {
 .summary-icon.tone-success {
   background: var(--panel-success-soft);
   color: var(--panel-success);
+}
+
+.summary-icon.tone-neutral {
+  background: var(--panel-muted);
+  color: var(--panel-muted-foreground);
 }
 
 .summary-label {

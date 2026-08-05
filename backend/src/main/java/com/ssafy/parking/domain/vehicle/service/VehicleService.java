@@ -12,6 +12,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ssafy.parking.domain.hw.outbox.SessionContextNotifier;
+import com.ssafy.parking.domain.parking.repository.ParkingSessionRepository;
+
 import java.util.List;
 
 @Service
@@ -20,6 +23,8 @@ public class VehicleService {
 
     private final VehicleRepository vehicleRepository;
     private final UserRepository userRepository;
+    private final ParkingSessionRepository parkingSessionRepository;
+    private final SessionContextNotifier sessionContextNotifier;
 
     @Transactional
     public VehicleCreateResponse register(Long userId, VehicleCreateRequest request) {
@@ -83,11 +88,25 @@ public class VehicleService {
             vehicle.changePlateNumber(request.plateNumber());
         }
         if (request.vehicleModel() != null) vehicle.changeVehicleModel(request.vehicleModel());
+
+        // (A) 변경 '전' 자격 값을 저장해둔다 (나중에 실제로 바뀌었는지 비교용)
+        boolean beforeDisabled = vehicle.isDisabledVehicle();
+        boolean beforeElectric = vehicle.isElectric();
+
         if (request.isDisabledVehicle() != null) vehicle.changeDisabledVehicle(request.isDisabledVehicle());
         if (request.isElectric() != null) vehicle.changeElectric(request.isElectric());
         if (request.ownerType() != null) vehicle.changeOwnerType(request.ownerType());
 
-        vehicleRepository.saveAndFlush(vehicle);   // updatedAt 갱신 반영
+        vehicleRepository.saveAndFlush(vehicle);
+
+        boolean capabilityChanged = vehicle.isDisabledVehicle() != beforeDisabled
+                || vehicle.isElectric() != beforeElectric;
+        if (capabilityChanged) {
+            parkingSessionRepository
+                    .findFirstByVehicle_IdAndExitTimeIsNullOrderByEntryTimeDesc(vehicleId)
+                    .ifPresent(session -> sessionContextNotifier.publish(session, "ACTIVE"));
+        }
+
         return VehicleUpdateResponse.from(vehicle);
     }
 

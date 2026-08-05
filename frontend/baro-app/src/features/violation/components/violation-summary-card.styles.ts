@@ -37,8 +37,4 @@ export const styles = StyleSheet.create({
   statValueDanger: {
     color: Palette.orange600,
   },
-  caption: {
-    fontSize: 11.5,
-    color: '#5c6070',
-  },
 });

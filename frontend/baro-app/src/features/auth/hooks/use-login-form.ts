@@ -43,6 +43,10 @@ export function useLoginForm(onLoginSuccess: () => void) {
       await login(username.trim(), password, keepSignedIn);
       onLoginSuccess();
     } catch (error) {
+      if (__DEV__ || process.env.EXPO_PUBLIC_ENABLE_API_LOGS === 'true') {
+        const description = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        console.error(`[AUTH] LOGIN_FLOW_ERROR - ${description}`);
+      }
       // ApiError면 서버가 준 메시지(예: "아이디 또는 비밀번호가 올바르지 않습니다")를 그대로 보여주고,
       // 네트워크 끊김처럼 서버 응답 자체가 없는 경우엔 일반적인 문구로 대체.
       setErrorMessage(error instanceof ApiError ? error.message : '로그인에 실패했습니다.');

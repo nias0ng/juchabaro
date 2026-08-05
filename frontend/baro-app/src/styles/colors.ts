@@ -46,6 +46,16 @@ export const Palette = {
   teal100: '#dff3ef',
   teal600: '#1e8d80',
 
+  // 주차 도면 - 빈 장애인 구역
+  green100: '#cdf0d8',
+
+  // 주차 도면 - 내 차량 강조. 다른 칸들(sky100/green100/violet300 등)과 같은 밝기대의
+  yellow100: '#f6ecc0',
+  yellow700: '#8a6100',
+
+  // 주차 도면 - 남의 차(사용중) 칸 글씨
+  purple700: '#7a0395',
+
   // 주차 도면 전체 보기(J-01) - 칸/구분선 배경
   lilac50: '#eeecf8',
   lilac100: '#e7e5f3',

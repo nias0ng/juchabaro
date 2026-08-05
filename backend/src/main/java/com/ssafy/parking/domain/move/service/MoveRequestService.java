@@ -10,6 +10,7 @@ import com.ssafy.parking.domain.move.repository.MoveRequestResponseRepository;
 import com.ssafy.parking.domain.notification.entity.Notification;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
 import com.ssafy.parking.domain.notification.repository.NotificationRepository;
+import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import com.ssafy.parking.domain.parking.entity.*;
 import com.ssafy.parking.domain.parking.repository.*;
 import com.ssafy.parking.domain.user.repository.UserRepository;
@@ -46,6 +47,7 @@ public class MoveRequestService {
     private final UserRepository userRepository;
     private final ImageStorageService imageStorageService;
     private final MoveRequestResponseRepository moveRequestResponseRepository;
+    private final NotificationDispatcher notificationDispatcher;
 
     private static final Set<Integer> ALLOWED_MINUTES = Set.of(10, 30, 60, 120);
 
@@ -116,15 +118,10 @@ public class MoveRequestService {
         moveRequestRepository.save(moveRequest);
 
         // 대상 차주에게 알림 레코드
-        Notification notification = Notification.builder()
-                .user(target.getUser())
-                .event(event).request(moveRequest)
-                .notificationType(NotificationType.MOVE_REQUEST)
-                .title("차량 이동 요청")
-                .body("등록하신 차량에 이동 요청이 도착했습니다.")
-                .sentAt(now)
-                .build();
-        notificationRepository.save(notification);
+        notificationDispatcher.dispatch(
+                target.getUser(), NotificationType.MOVE_REQUEST,
+                "차량 이동 요청", "등록하신 차량에 이동 요청이 도착했습니다.",
+                event, moveRequest, now);
 
         return MoveRequestCreateResponse.from(event, moveRequest, savedImages);
     }
@@ -190,6 +187,10 @@ public class MoveRequestService {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_NOT_ALLOWED);
         }
 
+        if (mr.getEvent().getEventType() == ParkingEventType.EV_OVERSTAY) {
+            throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_NOT_ALLOWED);
+        }
+
         MoveResponseType type = request.responseType();
         if (type == null) {
             throw new BusinessException(ErrorCode.MOVE_REQUEST_RESPONSE_INVALID);
@@ -228,16 +229,9 @@ public class MoveRequestService {
             String body = (type == MoveResponseType.WILL_MOVE)
                     ? "차주가 약 " + minutes + "분 후 이동 예정으로 응답했습니다."
                     : "차주가 지금은 이동이 어렵다고 응답했습니다.";
-            Notification notification = Notification.builder()
-                    .user(mr.getRequester())
-                    .event(event)
-                    .request(mr)
-                    .notificationType(NotificationType.MOVE_RESPONSE)
-                    .title("이동 요청 응답 도착")
-                    .body(body)
-                    .sentAt(now)
-                    .build();
-            notificationRepository.save(notification);
+            notificationDispatcher.dispatch(
+                    mr.getRequester(), NotificationType.MOVE_RESPONSE,
+                    "이동 요청 응답 도착", body, event, mr, now);
         }
 
         return MoveResponseCreateResponse.from(response, mr, event);

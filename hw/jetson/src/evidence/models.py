@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import NewType
 from uuid import UUID
 
-from src.domain.models import require_aware, require_non_negative, require_positive
+from src.domain.models import (
+    DeliveryState,
+    require_aware,
+    require_non_negative,
+    require_positive,
+)
 from src.parking.models import IncidentId
 
 
@@ -63,10 +68,21 @@ class EvidenceArtifact:
     backend_acked_at: datetime | None = None
     retention_disposition: EvidenceRetentionDisposition | None = None
     evicted_at: datetime | None = None
+    delivery_state: DeliveryState | None = None
+    delivery_attempt_count: int = 0
+    next_delivery_attempt_at: datetime | None = None
+    last_delivery_error: str | None = None
 
     def __post_init__(self) -> None:
         require_positive(self.record_version, "record_version")
-        for name in ("captured_at", "created_at", "updated_at", "backend_acked_at", "evicted_at"):
+        for name in (
+            "captured_at",
+            "created_at",
+            "updated_at",
+            "backend_acked_at",
+            "evicted_at",
+            "next_delivery_attempt_at",
+        ):
             require_aware(getattr(self, name), name)
         if not self.image_type:
             raise ValueError("image_type must not be empty")
@@ -74,9 +90,15 @@ class EvidenceArtifact:
             require_positive(self.publication_revision, "publication_revision")
         if self.byte_size is not None:
             require_non_negative(self.byte_size, "byte_size")
+        require_non_negative(
+            self.delivery_attempt_count,
+            "delivery_attempt_count",
+        )
 
         has_complete_binary_metadata = (
-            self.local_path is not None and self.byte_size is not None and self.checksum is not None
+            self.local_path is not None
+            and self.byte_size is not None
+            and self.checksum is not None
         )
         requires_binary_metadata = self.state in {
             EvidenceState.WRITING,
@@ -86,7 +108,9 @@ class EvidenceArtifact:
             EvidenceState.EVICTION_PENDING,
         }
         if requires_binary_metadata and not has_complete_binary_metadata:
-            raise ValueError(f"{self.state.value} evidence requires path, byte_size, and checksum")
+            raise ValueError(
+                f"{self.state.value} evidence requires path, byte_size, and checksum"
+            )
         if self.state is EvidenceState.ACKNOWLEDGED and self.backend_acked_at is None:
             raise ValueError("ACKNOWLEDGED evidence requires backend_acked_at")
         if self.state is EvidenceState.EVICTED:
@@ -98,3 +122,19 @@ class EvidenceArtifact:
                 raise ValueError("EVICTED evidence must retain byte_size and checksum")
         if self.state is EvidenceState.FAILED and not self.last_error:
             raise ValueError("FAILED evidence requires last_error")
+        if self.delivery_state is DeliveryState.DELIVERED and (
+            self.backend_acked_at is None
+        ):
+            raise ValueError("DELIVERED evidence requires backend_acked_at")
+        if self.delivery_state is DeliveryState.RETRY_WAIT and (
+            self.next_delivery_attempt_at is None
+        ):
+            raise ValueError("RETRY_WAIT evidence requires next attempt timestamp")
+        if self.delivery_state is not DeliveryState.RETRY_WAIT and (
+            self.next_delivery_attempt_at is not None
+        ):
+            raise ValueError("only RETRY_WAIT evidence has a next attempt timestamp")
+        if self.delivery_state is DeliveryState.FAILED_TERMINAL and (
+            not self.last_delivery_error
+        ):
+            raise ValueError("FAILED_TERMINAL evidence requires delivery error")

@@ -1,4 +1,9 @@
-export type NotificationType = 'MOVE_REQUEST' | 'REMINDER' | 'EV_OVERSTAY' | 'EVENT_RESOLVED';
+export type NotificationType =
+  | 'MOVE_REQUEST'
+  | 'MOVE_RESPONSE'
+  | 'REMINDER'
+  | 'EV_OVERSTAY'
+  | 'EVENT_RESOLVED';
 
 // GET /notifications 응답의 result.notifications 항목.
 export type NotificationSummary = {

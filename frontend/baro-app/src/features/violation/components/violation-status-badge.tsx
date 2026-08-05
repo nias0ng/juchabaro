@@ -1,6 +1,6 @@
 import { Text, View } from 'react-native';
 
-import type { ViolationStatus } from '../mocks/violation-history.mock';
+import type { ViolationStatus } from '../api/types';
 
 import { styles } from './violation-status-badge.styles';
 

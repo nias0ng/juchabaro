@@ -28,6 +28,7 @@ from src.application.frame_observation_workflow import (
 from src.camera.frame_source import EndOfVideo, FrameSource, FrameSourceError
 from src.camera.models import CapturedFrame
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
+from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.models import Incident
 from src.tracking.models import TrackingBatch
 from src.tracking.pipeline import TrackingPipeline
@@ -49,6 +50,7 @@ class MonitoringPipeline:
         calibration_reference: str,
         actuator_command_planner: ActuatorCommandPlanner | None = None,
         actuator_port: ActuatorPort | None = None,
+        evidence_capture_sink: EvidenceCaptureSink | None = None,
     ) -> None:
         if not calibration_reference:
             raise ValueError("calibration_reference must not be empty")
@@ -63,6 +65,20 @@ class MonitoringPipeline:
         self._calibration_reference = calibration_reference
         self._actuator_command_planner = actuator_command_planner
         self._actuator_port = actuator_port
+        self._evidence_capture_sink = evidence_capture_sink
+
+    @property
+    def has_evidence_capture_sink(self) -> bool:
+        """Composition root가 evidence 배선 중복을 피할 수 있게 한다."""
+
+        return self._evidence_capture_sink is not None
+
+    def bind_evidence_capture_sink(self, sink: EvidenceCaptureSink) -> None:
+        """Pipeline 기동 전에 process-local capture adapter를 한 번 결속한다."""
+
+        if self._evidence_capture_sink is not None:
+            raise RuntimeError("evidence capture sink is already configured")
+        self._evidence_capture_sink = sink
 
     def open(self) -> None:
         """durable runtime을 복원한 뒤 프레임 소스와 추적을 연다."""
@@ -156,6 +172,12 @@ class MonitoringPipeline:
             raise
 
         result = self._commit_batch(tracking_batch)
+        if self._evidence_capture_sink is not None:
+            self._evidence_capture_sink.capture(
+                frame,
+                tracking_batch,
+                result.evidence_capture_intents,
+            )
         if frame_observer is not None:
             frame_observer(frame, tracking_batch, result)
         return result

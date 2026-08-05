@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   mainCard: {
@@ -28,5 +28,27 @@ export const styles = StyleSheet.create({
     fontSize: 12.5,
     lineHeight: 21.25,
     color: Palette.gray500,
+  },
+  autoEscalation: {
+    gap: Spacing.base + 1,
+  },
+  // "위반 유형" 박스(request-info-card)와 같은 톤으로 맞춘 흰 배경 라벨+값 박스.
+  timerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Palette.white,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.base + 2,
+  },
+  label: {
+    fontSize: 12,
+    color: Palette.gray500,
+  },
+  timerValue: {
+    fontSize: 16,
+    fontWeight: FontWeight.bold,
+    color: Palette.red500,
   },
 });

@@ -27,4 +27,8 @@ export const styles = StyleSheet.create({
     fontSize: 11.5,
     color: '#9599a7',
   },
+  statusDescription: {
+    fontSize: 11.5,
+    color: '#9599a7',
+  },
 });

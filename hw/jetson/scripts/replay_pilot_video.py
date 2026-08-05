@@ -97,6 +97,7 @@ from src.application.monitoring_factory import (
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
 from src.camera.frame_source import (
+    CropFrameSource,
     EndOfVideo,
     RemapFrameSource,
     VideoFileFrameSource,
@@ -236,6 +237,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--remap-balance", type=float, default=DEFAULT_REMAP_BALANCE)
+    parser.add_argument(
+        "--crop-left-px", type=int, default=0,
+        help="remap 이후 프레임에서 왼쪽 여백을 잘라낼 픽셀 수. 기본 0(자르지 않음).",
+    )
+    parser.add_argument(
+        "--crop-right-px", type=int, default=0,
+        help="remap 이후 프레임에서 오른쪽 여백을 잘라낼 픽셀 수. 기본 0(자르지 않음).",
+    )
     parser.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO")
     return parser
 
@@ -360,6 +369,9 @@ def build_pipeline(
         camera_id=args.camera_id, path=args.video, start_seconds=args.start_seconds, end_seconds=args.end_seconds
     )
     frame_source = RemapFrameSource(inner=inner, calibration_path=str(args.calibration), balance=args.remap_balance)
+    frame_source = CropFrameSource(
+        inner=frame_source, crop_left_px=args.crop_left_px, crop_right_px=args.crop_right_px
+    )
 
     detector = UltralyticsVehicleTracker(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence

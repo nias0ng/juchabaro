@@ -2,8 +2,8 @@
 실제 하드웨어, OCR 모델과 HTTP 요청 없이 main orchestration을 검증한다.
 
 개별 센서 측정, 카메라 촬영 및 OCR 내부 알고리즘은 검증하지 않는다.
-OCR startup, 입차 이벤트와 Backend 요청 전달, 오류 경계 및 자원 cleanup을
-검증한다.
+OCR startup, 입차 이벤트, Backend 요청과 LED 표시 전달, 오류 경계 및
+자원 cleanup을 검증한다.
 """
 
 from __future__ import annotations
@@ -116,6 +116,7 @@ class MainHarness:
     pipeline: MagicMock
     sensor: MagicMock
     camera: MagicMock
+    green_led: MagicMock
     controller: MagicMock
     backend_client: MagicMock
     event: EntryEvent
@@ -125,6 +126,7 @@ class MainHarness:
     backend_constructor: MagicMock
     sensor_constructor: MagicMock
     camera_constructor: MagicMock
+    green_led_constructor: MagicMock
     controller_constructor: MagicMock
     create_entry_event: MagicMock
     sleep: MagicMock
@@ -139,6 +141,7 @@ def harness(
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     sensor = MagicMock(spec=main_module.UltrasonicSensor)
     camera = MagicMock(spec=main_module.EntryCamera)
+    green_led = MagicMock(spec=main_module.GreenLed)
     controller = MagicMock(spec=main_module.EntryController)
     backend_client = MagicMock(spec=main_module.BackendClient)
     logger = MagicMock(spec=logging.Logger)
@@ -164,6 +167,7 @@ def harness(
     backend_constructor = MagicMock(return_value=backend_client)
     sensor_constructor = MagicMock(return_value=sensor)
     camera_constructor = MagicMock(return_value=camera)
+    green_led_constructor = MagicMock(return_value=green_led)
     controller_constructor = MagicMock(return_value=controller)
     create_entry_event = MagicMock(return_value=event)
 
@@ -212,6 +216,11 @@ def harness(
     )
     monkeypatch.setattr(
         main_module,
+        "GreenLed",
+        green_led_constructor,
+    )
+    monkeypatch.setattr(
+        main_module,
         "create_entry_event",
         create_entry_event,
     )
@@ -230,6 +239,7 @@ def harness(
         pipeline=pipeline,
         sensor=sensor,
         camera=camera,
+        green_led=green_led,
         controller=controller,
         backend_client=backend_client,
         event=event,
@@ -239,6 +249,7 @@ def harness(
         backend_constructor=backend_constructor,
         sensor_constructor=sensor_constructor,
         camera_constructor=camera_constructor,
+        green_led_constructor=green_led_constructor,
         controller_constructor=controller_constructor,
         create_entry_event=create_entry_event,
         sleep=sleep,
@@ -642,7 +653,9 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
+    decision_calls = MagicMock()
     ocr_result = PlateReadResult(
         status=ReadStatus.SUCCESS,
         plate_number=PLATE_NUMBER,
@@ -664,11 +677,20 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
             "log_backend_entry_result",
         ) as log_backend_entry_result,
     ):
+        decision_calls.attach_mock(
+            log_backend_entry_result,
+            "log_backend_entry_result",
+        )
+        decision_calls.attach_mock(
+            green_led.indicate_allow,
+            "indicate_allow",
+        )
         returned = main_module.process_entry_event(
             event,
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
@@ -694,6 +716,77 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
         backend_result,
         logger,
     )
+    green_led.indicate_allow.assert_called_once_with(
+        main_module.GREEN_LED_DURATION_SECONDS
+    )
+    assert decision_calls.mock_calls == [
+        call.log_backend_entry_result(
+            backend_result,
+            logger,
+        ),
+        call.indicate_allow(
+            main_module.GREEN_LED_DURATION_SECONDS
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "access_decision",
+    [
+        pytest.param(
+            AccessDecision.REVIEW,
+            id="review",
+        ),
+        pytest.param(
+            AccessDecision.DENY,
+            id="deny",
+        ),
+    ],
+)
+def test_process_entry_event_does_not_indicate_non_allow_decision(
+    access_decision: AccessDecision,
+) -> None:
+    event = EntryEvent(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        idempotency_key=IDEMPOTENCY_KEY,
+        entry_time=ENTRY_TIME,
+    )
+    camera = MagicMock(spec=main_module.EntryCamera)
+    pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
+    backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
+    logger = MagicMock(spec=logging.Logger)
+
+    camera.capture_sequence.return_value = FRAMES
+    pipeline.read_plate.return_value = PlateReadResult(
+        status=ReadStatus.SUCCESS,
+        plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
+    )
+    backend_result = make_backend_result(
+        access_decision=access_decision,
+    )
+    backend_client.request_entry.return_value = backend_result
+
+    with patch.object(
+        main_module,
+        "log_backend_entry_result",
+    ) as log_backend_entry_result:
+        returned = main_module.process_entry_event(
+            event,
+            camera=camera,
+            ocr_pipeline=pipeline,
+            backend_client=backend_client,
+            green_led=green_led,
+            logger=logger,
+        )
+
+    assert returned is None
+    log_backend_entry_result.assert_called_once_with(
+        backend_result,
+        logger,
+    )
+    green_led.indicate_allow.assert_not_called()
 
 
 def test_process_entry_event_stops_after_capture_failure() -> None:
@@ -705,6 +798,7 @@ def test_process_entry_event_stops_after_capture_failure() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     capture_error = CaptureSequenceError("capture failed")
 
@@ -715,6 +809,7 @@ def test_process_entry_event_stops_after_capture_failure() -> None:
         camera=camera,
         ocr_pipeline=pipeline,
         backend_client=backend_client,
+        green_led=green_led,
         logger=logger,
     )
 
@@ -722,6 +817,7 @@ def test_process_entry_event_stops_after_capture_failure() -> None:
     camera.capture_sequence.assert_called_once_with()
     pipeline.read_plate.assert_not_called()
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     logger.warning.assert_called_once()
     assert logger.warning.call_args.kwargs["exc_info"] is True
     logger.error.assert_not_called()
@@ -754,6 +850,7 @@ def test_process_entry_event_handles_known_ocr_error(
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
 
     camera.capture_sequence.return_value = FRAMES
@@ -764,6 +861,7 @@ def test_process_entry_event_handles_known_ocr_error(
         camera=camera,
         ocr_pipeline=pipeline,
         backend_client=backend_client,
+        green_led=green_led,
         logger=logger,
     )
 
@@ -771,6 +869,7 @@ def test_process_entry_event_handles_known_ocr_error(
     camera.capture_sequence.assert_called_once_with()
     pipeline.read_plate.assert_called_once_with(FRAMES)
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     logger.error.assert_called_once_with(
         expected_message,
         exc_info=True,
@@ -813,6 +912,7 @@ def test_process_entry_event_does_not_call_backend_for_unsuccessful_ocr(
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     result = PlateReadResult(
         status=status,
@@ -831,12 +931,14 @@ def test_process_entry_event_does_not_call_backend_for_unsuccessful_ocr(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
     assert returned is None
     log_ocr_result.assert_called_once_with(result, logger)
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
 
 
 def test_process_entry_event_rejects_success_without_plate_number() -> None:
@@ -848,6 +950,7 @@ def test_process_entry_event_rejects_success_without_plate_number() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     result = PlateReadResult(
         status=ReadStatus.SUCCESS,
@@ -874,11 +977,13 @@ def test_process_entry_event_rejects_success_without_plate_number() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                green_led=green_led,
                 logger=logger,
             )
 
     log_ocr_result.assert_not_called()
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     log_backend_entry_result.assert_not_called()
 
 
@@ -891,6 +996,7 @@ def test_process_entry_event_rejects_success_without_rec_score() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     result = PlateReadResult(
         status=ReadStatus.SUCCESS,
@@ -917,11 +1023,13 @@ def test_process_entry_event_rejects_success_without_rec_score() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                green_led=green_led,
                 logger=logger,
             )
 
     log_ocr_result.assert_not_called()
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     log_backend_entry_result.assert_not_called()
 
 
@@ -934,6 +1042,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     result = PlateReadResult(
         status=ReadStatus.SUCCESS,
@@ -955,6 +1064,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
@@ -965,6 +1075,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
         exc_info=True,
     )
     log_backend_entry_result.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -991,6 +1102,7 @@ def test_process_entry_event_propagates_unexpected_backend_error(
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
 
     camera.capture_sequence.return_value = FRAMES
@@ -1007,10 +1119,12 @@ def test_process_entry_event_propagates_unexpected_backend_error(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is unexpected_error
+    green_led.indicate_allow.assert_not_called()
 
 
 def test_process_entry_event_rejects_mismatched_response_id() -> None:
@@ -1022,6 +1136,7 @@ def test_process_entry_event_rejects_mismatched_response_id() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
 
     camera.capture_sequence.return_value = FRAMES
@@ -1044,10 +1159,12 @@ def test_process_entry_event_rejects_mismatched_response_id() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                green_led=green_led,
                 logger=logger,
             )
 
     log_backend_entry_result.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
 
 
 def test_process_entry_event_propagates_unexpected_ocr_exception() -> None:
@@ -1059,6 +1176,7 @@ def test_process_entry_event_propagates_unexpected_ocr_exception() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     unexpected_error = LookupError("unexpected OCR failure")
 
@@ -1071,11 +1189,13 @@ def test_process_entry_event_propagates_unexpected_ocr_exception() -> None:
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is unexpected_error
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     logger.error.assert_not_called()
 
 
@@ -1103,6 +1223,7 @@ def test_process_entry_event_propagates_termination_exception(
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
 
     camera.capture_sequence.return_value = FRAMES
@@ -1114,13 +1235,104 @@ def test_process_entry_event_propagates_termination_exception(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is termination
     backend_client.request_entry.assert_not_called()
+    green_led.indicate_allow.assert_not_called()
     logger.warning.assert_not_called()
     logger.error.assert_not_called()
+
+
+def test_process_entry_event_logs_and_propagates_led_error() -> None:
+    event = EntryEvent(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        idempotency_key=IDEMPOTENCY_KEY,
+        entry_time=ENTRY_TIME,
+    )
+    camera = MagicMock(spec=main_module.EntryCamera)
+    pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
+    backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
+    logger = MagicMock(spec=logging.Logger)
+    led_error = RuntimeError("LED indication failed")
+
+    camera.capture_sequence.return_value = FRAMES
+    pipeline.read_plate.return_value = PlateReadResult(
+        status=ReadStatus.SUCCESS,
+        plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
+    )
+    backend_client.request_entry.return_value = make_backend_result()
+    green_led.indicate_allow.side_effect = led_error
+
+    with pytest.raises(RuntimeError) as captured:
+        main_module.process_entry_event(
+            event,
+            camera=camera,
+            ocr_pipeline=pipeline,
+            backend_client=backend_client,
+            green_led=green_led,
+            logger=logger,
+        )
+
+    assert captured.value is led_error
+    logger.exception.assert_called_once_with(
+        "Green LED allow indication failed. entry_attempt_id=%s",
+        ENTRY_ATTEMPT_ID,
+    )
+
+
+@pytest.mark.parametrize(
+    "termination",
+    [
+        pytest.param(
+            KeyboardInterrupt(),
+            id="keyboard-interrupt",
+        ),
+        pytest.param(
+            SystemExit(2),
+            id="system-exit",
+        ),
+    ],
+)
+def test_process_entry_event_propagates_led_termination_without_error_log(
+    termination: BaseException,
+) -> None:
+    event = EntryEvent(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        idempotency_key=IDEMPOTENCY_KEY,
+        entry_time=ENTRY_TIME,
+    )
+    camera = MagicMock(spec=main_module.EntryCamera)
+    pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
+    backend_client = MagicMock(spec=main_module.BackendClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
+    logger = MagicMock(spec=logging.Logger)
+
+    camera.capture_sequence.return_value = FRAMES
+    pipeline.read_plate.return_value = PlateReadResult(
+        status=ReadStatus.SUCCESS,
+        plate_number=PLATE_NUMBER,
+        rec_score=OCR_CONFIDENCE,
+    )
+    backend_client.request_entry.return_value = make_backend_result()
+    green_led.indicate_allow.side_effect = termination
+
+    with pytest.raises(type(termination)) as captured:
+        main_module.process_entry_event(
+            event,
+            camera=camera,
+            ocr_pipeline=pipeline,
+            backend_client=backend_client,
+            green_led=green_led,
+            logger=logger,
+        )
+
+    assert captured.value is termination
+    logger.exception.assert_not_called()
 
 
 # [startup과 반복 흐름]
@@ -1189,7 +1401,7 @@ def test_main_constructs_backend_before_loading_pipeline(
     ]
 
 
-def test_main_loads_pipeline_before_sensor_and_camera(
+def test_main_loads_pipeline_before_hardware_in_order(
     harness: MainHarness,
 ) -> None:
     calls = MagicMock()
@@ -1202,16 +1414,21 @@ def test_main_loads_pipeline_before_sensor_and_camera(
         harness.camera_constructor,
         "camera_constructor",
     )
+    calls.attach_mock(
+        harness.green_led_constructor,
+        "green_led_constructor",
+    )
 
     main_module.main()
 
     assert [
         recorded_call[0]
-        for recorded_call in calls.mock_calls[:3]
+        for recorded_call in calls.mock_calls[:4]
     ] == [
         "factory",
         "sensor_constructor",
         "camera_constructor",
+        "green_led_constructor",
     ]
 
 
@@ -1229,6 +1446,7 @@ def test_main_propagates_factory_failure_before_hardware_initialization(
     harness.factory.assert_called_once()
     harness.sensor_constructor.assert_not_called()
     harness.camera_constructor.assert_not_called()
+    harness.green_led_constructor.assert_not_called()
 
 
 def test_main_does_not_create_event_for_none_signal(
@@ -1282,6 +1500,7 @@ def test_main_creates_event_before_processing_detected_entry(
         camera=harness.camera,
         ocr_pipeline=harness.pipeline,
         backend_client=harness.backend_client,
+        green_led=harness.green_led,
         logger=harness.logger,
     )
     assert [
@@ -1329,6 +1548,7 @@ def test_main_reuses_runtime_objects_across_multiple_entry_events(
 
     harness.backend_constructor.assert_called_once()
     harness.factory.assert_called_once()
+    harness.green_led_constructor.assert_called_once_with()
     assert harness.create_entry_event.call_count == 2
     assert process_entry_event.call_count == 2
 
@@ -1343,6 +1563,7 @@ def test_main_reuses_runtime_objects_across_multiple_entry_events(
             event_call.kwargs["backend_client"]
             is harness.backend_client
         )
+        assert event_call.kwargs["green_led"] is harness.green_led
         assert event_call.kwargs["logger"] is harness.logger
 
 
@@ -1424,13 +1645,43 @@ def test_main_continues_after_backend_client_error(
     )
 
 
+def test_main_cleans_existing_hardware_after_led_initialization_failure(
+    harness: MainHarness,
+) -> None:
+    initialization_error = RuntimeError(
+        "green LED initialization failed"
+    )
+    harness.green_led_constructor.side_effect = initialization_error
+
+    with pytest.raises(RuntimeError) as captured:
+        main_module.main()
+
+    assert captured.value is initialization_error
+    harness.camera.cleanup.assert_called_once_with()
+    harness.sensor.cleanup.assert_called_once_with()
+    harness.green_led.cleanup.assert_not_called()
+    harness.logger.exception.assert_called_once_with(
+        "Raspberry Pi green LED initialization failed."
+    )
+    assert call(
+        "Raspberry Pi entry service started."
+    ) not in harness.logger.info.call_args_list
+    assert call(
+        "Raspberry Pi entry service stopped."
+    ) not in harness.logger.info.call_args_list
+
+
 # [서비스 종료와 cleanup]
 
 
-def test_main_cleans_camera_before_sensor_on_normal_exit(
+def test_main_cleans_hardware_in_reverse_initialization_order(
     harness: MainHarness,
 ) -> None:
     cleanup_calls = MagicMock()
+    cleanup_calls.attach_mock(
+        harness.green_led.cleanup,
+        "green_led_cleanup",
+    )
     cleanup_calls.attach_mock(
         harness.camera.cleanup,
         "camera_cleanup",
@@ -1443,6 +1694,7 @@ def test_main_cleans_camera_before_sensor_on_normal_exit(
     main_module.main()
 
     assert cleanup_calls.mock_calls == [
+        call.green_led_cleanup(),
         call.camera_cleanup(),
         call.sensor_cleanup(),
     ]
@@ -1465,6 +1717,8 @@ def test_main_cleans_sensor_after_camera_initialization_failure(
     assert captured.value is initialization_error
     harness.sensor.cleanup.assert_called_once_with()
     harness.camera.cleanup.assert_not_called()
+    harness.green_led_constructor.assert_not_called()
+    harness.green_led.cleanup.assert_not_called()
     assert call(
         "Raspberry Pi entry service stopped."
     ) not in harness.logger.info.call_args_list
@@ -1483,6 +1737,7 @@ def test_main_cleans_resources_and_propagates_unexpected_ocr_error(
         main_module.main()
 
     assert captured.value is unexpected_error
+    harness.green_led.cleanup.assert_called_once_with()
     harness.camera.cleanup.assert_called_once_with()
     harness.sensor.cleanup.assert_called_once_with()
 
@@ -1499,8 +1754,25 @@ def test_main_cleans_resources_and_propagates_unexpected_backend_error(
         main_module.main()
 
     assert captured.value is unexpected_error
+    harness.green_led.cleanup.assert_called_once_with()
     harness.camera.cleanup.assert_called_once_with()
     harness.sensor.cleanup.assert_called_once_with()
+
+
+def test_main_continues_cleanup_after_led_cleanup_failure(
+    harness: MainHarness,
+) -> None:
+    cleanup_error = RuntimeError("green LED cleanup failed")
+    harness.green_led.cleanup.side_effect = cleanup_error
+
+    main_module.main()
+
+    harness.green_led.cleanup.assert_called_once_with()
+    harness.camera.cleanup.assert_called_once_with()
+    harness.sensor.cleanup.assert_called_once_with()
+    harness.logger.exception.assert_any_call(
+        "Raspberry Pi green LED cleanup failed."
+    )
 
 
 def test_main_continues_sensor_cleanup_after_camera_cleanup_failure(
@@ -1511,11 +1783,42 @@ def test_main_continues_sensor_cleanup_after_camera_cleanup_failure(
 
     main_module.main()
 
+    harness.green_led.cleanup.assert_called_once_with()
     harness.camera.cleanup.assert_called_once_with()
     harness.sensor.cleanup.assert_called_once_with()
     harness.logger.exception.assert_any_call(
         "Raspberry Pi entry camera cleanup failed."
     )
+
+
+@pytest.mark.parametrize(
+    "termination",
+    [
+        pytest.param(
+            KeyboardInterrupt(),
+            id="keyboard-interrupt",
+        ),
+        pytest.param(
+            SystemExit(3),
+            id="system-exit",
+        ),
+    ],
+)
+def test_main_preserves_led_cleanup_termination_after_remaining_cleanup(
+    harness: MainHarness,
+    termination: BaseException,
+) -> None:
+    later_termination = SystemExit(9)
+    harness.green_led.cleanup.side_effect = termination
+    harness.camera.cleanup.side_effect = later_termination
+
+    with pytest.raises(type(termination)) as captured:
+        main_module.main()
+
+    assert captured.value is termination
+    harness.green_led.cleanup.assert_called_once_with()
+    harness.camera.cleanup.assert_called_once_with()
+    harness.sensor.cleanup.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
@@ -1541,5 +1844,6 @@ def test_main_preserves_camera_cleanup_termination_after_sensor_cleanup(
         main_module.main()
 
     assert captured.value is termination
+    harness.green_led.cleanup.assert_called_once_with()
     harness.camera.cleanup.assert_called_once_with()
     harness.sensor.cleanup.assert_called_once_with()

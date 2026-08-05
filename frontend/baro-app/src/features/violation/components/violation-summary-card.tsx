@@ -1,15 +1,16 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { Text, View } from 'react-native';
 
-import type { MockViolationSummary } from '../mocks/violation-history.mock';
 import { Palette } from '@/styles';
+
+import type { ViolationStats } from '../api/types';
 
 import { styles } from './violation-summary-card.styles';
 
 const SUMMARY_CARD_GRADIENT = [Palette.peach100, Palette.lavender100] as const;
 
 type ViolationSummaryCardProps = {
-  summary: MockViolationSummary;
+  summary: ViolationStats;
 };
 
 export function ViolationSummaryCard({ summary }: ViolationSummaryCardProps) {
@@ -31,8 +32,6 @@ export function ViolationSummaryCard({ summary }: ViolationSummaryCardProps) {
           <Text style={styles.statValue}>{summary.averageResponseMinutes}분</Text>
         </View>
       </View>
-
-      <Text style={styles.caption}>3개월 내 3회를 넘으면 관리사무소 안내가 발송됩니다.</Text>
     </LinearGradient>
   );
 }

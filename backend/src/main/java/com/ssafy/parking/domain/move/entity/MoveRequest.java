@@ -65,6 +65,12 @@ public class MoveRequest extends BaseEntity {
     @Column(name = "reminder_count", nullable = false)
     private int reminderCount;
 
+    @Column(name = "reminder_sent_at")
+    private LocalDateTime reminderSentAt;
+
+    @Column(name = "verification_attempt", nullable = false)
+    private int verificationAttempt;
+
     @Builder
     private MoveRequest(
             ParkingEvent event,
@@ -95,5 +101,20 @@ public class MoveRequest extends BaseEntity {
     public void markNeedAdmin() {
         this.requestStatus = MoveRequestStatus.NEED_ADMIN;
         this.dueAt = null;
+    }
+
+    public void markReminderSent(LocalDateTime reminderSentAt) {
+        this.requestStatus = MoveRequestStatus.REMINDER_SENT;
+        this.reminderCount = this.reminderCount + 1;
+        this.reminderSentAt = reminderSentAt;
+    }
+
+    public void markCompleted() {
+        this.requestStatus = MoveRequestStatus.COMPLETED;
+    }
+
+    public int bumpVerificationAttempt() {
+        this.verificationAttempt += 1;
+        return this.verificationAttempt;
     }
 }

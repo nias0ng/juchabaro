@@ -5,6 +5,7 @@ import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.domain.hw.dto.HwExitRequest;
 import com.ssafy.parking.domain.hw.dto.HwPublicationAck;
 import com.ssafy.parking.domain.hw.dto.HwTransitionRequest;
+import com.ssafy.parking.domain.hw.outbox.SessionContextNotifier;
 import com.ssafy.parking.domain.parking.entity.ParkingSession;
 import com.ssafy.parking.domain.parking.entity.ParkingZone;
 import com.ssafy.parking.domain.parking.repository.ParkingSessionRepository;
@@ -26,9 +27,13 @@ public class HwTransitionService {
 
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingZoneRepository parkingZoneRepository;
+    private final InboundIdempotencyService inboundIdempotencyService;
+    private final SessionContextNotifier sessionContextNotifier;
 
     @Transactional
-    public HwPublicationAck handleTransition(HwTransitionRequest req) {
+    public HwPublicationAck handleTransition(String idempotencyKey, HwTransitionRequest req) {
+        inboundIdempotencyService.record("PARKING_TRANSITION", idempotencyKey, req);
+
         ParkingSession session = parkingSessionRepository.findById(req.sessionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARKING_SESSION_NOT_FOUND));
 
@@ -64,7 +69,9 @@ public class HwTransitionService {
     }
 
     @Transactional
-    public HwPublicationAck handleExit(HwExitRequest req) {
+    public HwPublicationAck handleExit(String idempotencyKey, HwExitRequest req) {
+        inboundIdempotencyService.record("SESSION_EXIT", idempotencyKey, req);
+
         ParkingSession session = parkingSessionRepository.findById(req.sessionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARKING_SESSION_NOT_FOUND));
 
@@ -73,6 +80,7 @@ public class HwTransitionService {
             result = "ALREADY_APPLIED";
         } else {
             session.markExit(toKstLocal(req.occurredAt()));
+            sessionContextNotifier.publish(session, "CLOSED");
             result = "APPLIED";
         }
 

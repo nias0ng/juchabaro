@@ -8,7 +8,7 @@ import { usePasswordChangeForm } from './use-password-change-form';
 
 export function useProfileUpdateForm() {
   const { user, accessToken, updateUserProfile } = useAuth();
-  const initialName = user?.nickname ?? '';
+  const initialName = user?.name ?? '';
   const [name, setName] = useState(initialName);
   const password = usePasswordChangeForm();
   const [isSubmitting, setIsSubmitting] = useState(false);

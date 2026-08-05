@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from src.domain.models import (
     DeliveryState,
@@ -31,6 +31,7 @@ from src.session.models import (
     SessionAdministrativeState,
     SessionContext,
 )
+from src.parking.models import IncidentId
 from src.tracking.models import (
     ParkingSessionId,
     PhysicalVehicle,
@@ -53,6 +54,13 @@ from .models import (
     PublicationApplicationStatus,
 )
 from .unit_of_work import require_write_transaction
+
+if TYPE_CHECKING:
+    from src.communication.models import (
+        MoveRequestId,
+        MoveVerificationAttempt,
+        MoveVerificationIncidentResult,
+    )
 
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -95,6 +103,10 @@ class ParkingSessionMirrorConflictError(RuntimeError):
 
 class ContextBindingConflictError(RuntimeError):
     """ContextBinding이 immutable identity·active cardinality와 충돌했다."""
+
+
+class MoveVerificationAttemptConflictError(RuntimeError):
+    """MoveVerificationAttempt identity 또는 immutable command가 충돌했다."""
 
 
 class OptimisticConcurrencyError(RuntimeError):
@@ -148,6 +160,11 @@ def _accepted_input_from_row(row: sqlite3.Row) -> AcceptedInputRecord:
         input_type=str(row["input_type"]),
         input_identity=str(row["input_identity"]),
         input_revision=int(row["input_revision"]),
+        idempotency_key=(
+            str(row["idempotency_key"])
+            if row["idempotency_key"] is not None
+            else None
+        ),
         payload_hash=str(row["payload_hash"]),
         request_payload=bytes(row["request_payload"]),
         workflow_state=str(row["workflow_state"]),
@@ -295,6 +312,112 @@ def _session_context_from_payload(payload: bytes | bytearray | memoryview) -> Se
         vehicle_id=None if vehicle_id is None else VehicleId(vehicle_id),
         is_electric=is_electric,
         is_disabled_vehicle=is_disabled_vehicle,
+    )
+
+
+def _incident_ids_to_payload(incident_ids: tuple[IncidentId, ...]) -> bytes:
+    return json.dumps(
+        [uuid_to_text(incident_id) for incident_id in incident_ids],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _incident_ids_from_payload(
+    payload: bytes | bytearray | memoryview,
+) -> tuple[IncidentId, ...]:
+    try:
+        raw = json.loads(bytes(payload).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        raise ValueError("invalid target Incident payload") from error
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise ValueError("target Incident payload must be a JSON string array")
+    return tuple(IncidentId(uuid_from_text(item)) for item in raw)
+
+
+def _move_verification_incident_results_from_payload(
+    payload: bytes | bytearray | memoryview | None,
+) -> tuple[MoveVerificationIncidentResult, ...]:
+    from src.communication.models import (
+        MoveVerificationIncidentResult,
+        MoveVerificationResult,
+    )
+
+    if payload is None:
+        return ()
+    try:
+        raw = json.loads(bytes(payload).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        raise ValueError("invalid MoveVerification incident results payload") from error
+    if not isinstance(raw, list):
+        raise ValueError("MoveVerification incident results must be a JSON array")
+    try:
+        return tuple(
+            MoveVerificationIncidentResult(
+                incident_id=IncidentId(uuid_from_text(str(item["incidentId"]))),
+                result=MoveVerificationResult(str(item["result"])),
+                incident_publication_revision=int(
+                    item["incidentPublicationRevision"]
+                ),
+            )
+            for item in raw
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            "invalid MoveVerification incident result item"
+        ) from error
+
+
+def _move_verification_attempt_from_row(
+    row: sqlite3.Row,
+) -> MoveVerificationAttempt:
+    # communication package는 outbox를 통해 이 repository를 import한다.
+    # 런타임 import를 row 복원 시점으로 늦춰 module initialization cycle을 막는다.
+    from src.communication.models import (
+        MoveRequestId,
+        MoveVerificationAttempt,
+        MoveVerificationResult,
+        MoveVerificationState,
+    )
+
+    return MoveVerificationAttempt(
+        request_id=MoveRequestId(int(row["request_id"])),
+        verification_attempt=int(row["verification_attempt"]),
+        subject_physical_vehicle_id=PhysicalVehicleId(
+            uuid_from_text(str(row["subject_physical_vehicle_id"]))
+        ),
+        target_incident_ids=_incident_ids_from_payload(
+            row["target_incident_ids_payload"]
+        ),
+        command_payload_hash=str(row["command_payload_hash"]),
+        state=MoveVerificationState(str(row["domain_state"])),
+        result=(
+            MoveVerificationResult(str(row["result"]))
+            if row["result"] is not None
+            else None
+        ),
+        incident_results=_move_verification_incident_results_from_payload(
+            row["per_incident_results_payload"]
+        ),
+        deadline_at=(
+            datetime_from_epoch_microseconds(int(row["deadline_at_us"]))
+            if row["deadline_at_us"] is not None
+            else None
+        ),
+        terminal_reason=(
+            str(row["termination_reason"])
+            if row["termination_reason"] is not None
+            else None
+        ),
+        record_version=int(row["record_version"]),
+        publication_revision=int(row["publication_revision"]),
+        accepted_at=datetime_from_epoch_microseconds(int(row["accepted_at_us"])),
+        updated_at=datetime_from_epoch_microseconds(int(row["updated_at_us"])),
+        completed_at=(
+            datetime_from_epoch_microseconds(int(row["completed_at_us"]))
+            if row["completed_at_us"] is not None
+            else None
+        ),
     )
 
 
@@ -529,12 +652,23 @@ class AcceptedInputRepository:
         ).fetchone()
         return _accepted_input_from_row(row) if row is not None else None
 
+    def get_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> AcceptedInputRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM accepted_inputs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        return _accepted_input_from_row(row) if row is not None else None
+
     def accept(
         self,
         *,
         input_type: str,
         input_identity: str,
         input_revision: int,
+        idempotency_key: str,
         request_payload: bytes | bytearray | memoryview,
         workflow_state: str,
         accepted_at_us: int | None = None,
@@ -544,8 +678,25 @@ class AcceptedInputRepository:
         require_write_transaction(self._connection)
         if input_revision < 0:
             raise ValueError("input_revision must be non-negative")
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise ValueError("idempotency_key must not be empty")
         payload = _payload_bytes(request_payload)
         payload_hash = _sha256(payload)
+
+        key_record = self.get_by_idempotency_key(normalized_key)
+        if key_record is not None:
+            if (
+                key_record.input_type != input_type
+                or key_record.input_identity != input_identity
+                or key_record.input_revision != input_revision
+                or key_record.payload_hash != payload_hash
+                or key_record.request_payload != payload
+            ):
+                raise AcceptedInputConflictError(
+                    "Idempotency-Key was reused for a different input"
+                )
+            return AcceptanceResult(record=key_record, created=False)
 
         existing = self.get(input_type, input_identity, input_revision)
         if existing is not None:
@@ -553,22 +704,46 @@ class AcceptedInputRepository:
                 raise AcceptedInputConflictError(
                     "input identity and revision were reused with a different payload"
                 )
-            return AcceptanceResult(record=existing, created=False)
+            if existing.idempotency_key is not None:
+                raise AcceptedInputConflictError(
+                    "input identity and revision were retried with a different Idempotency-Key"
+                )
+            self._connection.execute(
+                """
+                UPDATE accepted_inputs
+                SET idempotency_key = ?, updated_at_us = ?,
+                    record_version = record_version + 1
+                WHERE input_type = ? AND input_identity = ? AND input_revision = ?
+                """,
+                (
+                    normalized_key,
+                    _utc_now_microseconds(),
+                    input_type,
+                    input_identity,
+                    input_revision,
+                ),
+            )
+            adopted = self.get(input_type, input_identity, input_revision)
+            if adopted is None:  # pragma: no cover - broken SQLite connection.
+                raise RuntimeError("accepted input disappeared while adopting its key")
+            return AcceptanceResult(record=adopted, created=False)
 
         now = accepted_at_us if accepted_at_us is not None else _utc_now_microseconds()
         try:
             self._connection.execute(
                 """
                 INSERT INTO accepted_inputs(
-                    input_type, input_identity, input_revision, payload_hash,
+                    input_type, input_identity, input_revision, idempotency_key,
+                    payload_hash,
                     request_payload, workflow_state, result_payload,
                     accepted_at_us, updated_at_us, record_version
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
                 """,
                 (
                     input_type,
                     input_identity,
                     input_revision,
+                    normalized_key,
                     payload_hash,
                     payload,
                     workflow_state,
@@ -585,6 +760,248 @@ class AcceptedInputRepository:
         if record is None:  # pragma: no cover - protects a broken SQLite connection.
             raise RuntimeError("accepted input disappeared during its transaction")
         return AcceptanceResult(record=record, created=True)
+
+
+class MoveVerificationAttemptRepository:
+    """Backend 재확인 command의 immutable scope와 workflow 상태를 저장한다."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(
+        self,
+        request_id: MoveRequestId,
+        verification_attempt: int,
+    ) -> MoveVerificationAttempt | None:
+        row = self._connection.execute(
+            """
+            SELECT * FROM move_verification_attempts
+            WHERE request_id = ? AND verification_attempt = ?
+            """,
+            (int(request_id), verification_attempt),
+        ).fetchone()
+        return (
+            _move_verification_attempt_from_row(row)
+            if row is not None
+            else None
+        )
+
+    def get_latest(
+        self,
+        request_id: MoveRequestId,
+    ) -> MoveVerificationAttempt | None:
+        """한 MoveRequest에서 가장 큰 verificationAttempt를 반환한다."""
+
+        row = self._connection.execute(
+            """
+            SELECT * FROM move_verification_attempts
+            WHERE request_id = ?
+            ORDER BY verification_attempt DESC
+            LIMIT 1
+            """,
+            (int(request_id),),
+        ).fetchone()
+        return (
+            _move_verification_attempt_from_row(row)
+            if row is not None
+            else None
+        )
+
+    def list_non_terminal(self) -> tuple[MoveVerificationAttempt, ...]:
+        """실행 또는 재시작 복구가 필요한 command를 접수 순서로 반환한다."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM move_verification_attempts
+            WHERE domain_state IN ('ACCEPTED', 'CHECKING')
+            ORDER BY accepted_at_us, request_id, verification_attempt
+            """
+        ).fetchall()
+        return tuple(_move_verification_attempt_from_row(row) for row in rows)
+
+    def add(self, attempt: MoveVerificationAttempt) -> None:
+        """신규 ACCEPTED command를 추가한다. 같은 identity는 conflict다."""
+
+        require_write_transaction(self._connection)
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO move_verification_attempts(
+                    request_id, verification_attempt,
+                    subject_physical_vehicle_id,
+                    target_incident_ids_payload, command_payload_hash,
+                    domain_state, result, per_incident_results_payload,
+                    deadline_at_us, termination_reason, record_version,
+                    publication_revision, accepted_at_us, updated_at_us,
+                    completed_at_us
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(attempt.request_id),
+                    attempt.verification_attempt,
+                    uuid_to_text(attempt.subject_physical_vehicle_id),
+                    _incident_ids_to_payload(attempt.target_incident_ids),
+                    attempt.command_payload_hash,
+                    attempt.state.value,
+                    attempt.result.value if attempt.result is not None else None,
+                    (
+                        json.dumps(
+                            [
+                                {
+                                    "incidentId": uuid_to_text(item.incident_id),
+                                    "incidentPublicationRevision": (
+                                        item.incident_publication_revision
+                                    ),
+                                    "result": item.result.value,
+                                }
+                                for item in attempt.incident_results
+                            ],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                        if attempt.incident_results
+                        else None
+                    ),
+                    (
+                        datetime_to_epoch_microseconds(attempt.deadline_at)
+                        if attempt.deadline_at is not None
+                        else None
+                    ),
+                    attempt.terminal_reason,
+                    attempt.record_version,
+                    attempt.publication_revision,
+                    datetime_to_epoch_microseconds(attempt.accepted_at),
+                    datetime_to_epoch_microseconds(attempt.updated_at),
+                    (
+                        datetime_to_epoch_microseconds(attempt.completed_at)
+                        if attempt.completed_at is not None
+                        else None
+                    ),
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt identity 또는 state가 충돌합니다."
+            ) from error
+
+    def save(
+        self,
+        attempt: MoveVerificationAttempt,
+        *,
+        expected_record_version: int,
+    ) -> None:
+        """실행 상태와 immutable 결과를 optimistic update한다."""
+
+        from src.communication.models import MoveVerificationState
+
+        require_write_transaction(self._connection)
+        if attempt.record_version != expected_record_version + 1:
+            raise ValueError(
+                "attempt.record_version must be exactly one greater than "
+                "expected_record_version"
+            )
+        existing = self.get(
+            attempt.request_id,
+            attempt.verification_attempt,
+        )
+        if existing is None:
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt를 찾을 수 없습니다."
+            )
+        immutable_fields = (
+            "subject_physical_vehicle_id",
+            "target_incident_ids",
+            "command_payload_hash",
+            "deadline_at",
+            "accepted_at",
+        )
+        if any(
+            getattr(attempt, field_name) != getattr(existing, field_name)
+            for field_name in immutable_fields
+        ):
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt command scope는 변경할 수 없습니다."
+            )
+        allowed_states = {
+            MoveVerificationState.ACCEPTED: {
+                MoveVerificationState.CHECKING,
+                MoveVerificationState.CANCELED,
+                MoveVerificationState.FAILED,
+            },
+            MoveVerificationState.CHECKING: {
+                MoveVerificationState.COMPLETED,
+                MoveVerificationState.CANCELED,
+                MoveVerificationState.FAILED,
+            },
+        }
+        if attempt.state not in allowed_states.get(existing.state, set()):
+            raise MoveVerificationAttemptConflictError(
+                f"허용되지 않은 MoveVerificationAttempt 전이입니다: "
+                f"{existing.state.value} -> {attempt.state.value}"
+            )
+
+        results_payload = (
+            json.dumps(
+                [
+                    {
+                        "incidentId": uuid_to_text(item.incident_id),
+                        "incidentPublicationRevision": (
+                            item.incident_publication_revision
+                        ),
+                        "result": item.result.value,
+                    }
+                    for item in attempt.incident_results
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if attempt.incident_results
+            else None
+        )
+        try:
+            cursor = self._connection.execute(
+                """
+                UPDATE move_verification_attempts
+                SET domain_state = ?, result = ?,
+                    per_incident_results_payload = ?, termination_reason = ?,
+                    publication_revision = ?, updated_at_us = ?,
+                    completed_at_us = ?, record_version = ?
+                WHERE request_id = ? AND verification_attempt = ?
+                  AND record_version = ?
+                """,
+                (
+                    attempt.state.value,
+                    (
+                        attempt.result.value
+                        if attempt.result is not None
+                        else None
+                    ),
+                    results_payload,
+                    attempt.terminal_reason,
+                    attempt.publication_revision,
+                    datetime_to_epoch_microseconds(attempt.updated_at),
+                    (
+                        datetime_to_epoch_microseconds(attempt.completed_at)
+                        if attempt.completed_at is not None
+                        else None
+                    ),
+                    attempt.record_version,
+                    int(attempt.request_id),
+                    attempt.verification_attempt,
+                    expected_record_version,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise MoveVerificationAttemptConflictError(
+                "MoveVerificationAttempt update가 durable state 계약을 위반했습니다."
+            ) from error
+        if cursor.rowcount != 1:
+            raise OptimisticConcurrencyError(
+                "MoveVerificationAttempt가 없거나 더 최신 version입니다: "
+                f"{int(attempt.request_id)}:{attempt.verification_attempt}"
+            )
 
 
 class PendingHandoffRepository:

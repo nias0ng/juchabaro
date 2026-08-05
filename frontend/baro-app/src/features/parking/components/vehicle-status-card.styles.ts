@@ -72,6 +72,30 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Palette.gray975,
   },
+  evTimeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: Radius.md,
+    backgroundColor: Palette.violet50,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+  },
+  evTimeBoxWarning: {
+    backgroundColor: Palette.orange50,
+  },
+  evTimeLabel: {
+    fontSize: 11.5,
+    color: Palette.gray600,
+  },
+  evTimeValue: {
+    fontSize: 12.5,
+    fontWeight: FontWeight.bold,
+    color: Palette.violet600,
+  },
+  evTimeValueWarning: {
+    color: Palette.red500,
+  },
   emptyText: {
     fontSize: 13.5,
     color: Palette.gray500,

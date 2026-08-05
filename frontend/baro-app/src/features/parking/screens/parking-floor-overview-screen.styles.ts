@@ -12,6 +12,9 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.medium,
     color: Palette.violet500,
   },
+  headerActionDisabled: {
+    color: Palette.gray400,
+  },
   content: {
     gap: Spacing.base + 2,
     paddingTop: 20,
@@ -24,5 +27,8 @@ export const styles = StyleSheet.create({
     padding: Spacing.md,
     gap: Spacing.base,
     ...Shadows.card,
+  },
+  congestionRow: {
+    alignSelf: 'flex-end',
   },
 });

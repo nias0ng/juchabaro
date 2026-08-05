@@ -40,6 +40,11 @@ export function useRequestDetailViewModel(requestId: number | null) {
   }, [requestId]);
 
   const showResponseActions = detail?.requestStatus === 'SENT' || isReminderSentNoResponse;
+  // 충전구역 초과 점유/장애인 구역 위반은 AI가 자동 감지한 위반이라 "몇 분 후 이동" 같은 응답을 받을 사람이 없다.
+  // 대신 감지 시점부터 흐른 시간과 관리사무소 자동 전송 안내만 보여준다.
+  const isAutoEscalationType =
+    detail?.event.eventType === 'EV_OVERSTAY' || detail?.event.eventType === 'DISABLED_ZONE_VIOLATION';
+  const occupancyCountdown = useCountdown(showResponseActions ? detail?.requestedAt ?? null : null);
 
   const latestResponse = detail?.responses[detail.responses.length - 1] ?? null;
   const countdown = useCountdown(
@@ -82,6 +87,8 @@ export function useRequestDetailViewModel(requestId: number | null) {
     showDetail,
     setShowDetail,
     showResponseActions,
+    isAutoEscalationType,
+    occupancyElapsedLabel: occupancyCountdown.elapsedLabel,
     countdown,
     isOverdueWaiting,
     showWaitingView,
