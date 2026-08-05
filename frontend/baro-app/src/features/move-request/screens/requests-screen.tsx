@@ -40,8 +40,11 @@ export default function RequestsScreen() {
           : '받은 이동 요청이 없습니다'
         : undefined;
 
-  const handlePressItem = (requestId: number) => {
-    router.push({ pathname: '/resident/request-detail', params: { requestId: String(requestId) } });
+  const handlePressItem = (requestId: number, viewMode: 'requester' | 'recipient') => {
+    router.push({
+      pathname: '/resident/request-detail',
+      params: { requestId: String(requestId), viewMode },
+    });
   };
 
   const refreshAll = async () => {
@@ -66,8 +69,9 @@ export default function RequestsScreen() {
                 <RequestListCard
                   key={item.requestId}
                   item={item}
-                  // 받은 요청은 실제 requestId를 사용해 상세 조회 API 화면으로 이동한다.
-                  onPress={scope === 'RECEIVED' ? () => handlePressItem(item.requestId) : undefined}
+                  onPress={() =>
+                    handlePressItem(item.requestId, scope === 'SENT' ? 'requester' : 'recipient')
+                  }
                 />
               ))}
             </Stack>

@@ -2,17 +2,21 @@ import { Text, View } from 'react-native';
 
 import { styles } from './request-status-badge.styles';
 
-export type RequestListStatus = 'RESPONDED' | 'PENDING' | 'CLOSED';
+export type RequestListStatus = 'RESPONDED' | 'PENDING' | 'REMINDER' | 'ESCALATED' | 'CLOSED';
 
 const STATUS_LABEL: Record<RequestListStatus, string> = {
   RESPONDED: '응답 완료',
   PENDING: '응답 대기',
+  REMINDER: '재알림 발송',
+  ESCALATED: '관리사무소 처리 중',
   CLOSED: '종료',
 };
 
 const STATUS_STYLE: Record<RequestListStatus, { badge: object; text: object }> = {
   RESPONDED: { badge: styles.badgeResponded, text: styles.textResponded },
   PENDING: { badge: styles.badgePending, text: styles.textPending },
+  REMINDER: { badge: styles.badgeReminder, text: styles.textReminder },
+  ESCALATED: { badge: styles.badgeEscalated, text: styles.textEscalated },
   CLOSED: { badge: styles.badgeClosed, text: styles.textClosed },
 };
 

@@ -50,7 +50,7 @@ export function navigateFromNotification(
     if (requestId) {
       router.push({
         pathname: '/resident/request-detail',
-        params: { requestId },
+        params: { requestId, viewMode: 'recipient' },
       });
     } else {
       router.push('/resident');
@@ -62,7 +62,11 @@ export function navigateFromNotification(
     if (requestId) {
       router.push({
         pathname: '/resident/request-detail',
-        params: { requestId },
+        params: {
+          requestId,
+          // 상대방의 응답 알림은 요청을 보낸 사람에게 전달되므로 진행 현황을 읽기 전용으로 연다.
+          viewMode: type === 'MOVE_RESPONSE' ? 'requester' : 'recipient',
+        },
       });
     } else {
       router.push('/resident/requests');

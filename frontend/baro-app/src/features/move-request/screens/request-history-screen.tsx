@@ -4,11 +4,13 @@ import { AsyncStateView, GradientScreenBackground, ScreenHeader, Stack } from '@
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
+import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
 
 import { styles } from './request-history-screen.styles';
 
 export default function RequestHistoryScreen() {
+  const { user } = useAuth();
   const { moveRequests, isLoading, isRefreshing, error, refetch } = useMoveRequests('ALL');
 
   const statusMessage = isLoading
@@ -37,7 +39,10 @@ export default function RequestHistoryScreen() {
               onPress={() =>
                 router.push({
                   pathname: '/resident/request-detail',
-                  params: { requestId: String(summary.requestId) },
+                  params: {
+                    requestId: String(summary.requestId),
+                    viewMode: summary.requesterUserId === user?.userId ? 'requester' : 'recipient',
+                  },
                 })
               }
             />

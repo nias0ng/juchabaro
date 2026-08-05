@@ -22,7 +22,7 @@ export type RequestListItemDisplay = {
 
 type RequestListCardProps = {
   item: RequestListItemDisplay;
-  /** 없으면 눌러도 아무 데도 이동하지 않는다(보낸 요청은 상세 화면으로 이동시키지 않는다). */
+  /** 읽기 전용 진행 현황 또는 응답 가능한 상세 화면으로 이동할 때 사용한다. */
   onPress?: () => void;
 };
 

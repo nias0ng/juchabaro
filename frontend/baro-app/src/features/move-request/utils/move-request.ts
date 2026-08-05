@@ -107,6 +107,22 @@ export type RequestTimelineStep = {
 };
 
 const REMINDER_ROUND_LABELS = ['1차 재알림', '2차 재알림', '3차 재알림'] as const;
+const ADMIN_ESCALATION_DELAY_MS = 60 * 60 * 1000;
+
+function getReminderHistory(detail: MoveRequestDetail): MoveRequestDetail['history'] {
+  return detail.history.filter((item) => item.notificationType === 'REMINDER');
+}
+
+/** 마지막 재알림 후 한 시간이 지난 시각이 관리사무소 이관 예정 시각이다. */
+export function getAdminEscalationDueAt(detail: MoveRequestDetail): string | null {
+  const reminders = getReminderHistory(detail);
+  const latestReminder = reminders[reminders.length - 1];
+  if (!latestReminder) return null;
+
+  const reminderTime = new Date(latestReminder.sentAt).getTime();
+  if (Number.isNaN(reminderTime)) return null;
+  return new Date(reminderTime + ADMIN_ESCALATION_DELAY_MS).toISOString();
+}
 
 export type RequestCompletedDisplay = {
   endTimeLabel: string;
@@ -141,18 +157,31 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
     timeline.push({ label: '이동 진행', detail: formatTime24(latestResponse.respondedAt), isFinal: false });
   }
 
-  detail.history
-    .filter((item) => item.notificationType === 'REMINDER')
-    .forEach((reminder, index) => {
-      const roundLabel = REMINDER_ROUND_LABELS[index] ?? `${index + 1}차 재알림`;
-      timeline.push({
-        label: `${roundLabel} 전송`,
-        detail: formatTime24(reminder.sentAt),
-        isFinal: false,
-        dotColor: '#e5493d',
-        labelColor: '#c8492e',
-      });
+  const reminders = getReminderHistory(detail);
+  reminders.forEach((reminder, index) => {
+    const roundLabel = REMINDER_ROUND_LABELS[index] ?? `${index + 1}차 재알림`;
+    timeline.push({
+      label: `${roundLabel} 전송`,
+      detail: formatTime24(reminder.sentAt),
+      isFinal: false,
+      dotColor: '#e5493d',
+      labelColor: '#c8492e',
     });
+  });
+
+  const escalationDueAt = getAdminEscalationDueAt(detail);
+  if (
+    resolvedEntry &&
+    escalationDueAt &&
+    new Date(resolvedEntry.sentAt).getTime() >= new Date(escalationDueAt).getTime()
+  ) {
+    timeline.push({
+      label: '관리사무소 이관',
+      detail: formatTime24(escalationDueAt),
+      dotColor: '#d4553a',
+      labelColor: '#c8492e',
+    });
+  }
 
   timeline.push({ label: '완료', detail: '정상 처리되었습니다', isFinal: true });
 
@@ -197,14 +226,15 @@ export function toRequestOverdueDisplay(detail: MoveRequestDetail): RequestOverd
   return { timeline: buildOverdueLeadingSteps(detail, formatTime12(detail.requestedAt)) };
 }
 
-export type RequestReminderDisplay = {
+export type RequestEscalationDisplay = {
   reminderRoundLabel: string;
+  escalationDueAt: string | null;
   timeline: RequestTimelineStep[];
-  pendingStep: { label: string; status: string };
+  pendingStep?: { label: string; status: string };
 };
 
-export function toRequestReminderDisplay(detail: MoveRequestDetail): RequestReminderDisplay {
-  const reminders = detail.history.filter((item) => item.notificationType === 'REMINDER');
+export function toRequestEscalationDisplay(detail: MoveRequestDetail): RequestEscalationDisplay {
+  const reminders = getReminderHistory(detail);
   const timeline = buildOverdueLeadingSteps(
     detail,
     `${formatTime12(detail.requestedAt)} · ${detail.targetVehicle.plateNumber}`,
@@ -220,12 +250,42 @@ export function toRequestReminderDisplay(detail: MoveRequestDetail): RequestRemi
     });
   });
 
-  const latestRoundLabel = REMINDER_ROUND_LABELS[reminders.length - 1] ?? `${reminders.length}차 재알림`;
+  const escalationDueAt = getAdminEscalationDueAt(detail);
+  const isTransferred = detail.requestStatus === 'NEED_ADMIN';
+  const latestResponse = detail.responses[detail.responses.length - 1];
+
+  if (isTransferred) {
+    if (latestResponse?.responseType === 'CANNOT_MOVE_NOW') {
+      timeline.push({
+        label: '상대방 응답',
+        detail: `${formatTime12(latestResponse.respondedAt)} · 지금 이동 어려움`,
+        dotColor: '#ff8f6b',
+        labelColor: '#d4553a',
+      });
+    }
+
+    const transferredAt = escalationDueAt ?? latestResponse?.respondedAt ?? null;
+    timeline.push({
+      label: '관리사무소 이관',
+      detail: transferredAt ? formatTime12(transferredAt) : '이관 완료',
+      isFinal: true,
+      dotColor: '#d4553a',
+      labelColor: '#c8492e',
+    });
+  }
+
+  const latestRoundLabel =
+    reminders.length > 0
+      ? REMINDER_ROUND_LABELS[reminders.length - 1] ?? `${reminders.length}차 재알림`
+      : '관리사무소 이관';
 
   return {
     reminderRoundLabel: latestRoundLabel,
+    escalationDueAt,
     timeline,
-    pendingStep: { label: '이동 확인 대기', status: '진행중' },
+    pendingStep: isTransferred
+      ? undefined
+      : { label: '관리사무소 이관', status: '예정' },
   };
 }
 
@@ -271,13 +331,13 @@ export function toRequestSummaryDisplay(summary: MoveRequestSummary): RequestSum
   };
 }
 
-// E-04(요청 목록) 카드가 쓰는 3단계 상태로 좁힌다. REMINDER_SENT도 응답 버튼은 그대로 있는 상태라 PENDING과 같이 묶는다.
+// 목록에서도 재알림과 관리사무소 이관을 구분해 요청 진행 상황이 끊기지 않게 보여준다.
 const LIST_STATUS: Record<MoveRequestStatus, RequestListStatus> = {
   SENT: 'PENDING',
   RESPONDED: 'RESPONDED',
-  REMINDER_SENT: 'PENDING',
+  REMINDER_SENT: 'REMINDER',
   COMPLETED: 'CLOSED',
-  NEED_ADMIN: 'CLOSED',
+  NEED_ADMIN: 'ESCALATED',
   CANCELLED: 'CLOSED',
 };
 
