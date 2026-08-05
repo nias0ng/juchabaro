@@ -10,6 +10,15 @@ app:
     provider: log
     expo:
       url: https://exp.host/--/api/v2/push/send
+  jetson:
+    enabled: false
+    provider: log
+    base-url: http://100.99.37.7:8000
+    api-key: ${INTERNAL_API_KEY:}
+    timeout-ms: 5000
+    verify-window-seconds: 120
+  review:
+    expire-minutes: 30
 
 server:
   port: ${SERVER_PORT:8080}

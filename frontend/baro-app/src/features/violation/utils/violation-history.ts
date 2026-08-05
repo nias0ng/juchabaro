@@ -3,6 +3,7 @@ import type {
   MoveRequestSummary,
 } from '@/features/move-request/api/types';
 import { formatDurationLabel } from '@/features/move-request/utils/move-request';
+import { toDisplayZoneNumber } from '@/features/parking/utils/parking-zone';
 
 import type { ViolationHistoryItem, ViolationStatus } from '../api/types';
 
@@ -52,17 +53,16 @@ function getStatusDescription(request: MoveRequestSummary): string {
 }
 
 export function toViolationHistoryItem(request: MoveRequestSummary): ViolationHistoryItem {
-  const metaParts = [
-    formatRequestedAt(request.requestedAt),
-    request.zoneNumber,
-    getStatusDescription(request),
-  ].filter((value): value is string => Boolean(value));
+  const metaParts = [formatRequestedAt(request.requestedAt), toDisplayZoneNumber(request.zoneNumber)].filter(
+    (value): value is string => Boolean(value),
+  );
 
   return {
     requestId: request.requestId,
     type: request.eventType,
     title: EVENT_TYPE_LABEL[request.eventType],
     meta: metaParts.join(' · '),
+    statusDescription: getStatusDescription(request),
     status: getViolationStatus(request),
     monthLabel: getMonthLabel(request.requestedAt),
   };

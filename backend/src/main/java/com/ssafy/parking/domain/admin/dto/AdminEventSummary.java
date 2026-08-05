@@ -6,9 +6,9 @@ public record AdminEventSummary(
         Long eventId,
         String plateNumber,
         String eventType,
-        String requestStatus,   // 연결된 이동요청 상태(없으면 null)
+        String requestType,      // AUTO | MANUAL (연결 이동요청 없으면 null)
+        String requestStatus,    // 연결 이동요청 없으면 null
         String zoneNumber,
         OffsetDateTime detectedAt,
-        Integer violationRatio,
         String eventStatus
 ) {}

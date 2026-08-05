@@ -325,6 +325,10 @@ class YoloPlateDetectorTests(unittest.TestCase):
                     )
                     self.assertEqual(model.task, "pose")
                     self.assertEqual(
+                        detector._confidence_threshold,
+                        0.30,
+                    )
+                    self.assertEqual(
                         len(model.predict_calls),
                         expected_predict_calls,
                     )

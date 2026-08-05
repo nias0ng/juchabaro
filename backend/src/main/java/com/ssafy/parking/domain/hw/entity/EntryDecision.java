@@ -38,10 +38,16 @@ public class EntryDecision extends BaseEntity {
     private int decisionRevision;
 
     @Column(name = "vehicle_id")
-    private Long vehicleId;   // 매칭 차량(REVIEW 후보 포함). DENY는 null
+    private Long vehicleId;
 
     @Column(name = "session_id")
-    private Long sessionId;   // ALLOW만 값, REVIEW/DENY는 null
+    private Long sessionId;
+
+    @Column(name = "resolution", length = 20)
+    private String resolution;
+
+    @Column(name = "resolved_at")
+    private java.time.LocalDateTime resolvedAt;
 
     @Builder
     private EntryDecision(String idempotencyKey, String entryAttemptId, String payloadHash,
@@ -54,5 +60,12 @@ public class EntryDecision extends BaseEntity {
         this.decisionRevision = decisionRevision;
         this.vehicleId = vehicleId;
         this.sessionId = sessionId;
+    }
+
+    public int resolveExpired(java.time.LocalDateTime resolvedAt) {
+        this.decisionRevision += 1;
+        this.resolution = "REVIEW_EXPIRED";
+        this.resolvedAt = resolvedAt;
+        return this.decisionRevision;
     }
 }

@@ -23,7 +23,7 @@ export const styles = StyleSheet.create({
     minHeight: 76,
     borderRadius: Radius.xl,
     paddingHorizontal: Spacing.md,
-    backgroundColor: Palette.violet600,
+    backgroundColor: Palette.violet300,
   },
   iconBadge: {
     width: 38,
@@ -31,7 +31,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.md,
-    backgroundColor: Palette.white72,
+    backgroundColor: Palette.white,
   },
   textGroup: {
     flex: 1,
@@ -40,15 +40,15 @@ export const styles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: FontWeight.bold,
-    color: Palette.white,
+    color: Palette.gray975,
   },
   subtitle: {
     fontSize: 11,
-    color: Palette.white80,
+    color: Palette.gray700,
   },
   chevron: {
     fontSize: 19,
     lineHeight: 22,
-    color: Palette.white,
+    color: Palette.gray975,
   },
 });

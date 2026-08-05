@@ -107,6 +107,9 @@ def _policy() -> MonitoringPolicy:
         parking_move_confirm_seconds=1.0,
         absence_confirmation_seconds=5.0,
         trusted_sample_max_gap_seconds=1.5,
+        reidentification_max_gap_seconds=1.0,
+        reidentification_min_score=0.42,
+        reidentification_ambiguity_margin=0.08,
         incident_confirm_seconds=0.0,
         incident_clear_seconds=0.0,
         zone_presence_min_overlap_ratio=0.5,
@@ -115,6 +118,13 @@ def _policy() -> MonitoringPolicy:
         bad_parking_min_primary_overlap_ratio=0.75,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
+        motion_window_seconds=0.75,
+        motion_min_observation_span_seconds=0.20,
+        motion_max_sample_gap_seconds=0.50,
+        motion_stationary_threshold=0.03,
+        motion_moving_threshold=0.10,
+        motion_min_samples=3,
+        motion_min_trend_consistency=0.60,
     )
 
 

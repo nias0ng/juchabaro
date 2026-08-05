@@ -250,17 +250,17 @@ class ParkingPipeline:
             previous_episode = self._parking_episode_tracker.active_episode(
                 vehicle.physical_vehicle_id
             )
+            motion_signal, motion_observation = _parking_motion_sample(
+                vehicle,
+                observation,
+            )
             episode = self._parking_episode_tracker.update(
                 physical_vehicle_id=vehicle.physical_vehicle_id,
                 parking_session_id=(
                     None if context is None else context.parking_session_id
                 ),
-                signal=(
-                    vehicle.motion_signal
-                    if observation.state is ObservationState.OBSERVED
-                    else MotionSignal.UNKNOWN
-                ),
-                observation=observation,
+                signal=motion_signal,
+                observation=motion_observation,
                 observed_at=vehicle.observed_at,
                 assignment=assignment,
             )
@@ -626,6 +626,28 @@ def _effective_observation(
     if batch.observation.state is not ObservationState.OBSERVED:
         return batch.observation
     return vehicle.observation
+
+
+def _parking_motion_sample(
+    vehicle: PhysicalVehicleSnapshot,
+    physical_observation: ObservationStatus,
+) -> tuple[MotionSignal, ObservationStatus]:
+    """PhysicalVehicle 관측과 ParkingEpisode motion dependency를 분리한다.
+
+    bbox·identity가 정상이어도 motion history가 부족하거나 상충할 수 있다.
+    이 경우 ZoneVisit과 최신 assignment는 현재 geometry로 계속 평가하되,
+    ParkingEpisode에만 UNKNOWN/DEPENDENCY_UNAVAILABLE을 전달해 timer chain을
+    끊는다. 마지막 신뢰 motion 시각은 tracker가 기존 episode에서 보존한다.
+    """
+
+    if physical_observation.state is not ObservationState.OBSERVED:
+        return MotionSignal.UNKNOWN, physical_observation
+    if vehicle.motion_signal is not MotionSignal.UNKNOWN:
+        return vehicle.motion_signal, physical_observation
+    return MotionSignal.UNKNOWN, ObservationStatus(
+        state=ObservationState.UNKNOWN,
+        reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+    )
 
 
 def _unobserved_observation(

@@ -87,6 +87,10 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
+기존 `.env`를 계속 사용하는 환경은 `.env.example`의 `MOTION_*` 일곱 값을
+명시적으로 추가해야 한다. 이 값들은 provisional이므로 누락 시 코드 기본값으로
+조용히 대체하지 않고 시작 단계에서 설정 오류로 중단한다.
+
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
 `config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
@@ -276,7 +280,7 @@ http://<JETSON_IP>:8000/docs
 
 ## 파일럿 영상 리플레이
 
-§4.7 임계값(`zone_entry_confirm_seconds`, `movement_epsilon`)을 산출하거나
+§4.7 임계값과 MotionEstimator의 시간 창·정규화 evidence 기준을 산출하거나
 회귀를 확인할 때는 녹화된 파일럿 영상을 새 파이프라인에 그대로 흘려보낼 수
 있다.
 
@@ -287,12 +291,23 @@ python -m scripts.replay_pilot_video \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
-    --parking-move-confirm-seconds 3.0 \
+    --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \
     --absence-confirmation-seconds 5.0 \
     --trusted-sample-max-gap-seconds 1.0 \
+    --motion-window-seconds 0.75 \
+    --motion-min-observation-span-seconds 0.20 \
+    --motion-max-sample-gap-seconds 0.50 \
+    --motion-stationary-threshold 0.03 \
+    --motion-moving-threshold 0.10 \
+    --motion-min-samples 3 \
+    --motion-min-trend-consistency 0.60 \
+    --reidentification-max-gap-seconds 4.0 \
+    --reidentification-min-score 0.42 \
+    --reidentification-ambiguity-margin 0.08 \
     --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \
     --bad-parking-min-primary-overlap-ratio 0.75 \
-    --movement-epsilon 0.01 \
+    --blocking-relation-confirm-seconds 1.0 \
+    --blocking-relation-clear-seconds 1.0 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```
@@ -302,6 +317,15 @@ python -m scripts.replay_pilot_video \
 오염된다. 코드에 이미 확립된 기본값이 있는 값(`--entry-zone-min-overlap-ratio`,
 `--incident-confirm-seconds`, `--incident-clear-seconds`,
 `--parking-confirm-seconds`)만 그 값을 재사용한다.
+
+위 PARKED 5.0초와 movement 0.5초는 Pipeline Viewer 판정 테스트의 명시적
+override다. 일반 배포의 PARKED 600초 기본 정책을 변경하지 않는다. 재식별
+세 값도 아직 파일럿 export로 조정해야 하는 `[제안값]`이다.
+MotionEstimator의 일곱 값도 bbox 크기로 정규화한 provisional 기준이며,
+Pipeline Viewer diagnostic export의 signal·reason·지표 분포로 재조정한다.
+`parking-move-confirm-seconds`는 ParkingEpisode timer이고
+`motion-max-sample-gap-seconds`는 motion history 연속성 기준이므로 서로
+대체할 수 없다.
 
 `--zones-file`은 464의 새 구역 정의 snapshot 포맷이어야 한다
 (`zoneDefinitionVersion`/`calibrationReference`/`zones`). `calibrationReference`가

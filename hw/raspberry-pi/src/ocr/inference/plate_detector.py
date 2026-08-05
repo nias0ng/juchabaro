@@ -128,7 +128,7 @@ class YoloPlateDetector:
         *,
         device: str = "cpu",
         imgsz: int = 640,
-        confidence_threshold: float = 0.40,
+        confidence_threshold: float = 0.30,
         max_detections: int = 3,
     ) -> None:
         if not callable(getattr(model, "predict", None)):
@@ -426,7 +426,7 @@ def load_yolo_plate_detector(
     *,
     device: str = "cpu",
     imgsz: int = 640,
-    confidence_threshold: float = 0.40,
+    confidence_threshold: float = 0.30,
     max_detections: int = 3,
     warm_up: bool = True,
 ) -> YoloPlateDetector:

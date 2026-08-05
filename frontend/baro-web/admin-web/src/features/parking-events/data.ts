@@ -1,4 +1,4 @@
-import type { ActionType, EventStatus, EventType } from './api/types';
+import type { ActionType, EventStatus, EventType, RequestType } from './api/types';
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {
   BAD_PARKING: '불법 주차',
@@ -24,6 +24,11 @@ export const ACTION_TYPE_LABELS: Record<ActionType, string> = {
   REMINDER: '재알림 전송',
 };
 
+export const REQUEST_TYPE_LABELS: Record<RequestType, string> = {
+  AUTO: '자동',
+  MANUAL: '수동',
+};
+
 export const EVENT_TYPE_OPTIONS = Object.keys(EVENT_TYPE_LABELS) as EventType[];
 export const EVENT_STATUS_OPTIONS = Object.keys(EVENT_STATUS_LABELS) as EventStatus[];
 export const ACTION_TYPE_OPTIONS = Object.keys(ACTION_TYPE_LABELS) as ActionType[];
@@ -32,12 +37,22 @@ export function eventTypeLabel(type: EventType): string {
   return EVENT_TYPE_LABELS[type];
 }
 
-export function eventStatusLabel(status: EventStatus): string {
+// REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동 이동 요청"/"수동 이동 요청"으로
+// 세분화해서 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은
+// 기존 "이동 요청됨" 문구를 그대로 쓴다.
+export function eventStatusLabel(status: EventStatus, requestType?: RequestType): string {
+  if (status === 'REQUESTED' && requestType) {
+    return `${requestTypeLabel(requestType)} 이동 요청`;
+  }
   return EVENT_STATUS_LABELS[status];
 }
 
 export function actionTypeLabel(action: ActionType): string {
   return ACTION_TYPE_LABELS[action];
+}
+
+export function requestTypeLabel(type: RequestType): string {
+  return REQUEST_TYPE_LABELS[type];
 }
 
 export function typeTone(type: EventType) {
@@ -74,6 +89,15 @@ function toDateString(date: Date): string {
 // yyyy-MM-dd 형식의 로컬 날짜(주로 날짜 필터 기본값과 CSV 파일명에 사용).
 export function todayDateString(): string {
   return toDateString(new Date());
+}
+
+// 관리자 사건 목록 API(GET /api/admin/parking-events)는 date를 안 보내도 "전체 기간"이 아니라
+// 서버가 오늘 하루로 채워서 그 하루치만 돌려준다. 날짜 필터를 고르지 않았을 때 오늘 데이터가
+// 없으면 이 함수로 하루씩 과거로 거슬러 올라가며 데이터가 있는 날을 찾는 데 쓴다.
+export function dateStringDaysAgo(daysAgo: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  return toDateString(date);
 }
 
 // ISO 시각을 yyyy-MM-dd 로컬 날짜로 변환(같은 날짜의 항목만 모아 보여줄 때 사용).

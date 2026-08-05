@@ -40,8 +40,9 @@ class PlatePreprocessError(OcrComponentError, ValueError):
 
 
 _TARGET_HEIGHT = 64
-_PADDING_PERCENT = 5.0
-_CLAHE_CLIP_LIMIT = 2.0
+# Raspberry Pi 실측 burst에서 검증한 잠정값이며, 촬영 데이터가 늘면 재평가한다.
+_PADDING_PERCENT = 0.0
+_CLAHE_CLIP_LIMIT = 0.5
 _CLAHE_TILE_SIZE = (8, 8)
 _BLUR_SIGMA = 1.0
 _SHARPEN_SOURCE_WEIGHT = 1.5

@@ -32,8 +32,6 @@ export function ViolationSummaryCard({ summary }: ViolationSummaryCardProps) {
           <Text style={styles.statValue}>{summary.averageResponseMinutes}분</Text>
         </View>
       </View>
-
-      <Text style={styles.caption}>3개월 내 3회를 넘으면 관리사무소 안내가 발송됩니다.</Text>
     </LinearGradient>
   );
 }

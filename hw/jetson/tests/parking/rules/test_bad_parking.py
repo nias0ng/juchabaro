@@ -75,6 +75,7 @@ def make_episode(
     state: ParkingState,
     *,
     assignment: ParkingAssignment | None = None,
+    observation: ObservationStatus | None = None,
 ) -> ParkingEpisode:
     was_parked = state in {ParkingState.PARKED, ParkingState.MOVE_PENDING}
     durable_assignment = assignment or (
@@ -84,7 +85,7 @@ def make_episode(
         episode_id=ParkingEpisodeId(UUID(int=10)),
         physical_vehicle_id=CAR,
         state=state,
-        observation=observed(),
+        observation=observation or observed(),
         stationary_trusted_seconds=10.0,
         movement_trusted_seconds=0.0,
         parking_confirmation_seconds=10.0,
@@ -139,6 +140,7 @@ def make_context(
     episode_assignment: ParkingAssignment | None = None,
     aisle_visit: ZoneVisit | None = None,
     context_observation: ObservationStatus | None = None,
+    episode_observation: ObservationStatus | None = None,
 ) -> RuleContext:
     status = context_observation or observed()
     vehicle = PhysicalVehicleSnapshot(
@@ -163,7 +165,11 @@ def make_context(
         parking_episode=(
             None
             if episode_state is None
-            else make_episode(episode_state, assignment=episode_assignment)
+            else make_episode(
+                episode_state,
+                assignment=episode_assignment,
+                observation=episode_observation,
+            )
         ),
         parking_assignment=parking_assignment,
         blocking_relations=(),
@@ -306,6 +312,23 @@ def test_move_pending_pauses_all_three_predicates_as_unknown() -> None:
     assert all(
         signal.value is IncidentSignalValue.UNKNOWN
         and signal.confirmable is False
+        for signal in signals.values()
+    )
+
+
+def test_unknown_parking_motion_dependency_pauses_all_three_predicates() -> None:
+    signals = signals_by_rule(
+        make_context(
+            parking_assignment=make_assignment(AssignmentState.ASSIGNED),
+            episode_observation=unknown(),
+        )
+    )
+
+    assert all(
+        signal.value is IncidentSignalValue.UNKNOWN
+        and signal.confirmable is False
+        and signal.evidence["reason"]
+        == "PARKING_MOTION_DEPENDENCY_UNAVAILABLE"
         for signal in signals.values()
     )
 

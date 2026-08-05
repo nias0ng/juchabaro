@@ -15,6 +15,7 @@ from typing import Any
 from src.camera.models import CapturedFrame
 from src.tracking.models import (
     BoundingBox,
+    DetectionObservation,
     TrackerFrameResult,
     TrackObservation,
     TrackSegmentId,
@@ -37,10 +38,18 @@ class UltralyticsVehicleTracker:
 
     실제 Jetson 배치 시에는 `model_path`를 TensorRT `.engine` 가중치로,
     파인튜닝이 끝나면 `ai/training/configs/yolo_vehicle.yaml`로 학습한
-    가중치로 교체한다.
+    가중치로 교체한다. ``capture_detections``는 pre-track 후보를 CPU 값으로
+    복사하는 진단 기능이며 운영 성능에 영향을 주지 않도록 기본은 꺼져 있다.
     """
 
-    def __init__(self, *, model_path: str, tracker_config: str, confidence: float) -> None:
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        tracker_config: str,
+        confidence: float,
+        capture_detections: bool = False,
+    ) -> None:
         if not model_path.strip():
             raise ValueError("model_path must not be empty")
         if not tracker_config.strip():
@@ -50,10 +59,14 @@ class UltralyticsVehicleTracker:
         self._model_path = model_path
         self._tracker_config = tracker_config
         self._confidence = confidence
+        self._capture_detections = capture_detections
         self._model: Any | None = None
         self._library_version = "not-initialized"
         self._known_removed_track_segment_ids: set[TrackSegmentId] = set()
         self._pretrack_detection_count: int | None = None
+        self._pretrack_detections: (
+            tuple[tuple[float, float, float, float, float, int], ...] | None
+        ) = None
 
     @property
     def model_info(self) -> ModelInfo:
@@ -119,6 +132,7 @@ class UltralyticsVehicleTracker:
         # 여기서 다시 변환해야 학습·추론 color order가 같다.
         try:
             self._pretrack_detection_count = None
+            self._pretrack_detections = None
             source_bgr = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
             results = self._model.track(
                 source=source_bgr,
@@ -130,6 +144,10 @@ class UltralyticsVehicleTracker:
             observations = self._to_observations(
                 results=results,
                 frame=frame,
+                image_width=image_width,
+                image_height=image_height,
+            )
+            detections = self._to_detection_observations(
                 image_width=image_width,
                 image_height=image_height,
             )
@@ -147,6 +165,8 @@ class UltralyticsVehicleTracker:
                     projected_observation_count=len(observations),
                 ),
                 ended_track_segment_ids=ended_ids,
+                detection_count=self._pretrack_detection_count,
+                detections=detections,
             )
         except TrackingError:
             raise
@@ -194,10 +214,14 @@ class UltralyticsVehicleTracker:
         return observations
 
     def _capture_pretrack_detection_count(self, predictor: Any) -> None:
-        """Tracker callback 전 YOLO detection 수를 frame-local로 보존한다."""
+        """Tracker callback 전 YOLO detection 진단값을 frame-local로 보존한다."""
 
-        self._pretrack_detection_count = self._result_detection_count(
-            getattr(predictor, "results", None)
+        results = getattr(predictor, "results", None)
+        self._pretrack_detection_count = self._result_detection_count(results)
+        self._pretrack_detections = (
+            self._result_detections(results)
+            if self._capture_detections
+            else None
         )
 
     @staticmethod
@@ -211,6 +235,65 @@ class UltralyticsVehicleTracker:
             return None
         xyxy = getattr(boxes, "xyxy", None)
         return None if xyxy is None else len(xyxy)
+
+    @staticmethod
+    def _result_detections(
+        results: Any,
+    ) -> tuple[tuple[float, float, float, float, float, int], ...] | None:
+        """post-NMS, pre-track YOLO 결과를 라이브러리 비의존 값으로 복사한다."""
+
+        if not results:
+            return ()
+        boxes = getattr(results[0], "boxes", None)
+        if boxes is None:
+            return None
+        xyxy = getattr(boxes, "xyxy", None)
+        confidences = getattr(boxes, "conf", None)
+        class_ids = getattr(boxes, "cls", None)
+        if xyxy is None or confidences is None or class_ids is None:
+            return None
+        return tuple(
+            (
+                float(x1),
+                float(y1),
+                float(x2),
+                float(y2),
+                float(confidence),
+                int(class_id),
+            )
+            for (x1, y1, x2, y2), confidence, class_id in zip(
+                xyxy.tolist(),
+                confidences.tolist(),
+                class_ids.tolist(),
+            )
+        )
+
+    def _to_detection_observations(
+        self,
+        *,
+        image_width: int,
+        image_height: int,
+    ) -> tuple[DetectionObservation, ...]:
+        """보존한 YOLO 후보를 판정에 쓰지 않는 normalized 진단값으로 만든다."""
+
+        if self._pretrack_detections is None:
+            return ()
+        detections: list[DetectionObservation] = []
+        for x1, y1, x2, y2, confidence, class_id in self._pretrack_detections:
+            nx1 = max(0.0, min(1.0, x1 / image_width))
+            ny1 = max(0.0, min(1.0, y1 / image_height))
+            nx2 = max(0.0, min(1.0, x2 / image_width))
+            ny2 = max(0.0, min(1.0, y2 / image_height))
+            if nx2 <= nx1 or ny2 <= ny1:
+                continue
+            detections.append(
+                DetectionObservation(
+                    bbox=BoundingBox(x1=nx1, y1=ny1, x2=nx2, y2=ny2),
+                    confidence=confidence,
+                    class_id=class_id,
+                )
+            )
+        return tuple(detections)
 
     def _all_detections_tracked(
         self,
@@ -264,4 +347,5 @@ class UltralyticsVehicleTracker:
 
         self._model = None
         self._pretrack_detection_count = None
+        self._pretrack_detections = None
         self._known_removed_track_segment_ids.clear()

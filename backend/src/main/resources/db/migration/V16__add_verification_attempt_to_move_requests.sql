@@ -1,0 +1,1 @@
+ALTER TABLE move_requests ADD COLUMN verification_attempt INT NOT NULL DEFAULT 0;

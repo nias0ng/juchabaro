@@ -8,6 +8,7 @@ import type {
 } from '@/features/move-request/api/types';
 import type { RequestListItemDisplay } from '@/features/move-request/components/requests-list/request-list-card';
 import type { RequestListStatus } from '@/features/move-request/components/requests-list/request-status-badge';
+import { toDisplayZoneNumber } from '@/features/parking/utils/parking-zone';
 
 const EVENT_TYPE_LABEL: Record<MoveEventType, string> = {
   BAD_PARKING: '불편 주차',
@@ -57,7 +58,7 @@ export function toRequestDetailDisplay(detail: MoveRequestDetail): RequestDetail
     reasonQuote: detail.event.reason ? `"${detail.event.reason}"` : '',
     violationTypeLabel: EVENT_TYPE_LABEL[detail.event.eventType],
     plateNumber: detail.targetVehicle.plateNumber,
-    location: detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL,
+    location: toDisplayZoneNumber(detail.event.zoneNumber) ?? DEFAULT_LOCATION_LABEL,
     photos: detail.event.images
       .filter((image) => image.imageType === 'PARKING_STATE' || image.imageType === 'REPORT')
       .map((image) => ({ imageId: image.imageId, imageUrl: image.imageUrl })),
@@ -289,8 +290,9 @@ export function maskPlateNumber(plateNumber: string): string {
 export function toRequestListItemDisplay(item: MoveRequestListItem): RequestListItemDisplay {
   const display = toRequestSummaryDisplay(item);
   const status = LIST_STATUS[item.requestStatus];
-  const situationLabel = item.zoneNumber
-    ? `${display.eventTypeLabel} · ${item.zoneNumber}`
+  const displayZone = toDisplayZoneNumber(item.zoneNumber);
+  const situationLabel = displayZone
+    ? `${display.eventTypeLabel} · ${displayZone}`
     : display.eventTypeLabel;
 
   // COMPLETED만 "N분 만에 이동 완료"로 보여주고, NEED_ADMIN/CANCELLED는 기존 상태 문구를 그대로 쓴다.

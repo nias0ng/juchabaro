@@ -28,6 +28,7 @@ export function ViolationListItem({ item }: ViolationListItemProps) {
       <View style={styles.content}>
         <Text style={styles.title}>{item.title}</Text>
         <Text style={styles.meta}>{item.meta}</Text>
+        <Text style={styles.statusDescription}>{item.statusDescription}</Text>
       </View>
 
       <ViolationStatusBadge status={item.status} />

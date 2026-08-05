@@ -27,9 +27,9 @@ export const styles = StyleSheet.create({
 });
 
 export const LEGEND_DOT_COLOR = {
-  occupied: Palette.lilac200,
+  mine: Palette.yellow100,
+  occupied: Palette.violet300,
   empty: Palette.lilac100,
-  ev: Palette.teal100,
-  disabled: Palette.sky100,
-  violation: Palette.peach100,
+  ev: Palette.sky100,
+  disabled: Palette.green100,
 } as const;

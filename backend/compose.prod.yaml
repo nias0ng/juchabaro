@@ -37,6 +37,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
       HW_API_KEY: ${HW_API_KEY}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       UPLOAD_DIR: /app/uploads
       UPLOAD_PUBLIC_URL: https://i15e202.p.ssafy.io/api/images
       TZ: Asia/Seoul

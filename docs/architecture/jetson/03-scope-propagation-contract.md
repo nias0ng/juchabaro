@@ -43,12 +43,35 @@ flowchart TD
 |---|---|---|---|
 | 한 TrackSegment 종료 | EntityResolver가 segment 연결 해제 | 재식별 후보 탐색 | PhysicalVehicle·ZoneVisit·ParkingEpisode·Incident 종료 |
 | tracker reset | 모든 기존 segment 종료 | 새 segment를 PhysicalVehicle에 재연결 | 실제 출차·UNPARKED·RESOLVE |
+| EntityResolver가 한 segment를 `UNRESOLVED` | 해당 segment를 PhysicalVehicle snapshot으로 투영하지 않고 frame observation을 `UNKNOWN / REIDENTIFICATION_UNCERTAIN`으로 둠 | 다음 frame의 전역 1:1 재식별 | 새 PhysicalVehicle 임의 생성, 후보 차량의 부재·EntryMatch·주차·Incident timer 누적 |
+| MotionEstimator가 `UNKNOWN` | 해당 차량의 motion-dependent observation을 `UNKNOWN / DEPENDENCY_UNAVAILABLE`로 두고 ParkingEpisode trusted chain을 끊음 | 충분한 새 bbox·시간 표본으로 motion 재평가 | 정상 bbox·identity를 전체 frame UNKNOWN으로 격하, ZoneVisit·assignment timer 정지, PARKED 의존 Incident를 `NOT_MATCHED`로 clear |
 | camera/pipeline unavailable | 관측 기반 scope를 DEGRADED 또는 UNKNOWN | timer 정지, health 갱신 | 빈 frame을 차량 부재로 해석 |
 | 장기 UNKNOWN | operational health 경고 | 복구 시 다시 관측 | 시간만으로 terminal 전이 |
 | 정상 전체 관측에서 `NOT_PRESENT_CONFIRMED` | `PHYSICAL_VEHICLE_LEFT` 처리 시작 | session 유무와 관계없이 child·Incident 정리 뒤 PhysicalVehicle RETIRED 조건 평가 | 단순 tracker timeout과 동일시 |
 | process restart | TrackSegment 폐기, durable state 복원 | 첫 정상 관측부터 재평가 | downtime을 trusted duration에 합산 |
 
 camera 한 대가 전체 모형을 관측한다는 전제가 성립할 때만 `NOT_PRESENT_CONFIRMED`를 사용할 수 있다. 부분 frame, camera unavailable과 calibration 오류 중에는 사용할 수 없다.
+
+부재와 EntryMatch에 사용할 수 있는 tracking sample의 최소 신뢰 조건은
+`fullAreaObserved && allDetectionsTracked && allIdentitiesResolved`다. 세 값은
+각각 camera/영역, tracker coverage, EntityResolver의 서로 다른 owner 사실이며
+하나의 flag로 합치지 않는다. 하나라도 false이면 이번 wall-clock 간격을 부재와
+EntryMatch trusted timer에 합산하지 않는다. 그중 `allIdentitiesResolved=false`는
+frame observation 자체를 UNKNOWN으로 만들므로 ZoneVisit, ParkingEpisode,
+BlockingRelation과 Incident timer도 함께 멈춘다. 반면 ID가 확정된 차량의 현재
+관측 사실까지 `allDetectionsTracked=false` 하나로 폐기하지 않는다.
+
+motion 신뢰도는 이 frame 전체 신뢰 조건과 별도의 하위 dependency다. 첫 sample,
+최소 sample·관측 span 미충족, 허용 gap 초과와 stationary/moving threshold 사이
+dead band에서는 motion만 UNKNOWN이다. PhysicalVehicle bbox·ZoneVisit·assignment
+geometry는 계속 정상 처리하지만 ParkingEpisode와 PARKED를 필수 입력으로 쓰는
+`BAD_PARKING`·`OUT_OF_ZONE`·`AISLE_BLOCK`은 `UNKNOWN`으로 timer를 멈춘다.
+partial frame, identity unresolved와 process restart는 모든 motion history chain을
+끊는다. 개별 차량의 일시 미관측 frame은 ParkingEpisode trusted chain만 즉시
+끊고 estimator history는 보존하며, 재관측 sample 간격이
+`motionMaxSampleGapSeconds`를 넘을 때 해당 history를 reset한다. 이 허용 gap을
+넘지 않더라도 UNKNOWN 구간의 wall-clock을 ParkingEpisode timer에 소급 누적하지
+않는다.
 
 NOT_PRESENT_CONFIRMED된 차량에 active ContextBinding 또는 행정 종료 뒤 보존한 session–vehicle correlation이 있으면 physicalPresenceState를 `EXITED / JETSON_EXIT_CONFIRMED / FULL_AREA_ABSENCE`로 전환하고 SessionExit을 만들 수 있다. 어느 session과도 연결되지 않아도 `PHYSICAL_VEHICLE_LEFT`로 local child와 Incident를 종료할 수 있다.
 
@@ -88,6 +111,7 @@ ZoneVisit ENDED는 이미 이탈 confirmation을 마친 사실이므로 해당 v
 | 정지 후보 | STOP_PENDING | 필요하면 후보 geometry 계산 | parking rule 후보는 `confirmable=false` | 없음 |
 | PARKED 확정 | PARKED + 안정된 assignment | 차단 후보 평가 가능 | parking rule 평가 | PARKED eligibility 생성 |
 | movement 후보 | MOVE_PENDING | 현재 관계 유지 | 기존 상태 유지 | 없음 |
+| motion 판단 불가 | 현재 lifecycle 유지, observation UNKNOWN·timer 정지 | geometry 관측은 유지하되 motion 의존 전이 금지 | PARKED 의존 규칙은 UNKNOWN, clear 금지 | 없음 |
 | movement 취소 | PARKED 복귀 | 필요하면 재평가 | 필요하면 재평가 | 없음 |
 | movement 확정 | ENDED, assignment 종료 | REEVALUATE | REEVALUATE | UNPARKED |
 | 실제 Session EXIT | ENDED / PHYSICAL_EXIT | 실제 부재 기준 정리 | Session EXIT 경로 적용 | 별도 UNPARKED 없음 |
@@ -199,7 +223,8 @@ durable scope state 복원
 → observation UNKNOWN
 → TrackSegment 새로 생성
 → camera·model 정상 확인
-→ PhysicalVehicle 재식별 또는 NOT_PRESENT_CONFIRMED
+→ durable 재식별 anchor가 있으면 PhysicalVehicle 재식별
+→ anchor가 없으면 identity UNKNOWN을 유지하고, 정상 전체 빈 영역의 absence confirmation만 진행
 → RuleEvaluator 재실행
 ```
 

@@ -1,0 +1,38 @@
+pipeline {
+    agent any
+    tools { nodejs 'node20' }
+    options { disableConcurrentBuilds() }
+    environment {
+        DEPLOY_DIR = '/var/www/admin'
+        VITE_API_BASE_URL = 'https://i15e202.p.ssafy.io'
+    }
+    stages {
+        stage('Install') {
+            steps { dir('frontend/baro-web/admin-web') { sh 'npm ci' } }
+        }
+        stage('Build') {
+            steps {
+                dir('frontend/baro-web/admin-web') {
+                    sh 'echo "VITE_API_BASE_URL=${VITE_API_BASE_URL}" > .env.production'
+                    sh 'npm run build'
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                dir('frontend/baro-web/admin-web') {
+                    sh '''
+                        tar -C dist -cf - . | \
+                        docker run --rm -i \
+                          -v ${DEPLOY_DIR}:/dest \
+                          alpine sh -c "rm -rf /dest/* && mkdir -p /dest && tar -C /dest -xf -"
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success { echo 'Admin web deploy 완료: https://i15e202.p.ssafy.io/admin/' }
+        failure { echo 'Admin web deploy 실패 - 로그 확인' }
+    }
+}

@@ -26,6 +26,7 @@ from src.parking.models import (
 )
 from src.parking.zone_registry import ZoneRegistry
 from src.storage.database import connect_database, open_database
+from src.tracking.entity_resolver import GeometricEntityResolver
 from src.tracking.models import TrackerFrameResult
 from src.tracking.protocols import ModelInfo
 
@@ -103,6 +104,9 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "parking_move_confirm_seconds": 1.0,
         "absence_confirmation_seconds": 5.0,
         "trusted_sample_max_gap_seconds": 1.0,
+        "reidentification_max_gap_seconds": 1.0,
+        "reidentification_min_score": 0.42,
+        "reidentification_ambiguity_margin": 0.08,
         "incident_confirm_seconds": 0.0,
         "incident_clear_seconds": 0.0,
         "zone_presence_min_overlap_ratio": 0.5,
@@ -111,6 +115,13 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "bad_parking_min_primary_overlap_ratio": 0.75,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
+        "motion_window_seconds": 0.75,
+        "motion_min_observation_span_seconds": 0.20,
+        "motion_max_sample_gap_seconds": 0.50,
+        "motion_stationary_threshold": 0.03,
+        "motion_moving_threshold": 0.10,
+        "motion_min_samples": 3,
+        "motion_min_trend_consistency": 0.60,
     }
     values.update(overrides)
     return MonitoringPolicy(**values)
@@ -124,7 +135,7 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     detector = _Detector()
     pipeline = build_monitoring_pipeline(
         zones=_zones(),
-        policy=_policy(),
+        policy=_policy(parking_move_confirm_seconds=0.5),
         dependencies=MonitoringDependencies(
             camera_id="camera-1",
             frame_source=frame_source,
@@ -142,6 +153,42 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
 
     assert frame_source.opened and frame_source.closed
     assert detector.opened and detector.closed
+    assert isinstance(
+        pipeline._tracking_pipeline._entity_resolver,
+        GeometricEntityResolver,
+    )
+    estimator = pipeline._tracking_pipeline._motion_estimator
+    assert estimator._window_seconds == 0.75
+    assert estimator._max_sample_gap_seconds == 0.50
+    assert estimator._stationary_threshold == 0.03
+    assert estimator._moving_threshold == 0.10
+    episode_tracker = (
+        pipeline._frame_workflow._parking_pipeline._parking_episode_tracker
+    )
+    assert episode_tracker._movement_confirmation_seconds == 0.5
+
+
+def test_factory_rejects_reidentification_window_reaching_absence_commit(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-reidentification.db"
+    open_database(database_path).close()
+
+    with pytest.raises(ValueError, match="must be smaller"):
+        build_monitoring_pipeline(
+            zones=_zones(),
+            policy=_policy(
+                absence_confirmation_seconds=5.0,
+                reidentification_max_gap_seconds=5.0,
+            ),
+            dependencies=MonitoringDependencies(
+                camera_id="camera-1",
+                frame_source=_FrameSource(),
+                detector=_Detector(),
+                publication_preparer=_PublicationPreparer(),
+                connection_factory=lambda: connect_database(database_path),
+            ),
+        )
 
 
 def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> None:
@@ -176,6 +223,29 @@ def test_factory_rejects_bad_parking_overlap_below_assignment_overlap(
             policy=_policy(
                 assignment_min_overlap_ratio=0.5,
                 bad_parking_min_primary_overlap_ratio=0.49,
+            ),
+            dependencies=MonitoringDependencies(
+                camera_id="camera-1",
+                frame_source=_FrameSource(),
+                detector=_Detector(),
+                publication_preparer=_PublicationPreparer(),
+                connection_factory=lambda: connect_database(database_path),
+            ),
+        )
+
+
+def test_factory_delegates_invalid_motion_policy_to_motion_owner(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-motion.db"
+    open_database(database_path).close()
+
+    with pytest.raises(ValueError, match="stationary_threshold"):
+        build_monitoring_pipeline(
+            zones=_zones(),
+            policy=_policy(
+                motion_stationary_threshold=0.10,
+                motion_moving_threshold=0.10,
             ),
             dependencies=MonitoringDependencies(
                 camera_id="camera-1",

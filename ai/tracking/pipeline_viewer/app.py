@@ -61,7 +61,8 @@ def _render_policy_inputs() -> ViewerPolicy:
     with st.expander("Monitoring / tracker 설정", expanded=False):
         st.caption(
             "모든 값은 실제 MonitoringPolicy와 adapter에 그대로 전달됩니다. "
-            "1.0초 blocking 값 등 실측 전 값은 provisional입니다."
+            "PARKED 5초·movement 0.5초는 Viewer 판정 테스트 override이며, "
+            "motion·blocking 등 실측 전 값은 provisional입니다."
         )
         columns = st.columns(4)
         zone_entry = columns[0].number_input(
@@ -89,6 +90,26 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
         incident_clear = columns[3].number_input(
             "Incident clear (s)", min_value=0.0, value=defaults.incident_clear_seconds
+        )
+
+        columns = st.columns(4)
+        reidentification_gap = columns[0].number_input(
+            "Re-ID max gap (s)",
+            min_value=0.001,
+            value=defaults.reidentification_max_gap_seconds,
+            help="이 시간 안의 끊긴 TrackSegment만 같은 PhysicalVehicle 후보로 봅니다.",
+        )
+        reidentification_score = columns[1].number_input(
+            "Re-ID min score",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.reidentification_min_score,
+        )
+        reidentification_margin = columns[2].number_input(
+            "Re-ID ambiguity margin",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.reidentification_ambiguity_margin,
         )
 
         columns = st.columns(4)
@@ -125,17 +146,73 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
 
         columns = st.columns(4)
-        movement_epsilon = columns[0].number_input(
-            "Movement epsilon", min_value=0.0, value=defaults.movement_epsilon, format="%.4f"
+        motion_window = columns[0].number_input(
+            "Motion window (s)",
+            min_value=0.001,
+            value=defaults.motion_window_seconds,
+        )
+        motion_min_span = columns[1].number_input(
+            "Motion min span (s)",
+            min_value=0.001,
+            value=defaults.motion_min_observation_span_seconds,
+        )
+        motion_max_gap = columns[2].number_input(
+            "Motion max sample gap (s)",
+            min_value=0.001,
+            value=defaults.motion_max_sample_gap_seconds,
+            help=(
+                "MotionEstimator history의 연속성 기준입니다. "
+                "Parking move confirm 시간과는 다른 값입니다."
+            ),
+        )
+        motion_min_samples = int(
+            columns[3].number_input(
+                "Motion min samples",
+                min_value=3,
+                step=1,
+                value=defaults.motion_min_samples,
+            )
         )
 
-        confidence = columns[1].number_input(
-            "YOLO confidence", min_value=0.0, max_value=1.0, value=defaults.confidence
+        columns = st.columns(4)
+        motion_stationary = columns[0].number_input(
+            "Motion stationary threshold",
+            min_value=0.0001,
+            value=defaults.motion_stationary_threshold,
+            format="%.4f",
+            help="차량 bbox median diagonal 대비 정규화 이동량입니다.",
         )
-        remap_balance = columns[2].number_input(
+        motion_moving = columns[1].number_input(
+            "Motion moving threshold",
+            min_value=0.0001,
+            value=defaults.motion_moving_threshold,
+            format="%.4f",
+            help="stationary threshold보다 커야 하며 중간 영역은 UNKNOWN입니다.",
+        )
+        motion_consistency = columns[2].number_input(
+            "Motion trend consistency",
+            min_value=0.0001,
+            max_value=1.0,
+            value=defaults.motion_min_trend_consistency,
+            format="%.4f",
+        )
+
+        confidence = columns[3].number_input(
+            "YOLO confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.confidence,
+            format="%.4f",
+            help=(
+                "진단용 provisional 기본값입니다. 낮출수록 export에 더 많은 "
+                "post-threshold 후보가 남지만 오탐과 처리시간도 증가합니다."
+            ),
+        )
+        columns = st.columns(4)
+        remap_balance = columns[0].number_input(
             "Remap balance", min_value=0.0, max_value=1.0, value=defaults.remap_balance
         )
-        tracker_config = columns[3].text_input(
+        tracker_config = columns[1].text_input(
             "Tracker config", value=defaults.tracker_config
         )
 
@@ -147,6 +224,9 @@ def _render_policy_inputs() -> ViewerPolicy:
         parking_move_confirm_seconds=parking_move,
         absence_confirmation_seconds=absence,
         trusted_sample_max_gap_seconds=trusted_gap,
+        reidentification_max_gap_seconds=reidentification_gap,
+        reidentification_min_score=reidentification_score,
+        reidentification_ambiguity_margin=reidentification_margin,
         incident_confirm_seconds=incident_confirm,
         incident_clear_seconds=incident_clear,
         zone_presence_min_overlap_ratio=zone_overlap,
@@ -156,7 +236,13 @@ def _render_policy_inputs() -> ViewerPolicy:
         blocking_relation_confirm_seconds=blocking_confirm,
         blocking_relation_clear_seconds=blocking_clear,
         entry_match_window_seconds=match_window,
-        movement_epsilon=movement_epsilon,
+        motion_window_seconds=motion_window,
+        motion_min_observation_span_seconds=motion_min_span,
+        motion_max_sample_gap_seconds=motion_max_gap,
+        motion_stationary_threshold=motion_stationary,
+        motion_moving_threshold=motion_moving,
+        motion_min_samples=motion_min_samples,
+        motion_min_trend_consistency=motion_consistency,
         confidence=confidence,
         tracker_config=tracker_config,
         remap_balance=remap_balance,

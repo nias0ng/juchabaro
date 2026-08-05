@@ -175,6 +175,7 @@ class _Boxes:
             dtype=float,
         )
         self.conf = np.asarray([0.9 for _ in range(detection_count)], dtype=float)
+        self.cls = np.asarray([0.0 for _ in range(detection_count)], dtype=float)
 
 
 class _Result:
@@ -248,6 +249,7 @@ def test_visible_result_is_normalized_without_inventing_segment_end():
         model_path="unused.pt",
         tracker_config="bytetrack.yaml",
         confidence=0.5,
+        capture_detections=True,
     )
     _attach_model(tracker, _SuccessfulModel(track_ids=(7,)))
 
@@ -257,6 +259,29 @@ def test_visible_result_is_normalized_without_inventing_segment_end():
     assert result.observations[0].track_segment_id == TrackSegmentId(7)
     assert result.all_detections_tracked is True
     assert result.ended_track_segment_ids == ()
+    assert result.detection_count == 1
+    assert len(result.detections) == 1
+    assert result.detections[0].confidence == pytest.approx(0.9)
+    assert result.detections[0].class_id == 0
+    assert result.detections[0].bbox.x1 == pytest.approx(0.1)
+    assert result.detections[0].bbox.y1 == pytest.approx(0.2)
+    assert result.detections[0].bbox.x2 == pytest.approx(0.3)
+    assert result.detections[0].bbox.y2 == pytest.approx(0.4)
+
+
+def test_pretrack_detection_payload_capture_is_opt_in():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+    _attach_model(tracker, _SuccessfulModel(track_ids=(7,)))
+
+    result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
+
+    assert result.detection_count == 1
+    assert result.detections == ()
+    assert result.all_detections_tracked is True
 
 
 def test_empty_visible_result_without_bytetrack_removal_is_not_segment_end():
@@ -279,6 +304,7 @@ def test_tentative_detection_without_track_id_marks_frame_untrusted():
         model_path="unused.pt",
         tracker_config="bytetrack.yaml",
         confidence=0.5,
+        capture_detections=True,
     )
     _attach_model(
         tracker,
@@ -292,6 +318,8 @@ def test_tentative_detection_without_track_id_marks_frame_untrusted():
     ) == (TrackSegmentId(7),)
     assert result.all_detections_tracked is False
     assert result.ended_track_segment_ids == ()
+    assert result.detection_count == 2
+    assert len(result.detections) == 2
 
 
 def test_non_detect_result_shape_marks_frame_untrusted():
@@ -310,6 +338,7 @@ def test_non_detect_result_shape_marks_frame_untrusted():
         model_path="unused.pt",
         tracker_config="bytetrack.yaml",
         confidence=0.5,
+        capture_detections=True,
     )
     _attach_model(tracker, _ModelWithMissingBoxes(track_ids=()))
 
@@ -317,6 +346,8 @@ def test_non_detect_result_shape_marks_frame_untrusted():
 
     assert result.observations == ()
     assert result.all_detections_tracked is False
+    assert result.detection_count is None
+    assert result.detections == ()
 
 
 def test_unprojectable_tracked_box_marks_frame_untrusted():

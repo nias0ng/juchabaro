@@ -108,7 +108,7 @@ function handleReminderClick() {
   <div class="detail-header">
     <h3>사건 상세</h3>
     <StatusTag :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
-      {{ detail ? eventStatusLabel(detail.eventStatus) : '-' }}
+      {{ detail ? eventStatusLabel(detail.eventStatus, detail.requestType) : '-' }}
     </StatusTag>
   </div>
 

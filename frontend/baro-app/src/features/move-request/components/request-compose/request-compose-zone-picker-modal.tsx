@@ -1,9 +1,9 @@
-import { Modal, Pressable, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { ParkingLegend } from '@/features/parking/components/parking-legend';
 import { ParkingSpotMap } from '@/features/parking/components/parking-spot-map';
 import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
-import { toParkingStatusDisplay } from '@/features/parking/utils/parking-zone';
+import { toParkingStatusDisplay, type ParkingFloorKey } from '@/features/parking/utils/parking-zone';
 import { Palette } from '@/styles';
 
 import { styles } from './request-compose-zone-picker-modal.styles';
@@ -14,10 +14,13 @@ type RequestComposeZonePickerModalProps = {
   onSelectSpot: (spotCode: string) => void;
 };
 
-/** "차량 구역"의 "선택"을 누르면 뜨는 팝업. 홈 화면 주차 현황 카드와 같은 지도에서 자리를 골라 고른다. */
+// 홈 화면 주차 현황 카드와 동일하게, 지금은 지하 1층 하나만 지원한다(구역 API에 층 정보가 없음).
+const ZONE_FLOOR: ParkingFloorKey = 'B1';
+
+/** "차량 구역"의 "선택"을 누르면 뜨는 팝업. 홈 화면 주차 현황 카드와 같은 실제 층 배치 지도에서 자리를 골라 고른다. */
 export function RequestComposeZonePickerModal({ visible, onClose, onSelectSpot }: RequestComposeZonePickerModalProps) {
   const { summary, isLoading, error } = useParkingZoneSummary();
-  const status = summary ? toParkingStatusDisplay(summary, []) : null;
+  const status = summary ? toParkingStatusDisplay(summary, [], ZONE_FLOOR) : null;
 
   const message = isLoading
     ? '주차 현황을 불러오는 중입니다'
@@ -40,16 +43,23 @@ export function RequestComposeZonePickerModal({ visible, onClose, onSelectSpot }
 
           <Text style={styles.subtitle}>차량이 있는 자리를 눌러 주세요.</Text>
 
-          <ParkingSpotMap cells={status?.cells ?? []} message={message} onPressCell={onSelectSpot} />
+          <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
+            <ParkingSpotMap
+              cells={status?.cells ?? []}
+              message={message}
+              onPressCell={onSelectSpot}
+              floor={ZONE_FLOOR}
+            />
 
-          <ParkingLegend
-            items={[
-              { label: '주차 중', color: Palette.violet300 },
-              { label: '비어 있음', color: Palette.gray100 },
-              { label: '충전구역', color: Palette.teal100 },
-              { label: '장애인구역', color: Palette.sky100 },
-            ]}
-          />
+            <ParkingLegend
+              items={[
+                { label: '주차 중', color: Palette.violet300 },
+                { label: '비어 있음', color: Palette.gray100 },
+                { label: '충전구역', color: Palette.teal100 },
+                { label: '장애인구역', color: Palette.sky100 },
+              ]}
+            />
+          </ScrollView>
         </View>
       </View>
     </Modal>

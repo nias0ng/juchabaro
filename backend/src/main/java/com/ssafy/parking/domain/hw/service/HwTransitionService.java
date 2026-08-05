@@ -5,6 +5,7 @@ import com.ssafy.parking.common.exception.ErrorCode;
 import com.ssafy.parking.domain.hw.dto.HwExitRequest;
 import com.ssafy.parking.domain.hw.dto.HwPublicationAck;
 import com.ssafy.parking.domain.hw.dto.HwTransitionRequest;
+import com.ssafy.parking.domain.hw.outbox.SessionContextNotifier;
 import com.ssafy.parking.domain.parking.entity.ParkingSession;
 import com.ssafy.parking.domain.parking.entity.ParkingZone;
 import com.ssafy.parking.domain.parking.repository.ParkingSessionRepository;
@@ -27,6 +28,7 @@ public class HwTransitionService {
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingZoneRepository parkingZoneRepository;
     private final InboundIdempotencyService inboundIdempotencyService;
+    private final SessionContextNotifier sessionContextNotifier;
 
     @Transactional
     public HwPublicationAck handleTransition(String idempotencyKey, HwTransitionRequest req) {
@@ -78,6 +80,7 @@ public class HwTransitionService {
             result = "ALREADY_APPLIED";
         } else {
             session.markExit(toKstLocal(req.occurredAt()));
+            sessionContextNotifier.publish(session, "CLOSED");
             result = "APPLIED";
         }
 
