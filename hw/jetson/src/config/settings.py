@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     tof_boot_settle_seconds: float
     tof_io_timeout_seconds: float
 
+    # ToF 점유 runtime의 zone 결속, polling 및 상태 확정 정책.
+    # 환경변수 parsing만 담당하며 의미 검증은 factory와 각 domain owner가 한다.
+    tof_disabled_zone_id: int
+    tof_ev_charging_zone_id: int
+    tof_poll_interval_seconds: float
+    tof_enter_distance_mm: float
+    tof_exit_distance_mm: float
+    tof_enter_confirm_seconds: float
+    tof_exit_confirm_seconds: float
+    tof_trusted_sample_max_gap_seconds: float
+    tof_stale_after_seconds: float
+
     # Jetson local durable state. 요청 thread와 tracking worker는 각자
     # connection을 열고 SQLite file만 공유한다.
     database_path: Path
