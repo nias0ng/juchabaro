@@ -47,6 +47,10 @@ pipeline {
                         string(
                             credentialsId: 'parking-prod-hw-api-key',
                             variable: 'HW_API_KEY'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-internal-api-key',
+                            variable: 'INTERNAL_API_KEY'
                         )
                     ]) {
                     dir('backend') {
