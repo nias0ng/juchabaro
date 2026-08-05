@@ -65,10 +65,10 @@ export function useRequestDetailViewModel(
   const isOverdueWaiting = isWaiting && countdown.isOverdue;
   const showWaitingView = isWaiting && !isOverdueWaiting && !showDetail;
   const showOverdueView = isOverdueWaiting && !showDetail;
-  // 받은 사람은 마지막 재알림 이후에도 응답할 수 있어야 하므로 기존 응답 화면을 유지한다.
-  // 보낸 사람은 같은 상태에서 관리자 이관까지 남은 시간과 진행 기록을 읽기 전용으로 본다.
+  // 받은 사람은 무응답 재알림 이후에도 응답할 수 있어야 하고, 이관 완료 뒤에는
+  // 응답 버튼 없는 기존 상세 화면에서 이관 안내를 본다. 보낸 사람만 이관 타임라인을 유지한다.
   const showEscalationView =
-    isNeedAdmin ||
+    (viewMode === 'requester' && isNeedAdmin) ||
     isReminderSentOverdue ||
     (viewMode === 'requester' && isReminderSentNoResponse);
 
