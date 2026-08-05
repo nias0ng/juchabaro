@@ -1,17 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { CheckCircle2, Eye } from '@lucide/vue'
+import { CheckCircle2 } from '@lucide/vue'
 
 import StatusTag from '@/components/ui/StatusTag.vue'
-import {
-  eventStatusLabel,
-  eventTypeLabel,
-  formatDateTime,
-  formatEventId,
-  requestStatusDescription,
-  statusTone,
-  typeTone,
-} from '@/features/parking-events/data'
+import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, statusTone, typeTone } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
 // 사건 목록(아래쪽 "사건 상세" 패널)과 사건 상세 페이지가 완전히 동일한 내용(상태 배지,
@@ -57,7 +49,7 @@ const detailFields = computed(() => {
 
 const memoText = ref('')
 const actionError = ref<string | null>(null)
-const submitting = ref<'complete' | 'acknowledge' | null>(null)
+const submitting = ref<'complete' | null>(null)
 
 // 다른 사건으로 바뀌면(선택 행 변경, 라우트 파라미터 변경 등) 이전에 쓰던 메모나 에러가 새
 // 사건에 잘못 남지 않도록 비운다.
@@ -74,7 +66,7 @@ const sortedActionLogs = computed(() =>
   [...(detail.value?.actionLogs ?? [])].sort((a, b) => (a.actedAt < b.actedAt ? 1 : -1)),
 )
 
-async function runAction(kind: 'complete' | 'acknowledge', run: () => Promise<void>) {
+async function runAction(kind: 'complete', run: () => Promise<void>) {
   submitting.value = kind
   actionError.value = null
   try {
@@ -92,18 +84,15 @@ function handleCompleteClick() {
   if (!memo) return
   void runAction('complete', () => parkingEventStore.completeEvent(props.eventId, memo))
 }
-
-function handleAcknowledgeClick() {
-  const memo = memoText.value.trim()
-  if (!memo) return
-  void runAction('acknowledge', () => parkingEventStore.acknowledgeEvent(props.eventId, memo))
-}
 </script>
 
 <template>
   <div class="detail-header">
     <h3>사건 상세</h3>
-    <StatusTag :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
+    <span v-if="detail && (detail.eventStatus === 'REQUESTED' || detail.eventStatus === 'RESOLVED')">
+      {{ eventStatusLabel(detail.eventStatus, detail.requestType) }}
+    </span>
+    <StatusTag v-else :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
       {{ detail ? eventStatusLabel(detail.eventStatus, detail.requestType) : '-' }}
     </StatusTag>
   </div>
@@ -136,13 +125,6 @@ function handleAcknowledgeClick() {
       </div>
     </div>
 
-    <hr class="divider">
-
-    <div class="admin-check-section">
-      <p class="admin-check-label">관리자 확인 내용</p>
-      <p class="admin-check-value">{{ requestStatusDescription(detail.requestStatus) }}</p>
-    </div>
-
     <div class="memo-section">
       <label class="memo-label" :for="`event-memo-${eventId}`">처리 메모</label>
       <textarea
@@ -150,18 +132,10 @@ function handleAcknowledgeClick() {
         v-model="memoText"
         class="memo-input"
         rows="2"
-        placeholder="완료 처리, 오탐 처리 또는 관리자 확인 사유를 입력하세요."
+        placeholder="완료 처리 사유를 입력하세요."
       />
       <p v-if="actionError" class="action-error">{{ actionError }}</p>
       <div class="memo-actions">
-        <button
-          type="button"
-          class="outline-btn"
-          :disabled="isTerminal || !memoText.trim() || submitting !== null"
-          @click="handleAcknowledgeClick"
-        >
-          <Eye :size="16" /> 관리자 확인
-        </button>
         <button
           type="button"
           class="primary-btn"
@@ -285,61 +259,23 @@ function handleAcknowledgeClick() {
   object-fit: cover;
 }
 
-.divider {
-  margin: 20px 0 0;
-  border: none;
-  border-top: 1px solid var(--panel-border);
-}
-
-.admin-check-section {
-  margin-top: var(--spacing-base);
-}
-
-.admin-check-label {
-  margin-bottom: 4px;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-}
-
-.admin-check-value {
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.outline-btn,
 .primary-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-sm);
   flex-shrink: 0;
+  border: none;
   border-radius: var(--radius-md);
   padding: var(--spacing-sm) var(--spacing-base);
   font-size: var(--font-size-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.outline-btn {
-  border: 1px solid var(--panel-border);
-  background: none;
-  color: inherit;
-  transition: background-color 0.15s ease;
-}
-
-.outline-btn:hover:not(:disabled) {
-  background: var(--panel-muted);
-}
-
-.primary-btn {
-  border: none;
   font-weight: 600;
+  white-space: nowrap;
   background: var(--panel-primary);
   color: var(--panel-on-primary);
   box-shadow: var(--panel-shadow-pop);
+  cursor: pointer;
 }
 
-.outline-btn:disabled,
 .primary-btn:disabled {
   opacity: 0.4;
   cursor: default;

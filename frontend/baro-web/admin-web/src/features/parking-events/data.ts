@@ -47,12 +47,12 @@ export function eventTypeLabel(type: EventType): string {
   return EVENT_TYPE_LABELS[type];
 }
 
-// REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동 이동 요청"/"수동 이동 요청"으로
-// 세분화해서 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은
-// 기존 "이동 요청됨" 문구를 그대로 쓴다.
+// REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동"/"수동"으로 세분화해서
+// 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은 기존
+// "이동 요청됨" 문구를 그대로 쓴다.
 export function eventStatusLabel(status: EventStatus, requestType?: RequestType): string {
   if (status === 'REQUESTED' && requestType) {
-    return `${requestTypeLabel(requestType)} 이동 요청`;
+    return requestTypeLabel(requestType);
   }
   return EVENT_STATUS_LABELS[status];
 }
@@ -71,12 +71,14 @@ export function requestStatusDescription(status: RequestStatus | null): string {
 }
 
 export function typeTone(type: EventType) {
-  if (type === 'DISABLED_ZONE_VIOLATION') return 'primary' as const;
-  if (type === 'EV_OVERSTAY') return 'success' as const;
+  if (type === 'DISABLED_ZONE_VIOLATION') return 'success' as const;
+  if (type === 'EV_OVERSTAY') return 'sky' as const;
   if (type === 'ETC') return 'neutral' as const;
   return 'danger' as const;
 }
 
+// REQUESTED 상태(자동/수동)는 배지 없이 일반 텍스트로 보여줘서 이 함수가 호출되지 않는다
+// (ParkingEventListView.vue, EventDetailCard.vue 참고). 그 외 상태만 배지 톤을 정한다.
 export function statusTone(status: EventStatus) {
   if (status === 'RESOLVED') return 'success' as const;
   if (status === 'DISMISSED') return 'neutral' as const;

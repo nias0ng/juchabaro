@@ -1,29 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import {
-  Bell,
-  CheckCircle2,
-  ChevronDown,
-  Crosshair,
-  Download,
-  Eye,
-  Search,
-} from '@lucide/vue'
+import { CheckCircle2, ChevronDown, Download, Search } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import AppPagination from '@/components/ui/AppPagination.vue'
-import type { ActionType, AdminHistoryItem } from '@/features/parking-events/api/types'
-import {
-  ACTION_TYPE_OPTIONS,
-  actionTone,
-  actionTypeLabel,
-  formatDateTime,
-  localDateString,
-  todayDateString,
-} from '@/features/parking-events/data'
+import type { AdminHistoryItem } from '@/features/parking-events/api/types'
+import { actionTone, actionTypeLabel, formatDateTime, localDateString, todayDateString } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
 const PAGE_SIZE = 10
@@ -36,13 +21,6 @@ const COLUMN_WIDTHS = [71, 66, 85, 100, 71, 150]
 // 창이 좁아 남는 공간이 이 값보다 작아지면(메모가 읽을 수 없이 눌리는 대신) 표 전체가
 // 넘치면서 가로 스크롤로 전환된다.
 const MEMO_MIN_WIDTH = 200
-
-const SUMMARY_ICONS: Record<ActionType, typeof CheckCircle2> = {
-  COMPLETE: CheckCircle2,
-  DISMISS: Crosshair,
-  REMINDER: Bell,
-  ACKNOWLEDGE: Eye,
-}
 
 function exportRowsToCsv(rows: AdminHistoryItem[], dateRange: { start: string; end: string }) {
   const headers = ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']
@@ -79,10 +57,9 @@ function exportRowsToCsv(rows: AdminHistoryItem[], dateRange: { start: string; e
   URL.revokeObjectURL(url)
 }
 
-type DropdownName = 'date' | 'type'
+type DropdownName = 'date'
 
 const dateRange = ref({ start: todayDateString(), end: todayDateString() })
-const typeFilter = ref<ActionType | null>(null)
 const query = ref('')
 const page = ref(1)
 
@@ -94,12 +71,11 @@ function loadHistory() {
   void parkingEventStore.fetchHistory({
     startDate: dateRange.value.start,
     endDate: dateRange.value.end,
-    actionType: typeFilter.value ?? undefined,
     size: FETCH_SIZE,
   })
 }
 
-watch([dateRange, typeFilter], () => {
+watch(dateRange, () => {
   page.value = 1
   loadHistory()
 }, { immediate: true, deep: true })
@@ -119,16 +95,6 @@ const filteredRows = computed(() => {
     return car.includes(q) || eventId.includes(q)
   })
 })
-
-const summary = computed(() =>
-  ACTION_TYPE_OPTIONS.map((type) => ({
-    type,
-    label: actionTypeLabel(type),
-    value: parkingEventStore.history.filter((r) => r.actionType === type).length,
-    icon: SUMMARY_ICONS[type],
-    tone: actionTone(type),
-  })),
-)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
 // 필터가 바뀌어 결과 수가 줄면 이미 지나간 페이지 번호가 남아있을 수 있어 화면에는
@@ -154,32 +120,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
           <input v-model="dateRange.start" type="date">
           <span class="tilde">~</span>
           <input v-model="dateRange.end" type="date">
-        </div>
-      </div>
-
-      <div class="dropdown-wrap">
-        <button type="button" class="chip" :class="{ active: !!typeFilter }" @click="toggleDropdown('type')">
-          {{ typeFilter ? actionTypeLabel(typeFilter) : '처리 유형' }} <ChevronDown :size="14" />
-        </button>
-        <div v-if="openDropdown === 'type'" class="dropdown-menu">
-          <button
-            type="button"
-            class="dropdown-item"
-            :class="{ selected: typeFilter === null }"
-            @click="typeFilter = null; openDropdown = null"
-          >
-            전체
-          </button>
-          <button
-            v-for="opt in ACTION_TYPE_OPTIONS"
-            :key="opt"
-            type="button"
-            class="dropdown-item"
-            :class="{ selected: typeFilter === opt }"
-            @click="typeFilter = opt; openDropdown = null"
-          >
-            {{ actionTypeLabel(opt) }}
-          </button>
         </div>
       </div>
 
@@ -243,21 +183,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
       </section>
 
       <div class="side-col">
-        <section class="panel summary-panel">
-          <h3>이력 요약</h3>
-          <div class="summary-grid">
-            <div v-for="s in summary" :key="s.type" class="summary-card">
-              <div class="summary-head">
-                <span class="summary-icon" :class="`tone-${s.tone}`">
-                  <component :is="s.icon" :size="16" />
-                </span>
-                <p class="summary-label">{{ s.label }}</p>
-              </div>
-              <p class="summary-value">{{ s.value }}<span class="summary-unit">건</span></p>
-            </div>
-          </div>
-        </section>
-
         <section class="panel timeline-panel">
           <div class="timeline-header">
             <h3>활동 타임라인</h3>
@@ -315,13 +240,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   cursor: pointer;
 }
 
-.chip.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 500;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -356,27 +274,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
 
 .tilde {
   color: var(--panel-muted-foreground);
-}
-
-.dropdown-item {
-  display: block;
-  width: 100%;
-  border: none;
-  background: none;
-  border-radius: 6px;
-  padding: 6px var(--spacing-base);
-  text-align: left;
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-}
-
-.dropdown-item:hover {
-  background: var(--panel-muted);
-}
-
-.dropdown-item.selected {
-  color: var(--panel-primary);
-  font-weight: 600;
 }
 
 .search-box {
@@ -516,80 +413,8 @@ td {
   gap: var(--spacing-lg);
 }
 
-.summary-panel,
 .timeline-panel {
   padding: var(--spacing-lg);
-}
-
-.summary-panel h3 {
-  margin-bottom: var(--spacing-md);
-  font-size: var(--font-size-lg);
-  font-weight: 700;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: var(--spacing-md);
-}
-
-.summary-card {
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-md);
-}
-
-.summary-head {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.summary-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-}
-
-.summary-icon.tone-info {
-  background: var(--panel-info-soft);
-  color: var(--panel-info);
-}
-
-.summary-icon.tone-primary {
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-}
-
-.summary-icon.tone-success {
-  background: var(--panel-success-soft);
-  color: var(--panel-success);
-}
-
-.summary-icon.tone-neutral {
-  background: var(--panel-muted);
-  color: var(--panel-muted-foreground);
-}
-
-.summary-label {
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.summary-value {
-  margin-top: var(--spacing-sm);
-  font-size: var(--font-size-xl);
-  font-weight: 800;
-}
-
-.summary-unit {
-  margin-left: 4px;
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: var(--panel-muted-foreground);
 }
 
 .timeline-header {

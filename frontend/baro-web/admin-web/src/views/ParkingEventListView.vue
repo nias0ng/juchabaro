@@ -31,7 +31,7 @@ const PAGE_SIZE = 10
 const FETCH_SIZE = 200
 
 function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
-  const headers = ['ID', '차량 번호', '유형', '위치', '발생 시간', '상태', '날짜']
+  const headers = ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '날짜']
   const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
   // 날짜를 선택하지 않았으면(전체 조회) 행마다 실제 발생 날짜를 넣고, 선택했으면 필터 날짜를 그대로 쓴다.
   // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
@@ -41,10 +41,10 @@ function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
       [
         `#${r.eventId}`,
         r.plateNumber,
+        eventStatusLabel(r.eventStatus, r.requestType),
         eventTypeLabel(r.eventType),
         r.zoneNumber ?? '-',
         formatTime(r.detectedAt),
-        eventStatusLabel(r.eventStatus, r.requestType),
         `'${dateFilter ?? localDateString(r.detectedAt)}`,
       ].map(escapeCsv).join(','),
     ),
@@ -71,6 +71,14 @@ const typeFilter = ref<EventType | null>(null)
 const dateFilter = ref<string | null>(null)
 const carQuery = ref('')
 const page = ref(1)
+// "관리자 확인 필요"는 사건 상태(eventStatus)가 아니라 이동요청 상태(requestStatus)에 실리는
+// 값이고, 목록 API 쿼리 파라미터에는 requestStatus 필터가 없어 서버에 요청할 수 없다. 그래서
+// 다른 필터와 달리 이미 받아온 목록을 filteredRows에서 화면단에서 걸러내는 방식으로 둔다.
+const needAdminOnly = ref(false)
+
+function toggleNeedAdminOnly() {
+  needAdminOnly.value = !needAdminOnly.value
+}
 
 const parkingEventStore = useParkingEventStore()
 
@@ -96,8 +104,10 @@ const selectedRow = computed(
 
 const filteredRows = computed(() => {
   const query = carQuery.value.trim().replaceAll(' ', '')
-  if (!query) return parkingEventStore.events
-  return parkingEventStore.events.filter((r) => r.plateNumber.replaceAll(' ', '').includes(query))
+  let rows = parkingEventStore.events
+  if (query) rows = rows.filter((r) => r.plateNumber.replaceAll(' ', '').includes(query))
+  if (needAdminOnly.value) rows = rows.filter((r) => r.requestStatus === 'NEED_ADMIN')
+  return rows
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
@@ -109,15 +119,6 @@ const pagedRows = computed(() =>
 )
 const rangeStart = computed(() => (filteredRows.value.length === 0 ? 0 : (safePage.value - 1) * PAGE_SIZE + 1))
 const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRows.value.length))
-
-// "관리자 확인" 버튼: 켜면 상태 필터를 NEED_ADMIN으로 고정해 관리자 확인이 필요한 사건만
-// 보여주고, 상태 드롭다운은 그동안 손대지 못하게 비활성화한다. 끄면 전체 상태로 되돌린다.
-const needAdminOnly = ref(false)
-
-function toggleNeedAdminOnly() {
-  needAdminOnly.value = !needAdminOnly.value
-  statusFilter.value = needAdminOnly.value ? 'NEED_ADMIN' : null
-}
 </script>
 
 <template>
@@ -132,7 +133,6 @@ function toggleNeedAdminOnly() {
               type="button"
               class="chip"
               :class="{ active: !!statusFilter }"
-              :disabled="needAdminOnly"
               @click="toggleDropdown('status')"
             >
               {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
@@ -235,7 +235,7 @@ function toggleNeedAdminOnly() {
             <table>
               <thead>
                 <tr>
-                  <th v-for="h in ['ID', '차량 번호', '유형', '위치', '발생 시간', '상태', '조치']" :key="h">
+                  <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
                     {{ h }}
                   </th>
                 </tr>
@@ -260,14 +260,17 @@ function toggleNeedAdminOnly() {
                 >
                   <td class="strong">#{{ r.eventId }}</td>
                   <td class="nowrap">{{ r.plateNumber }}</td>
+                  <td class="nowrap">
+                    <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
+                    <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
+                  </td>
                   <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
                   <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
                   <td class="muted">{{ formatTime(r.detectedAt) }}</td>
-                  <td><StatusTag :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag></td>
                   <td>
                     <div class="row-actions">
                       <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                      <StatusTag v-if="r.eventStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
+                      <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
                     </div>
                   </td>
                 </tr>
@@ -346,11 +349,6 @@ function toggleNeedAdminOnly() {
   background: var(--panel-primary-soft);
   color: var(--panel-primary);
   font-weight: 500;
-}
-
-.chip:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .dropdown-menu {
