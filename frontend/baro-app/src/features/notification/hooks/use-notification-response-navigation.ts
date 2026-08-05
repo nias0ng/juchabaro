@@ -1,13 +1,16 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 import { navigateFromNotification } from '@/features/notification/utils/notification-navigation';
 import { useAuth } from '@/providers/auth-provider';
-import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
+
+import { invalidateForNotification } from '../utils/notification-cache';
 
 export function useNotificationResponseNavigation(): void {
   const { status, user } = useAuth();
+  const queryClient = useQueryClient();
   const lastHandledIdentifierRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -29,7 +32,7 @@ export function useNotificationResponseNavigation(): void {
       if (lastHandledIdentifierRef.current === identifier) return;
 
       lastHandledIdentifierRef.current = identifier;
-      refreshAuthenticatedQueries();
+      invalidateForNotification(queryClient, response.notification.request.content.data);
       navigateFromNotification(response.notification.request.content.data);
       await Notifications.clearLastNotificationResponseAsync();
     };
@@ -44,5 +47,5 @@ export function useNotificationResponseNavigation(): void {
       cancelled = true;
       subscription.remove();
     };
-  }, [status, user?.role]);
+  }, [status, user?.role, queryClient]);
 }

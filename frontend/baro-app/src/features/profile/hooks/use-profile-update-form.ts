@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { updateMyProfile } from '@/features/profile/api/profile-api';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
-import { refreshAuthenticatedQueries } from '@/services/authenticated-query-refresh';
 
 import { usePasswordChangeForm } from './use-password-change-form';
 
@@ -40,7 +39,6 @@ export function useProfileUpdateForm() {
       );
 
       updateUserProfile(result);
-      refreshAuthenticatedQueries();
       return true;
     } catch (error) {
       setErrorMessage(error instanceof ApiError ? error.message : '내 정보를 수정하지 못했습니다.');
