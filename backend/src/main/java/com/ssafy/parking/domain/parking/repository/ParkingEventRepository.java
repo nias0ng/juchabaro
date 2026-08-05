@@ -26,9 +26,10 @@ public interface ParkingEventRepository extends JpaRepository<ParkingEvent, Long
 
     @Query("""
         select e from ParkingEvent e
-        where e.detectedAt >= :from and e.detectedAt < :to
-          and (:status is null or e.eventStatus = :status)
-          and (:type is null or e.eventType = :type)
+        where (:from is null or e.detectedAt >= :from)
+              and (:to   is null or e.detectedAt <  :to)
+              and (:status is null or e.eventStatus = :status)
+              and (:type   is null or e.eventType   = :type)
         order by e.detectedAt desc
         """)
     Page<ParkingEvent> findForAdmin(@Param("from") LocalDateTime from,

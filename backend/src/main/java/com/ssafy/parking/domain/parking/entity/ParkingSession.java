@@ -55,6 +55,9 @@ public class ParkingSession extends BaseEntity {
     @Column(name = "idempotency_key", unique = true, length = 100)
     private String idempotencyKey;
 
+    @Column(name = "context_revision", nullable = false)
+    private int contextRevision;
+
     @Builder
     private ParkingSession(
             Vehicle vehicle,
@@ -88,5 +91,10 @@ public class ParkingSession extends BaseEntity {
 
     public void markExit(LocalDateTime exitTime) {
         this.exitTime = exitTime;
+    }
+
+    public int bumpContextRevision() {
+        this.contextRevision += 1;
+        return this.contextRevision;
     }
 }
