@@ -631,7 +631,7 @@ class PendingHandoffWorkflow:
                     else None
                 ),
                 physical_exit_evidence=(
-                    PhysicalExitEvidence.FULL_AREA_ABSENCE
+                    PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
                     if is_exited
                     else None
                 ),
@@ -658,7 +658,7 @@ class PendingHandoffWorkflow:
                 else None
             ),
             physical_exit_evidence=(
-                PhysicalExitEvidence.FULL_AREA_ABSENCE if is_exited else None
+                PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL if is_exited else None
             ),
             exited_at=vehicle.terminated_at if is_exited else None,
             record_version=mirror.record_version + 1,

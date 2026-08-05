@@ -477,6 +477,8 @@ def test_late_allow_after_retirement_creates_historical_exit_without_binding(
         assert mirror.physical_vehicle_id == VEHICLE_ID
         assert mirror.physical_presence_state is PhysicalPresenceState.EXITED
         assert mirror.exited_at == T1
+        assert mirror.physical_termination_origin is PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
+        assert mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         assert ContextBindingRepository(connection).list_active() == ()
 
         with UnitOfWork(connection):
