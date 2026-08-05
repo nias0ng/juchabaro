@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -76,7 +77,38 @@ from src.tracking.adapters.ultralytics_bytetrack import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 DatabaseConnectionFactory = Callable[[], sqlite3.Connection]
+ShutdownWorker = (
+    MonitoringWorker
+    | MoveVerificationExecutorWorker
+    | OutboxPublisherWorker
+    | EvidencePublicationWorker
+)
+
+
+def _stop_workers_best_effort(
+    workers: tuple[tuple[str, ShutdownWorker | None], ...],
+    *,
+    suppress_errors: bool,
+) -> None:
+    """모든 worker 정리를 시도하고 정상 종료에서는 첫 오류를 전파한다."""
+
+    first_error: Exception | None = None
+    for name, worker in workers:
+        if worker is None:
+            continue
+        try:
+            worker.stop()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+            logger.exception("%s worker 종료에 실패했습니다.", name)
+
+    if first_error is not None and not suppress_errors:
+        raise first_error
 
 
 @dataclass(frozen=True)
@@ -402,13 +434,17 @@ def create_app(
                 outbox_publisher_worker.start()
             yield
         finally:
-            move_verification_worker.stop()
-            if evidence_publication_worker is not None:
-                evidence_publication_worker.stop()
-            if outbox_publisher_worker is not None:
-                outbox_publisher_worker.stop()
-            if monitoring_worker is not None:
-                monitoring_worker.stop()
+            _stop_workers_best_effort(
+                (
+                    ("monitoring", monitoring_worker),
+                    ("move verification", move_verification_worker),
+                    ("outbox publication", outbox_publisher_worker),
+                    ("evidence publication", evidence_publication_worker),
+                ),
+                # worker start 또는 lifespan 본문 예외를 shutdown 오류로
+                # 덮어쓰지 않는다.
+                suppress_errors=sys.exc_info()[1] is not None,
+            )
 
     application = FastAPI(
         title=resolved_settings.app_name,

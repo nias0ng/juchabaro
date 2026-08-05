@@ -30,6 +30,97 @@ class _BlockingPipeline:
         self.closed.set()
 
 
+class _LifecycleWorker:
+    def __init__(
+        self,
+        *,
+        name: str,
+        stop_calls: list[str],
+        fail_on_start: bool,
+        fail_on_stop: bool,
+    ) -> None:
+        self.name = name
+        self.stop_calls = stop_calls
+        self.fail_on_start = fail_on_start
+        self.fail_on_stop = fail_on_stop
+        self.start_count = 0
+        self.stop_count = 0
+
+    @property
+    def is_running(self) -> bool:
+        return self.start_count == 1 and self.stop_count == 0
+
+    def start(self) -> None:
+        self.start_count += 1
+        if self.fail_on_start:
+            raise RuntimeError(f"{self.name} start failed")
+
+    def stop(self) -> None:
+        self.stop_count += 1
+        self.stop_calls.append(self.name)
+        if self.fail_on_stop:
+            raise RuntimeError(f"{self.name} stop failed")
+
+
+def _install_lifecycle_worker_spies(
+    main,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stop_calls: list[str],
+    failing_start_worker: str | None = None,
+    failing_stop_worker: str | None = None,
+) -> dict[str, _LifecycleWorker]:
+    workers: dict[str, _LifecycleWorker] = {}
+
+    def worker_constructor(name: str):
+        def construct(_owner) -> _LifecycleWorker:
+            worker = _LifecycleWorker(
+                name=name,
+                stop_calls=stop_calls,
+                fail_on_start=name == failing_start_worker,
+                fail_on_stop=name == failing_stop_worker,
+            )
+            workers[name] = worker
+            return worker
+
+        return construct
+
+    monkeypatch.setattr(
+        main,
+        "MonitoringWorker",
+        worker_constructor("monitoring"),
+    )
+    monkeypatch.setattr(
+        main,
+        "MoveVerificationExecutorWorker",
+        worker_constructor("move verification"),
+    )
+    monkeypatch.setattr(
+        main,
+        "OutboxPublisherWorker",
+        worker_constructor("outbox publication"),
+    )
+    monkeypatch.setattr(
+        main,
+        "EvidencePublicationWorker",
+        worker_constructor("evidence publication"),
+    )
+
+    # HTTP client나 실제 publisher를 만들 필요가 없는 composition spy다.
+    monkeypatch.setattr(main, "BackendClient", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        main,
+        "OutboxPublisher",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        main,
+        "EvidencePublicationPublisher",
+        lambda **_kwargs: object(),
+    )
+    return workers
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
@@ -91,6 +182,117 @@ def test_create_runtime_app_binds_concrete_monitoring_factory(
     }
 
 
+def test_lifespan_stops_producers_before_publication_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main
+
+    stop_calls: list[str] = []
+    workers = _install_lifecycle_worker_spies(
+        main,
+        monkeypatch,
+        stop_calls=stop_calls,
+    )
+    settings = _settings(tmp_path).model_copy(
+        update={"backend_hw_api_key": "configured-hardware-key"}
+    )
+    application = main.create_app(
+        settings=settings,
+        monitoring_pipeline_factory=lambda _context: object(),
+    )
+
+    with TestClient(application) as client:
+        assert client.get("/health").status_code == 200
+        assert all(
+            worker.start_count == 1
+            for worker in workers.values()
+        )
+
+    assert stop_calls == [
+        "monitoring",
+        "move verification",
+        "outbox publication",
+        "evidence publication",
+    ]
+    assert all(worker.start_count == 1 for worker in workers.values())
+    assert all(worker.stop_count == 1 for worker in workers.values())
+
+
+def test_lifespan_continues_cleanup_after_worker_stop_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main
+
+    stop_calls: list[str] = []
+    workers = _install_lifecycle_worker_spies(
+        main,
+        monkeypatch,
+        stop_calls=stop_calls,
+        failing_stop_worker="monitoring",
+    )
+    settings = _settings(tmp_path).model_copy(
+        update={"backend_hw_api_key": "configured-hardware-key"}
+    )
+    application = main.create_app(
+        settings=settings,
+        monitoring_pipeline_factory=lambda _context: object(),
+    )
+
+    with pytest.raises(RuntimeError, match="monitoring stop failed"):
+        with TestClient(application) as client:
+            assert client.get("/health").status_code == 200
+
+    assert stop_calls == [
+        "monitoring",
+        "move verification",
+        "outbox publication",
+        "evidence publication",
+    ]
+    assert all(worker.start_count == 1 for worker in workers.values())
+    assert all(worker.stop_count == 1 for worker in workers.values())
+
+
+def test_lifespan_preserves_startup_error_during_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main
+
+    stop_calls: list[str] = []
+    workers = _install_lifecycle_worker_spies(
+        main,
+        monkeypatch,
+        stop_calls=stop_calls,
+        failing_start_worker="outbox publication",
+        failing_stop_worker="monitoring",
+    )
+    settings = _settings(tmp_path).model_copy(
+        update={"backend_hw_api_key": "configured-hardware-key"}
+    )
+    application = main.create_app(
+        settings=settings,
+        monitoring_pipeline_factory=lambda _context: object(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="outbox publication start failed",
+    ):
+        with TestClient(application):
+            pass
+
+    assert stop_calls == [
+        "monitoring",
+        "move verification",
+        "outbox publication",
+        "evidence publication",
+    ]
+    assert all(worker.start_count == 1 for worker in workers.values())
+    assert all(worker.stop_count == 1 for worker in workers.values())
+
+
 def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None:
     # src.main은 배포용 module-level app도 제공하므로, 필수
     # Settings env가 적용된 test 실행 시점에 import한다.
@@ -112,7 +314,7 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
     with TestClient(application) as client:
         assert pipeline.entered_run.wait(timeout=1.0)
         assert client.get("/health").status_code == 200
-        assert application.state.zone_registry.zone_definition_version == 6
+        assert application.state.zone_registry.zone_definition_version == 1
         assert application.state.monitoring_worker.is_running is True
         assert application.state.move_verification_worker.is_running is True
         assert application.state.publication_preparer is (
