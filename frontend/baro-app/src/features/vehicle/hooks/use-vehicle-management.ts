@@ -64,7 +64,15 @@ export function useVehicleManagement() {
 
   const deleteMutation = useMutation({
     mutationFn: (vehicleId: number) => deleteVehicle(vehicleId, accessToken!),
-    onSuccess: () => {
+    onSuccess: (_data, vehicleId) => {
+      // 재조회가 끝날 때까지 삭제한 차량이 목록에 잠깐 남아있지 않도록, 캐시에서 먼저 제거하고
+      // invalidate로 백그라운드 재검증한다.
+      queryClient.setQueryData<VehicleResult[]>(queryKeys.vehicles.management(), (prev) =>
+        prev?.filter((vehicle) => vehicle.vehicleId !== vehicleId),
+      );
+      queryClient.setQueryData<VehicleResult[]>(queryKeys.vehicles.summary(), (prev) =>
+        prev?.filter((vehicle) => vehicle.vehicleId !== vehicleId),
+      );
       setDeleteTargetVehicle(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vehicles.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.parking.sessions() });
@@ -93,10 +101,17 @@ export function useVehicleManagement() {
   };
 
   return {
-    status: query.isLoading ? 'loading' : query.isError ? 'error' : 'success',
+    // 백그라운드 갱신 실패는 이미 표시된 목록을 오류 화면으로 바꾸지 않는다 — 캐시가 없을 때만 error로 취급한다.
+    status: query.isLoading ? 'loading' : query.data === undefined && query.isError ? 'error' : 'success',
     isRefreshing: query.isFetching && !query.isLoading,
     vehicles: query.data ?? [],
-    listErrorMessage: query.error instanceof ApiError ? query.error.message : query.error ? '차량 목록을 불러오지 못했습니다.' : undefined,
+    // 백그라운드 갱신 실패는 이미 화면에 표시된 목록을 지우지 않는다 — 캐시가 없을 때만 오류로 노출한다.
+    listErrorMessage:
+      query.data === undefined && query.error
+        ? query.error instanceof ApiError
+          ? query.error.message
+          : '차량 목록을 불러오지 못했습니다.'
+        : undefined,
     refetch: query.refetch,
     deleteTargetVehicle,
     isDeleting: deleteMutation.isPending,

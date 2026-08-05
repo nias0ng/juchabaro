@@ -23,8 +23,9 @@ export function invalidateForNotification(queryClient: QueryClient, data: Notifi
       void queryClient.invalidateQueries({ queryKey: queryKeys.moveRequests.detail(numericRequestId) });
     }
     if (type === 'EVENT_RESOLVED') {
-      // 이관 처리 완료는 주차 현황/위반 통계에도 영향을 줄 수 있어 함께 갱신한다.
+      // 이관 처리 완료는 실제 차량 이동/출차를 동반할 수 있어 주차 현황·구역 요약·위반 통계까지 함께 갱신한다.
       void queryClient.invalidateQueries({ queryKey: queryKeys.parking.sessions() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.parking.zoneSummary() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.violation.stats() });
     }
     return;

@@ -42,7 +42,7 @@ export function useNotificationSettings() {
     queryKey: queryKeys.notifications.settings(),
     queryFn: () => getNotificationSettings(accessToken!),
     enabled: status === 'authenticated' && !!accessToken,
-    refetchOnWindowFocus: !dirty,
+    // 앱 활성화/화면 재진입 재요청은 useRefetchOnFocus가 isStale && !dirty로 이미 처리한다.
     refetchOnReconnect: !dirty,
   });
   useRefetchOnFocus(query.refetch, query.isStale && !dirty);
@@ -94,7 +94,13 @@ export function useNotificationSettings() {
     hasChanges: dirty,
     isLoading: query.isLoading,
     isSaving: saveMutation.isPending,
-    loadErrorMessage: query.error instanceof ApiError ? query.error.message : query.error ? '알림 설정을 불러오지 못했습니다.' : undefined,
+    // 백그라운드 갱신 실패는 이미 화면에 표시된 설정을 지우지 않는다 — 캐시가 없을 때만 오류로 노출한다.
+    loadErrorMessage:
+      query.data === undefined && query.error
+        ? query.error instanceof ApiError
+          ? query.error.message
+          : '알림 설정을 불러오지 못했습니다.'
+        : undefined,
     saveErrorMessage,
     reload: () => query.refetch(),
     save,
