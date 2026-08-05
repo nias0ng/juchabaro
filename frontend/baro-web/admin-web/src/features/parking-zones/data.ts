@@ -122,6 +122,28 @@ export function zoneFloorOf(zoneNumber: string): FloorKey | null {
   return null;
 }
 
+// 구역 목록은 물리 배치 순서(번호칸 B{층}-01..24 → 장애인 D{층}-01,02 → 전기차
+// EV{층}-01,02 → 입구 ENTRY{층}-01 → 출구 EXIT{층}-01)로 보여준다. 백엔드가 이 순서로
+// 정렬해서 내려준다는 보장이 없어 화면에서 직접 정렬한다.
+const ZONE_PREFIX_ORDER = ['B', 'D', 'EV', 'ENTRY', 'EXIT'] as const;
+
+function zoneSortKey(zoneNumber: string): [number, number, string] {
+  const trimmed = zoneNumber.trim();
+  const match = /^([A-Z]+)\d*-(\d+)$/.exec(trimmed);
+  if (!match) return [ZONE_PREFIX_ORDER.length, 0, trimmed];
+  const [, prefix, seq] = match;
+  const prefixIndex = ZONE_PREFIX_ORDER.indexOf(prefix as (typeof ZONE_PREFIX_ORDER)[number]);
+  return [prefixIndex === -1 ? ZONE_PREFIX_ORDER.length : prefixIndex, Number(seq), trimmed];
+}
+
+export function compareZoneNumbers(a: string, b: string): number {
+  const [rankA, seqA, strA] = zoneSortKey(a);
+  const [rankB, seqB, strB] = zoneSortKey(b);
+  if (rankA !== rankB) return rankA - rankB;
+  if (seqA !== seqB) return seqA - seqB;
+  return strA.localeCompare(strB);
+}
+
 // 백엔드 GET /api/parking-zones/summary가 층 구분 없이 전체를 한 번에 반환하기 때문에,
 // 혼잡도는 응답의 최상위 값을 그대로 쓰지 않고 해당 층 구역만 걸러서 화면에서 직접 계산한다.
 export function computeFloorCongestion(

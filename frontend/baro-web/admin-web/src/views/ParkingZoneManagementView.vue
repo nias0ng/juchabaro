@@ -13,6 +13,7 @@ import {
   ZONE_TYPE_OPTIONS,
   OCCUPANCY_OPTIONS,
   allowedTimeLabel,
+  compareZoneNumbers,
   computeFloorCongestion,
   congestionLabel,
   congestionTone,
@@ -108,7 +109,12 @@ function occupancyOf(zoneId: number): OccupancyStatus | null {
 // 응답 최상위 값 대신 선택한 층의 구역만 걸러서 화면에서 직접 계산한다.
 const congestion = computed(() => computeFloorCongestion(selectedFloor.value, spots.value))
 
-const floorZones = computed(() => zones.value.filter((z) => zoneFloorOf(z.zoneNumber) === selectedFloor.value))
+const floorZones = computed(() =>
+  zones.value
+    .filter((z) => zoneFloorOf(z.zoneNumber) === selectedFloor.value)
+    .slice()
+    .sort((a, b) => compareZoneNumbers(a.zoneNumber, b.zoneNumber)),
+)
 
 const zoneStats = computed(() => ({
   total: floorZones.value.length,
