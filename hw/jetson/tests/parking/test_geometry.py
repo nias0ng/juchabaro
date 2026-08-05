@@ -5,11 +5,13 @@ import pytest
 from src.parking.geometry import (
     bbox_area,
     bbox_center,
+    clip_polygon_to_half_plane,
     convex_polygon_intersection_area,
     coverage_ratio,
     is_convex_polygon,
     overlap_ratio,
     polygon_area,
+    polygon_centroid,
     polygon_overlap_ratio,
 )
 from src.parking.models import NormalizedPolygon
@@ -151,3 +153,56 @@ def test_small_self_intersecting_polygon_is_not_convex() -> None:
 
     assert polygon_area(star) > 0.0
     assert not is_convex_polygon(star)
+
+
+def test_polygon_centroid_of_unit_square_is_its_middle() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    assert polygon_centroid(square) == pytest.approx((0.5, 0.5))
+
+
+def test_polygon_centroid_is_independent_of_winding_and_start_vertex() -> None:
+    clockwise = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
+    rotated = ((1.0, 1.0), (1.0, 0.0), (0.0, 0.0), (0.0, 1.0))
+    assert polygon_centroid(clockwise) == pytest.approx((0.5, 0.5))
+    assert polygon_centroid(rotated) == pytest.approx((0.5, 0.5))
+
+
+def test_polygon_centroid_rejects_degenerate_polygon() -> None:
+    with pytest.raises(ValueError, match="area"):
+        polygon_centroid(((0.0, 0.0), (1.0, 1.0), (2.0, 2.0)))
+
+
+def test_half_plane_clip_keeps_fully_inside_polygon() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    clipped = clip_polygon_to_half_plane(square, (0.0, 0.0), (1.0, 0.0))
+    assert polygon_area(clipped) == pytest.approx(1.0)
+
+
+def test_half_plane_clip_drops_fully_outside_polygon() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    assert clip_polygon_to_half_plane(square, (2.0, 0.0), (1.0, 0.0)) == []
+
+
+def test_half_plane_clip_halves_polygon_through_its_centre() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    clipped = clip_polygon_to_half_plane(square, (0.5, 0.5), (1.0, 0.0))
+    assert polygon_area(clipped) == pytest.approx(0.5)
+    assert min(x for x, _ in clipped) == pytest.approx(0.5)
+
+
+def test_half_plane_clip_handles_diagonal_direction() -> None:
+    """외부 방향은 축에 정렬되지 않는다(실측값 약 (+0.5, -0.87))."""
+
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    clipped = clip_polygon_to_half_plane(square, (0.5, 0.5), (1.0, -1.0))
+    assert polygon_area(clipped) == pytest.approx(0.5)
+    # 잘린 조각은 오른쪽 아래 절반이므로 (0,1) 꼭짓점을 포함하지 않는다.
+    assert all(
+        not (x == pytest.approx(0.0) and y == pytest.approx(1.0)) for x, y in clipped
+    )
+
+
+def test_half_plane_clip_rejects_zero_direction() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    with pytest.raises(ValueError, match="zero vector"):
+        clip_polygon_to_half_plane(square, (0.5, 0.5), (0.0, 0.0))
