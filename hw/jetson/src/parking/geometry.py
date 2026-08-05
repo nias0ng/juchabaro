@@ -96,50 +96,6 @@ def clip_polygon_to_bbox(
     )
 
 
-def clip_polygon_to_half_plane(
-    points: Sequence[tuple[float, float]],
-    origin: tuple[float, float],
-    direction: tuple[float, float],
-) -> list[tuple[float, float]]:
-    """``origin``을 지나 ``direction`` 쪽 반평면으로 polygon을 자른다.
-
-    경계선 위의 점은 포함한다. 결과 꼭짓점이 3개 미만이면 면적 0인
-    조각이므로 빈 리스트를 반환한다.
-    """
-
-    direction_x, direction_y = direction
-    if direction_x == 0.0 and direction_y == 0.0:
-        raise ValueError("half plane direction must not be a zero vector")
-
-    origin_x, origin_y = origin
-
-    def offset(point: tuple[float, float]) -> float:
-        return (point[0] - origin_x) * direction_x + (point[1] - origin_y) * direction_y
-
-    def inside(point: tuple[float, float]) -> bool:
-        return offset(point) >= 0.0
-
-    def intersect(
-        first: tuple[float, float],
-        second: tuple[float, float],
-    ) -> tuple[float, float]:
-        first_offset = offset(first)
-        span = first_offset - offset(second)
-        # span == 0.0 is unreachable: _clip_half_plane only calls this when
-        # inside(first) != inside(second), meaning one offset < 0 and the other >= 0,
-        # so their difference is never exactly zero. Guard kept for safety.
-        if span == 0.0:
-            return second
-        ratio = first_offset / span
-        return (
-            first[0] + (second[0] - first[0]) * ratio,
-            first[1] + (second[1] - first[1]) * ratio,
-        )
-
-    clipped = _clip_half_plane(points, inside, intersect)
-    return clipped if len(clipped) >= 3 else []
-
-
 def polygon_area(points: Sequence[tuple[float, float]]) -> float:
     """꼭짓점 방향과 무관한 shoelace formula로 polygon 면적을 계산한다."""
 
@@ -168,11 +124,14 @@ def polygon_centroid(points: Sequence[tuple[float, float]]) -> tuple[float, floa
     """shoelace 가중 중심을 반환한다.
 
     꼭짓점 순서(시계/반시계)와 시작 꼭짓점에 무관하다. 면적이 0인
-    degenerate polygon은 중심이 정의되지 않으므로 거부한다.
+    degenerate polygon은 중심이 정의되지 않으므로 거부한다. 모듈의 다른
+    함수와 같은 epsilon 관례를 따라, 절대값이 ``_GEOMETRY_EPSILON``
+    이하인 면적도 degenerate로 본다 — sliver polygon의 불안정한 중심을
+    막는다.
     """
 
     area = signed_polygon_area(points)
-    if area == 0.0:
+    if abs(area) <= _GEOMETRY_EPSILON:
         raise ValueError("polygon centroid requires a non-zero area")
 
     weighted_x = 0.0

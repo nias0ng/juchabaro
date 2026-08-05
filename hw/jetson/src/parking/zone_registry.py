@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.parking.geometry import (
-    clip_polygon_to_half_plane,
     convex_polygon_intersection_area,
     is_convex_polygon,
     polygon_area,
@@ -72,7 +71,7 @@ class ZoneRegistry:
         self._zones = {definition.zone_id: definition for definition in ordered}
         self._zone_definition_version = ordered[0].zone_definition_version
         self._calibration_reference = ordered[0].calibration_reference
-        self._exit_outward_polygons = self._build_exit_outward_polygons()
+        self._exit_outward_baselines = self._build_exit_outward_baselines()
 
     @property
     def zone_definition_version(self) -> ZoneDefinitionVersion:
@@ -276,22 +275,31 @@ class ZoneRegistry:
                     f"overlapRatio={overlap_ratio:.12f}"
                 )
 
-    def exit_outward_polygons(self) -> dict[ZoneId, NormalizedPolygon]:
-        """EXIT role 구역별 외부측 sub-polygon을 반환한다(571).
+    def exit_outward_baselines(
+        self,
+    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
+        """EXIT role 구역별 외부측 기준선을 반환한다(571).
 
-        외부 방향을 유도할 수 없거나 조각 면적이 0인 구역은 키에서 빠진다.
-        호출자는 키가 없으면 그 구역으로 통과를 확정하지 않는다.
+        값은 ``(origin, unit_direction)``이다. ``origin``은 EXIT 구역 중심,
+        ``unit_direction``은 외부 방향 단위벡터다. 호출자는 차량 bbox 중심의
+        ``origin`` 기준 부호 있는 오프셋이 ``unit_direction``으로 양수면
+        외부측으로 판정한다.
+
+        외부 방향을 유도할 수 없는 구역은 키에서 빠진다. 호출자는 키가
+        없으면 그 구역으로 통과를 확정하지 않는다.
         """
 
-        return dict(self._exit_outward_polygons)
+        return dict(self._exit_outward_baselines)
 
-    def _build_exit_outward_polygons(self) -> dict[ZoneId, NormalizedPolygon]:
+    def _build_exit_outward_baselines(
+        self,
+    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
         """구역 정의는 불변이므로 구성 시 1회만 계산한다.
 
         외부 방향은 가장 가까운 AISLE 구역 중심에서 EXIT 구역 중심으로
-        향하는 벡터다. 기준선은 EXIT 중심을 지나고 그 방향에 수직인
-        직선이며, 외부측 조각은 그 직선의 외부 방향 쪽이다. 새 설정 필드를
-        도입하지 않으려고 기존 폴리곤에서 유도한다.
+        향하는 단위벡터다. 기준선은 EXIT 중심을 지나고 그 방향에 수직인
+        직선이다. 새 설정 필드를 도입하지 않으려고 기존 폴리곤에서
+        유도한다.
         """
 
         exits = tuple(
@@ -335,7 +343,7 @@ class ZoneRegistry:
             )
             return {}
 
-        outward: dict[ZoneId, NormalizedPolygon] = {}
+        baselines: dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]] = {}
         for exit_definition in exits:
             try:
                 exit_center = polygon_centroid(exit_definition.polygon)
@@ -365,20 +373,12 @@ class ZoneRegistry:
                     int(exit_definition.zone_id),
                 )
                 continue
-            piece = clip_polygon_to_half_plane(
-                exit_definition.polygon,
-                exit_center,
-                direction,
-            )
-            if not piece:
-                logger.warning(
-                    "출차 구역 외부측 조각이 비어 외부측 판정을 할 수 "
-                    "없습니다: zone_id=%s",
-                    int(exit_definition.zone_id),
-                )
-                continue
-            outward[exit_definition.zone_id] = tuple(piece)
-        return outward
+            # direction이 정확히 (0, 0)이 아님을 위에서 확인했으므로
+            # magnitude는 항상 양수다 — 0 나눗셈이 발생하지 않는다.
+            magnitude = math.hypot(direction[0], direction[1])
+            unit_direction = (direction[0] / magnitude, direction[1] / magnitude)
+            baselines[exit_definition.zone_id] = (exit_center, unit_direction)
+        return baselines
 
     def all(self) -> tuple[ZoneDefinition, ...]:
         """파일에 기록된 순서대로 모든 구역 정의를 반환한다."""

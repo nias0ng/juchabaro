@@ -75,12 +75,17 @@ SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
 SECOND_SPOT = ((0.30, 0.10), (0.50, 0.10), (0.50, 0.30), (0.30, 0.30))
 EXIT_SPOT = ((0.60, 0.10), (0.80, 0.10), (0.80, 0.30), (0.60, 0.30))
-IN_EXIT = BoundingBox(0.62, 0.12, 0.78, 0.28)
 AISLE_STRIP = ((0.10, 0.50), (0.90, 0.50), (0.90, 0.95), (0.10, 0.95))
-# EXIT_SPOT(y 0.10~0.30)의 중심은 y=0.20이고 aisle이 아래(y 0.50~)이므로
-# 외부측은 y <= 0.20 쪽이다.
-IN_EXIT_OUTWARD = BoundingBox(0.64, 0.11, 0.72, 0.18)
-IN_EXIT_INWARD = BoundingBox(0.64, 0.22, 0.72, 0.29)
+# 판정은 bbox 폴리곤 겹침이 아니라 bbox 중심의 기준선 기준 부호로 한다
+# (571 finding 1). 기준선은 AISLE_STRIP 중심(0.5, 0.725)에서
+# EXIT_SPOT 중심(0.7, 0.2)으로 향하는 단위벡터 (0.356, -0.934)가 정의한다.
+# IN_EXIT_OUTWARD의 중심 (0.76, 0.13)은 이 축에 투영하면 EXIT_SPOT
+# 중심보다 +0.0868만큼 외부 방향이고, IN_EXIT_INWARD의 중심 (0.64, 0.27)은
+# -0.0868만큼 내부 방향이다 — 부호가 반대이므로 두 이름이 실제로 가리키는
+# 쪽을 가른다. 두 bbox 모두 EXIT_SPOT 안에 완전히 포함되어 있어
+# 존재 판정(overlap_ratio)에는 영향이 없다.
+IN_EXIT_OUTWARD = BoundingBox(0.72, 0.10, 0.80, 0.16)
+IN_EXIT_INWARD = BoundingBox(0.60, 0.24, 0.68, 0.30)
 
 
 def at(seconds: float) -> datetime:
@@ -1290,10 +1295,17 @@ def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
     """설정 교체로 사라진 zone의 방문은 예외 없이 통과 미인정으로 처리한다(565).
 
     이 경로는 departure commit 중에 실행되므로 예외를 던지면 차량 종료
-    자체가 실패한다.
+    자체가 실패한다. registry에 실제 EXIT 구역을 두어(571), 차량이 이미
+    outward 접촉을 만든 상태에서 알 수 없는 zoneId의 방문이 섞여도 결과가
+    그대로 유지되고 예외도 나지 않는지를 확인한다 — EXIT 구역이 없어
+    접촉 집합이 항상 비어 있던 이전 registry로는 이 방문이 아무것도
+    가르지 못했다.
     """
 
-    pipeline, visit_tracker, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=1.0)
+    pipeline, visit_tracker, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
     visit_tracker.update(
         physical_vehicle_id=CAR,
         zone_id=ZoneId(999),
@@ -1302,7 +1314,7 @@ def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
         observed_at=at(0),
     )
 
-    assert pipeline.exit_zone_traversal_observed(CAR) is False
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
 
 
 def test_inward_side_contact_alone_is_not_traversal() -> None:

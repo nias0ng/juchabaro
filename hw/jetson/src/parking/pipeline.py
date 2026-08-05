@@ -38,7 +38,7 @@ import math
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking import assignment_resolver
 from src.parking.blocking_relation_tracker import BlockingRelationTracker
-from src.parking.geometry import overlap_ratio
+from src.parking.geometry import bbox_center, overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
     BlockingRelation,
@@ -165,8 +165,8 @@ class ParkingPipeline:
         self._out_of_zone_min_spot_overlap_ratio = (
             out_of_zone_min_spot_overlap_ratio
         )
-        # 구역 정의는 불변이라 외부측 조각은 여기서 1회만 계산한다(571).
-        self._exit_outward_polygons = zones.exit_outward_polygons()
+        # 구역 정의는 불변이라 외부측 기준선은 여기서 1회만 계산한다(571).
+        self._exit_outward_baselines = zones.exit_outward_baselines()
         # 차량별 "가장 최근 신뢰 관측 프레임에서 접촉한 EXIT 구역" 집합이다.
         # 매 신뢰 프레임마다 덮어쓰므로 오래된 접촉이 남지 않는다.
         self._exit_outward_contacts: dict[PhysicalVehicleId, frozenset[ZoneId]] = {}
@@ -628,16 +628,19 @@ class ParkingPipeline:
         self,
         vehicle: PhysicalVehicleSnapshot,
     ) -> frozenset[ZoneId]:
-        """이번 프레임에 외부측 조각과 겹친 EXIT 구역 id를 반환한다(571).
+        """이번 프레임에 외부측 기준선을 넘은 EXIT 구역 id를 반환한다(571).
 
-        비율 임계값을 두지 않는다 — 차량이 기준선을 물리적으로 넘었다는
-        사실만 요구한다.
+        bbox 자체와 sub-polygon의 겹침이 아니라 bbox **중심**이 기준선의
+        외부 방향 쪽(부호 > 0)에 있는지로 판정한다. 차량이 outward
+        sub-polygon보다 커서 항상 겹치던 문제를 피한다 — 중심은 차량
+        전체가 기준선을 넘었을 때만 외부 방향으로 넘어간다.
         """
 
+        center = bbox_center(vehicle.bbox)
         return frozenset(
             zone_id
-            for zone_id, polygon in self._exit_outward_polygons.items()
-            if overlap_ratio(polygon, vehicle.bbox) > 0.0
+            for zone_id, (origin, direction) in self._exit_outward_baselines.items()
+            if _signed_offset(center, origin, direction) > 0.0
         )
 
     def physical_exit(
@@ -894,3 +897,13 @@ def _parking_transitions(
 def _validate_ratio(value: float, name: str) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise ValueError(f"{name} must be finite and between 0 and 1")
+
+
+def _signed_offset(
+    point: tuple[float, float],
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+) -> float:
+    """``origin``에서 ``point``까지 벡터를 단위벡터 ``direction``에 투영한다(571)."""
+
+    return (point[0] - origin[0]) * direction[0] + (point[1] - origin[1]) * direction[1]

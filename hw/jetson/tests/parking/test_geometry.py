@@ -5,7 +5,6 @@ import pytest
 from src.parking.geometry import (
     bbox_area,
     bbox_center,
-    clip_polygon_to_half_plane,
     convex_polygon_intersection_area,
     coverage_ratio,
     is_convex_polygon,
@@ -195,37 +194,15 @@ def test_polygon_centroid_of_l_shape() -> None:
     assert polygon_centroid(l_shape) == pytest.approx(expected)
 
 
-def test_half_plane_clip_keeps_fully_inside_polygon() -> None:
-    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-    clipped = clip_polygon_to_half_plane(square, (0.0, 0.0), (1.0, 0.0))
-    assert polygon_area(clipped) == pytest.approx(1.0)
+def test_polygon_centroid_rejects_sliver_polygon_within_epsilon() -> None:
+    """면적이 정확히 0은 아니어도 epsilon 이하인 sliver polygon은 거부한다.
 
+    모듈의 다른 함수들(``is_convex_polygon`` 등)과 같은
+    ``_GEOMETRY_EPSILON`` 관례를 따른다 — 수치적으로 불안정한 중심을
+    반환하지 않는다.
+    """
 
-def test_half_plane_clip_drops_fully_outside_polygon() -> None:
-    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-    assert clip_polygon_to_half_plane(square, (2.0, 0.0), (1.0, 0.0)) == []
+    sliver = ((0.0, 0.0), (1.0, 0.0), (1.0, 1e-13), (0.0, 1e-13))
+    with pytest.raises(ValueError, match="area"):
+        polygon_centroid(sliver)
 
-
-def test_half_plane_clip_halves_polygon_through_its_centre() -> None:
-    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-    clipped = clip_polygon_to_half_plane(square, (0.5, 0.5), (1.0, 0.0))
-    assert polygon_area(clipped) == pytest.approx(0.5)
-    assert min(x for x, _ in clipped) == pytest.approx(0.5)
-
-
-def test_half_plane_clip_handles_diagonal_direction() -> None:
-    """외부 방향은 축에 정렬되지 않는다(실측값 약 (+0.5, -0.87))."""
-
-    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-    clipped = clip_polygon_to_half_plane(square, (0.5, 0.5), (1.0, -1.0))
-    assert polygon_area(clipped) == pytest.approx(0.5)
-    # 잘린 조각은 오른쪽 아래 절반이므로 (0,1) 꼭짓점을 포함하지 않는다.
-    assert all(
-        not (x == pytest.approx(0.0) and y == pytest.approx(1.0)) for x, y in clipped
-    )
-
-
-def test_half_plane_clip_rejects_zero_direction() -> None:
-    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-    with pytest.raises(ValueError, match="zero vector"):
-        clip_polygon_to_half_plane(square, (0.5, 0.5), (0.0, 0.0))
