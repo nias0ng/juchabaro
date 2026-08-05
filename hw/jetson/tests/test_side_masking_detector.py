@@ -8,10 +8,12 @@ delegate가 받는 `CapturedFrame`의 메타데이터가 그대로 유지되는�
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
 from src.camera.models import CapturedFrame
+from src.parking.zone_registry import ZoneRegistry
 from src.tracking.adapters.side_masking_detector import (
     DEFAULT_LEFT_MASK_END_RATIO,
     DEFAULT_RIGHT_MASK_START_RATIO,
@@ -23,6 +25,13 @@ from src.tracking.protocols import ModelInfo, TrackingError
 
 
 FILL_VALUE = 200  # 0이 아닌 값이어야 "마스킹으로 0이 됐다"를 의미 있게 검증할 수 있다.
+
+# hw/jetson/tests/test_side_masking_detector.py -> hw/jetson/config/zone_definition.json
+_REAL_ZONE_DEFINITION_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "zone_definition.json"
+)
+# 537 인수인계 §5: polygon 최외곽과 마스크 사이의 full-frame 여백은 좌우 각각 0.040이다.
+_EXPECTED_MASK_MARGIN_RATIO = 0.040
 
 
 class _FakeInnerDetector:
@@ -98,6 +107,42 @@ def test_mask_bounds_px_scales_with_a_non_1920_width():
     left_end_px, right_start_px = _mask_bounds_px(100, 0.180, 0.808)
 
     assert (left_end_px, right_start_px) == (18, 81)
+
+
+def test_default_mask_bounds_stay_outside_real_zone_definition_polygon_extent():
+    """실제 `zone_definition.json`의 polygon x좌표 범위가 기본 마스크 경계 안쪽에
+    있는지 회귀 가드로 고정한다.
+
+    `DEFAULT_LEFT_MASK_END_RATIO`/`DEFAULT_RIGHT_MASK_START_RATIO`는 537 인수인계
+    시점의 `zone_definition.json`(1~9번 전체 polygon x좌표 합집합
+    [0.220, 0.768])에서 계산된 상수다. 이후 구역 추가·재-crop·calibration 변경으로
+    실제 polygon이 이 경계를 넘으면, 아무 예외·로그 없이 YOLO 입력에서 진짜
+    주차면 픽셀이 검정으로 지워진다 — 이 저장소가 반복 겪은 "stale hardcoded wire
+    constant" 실패 패턴이다. 이 테스트는 그 이탈을 실패로 드러낸다.
+    """
+
+    registry = ZoneRegistry.from_file(_REAL_ZONE_DEFINITION_PATH)
+    x_coordinates = [
+        point[0] for zone in registry.all() for point in zone.polygon
+    ]
+    min_x, max_x = min(x_coordinates), max(x_coordinates)
+
+    assert DEFAULT_LEFT_MASK_END_RATIO <= min_x, (
+        "왼쪽 마스크가 실제 zone polygon을 침범합니다: "
+        f"DEFAULT_LEFT_MASK_END_RATIO={DEFAULT_LEFT_MASK_END_RATIO}, min_x={min_x}"
+    )
+    assert DEFAULT_RIGHT_MASK_START_RATIO >= max_x, (
+        "오른쪽 마스크가 실제 zone polygon을 침범합니다: "
+        f"DEFAULT_RIGHT_MASK_START_RATIO={DEFAULT_RIGHT_MASK_START_RATIO}, max_x={max_x}"
+    )
+    # 537 인수인계 §5가 명시한 고정 여백(0.040)도 함께 고정한다 — 여백이 원래
+    # 계약보다 크게 벌어지거나 좁아지는 조용한 변경도 이 테스트로 드러난다.
+    assert min_x - DEFAULT_LEFT_MASK_END_RATIO == pytest.approx(
+        _EXPECTED_MASK_MARGIN_RATIO, abs=1e-6
+    )
+    assert DEFAULT_RIGHT_MASK_START_RATIO - max_x == pytest.approx(
+        _EXPECTED_MASK_MARGIN_RATIO, abs=1e-6
+    )
 
 
 # ---------------------------------------------------------------------------
