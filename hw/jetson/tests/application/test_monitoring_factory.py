@@ -19,6 +19,7 @@ from src.camera.frame_source import EndOfVideo
 from src.communication.outbox import PreparedPublication
 from src.parking.models import (
     EntryExitRole,
+    IncidentRuleTiming,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -100,7 +101,7 @@ def _egress_aisles(zones: ZoneRegistry) -> EgressAisleRegistry:
     return EgressAisleRegistry.empty(zones)
 
 
-def _policy(**overrides: float) -> MonitoringPolicy:
+def _policy(**overrides: object) -> MonitoringPolicy:
     values = {
         "zone_entry_confirm_seconds": 1.0,
         "zone_exit_confirm_seconds": 1.0,
@@ -146,7 +147,16 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     pipeline = build_monitoring_pipeline(
         zones=zones,
         egress_aisles=_egress_aisles(zones),
-        policy=_policy(parking_move_confirm_seconds=0.5),
+        policy=_policy(
+            parking_move_confirm_seconds=0.5,
+            incident_rule_timings=(
+                IncidentRuleTiming(
+                    rule_code="BAD_PARKING",
+                    confirm_duration_seconds=2.0,
+                    clear_duration_seconds=3.0,
+                ),
+            ),
+        ),
         dependencies=MonitoringDependencies(
             camera_id="camera-1",
             frame_source=frame_source,
@@ -177,6 +187,12 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
         pipeline._frame_workflow._parking_pipeline._parking_episode_tracker
     )
     assert episode_tracker._movement_confirmation_seconds == 0.5
+    incident_reducer = (
+        pipeline._frame_workflow._parking_pipeline._incident_reducer
+    )
+    timing = incident_reducer.timing_for_rule("BAD_PARKING")
+    assert timing.confirm_duration_seconds == 2.0
+    assert timing.clear_duration_seconds == 3.0
 
 
 def test_factory_rejects_reidentification_window_reaching_absence_commit(

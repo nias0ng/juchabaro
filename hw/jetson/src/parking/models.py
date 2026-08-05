@@ -631,6 +631,46 @@ class IncidentSignal:
 
 
 @dataclass(frozen=True, kw_only=True)
+class IncidentRuleTiming:
+    """새 Incident가 생성될 때 snapshot하는 규칙별 debounce 정책.
+
+    이미 생성된 Incident는 aggregate에 저장된 duration을 계속 사용한다.
+    따라서 runtime 정책 변경이나 restart가 진행 중 timer의 의미를 바꾸지
+    않는다.
+    """
+
+    rule_code: str
+    confirm_duration_seconds: float
+    clear_duration_seconds: float
+
+    def __post_init__(self) -> None:
+        if not self.rule_code:
+            raise ValueError("rule_code must not be empty")
+        require_non_negative(
+            self.confirm_duration_seconds,
+            "confirm_duration_seconds",
+        )
+        require_non_negative(
+            self.clear_duration_seconds,
+            "clear_duration_seconds",
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class IncidentSignalDiagnostic:
+    """한 frame에서 reducer에 실제 전달한 rule signal과 적용 timing."""
+
+    physical_vehicle_id: PhysicalVehicleId
+    track_segment_id: TrackSegmentId
+    signal: IncidentSignal
+    timing: IncidentRuleTiming
+
+    def __post_init__(self) -> None:
+        if self.signal.key.rule_code != self.timing.rule_code:
+            raise ValueError("signal and timing rule_code must match")
+
+
+@dataclass(frozen=True, kw_only=True)
 class PlacementDiagnostic:
     """한 frame에서 실제 rule 입력으로 사용한 비영속 placement 진단값."""
 
@@ -791,3 +831,4 @@ class ParkingPipelineResult:
     blocking_relation_updates: tuple[BlockingRelation, ...] = ()
     incident_updates: tuple[Incident, ...] = ()
     placement_diagnostics: tuple[PlacementDiagnostic, ...] = ()
+    incident_signal_diagnostics: tuple[IncidentSignalDiagnostic, ...] = ()

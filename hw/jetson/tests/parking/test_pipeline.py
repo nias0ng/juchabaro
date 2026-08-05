@@ -18,6 +18,7 @@ from src.parking.models import (
     EgressAisleDefinitionVersion,
     EgressAisleId,
     IncidentSignalValue,
+    IncidentRuleTiming,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
@@ -235,6 +236,7 @@ def make_pipeline(
     blocking_clear_seconds: float = 0.0,
     blocking_subject_overlap_ratio: float = 0.5,
     blocking_egress_coverage_ratio: float = 0.5,
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = (),
 ):
     registry = ZoneRegistry(zones)
     egress_registry = EgressAisleRegistry(
@@ -259,6 +261,7 @@ def make_pipeline(
         trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
         confirm_duration_seconds=incident_confirm_seconds,
         clear_duration_seconds=incident_clear_seconds,
+        rule_timings=incident_rule_timings,
     )
     relation_tracker = InMemoryBlockingRelationTracker(
         confirm_duration_seconds=blocking_confirm_seconds,
@@ -284,6 +287,40 @@ def make_pipeline(
         blocking_min_egress_coverage_ratio=blocking_egress_coverage_ratio,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
+
+
+def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None:
+    bad_timing = IncidentRuleTiming(
+        rule_code=BAD_PARKING,
+        confirm_duration_seconds=2.0,
+        clear_duration_seconds=3.0,
+    )
+    out_timing = IncidentRuleTiming(
+        rule_code=OUT_OF_ZONE,
+        confirm_duration_seconds=4.0,
+        clear_duration_seconds=5.0,
+    )
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, GENERAL_B),
+        parking_seconds=1.0,
+        incident_rule_timings=(bad_timing, out_timing),
+    )
+
+    result = pipeline.process(batch(0, snapshot(0, bbox=AMBIGUOUS)))
+    diagnostics = {
+        item.signal.key.rule_code: item
+        for item in result.incident_signal_diagnostics
+    }
+
+    assert diagnostics[BAD_PARKING].signal.value is IncidentSignalValue.MATCHED
+    assert diagnostics[BAD_PARKING].timing == bad_timing
+    assert diagnostics[OUT_OF_ZONE].signal.value is (
+        IncidentSignalValue.NOT_MATCHED
+    )
+    assert diagnostics[OUT_OF_ZONE].timing == out_timing
+    candidate = updates_for(result, BAD_PARKING)[-1]
+    assert candidate.confirm_duration_seconds == 2.0
+    assert candidate.clear_duration_seconds == 3.0
 
 
 def transitions_for(result, rule_code: str):

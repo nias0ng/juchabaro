@@ -21,7 +21,9 @@ from src.domain.models import ObservationState, ObservationStatus
 from src.parking.models import (
     AssignmentState,
     IncidentKey,
+    IncidentRuleTiming,
     IncidentSignal,
+    IncidentSignalDiagnostic,
     IncidentSignalValue,
     ParkingAssignment,
     ParkingPipelineResult,
@@ -200,6 +202,27 @@ def _frame(
         if with_detection
         else ()
     )
+    placement_diagnostic = (
+        _placement_diagnostic(out_of_zone=out_of_zone)
+        if with_detection
+        else None
+    )
+    incident_signal_diagnostics = (
+        (
+            IncidentSignalDiagnostic(
+                physical_vehicle_id=VEHICLE_ID,
+                track_segment_id=TrackSegmentId(7),
+                signal=placement_diagnostic.bad_parking_signal,
+                timing=IncidentRuleTiming(
+                    rule_code="BAD_PARKING",
+                    confirm_duration_seconds=1.5,
+                    clear_duration_seconds=2.5,
+                ),
+            ),
+        )
+        if placement_diagnostic is not None
+        else ()
+    )
     return SimpleNamespace(
         frame_id=7 if with_detection else 8,
         video_seconds=0.2 if with_detection else 0.233,
@@ -225,10 +248,11 @@ def _frame(
                 parking_episode_updates=(),
                 incident_transitions=(),
                 placement_diagnostics=(
-                    (_placement_diagnostic(out_of_zone=out_of_zone),)
-                    if with_detection
+                    (placement_diagnostic,)
+                    if placement_diagnostic is not None
                     else ()
                 ),
+                incident_signal_diagnostics=incident_signal_diagnostics,
             )
         ),
         changes=(
@@ -278,6 +302,7 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
         "IDENTITY_RESOLUTION",
         "MOTION_ESTIMATE",
         "TRACKED_VEHICLE",
+        "INCIDENT_SIGNAL",
         "PLACEMENT_EVIDENCE",
         "FRAME",
     ]
@@ -285,8 +310,9 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     identity = rows[2]
     motion = rows[3]
     tracked = rows[4]
-    placement = rows[5]
-    empty_frame = rows[6]
+    incident_signal = rows[5]
+    placement = rows[6]
+    empty_frame = rows[7]
     assert detection["detectionStage"] == "POST_THRESHOLD_PRE_TRACK"
     assert detection["confidence"] == pytest.approx(0.27)
     assert detection["detectionThreshold"] == pytest.approx(0.01)
@@ -311,6 +337,16 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     assert tracked["detectionStage"] == "POST_TRACK"
     assert tracked["confidence"] == pytest.approx(0.31)
     assert tracked["vehicleAlias"] == "V1"
+    assert incident_signal["incidentScopeType"] == "PHYSICAL_VEHICLE"
+    assert incident_signal["incidentScopeId"] == str(VEHICLE_ID)
+    assert incident_signal["incidentRuleCode"] == "BAD_PARKING"
+    assert incident_signal["incidentSignalValue"] == "MATCHED"
+    assert incident_signal["incidentSignalConfirmable"] is True
+    assert incident_signal["incidentSignalEvidenceJson"] == (
+        '{"reasons":["LOW_PRIMARY_OVERLAP","MULTI_SPOT_OVERLAP"]}'
+    )
+    assert incident_signal["incidentConfirmSeconds"] == pytest.approx(1.5)
+    assert incident_signal["incidentClearSeconds"] == pytest.approx(2.5)
     assert placement["vehicleAlias"] == "V1"
     assert placement["trackSegmentId"] == 7
     assert placement["evidenceSource"] == "PARKED_SNAPSHOT"
@@ -343,9 +379,9 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     assert placement["outOfZoneConfirmable"] is False
     assert empty_frame["pretrackDetectionCount"] == 0
     assert empty_frame["trackedVehicleCount"] == 0
-    assert rows[0]["diagnosticSchemaVersion"] == 3
+    assert rows[0]["diagnosticSchemaVersion"] == 4
     assert rows[0]["policySnapshotJson"] == '{"parking_confirm_seconds":5.0}'
-    assert empty_frame["diagnosticSchemaVersion"] == 3
+    assert empty_frame["diagnosticSchemaVersion"] == 4
 
 
 def test_diagnostic_export_preserves_out_of_zone_rule_reason() -> None:
@@ -397,5 +433,9 @@ def test_csv_bytes_emits_utf8_bom_and_requested_header() -> None:
             "badParkingReasonsJson",
             "outOfZoneValue",
             "outOfZoneReasonsJson",
+            "incidentRuleCode",
+            "incidentSignalValue",
+            "incidentConfirmSeconds",
+            "incidentClearSeconds",
         }
     )

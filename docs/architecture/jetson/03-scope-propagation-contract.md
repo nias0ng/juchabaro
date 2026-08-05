@@ -112,6 +112,11 @@ binding 전에 PARKED와 후속 UNPARKED가 모두 발생했더라도 retention 
 
 ZoneVisit ENDED는 이미 이탈 confirmation을 마친 사실이므로 해당 visit 기반 Incident의 직접 종료 입력이다. 같은 사건에 별도 NOT_MATCHED·clear timer를 다시 적용하지 않는다. IncidentReducer가 동일 `incidentId`의 RESOLVE publication을 만들며 다른 rule에는 전파하지 않는다.
 
+Incident의 관측 기반 OPEN·RESOLVE debounce는 ruleCode별 scalar를 사용한다.
+다만 이 표의 ZoneVisit ENDED와 실제 physical departure 같은 직접 종료 전파는
+이미 자기 owner에서 확정된 scope 사실이므로 rule별 clear scalar를 우회한다.
+UNKNOWN은 어느 경로에서도 직접 종료 사실로 승격하지 않는다.
+
 ZoneRegistry는 적용 전에 assignment 대상 주차면 polygon의 convex·positive
 area와 pairwise interior non-overlap을 검증한다. 이 검증 실패는 개별
 frame의 주차 판정 실패가 아니라 ZoneDefinition snapshot 적용 실패다.

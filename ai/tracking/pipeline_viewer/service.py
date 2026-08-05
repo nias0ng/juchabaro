@@ -45,6 +45,18 @@ from src.camera.frame_source import (  # noqa: E402
 )
 from src.parking.zone_registry import ZoneRegistry  # noqa: E402
 from src.parking.egress_aisle_registry import EgressAisleRegistry  # noqa: E402
+from src.parking.models import IncidentRuleTiming  # noqa: E402
+from src.parking.rules.bad_parking import (  # noqa: E402
+    AISLE_BLOCK,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+)
+from src.parking.rules.double_parking import DOUBLE_PARKING  # noqa: E402
+from src.parking.rules.ev_overstay import EV_OVERSTAY  # noqa: E402
+from src.parking.rules.restricted_zone import (  # noqa: E402
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
+)
 from src.replay.publication_preparer import JsonlPublicationPreparer  # noqa: E402
 from src.session.entry_match_coordinator import EntryMatchCoordinator  # noqa: E402
 from src.storage.database import connect_database, open_database  # noqa: E402
@@ -62,6 +74,28 @@ DEFAULT_ZONES_PATH = JETSON_ROOT / "config" / "zone_definition.json"
 DEFAULT_EGRESS_AISLES_PATH = JETSON_ROOT / "config" / "egress_aisle.json"
 DEFAULT_CALIBRATION_PATH = REPOSITORY_ROOT / "ai" / "tracking" / "camera_calibration.json"
 ALLOWED_VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv"})
+VIEWER_INCIDENT_RULE_CODES = (
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
+    EV_OVERSTAY,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+    AISLE_BLOCK,
+    DOUBLE_PARKING,
+)
+
+
+def _default_incident_rule_timings() -> tuple[IncidentRuleTiming, ...]:
+    """현재 동작(0초)을 보존한 Viewer용 명시적 rule timing 집합."""
+
+    return tuple(
+        IncidentRuleTiming(
+            rule_code=rule_code,
+            confirm_duration_seconds=0.0,
+            clear_duration_seconds=0.0,
+        )
+        for rule_code in VIEWER_INCIDENT_RULE_CODES
+    )
 
 
 class ViewerInputError(ValueError):
@@ -96,6 +130,11 @@ class ViewerPolicy:
     reidentification_ambiguity_margin: float = 0.08
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
+    # 위 두 값은 알려지지 않은 future rule의 compatibility fallback이다.
+    # 현재 rule들은 아래 tuple로 독립 조정하며, 아직 권장 운영값은 아니다.
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = field(
+        default_factory=_default_incident_rule_timings
+    )
     zone_presence_min_overlap_ratio: float = 0.40
     assignment_min_overlap_ratio: float = 0.50
     assignment_ambiguous_margin: float = 0.05
@@ -149,6 +188,7 @@ class ViewerPolicy:
             ),
             incident_confirm_seconds=self.incident_confirm_seconds,
             incident_clear_seconds=self.incident_clear_seconds,
+            incident_rule_timings=self.incident_rule_timings,
             zone_presence_min_overlap_ratio=self.zone_presence_min_overlap_ratio,
             assignment_min_overlap_ratio=self.assignment_min_overlap_ratio,
             assignment_ambiguous_margin=self.assignment_ambiguous_margin,

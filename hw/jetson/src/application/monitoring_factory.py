@@ -26,6 +26,7 @@ from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.incident_reducer import InMemoryIncidentReducer
+from src.parking.models import IncidentRuleTiming
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
 from src.parking.zone_registry import ZoneRegistry
@@ -79,6 +80,9 @@ class MonitoringPolicy:
     motion_moving_threshold: float
     motion_min_samples: int
     motion_min_trend_consistency: float
+    # 빈 tuple이면 incident_confirm/clear_seconds가 모든 규칙의 compatibility
+    # 기본값이다. 명시된 규칙만 새 Incident 생성 시 override한다.
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -147,6 +151,7 @@ def build_monitoring_pipeline(
             ),
             confirm_duration_seconds=policy.incident_confirm_seconds,
             clear_duration_seconds=policy.incident_clear_seconds,
+            rule_timings=policy.incident_rule_timings,
         ),
         blocking_relation_tracker=InMemoryBlockingRelationTracker(
             confirm_duration_seconds=policy.blocking_relation_confirm_seconds,

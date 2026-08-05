@@ -32,6 +32,7 @@ from pipeline_viewer.service import (  # noqa: E402
     run_viewer_pipeline,
 )
 from pipeline_viewer.ui import render_run  # noqa: E402
+from src.parking.models import IncidentRuleTiming  # noqa: E402
 
 
 ENTRY_JSON_KEY = "jetson_viewer_entry_json"
@@ -91,6 +92,34 @@ def _render_policy_inputs() -> ViewerPolicy:
         incident_clear = columns[3].number_input(
             "Incident clear (s)", min_value=0.0, value=defaults.incident_clear_seconds
         )
+
+        st.caption(
+            "규칙별 Incident confirm/clear (provisional). 위 전역 값은 목록에 "
+            "없는 future rule의 fallback으로만 사용합니다."
+        )
+        incident_rule_timings: list[IncidentRuleTiming] = []
+        for default_timing in defaults.incident_rule_timings:
+            columns = st.columns((2, 1, 1))
+            columns[0].code(default_timing.rule_code)
+            rule_confirm = columns[1].number_input(
+                f"{default_timing.rule_code} confirm (s)",
+                min_value=0.0,
+                value=default_timing.confirm_duration_seconds,
+                label_visibility="collapsed",
+            )
+            rule_clear = columns[2].number_input(
+                f"{default_timing.rule_code} clear (s)",
+                min_value=0.0,
+                value=default_timing.clear_duration_seconds,
+                label_visibility="collapsed",
+            )
+            incident_rule_timings.append(
+                IncidentRuleTiming(
+                    rule_code=default_timing.rule_code,
+                    confirm_duration_seconds=rule_confirm,
+                    clear_duration_seconds=rule_clear,
+                )
+            )
 
         columns = st.columns(4)
         reidentification_gap = columns[0].number_input(
@@ -265,6 +294,7 @@ def _render_policy_inputs() -> ViewerPolicy:
         reidentification_ambiguity_margin=reidentification_margin,
         incident_confirm_seconds=incident_confirm,
         incident_clear_seconds=incident_clear,
+        incident_rule_timings=tuple(incident_rule_timings),
         zone_presence_min_overlap_ratio=zone_overlap,
         assignment_min_overlap_ratio=assignment_overlap,
         assignment_ambiguous_margin=ambiguous_margin,

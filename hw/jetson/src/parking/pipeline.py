@@ -51,6 +51,7 @@ from src.parking.models import (
     Incident,
     IncidentKeyScope,
     IncidentReduction,
+    IncidentSignalDiagnostic,
     IncidentSignal,
     IncidentTransition,
     ParkingAssignment,
@@ -296,6 +297,7 @@ class ParkingPipeline:
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
         placement_diagnostics: list[PlacementDiagnostic] = []
+        incident_signal_diagnostics: list[IncidentSignalDiagnostic] = []
         frames: dict[PhysicalVehicleId, _VehicleFrame] = {}
 
         # pass 1: 차량별 geometry·scope 갱신. BlockingRelation 후보는 모든
@@ -450,6 +452,7 @@ class ParkingPipeline:
                 entry_attempt_id=frame.entry_attempt_id,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
+                incident_signal_diagnostics=incident_signal_diagnostics,
             )
             signals_by_code = {signal.key.rule_code: signal for signal in signals}
             placement_diagnostics.append(
@@ -508,6 +511,7 @@ class ParkingPipeline:
             incident_transitions=tuple(incident_transitions),
             blocking_relation_updates=blocking_relation_updates,
             placement_diagnostics=tuple(placement_diagnostics),
+            incident_signal_diagnostics=tuple(incident_signal_diagnostics),
         )
 
     def _process_blocking_relations(
@@ -719,6 +723,7 @@ class ParkingPipeline:
         entry_attempt_id: EntryAttemptId | None,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
+        incident_signal_diagnostics: list[IncidentSignalDiagnostic],
     ) -> tuple[IncidentSignal, ...]:
         zone_id_by_visit_id = {
             visit.visit_id: visit.zone_id for visit in context.active_zone_visits
@@ -736,6 +741,18 @@ class ParkingPipeline:
         for evaluate in _RULE_EVALUATORS:
             for signal in evaluate(context):
                 evaluated_signals.append(signal)
+                incident_signal_diagnostics.append(
+                    IncidentSignalDiagnostic(
+                        physical_vehicle_id=(
+                            context.vehicle.physical_vehicle_id
+                        ),
+                        track_segment_id=context.vehicle.track_segment_id,
+                        signal=signal,
+                        timing=self._incident_reducer.timing_for_rule(
+                            signal.key.rule_code
+                        ),
+                    )
+                )
                 zone_id: ZoneId | None = None
                 victim_physical_vehicle_id: PhysicalVehicleId | None = None
                 if signal.key.scope_type is IncidentKeyScope.ZONE_VISIT:

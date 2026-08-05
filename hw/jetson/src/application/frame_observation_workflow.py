@@ -795,6 +795,11 @@ def _combine_parking_results(
         placement_diagnostics=tuple(
             item for result in results for item in result.placement_diagnostics
         ),
+        incident_signal_diagnostics=tuple(
+            item
+            for result in results
+            for item in result.incident_signal_diagnostics
+        ),
     )
 
 
