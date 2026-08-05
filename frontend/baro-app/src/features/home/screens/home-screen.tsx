@@ -73,7 +73,7 @@ export default function HomeScreen() {
     isLoading: isSummaryLoading,
     error: summaryError,
   } = useParkingZoneSummary();
-  const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers) : null;
+  const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null;
 
   return (
     <LinearGradient
@@ -103,6 +103,7 @@ export default function HomeScreen() {
           <ParkingStatusCard
             title={PARKING_STATUS_TITLE}
             status={parkingStatus}
+            floor="B1"
             isLoading={isSummaryLoading}
             hasError={Boolean(summaryError)}
             onPress={() => router.push('/resident/parking-map')}

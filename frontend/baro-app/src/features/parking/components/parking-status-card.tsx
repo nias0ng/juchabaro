@@ -1,6 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
-import type { ParkingStatusDisplay } from '../utils/parking-zone';
+import type { ParkingFloorKey, ParkingStatusDisplay } from '../utils/parking-zone';
 import { Palette } from '@/styles';
 
 import { ParkingLegend } from './parking-legend';
@@ -12,6 +12,7 @@ type ParkingStatusCardProps = {
   status: ParkingStatusDisplay | null;
   isLoading?: boolean;
   hasError?: boolean;
+  floor?: ParkingFloorKey;
   /** 있으면 카드 전체를 눌러서 주차 도면 전체 보기 등으로 이동할 수 있게 된다. */
   onPress?: () => void;
 };
@@ -21,6 +22,7 @@ export function ParkingStatusCard({
   status,
   isLoading = false,
   hasError = false,
+  floor,
   onPress,
 }: ParkingStatusCardProps) {
   const congestionColorStyle =
@@ -57,7 +59,7 @@ export function ParkingStatusCard({
           </View>
         ) : null}
 
-        <ParkingSpotMap cells={status?.cells ?? []} message={mapMessage} />
+        <ParkingSpotMap cells={status?.cells ?? []} message={mapMessage} floor={floor} />
 
         <ParkingLegend
           items={[

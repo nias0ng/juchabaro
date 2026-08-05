@@ -35,6 +35,67 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  mapCellMissing: {
+    backgroundColor: Palette.violet50,
+  },
+  floorLayout: {
+    alignSelf: 'center',
+    gap: Spacing.sm,
+  },
+  layoutRowGroup: {
+    gap: Spacing.sm,
+  },
+  layoutDivider: {
+    height: 22,
+    backgroundColor: Palette.violet50,
+  },
+  layoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sideCell: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    width: 40,
+    maxWidth: 40,
+    height: 32,
+    aspectRatio: undefined,
+  },
+  gapSlot: {
+    width: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accessBlock: {
+    width: 40,
+    height: 32,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitBlock: {
+    backgroundColor: Palette.blue500,
+  },
+  entryBlock: {
+    backgroundColor: Palette.emerald500,
+  },
+  accessBlockText: {
+    color: Palette.white,
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+  },
+  mainCells: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  mainCell: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    width: 32,
+    maxWidth: 32,
+  },
   mapCellOccupied: {
     backgroundColor: Palette.violet300,
   },
