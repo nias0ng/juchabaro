@@ -12,6 +12,7 @@ import pytest
 from src.application.frame_observation_workflow import FrameObservationWorkflow
 from src.application.pending_handoff_workflow import PendingHandoffWorkflow
 from src.application.physical_presence_workflow import (
+    ABSENCE_WITHOUT_EXIT_EVIDENCE,
     PHYSICAL_VEHICLE_LEFT,
     SESSION_EXITED,
     UnfinishedPhysicalVehicleScopeError,
@@ -152,6 +153,7 @@ class _ParkingPipeline:
         self.exit_result = exit_result or _empty_result()
         self.runtime_revision = 0
         self.exit_reasons: list[str] = []
+        self.exit_zone_traversal = True
         self.restored_episodes: tuple[ParkingEpisode, ...] = ()
 
     def checkpoint_state(self):
@@ -174,6 +176,10 @@ class _ParkingPipeline:
     def process(self, _batch, **_correlations) -> ParkingPipelineResult:
         self.runtime_revision += 1
         return self.process_result
+
+    def exit_zone_traversal_observed(self, physical_vehicle_id) -> bool:
+        assert physical_vehicle_id == VEHICLE_ID
+        return self.exit_zone_traversal
 
     def physical_exit(
         self,
@@ -744,7 +750,7 @@ def test_session_exit_failure_rolls_back_then_commit_is_idempotently_ackable(
             mirror.physical_termination_origin
             is PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
         )
-        assert mirror.physical_exit_evidence is PhysicalExitEvidence.FULL_AREA_ABSENCE
+        assert mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         assert mirror.exited_at == T1
         assert _outbox_count(connection) == 1
         assert parking.exit_reasons == [SESSION_EXITED, SESSION_EXITED]
@@ -816,7 +822,7 @@ def test_admin_closed_session_keeps_admin_end_and_still_records_physical_exit(
             mirror.physical_termination_origin
             is PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
         )
-        assert mirror.physical_exit_evidence is PhysicalExitEvidence.FULL_AREA_ABSENCE
+        assert mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         assert mirror.exited_at == T1
         assert parking.exit_reasons == [SESSION_EXITED]
         assert _outbox_count(connection) == 1
@@ -922,6 +928,82 @@ def test_unbound_departure_retires_locally_without_session_exit(
         assert result.retired_physical_vehicle_ids == (VEHICLE_ID,)
         assert vehicle.state is PhysicalVehicleState.RETIRED
         assert vehicle.termination_reason == PHYSICAL_VEHICLE_LEFT
+        assert parking.exit_reasons == [PHYSICAL_VEHICLE_LEFT]
+        assert _outbox_count(connection) == 0
+    finally:
+        connection.close()
+
+
+def test_bound_absence_without_exit_zone_traversal_does_not_publish_session_exit(
+    tmp_path: Path,
+) -> None:
+    """출차 구역 통과가 관측되지 않은 부재는 백엔드에 발행하지 않는다(565).
+
+    로컬 수명주기는 그대로 닫는다 — 부재 확정 사실은 forget ACK까지 매
+    프레임 반복되므로 소비하지 않으면 무한 반복이고, BOUND binding을 남기면
+    RETIRE 자체가 UnfinishedPhysicalVehicleScopeError로 실패한다.
+    """
+
+    connection = open_database(tmp_path / "departure-no-evidence.db")
+    session = _SessionWorkflow(ensure_vehicle=False)
+    parking = _ParkingPipeline(process_result=_empty_result())
+    parking.exit_zone_traversal = False
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    try:
+        _seed_bound_departure(connection)
+
+        result = workflow.process(_batch(departure=True), connection=connection)
+
+        vehicle = PhysicalVehicleRepository(connection).get(VEHICLE_ID)
+        binding = ContextBindingRepository(connection).get(BINDING_ID)
+        mirror = ParkingSessionMirrorRepository(connection).get(SESSION_ID)
+
+        # 로컬 수명주기는 현행 그대로 닫힌다.
+        assert result.retired_physical_vehicle_ids == (VEHICLE_ID,)
+        assert vehicle.state is PhysicalVehicleState.RETIRED
+        assert binding.state is ContextBindingState.ENDED
+        # Incident 종료 사유(API 7 wire 노출)는 바뀌지 않는다.
+        assert parking.exit_reasons == [SESSION_EXITED]
+        # 진단용 차량 종료 사유만 구분된다.
+        assert vehicle.termination_reason == ABSENCE_WITHOUT_EXIT_EVIDENCE
+        # 백엔드로는 아무것도 나가지 않고 mirror는 손대지 않는다.
+        assert _outbox_count(connection) == 0
+        assert mirror.physical_presence_state is PhysicalPresenceState.INSIDE
+        assert mirror.physical_termination_origin is None
+        assert mirror.physical_exit_evidence is None
+        assert mirror.exited_at is None
+        assert mirror.publication_revision == 0
+    finally:
+        connection.close()
+
+
+def test_unbound_absence_without_exit_zone_traversal_records_absence_reason(
+    tmp_path: Path,
+) -> None:
+    """session이 없는 차량도 통과 여부를 평가해 사유로 남긴다(565).
+
+    나중에 세션이 늦게 붙을 수 있으므로, 늦은 correlation이 읽을 수 있도록
+    mirror 유무와 무관하게 사유를 영속한다.
+    """
+
+    connection = open_database(tmp_path / "unbound-no-evidence.db")
+    session = _SessionWorkflow(ensure_vehicle=False)
+    parking = _ParkingPipeline(process_result=_empty_result())
+    parking.exit_zone_traversal = False
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(
+                _confirmed_absent_vehicle()
+            )
+
+        result = workflow.process(_batch(departure=True), connection=connection)
+
+        vehicle = PhysicalVehicleRepository(connection).get(VEHICLE_ID)
+        assert result.retired_physical_vehicle_ids == (VEHICLE_ID,)
+        assert vehicle.state is PhysicalVehicleState.RETIRED
+        assert vehicle.termination_reason == ABSENCE_WITHOUT_EXIT_EVIDENCE
+        # Incident 종료 사유는 현행 값을 유지한다.
         assert parking.exit_reasons == [PHYSICAL_VEHICLE_LEFT]
         assert _outbox_count(connection) == 0
     finally:

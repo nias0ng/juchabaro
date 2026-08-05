@@ -5,12 +5,21 @@
 session correlation을 고정하고 child scope를 종료한다. 모든 변경은
 상위 frame UnitOfWork에 참여하며, TrackingPipeline ACK는 commit 뒤에만
 호출되어야 한다.
+
+부재 확정을 곧 출차로 발행하지는 않는다(565). 단일 카메라에서 "전체 영역"은
+카메라 화각이므로, 주차장 안에 있으면서 화각만 벗어난 차량과 실제로 나간
+차량을 부재만으로 구분할 수 없다. 그래서 출차 구역(``ENTRY_EXIT`` /
+``EXIT``) 통과가 관측된 부재만 SessionExit으로 발행하고, 통과가 관측되지
+않은 부재는 로컬 수명주기만 닫는다. 후자의 session은 Jetson이 닫지 않으므로
+행정 종료가 필요하며, 진단을 위해 PhysicalVehicle의 termination_reason에
+``ABSENCE_WITHOUT_EXIT_EVIDENCE``를 남긴다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+import logging
 import sqlite3
 
 from src.domain.models import require_aware, require_positive
@@ -37,6 +46,9 @@ from src.tracking.models import (
 
 SESSION_EXITED = "SESSION_EXITED"
 PHYSICAL_VEHICLE_LEFT = "PHYSICAL_VEHICLE_LEFT"
+ABSENCE_WITHOUT_EXIT_EVIDENCE = "ABSENCE_WITHOUT_EXIT_EVIDENCE"
+
+logger = logging.getLogger(__name__)
 
 
 class UnfinishedPhysicalVehicleScopeError(RuntimeError):
@@ -67,6 +79,7 @@ class PhysicalDeparturePlan:
     parking_result: ParkingPipelineResult
     session_exit_transition: SessionExitTransition | None
     termination_reason: str
+    vehicle_termination_reason: str
     already_terminal: bool = False
 
 
@@ -101,13 +114,13 @@ class PhysicalPresenceWorkflow:
             PhysicalVehicleState.RETIRED,
             PhysicalVehicleState.CANCELED,
         }:
+            existing_reason = vehicle.termination_reason or PHYSICAL_VEHICLE_LEFT
             return PhysicalDeparturePlan(
                 physical_vehicle_id=physical_vehicle_id,
                 parking_result=_empty_parking_result(),
                 session_exit_transition=None,
-                termination_reason=(
-                    vehicle.termination_reason or PHYSICAL_VEHICLE_LEFT
-                ),
+                termination_reason=existing_reason,
+                vehicle_termination_reason=existing_reason,
                 already_terminal=True,
             )
         if vehicle.absence_confirmed_at is None:
@@ -143,9 +156,26 @@ class PhysicalPresenceWorkflow:
                 physical_vehicle_id
             )
 
+        traversal_observed = self._parking_pipeline.exit_zone_traversal_observed(
+            physical_vehicle_id
+        )
         termination_reason = (
             SESSION_EXITED if mirror is not None else PHYSICAL_VEHICLE_LEFT
         )
+        vehicle_termination_reason = (
+            termination_reason
+            if traversal_observed
+            else ABSENCE_WITHOUT_EXIT_EVIDENCE
+        )
+        if not traversal_observed:
+            logger.warning(
+                "부재가 확정됐지만 출차 구역 통과가 관측되지 않아 SessionExit을 "
+                "발행하지 않습니다: physical_vehicle_id=%s session_id=%s "
+                "absence_confirmed_at=%s",
+                physical_vehicle_id,
+                None if mirror is None else mirror.parking_session_id,
+                occurred_at,
+            )
         parking_result = self._parking_pipeline.physical_exit(
             physical_vehicle_id=physical_vehicle_id,
             observed_at=occurred_at,
@@ -168,7 +198,7 @@ class PhysicalPresenceWorkflow:
             )
 
         session_exit: SessionExitTransition | None = None
-        if mirror is not None:
+        if mirror is not None and traversal_observed:
             if mirror.physical_vehicle_id != physical_vehicle_id:
                 raise RuntimeError(
                     "exit correlation references another PhysicalVehicle"
@@ -180,7 +210,7 @@ class PhysicalPresenceWorkflow:
                 physical_termination_origin=(
                     PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
                 ),
-                physical_exit_evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+                physical_exit_evidence=PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL,
                 exited_at=occurred_at,
                 record_version=mirror.record_version + 1,
                 publication_revision=mirror.publication_revision + 1,
@@ -196,7 +226,7 @@ class PhysicalPresenceWorkflow:
                 publication_revision=exited_mirror.publication_revision,
                 occurred_at=occurred_at,
                 origin=PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED,
-                evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+                evidence=PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL,
             )
 
         return PhysicalDeparturePlan(
@@ -204,6 +234,7 @@ class PhysicalPresenceWorkflow:
             parking_result=parking_result,
             session_exit_transition=session_exit,
             termination_reason=termination_reason,
+            vehicle_termination_reason=vehicle_termination_reason,
         )
 
     def complete_departure(
@@ -246,7 +277,7 @@ class PhysicalPresenceWorkflow:
             state=PhysicalVehicleState.RETIRED,
             record_version=vehicle.record_version + 1,
             terminated_at=occurred_at,
-            termination_reason=plan.termination_reason,
+            termination_reason=plan.vehicle_termination_reason,
             updated_at=max(vehicle.updated_at, occurred_at),
         )
         repository.save(
