@@ -22,3 +22,7 @@ management:
 app:
   push:
     provider: expo
+  jetson:
+    enabled: true
+    provider: real
+    base-url: http://100.99.37.7:8000
