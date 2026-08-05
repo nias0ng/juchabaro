@@ -47,10 +47,14 @@ from src.parking.zone_registry import ZoneRegistry  # noqa: E402
 from src.replay.publication_preparer import JsonlPublicationPreparer  # noqa: E402
 from src.session.entry_match_coordinator import EntryMatchCoordinator  # noqa: E402
 from src.storage.database import connect_database, open_database  # noqa: E402
+from src.tracking.adapters.side_masking_detector import (  # noqa: E402
+    SideMaskingDetector,
+)
 from src.tracking.adapters.ultralytics_bytetrack import (  # noqa: E402
     UltralyticsVehicleTracker,
 )
 from src.tracking.motion_estimator import MotionEstimator  # noqa: E402
+from src.tracking.protocols import Detector  # noqa: E402
 
 from .tracing import FrameTrace, TraceCollector, parse_entry_attempt_id  # noqa: E402
 
@@ -265,8 +269,8 @@ def run_viewer_pipeline(
         calibration_path=str(request.paths.calibration),
         balance=request.policy.remap_balance,
     )
-    detector = UltralyticsVehicleTracker(
-        model_path=str(request.paths.model),
+    detector = _build_detector(
+        model_path=request.paths.model,
         tracker_config=request.policy.tracker_config,
         confidence=request.policy.confidence,
     )
@@ -414,6 +418,28 @@ def _receive_entry_event(
         )
     finally:
         connection.close()
+
+
+def _build_detector(
+    *,
+    model_path: Path,
+    tracker_config: str,
+    confidence: float,
+) -> Detector:
+    """full-frame 경로의 YOLO delegate를 좌우 마스킹 decorator로 감싼다.
+
+    `zones`가 full-frame(`DEFAULT_ZONES_PATH`) 좌표계인 이 경로에서만 조립한다
+    (537 인수인계 §6). `UltralyticsVehicleTracker` 내부는 건드리지 않는다 —
+    같은 tracker가 pilot v6 crop 리플레이 등 다른 좌표계 경로에서도 쓰이기
+    때문이다.
+    """
+
+    raw_detector = UltralyticsVehicleTracker(
+        model_path=str(model_path),
+        tracker_config=tracker_config,
+        confidence=confidence,
+    )
+    return SideMaskingDetector(inner=raw_detector)
 
 
 def _analysis_frame_count(

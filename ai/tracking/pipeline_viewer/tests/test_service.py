@@ -1,11 +1,14 @@
 """Viewer 입력 계약과 기본 경로 테스트."""
 
 import json
+from pathlib import Path
 
 import pytest
 
+from pipeline_viewer import service
 from pipeline_viewer.service import (
     EPOCH,
+    SideMaskingDetector,
     ViewerInputError,
     ViewerPolicy,
     build_allow_example,
@@ -49,3 +52,34 @@ def test_entry_event_time_must_match_video_zero() -> None:
 
     with pytest.raises(ViewerInputError, match="영상 첫 프레임"):
         parse_entry_event(json.dumps(raw))
+
+
+def test_full_frame_detector_is_wrapped_with_side_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """full-frame 경로의 YOLO delegate가 SideMaskingDetector로 조립되는지
+    실제 YOLO 모델·영상 없이 fake raw detector로 확인한다(537)."""
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeRawDetector:
+        def __init__(self, *, model_path, tracker_config, confidence) -> None:
+            captured_kwargs["model_path"] = model_path
+            captured_kwargs["tracker_config"] = tracker_config
+            captured_kwargs["confidence"] = confidence
+
+    monkeypatch.setattr(service, "UltralyticsVehicleTracker", _FakeRawDetector)
+
+    detector = service._build_detector(
+        model_path=Path("fake-model.pt"),
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+
+    assert isinstance(detector, SideMaskingDetector)
+    assert isinstance(detector._inner, _FakeRawDetector)
+    assert captured_kwargs == {
+        "model_path": "fake-model.pt",
+        "tracker_config": "bytetrack.yaml",
+        "confidence": 0.5,
+    }
