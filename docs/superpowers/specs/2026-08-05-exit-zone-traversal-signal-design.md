@@ -78,7 +78,28 @@ def exit_zone_traversal_observed(self, physical_vehicle_id: PhysicalVehicleId) -
 
 `ABSENCE_WITHOUT_EXIT_EVIDENCE`는 `physical_vehicles.termination_reason`에 기록된다. 이 컬럼은 CHECK 제약이 없는 자유 TEXT라 마이그레이션이 필요 없다.
 
-### 3. 로컬 수명주기는 현행 유지
+### 3. 늦은 correlation 경로도 같은 규칙을 따른다
+
+SessionExit을 만드는 지점은 두 곳이다. `plan_departure` 외에 `PendingHandoffWorkflow`(`src/application/pending_handoff_workflow.py:243-254`)가 있다 — 차량이 이미 `RETIRED`된 뒤 그 세션 결정이 늦게 도착했을 때 historical correlation으로 SessionExit을 만든다. 이쪽도 `FULL_AREA_ABSENCE`를 하드코딩하고 있다.
+
+이 경로에서는 통과 여부를 다시 계산할 수 없다 — 차량이 이미 종료됐고 ZoneVisit도 함께 종료됐으므로 `active_visits()`가 비어 있다. 따라서 **통과 여부를 departure 시점에 영속해야 한다.**
+
+영속 위치는 `physical_vehicles.termination_reason`이다(CHECK 제약 없는 자유 TEXT, 마이그레이션 불필요). 단, 이 값은 현재 Incident 종료 사유와 ContextBinding 종료 사유로도 함께 쓰이고(`src/application/physical_presence_workflow.py:152`, `:163`), Incident 종료 사유는 API 7의 `terminationReason`으로 **wire에 노출된다.** 그래서 하나의 값을 재활용하면 wire가 조용히 바뀐다.
+
+`PhysicalDeparturePlan`에 필드를 하나 더 둬서 분리한다.
+
+| 용도 | 필드 | 값 |
+|---|---|---|
+| Incident 종료 · ContextBinding 종료 (wire 노출) | `termination_reason` (기존) | mirror 있으면 `SESSION_EXITED`, 없으면 `PHYSICAL_VEHICLE_LEFT` — **현행 그대로** |
+| PhysicalVehicle 종료 사유 (로컬 진단 + 늦은 correlation 입력) | `vehicle_termination_reason` (신규) | 통과 없으면 `ABSENCE_WITHOUT_EXIT_EVIDENCE`, 있으면 위와 동일한 값 |
+
+따라서 통과 여부는 **mirror 유무와 무관하게 항상 평가한다.** mirror가 없는 차량도 나중에 세션이 늦게 붙을 수 있기 때문이다.
+
+`PendingHandoffWorkflow`는 `vehicle.termination_reason`이 `ABSENCE_WITHOUT_EXIT_EVIDENCE`이면 mirror를 `EXITED`로 갱신하지 않고 SessionExit도 만들지 않는다(해당 반복을 `continue`로 건너뛴다). 그 외에는 현행 동작을 유지하되 `evidence`를 `ENTRY_EXIT_TRAVERSAL`로 바꾼다.
+
+mirror가 아직 없는 상태에서 건너뛰면 mirror row가 생성되지 않는다. 이는 의도된 결과다 — 확인할 수 없는 출차 상태를 만들어 두지 않는다.
+
+### 4. 로컬 수명주기는 현행 유지
 
 통과가 없어도 PhysicalVehicle은 `RETIRED`하고, child scope(ZoneVisit·ParkingEpisode·Incident)와 ContextBinding은 지금처럼 종료한다. 두 가지 이유로 이 부분을 바꾸지 않는다.
 
@@ -87,7 +108,7 @@ def exit_zone_traversal_observed(self, physical_vehicle_id: PhysicalVehicleId) -
 
 즉 이 변경은 "로컬 수명주기는 그대로 닫고, 백엔드 발행과 mirror 상태만 억제한다"로 구현된다.
 
-### 4. 관측 가능성
+### 5. 관측 가능성
 
 발행하지 않은 출차가 조용히 사라지지 않도록 두 가지를 남긴다.
 
@@ -96,7 +117,7 @@ def exit_zone_traversal_observed(self, physical_vehicle_id: PhysicalVehicleId) -
 
 백엔드에 "출차 근거 없는 부재" 사실을 별도로 알리는 경로는 이번 범위 밖이다 — 새 API라 계약 협의가 먼저 필요하다(§후속).
 
-### 5. 계약 문서 수정
+### 6. 계약 문서 수정
 
 `docs/HW API 정리.md` API 10(SessionExit)의 다음 문장이 사실과 달라진다.
 
@@ -117,11 +138,14 @@ def exit_zone_traversal_observed(self, physical_vehicle_id: PhysicalVehicleId) -
 - 출차가 아닌 구역(`GENERAL`, `AISLE`, `ENTRY` role) 방문만 열려 있으면 통과로 인정되지 않는지
 - 읽기 순서 회귀: `physical_exit()` 이후 `exit_zone_traversal_observed()`가 `False`
 - 현재 ZoneRegistry에 없는 zone_id의 방문이 열려 있어도 예외 없이 통과 미인정으로 처리되는지
+- 통과 없이 종료된 차량의 `termination_reason`이 `ABSENCE_WITHOUT_EXIT_EVIDENCE`이고, Incident 종료 사유와 ContextBinding 종료 사유는 **바뀌지 않는지**(wire 안정성)
+- 늦은 correlation 경로: `ABSENCE_WITHOUT_EXIT_EVIDENCE`로 종료된 차량은 SessionExit이 만들어지지 않고 mirror도 `EXITED`가 되지 않는지
+- 늦은 correlation 경로: 통과로 종료된 차량은 현행대로 SessionExit이 만들어지고 evidence가 `ENTRY_EXIT_TRAVERSAL`인지
 - 기존 SessionExit 테스트들의 evidence 기대값을 `ENTRY_EXIT_TRAVERSAL`로 갱신
 
 ## 받아들이는 대가
 
-통과가 관측되지 않은 세션은 **Jetson이 닫을 방법이 없다.** 그 차가 다시 나타나도 새 PhysicalVehicle이 되어 기존 mirror에 재correlate되지 않는다. 관리자 수동 종료(백엔드 행정 `CLOSED`)가 유일한 해소 경로다. 이는 A안 채택 시 의식적으로 받아들인 결과이며, §4의 로그와 termination_reason으로 진단 가능하게만 만든다.
+통과가 관측되지 않은 세션은 **Jetson이 닫을 방법이 없다.** 그 차가 다시 나타나도 새 PhysicalVehicle이 되어 기존 mirror에 재correlate되지 않는다. 관리자 수동 종료(백엔드 행정 `CLOSED`)가 유일한 해소 경로다. 이는 A안 채택 시 의식적으로 받아들인 결과이며, §5의 로그와 termination_reason으로 진단 가능하게만 만든다.
 
 ## 비범위 / 후속
 
