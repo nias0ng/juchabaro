@@ -13,6 +13,10 @@ export const styles = StyleSheet.create({
   sheet: {
     width: '100%',
     maxWidth: 360,
+    // 구역이 많으면 지도가 화면보다 길어질 수 있어 시트 자체 높이를 화면 안으로 제한하고,
+    // 넘치는 부분은 아래 scrollArea가 스크롤로 보여준다.
+    maxHeight: '85%',
+    overflow: 'hidden',
     borderRadius: 26,
     backgroundColor: Palette.white,
     padding: Spacing.lg,
@@ -22,6 +26,13 @@ export const styles = StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: 22,
     elevation: 6,
+  },
+  scrollArea: {
+    flexShrink: 1,
+  },
+  scrollContent: {
+    gap: Spacing.base,
+    paddingBottom: Spacing.xs,
   },
   headerRow: {
     flexDirection: 'row',

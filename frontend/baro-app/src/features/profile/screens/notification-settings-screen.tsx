@@ -22,11 +22,13 @@ type EditingField = 'start' | 'end' | null;
 export default function NotificationSettingsScreen() {
   const {
     settings,
+    hasChanges,
     isLoading,
     isSaving,
     loadErrorMessage,
     saveErrorMessage,
     reload,
+    save,
     setResponseReminder,
     setEvOverstay,
     setQuietHoursStart,
@@ -91,7 +93,18 @@ export default function NotificationSettingsScreen() {
                 onPressEnd={() => setEditingField('end')}
               />
 
-              {isSaving ? <Text style={styles.savingText}>변경사항을 저장하는 중입니다...</Text> : null}
+              {saveErrorMessage ? null : hasChanges ? (
+                <Text style={styles.savingText}>저장하지 않은 변경사항이 있습니다.</Text>
+              ) : null}
+
+              <AppButton
+                label="저장"
+                size="lg"
+                fullWidth
+                loading={isSaving}
+                disabled={!hasChanges}
+                onPress={() => void save()}
+              />
             </>
           )}
         </Stack>

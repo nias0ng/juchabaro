@@ -8,6 +8,7 @@ import { useMoveRequestDetail } from '@/features/move-request/hooks/use-move-req
 import { RedirectCountdown } from '@/features/notification/components/response-complete/redirect-countdown';
 import { useRedirectCountdown } from '@/features/notification/hooks/use-redirect-countdown';
 import { formatEstimatedMinutesLabel, formatTimeLabel } from '@/features/notification/utils/notification';
+import { toDisplayZoneNumber } from '@/features/parking/utils/parking-zone';
 import { Gradients } from '@/styles';
 
 import { styles } from './response-complete-screen.styles';
@@ -67,7 +68,7 @@ export default function ResponseCompleteScreen() {
                 { label: '내 응답', value: formatEstimatedMinutesLabel(latestResponse.estimatedMinutes) },
                 {
                   label: '차량',
-                  value: `${detail.targetVehicle.plateNumber} · ${detail.event.zoneNumber ?? DEFAULT_LOCATION_LABEL}`,
+                  value: `${detail.targetVehicle.plateNumber} · ${toDisplayZoneNumber(detail.event.zoneNumber) ?? DEFAULT_LOCATION_LABEL}`,
                 },
                 { label: '이동 기한', value: formatTimeLabel(detail.dueAt) },
               ]}

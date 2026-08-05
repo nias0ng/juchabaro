@@ -1,4 +1,5 @@
 import type { ParkingSession, ParkingSessionStatus } from '../api/types';
+import { toDisplayZoneNumber } from './parking-zone';
 
 function isEvChargingSession(session: ParkingSession): session is ParkingSession & { dueAt: string } {
   return (
@@ -36,16 +37,11 @@ export type VehicleStatusDisplay = {
   dueAt: string | null;
 };
 
-function toDisplayZone(zoneNumber: string | null): string | null {
-  if (!zoneNumber?.trim()) return null;
-  return zoneNumber.trim().toUpperCase().startsWith('AISLE') ? '통로' : zoneNumber;
-}
-
 export function formatParkingLocation(
   floor: string | null,
   zoneNumber: string | null,
 ): string {
-  const parts = [floor, toDisplayZone(zoneNumber)].filter(
+  const parts = [floor, toDisplayZoneNumber(zoneNumber)].filter(
     (value): value is string => Boolean(value?.trim()),
   );
   return parts.length > 0 ? parts.join(' · ') : '위치 확인 중';

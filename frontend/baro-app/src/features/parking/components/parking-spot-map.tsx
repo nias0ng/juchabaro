@@ -2,6 +2,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import {
   floorZoneLayout,
+  toDisplayZoneNumber,
   type ParkingFloorKey,
   type SpotCell,
 } from '../utils/parking-zone';
@@ -109,7 +110,8 @@ export function ParkingSpotMap({
     const label = toCellLabel(cell);
     const selected = selectedSpotCode === cell.spotCode;
     // 고르는 화면(onPressCell 있음)에서는 어떤 칸인지 알아야 고를 수 있어서, 상태 라벨 대신 구역 번호를 보여준다.
-    const displayText = onPressCell ? cell.spotCode : label?.text;
+    // 실제로 넘기는 값(onPressCell 콜백)은 원본 spotCode 그대로 쓰고, 화면 표시 텍스트만 바꾼다.
+    const displayText = onPressCell ? (toDisplayZoneNumber(cell.spotCode) ?? cell.spotCode) : label?.text;
     const displayStyle = onPressCell ? styles.spotCodeLabel : label?.style;
 
     return (

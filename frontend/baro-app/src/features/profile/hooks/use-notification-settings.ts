@@ -16,9 +16,20 @@ const DEFAULT_SETTINGS: NotificationSettings = {
   quietHoursEnd: '07:00',
 };
 
+function hasUnsavedChanges(draft: NotificationSettings, saved: NotificationSettings): boolean {
+  return (
+    draft.responseReminder !== saved.responseReminder ||
+    draft.evOverstay !== saved.evOverstay ||
+    draft.quietHoursStart !== saved.quietHoursStart ||
+    draft.quietHoursEnd !== saved.quietHoursEnd
+  );
+}
+
 export function useNotificationSettings() {
   const { accessToken, status } = useAuth();
-  const [settings, setSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
+  // savedSettings는 서버에 실제로 저장된 값, draftSettings는 화면에서 편집 중인(아직 저장 전) 값이다.
+  const [savedSettings, setSavedSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
+  const [draftSettings, setDraftSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [loadErrorMessage, setLoadErrorMessage] = useState<string>();
@@ -44,7 +55,10 @@ export function useNotificationSettings() {
 
     try {
       const result = await getNotificationSettings(accessToken);
-      if (mountedRef.current) setSettings(result);
+      if (mountedRef.current) {
+        setSavedSettings(result);
+        setDraftSettings(result);
+      }
     } catch (error) {
       if (!mountedRef.current) return;
       setLoadErrorMessage(
@@ -59,45 +73,55 @@ export function useNotificationSettings() {
     void loadSettings();
   }, [loadSettings]);
 
-  const saveSettings = useCallback(
-    async (request: UpdateNotificationSettingsRequest) => {
-      if (!accessToken || savingRef.current) return;
+  const save = useCallback(async () => {
+    if (!accessToken || savingRef.current || !hasUnsavedChanges(draftSettings, savedSettings)) return;
 
-      const previousSettings = settings;
-      savingRef.current = true;
-      setIsSaving(true);
-      setSaveErrorMessage(undefined);
-      setSettings((current) => ({ ...current, ...request }));
+    const request: UpdateNotificationSettingsRequest = {
+      responseReminder: draftSettings.responseReminder,
+      evOverstay: draftSettings.evOverstay,
+      quietHoursStart: draftSettings.quietHoursStart,
+      quietHoursEnd: draftSettings.quietHoursEnd,
+    };
 
-      try {
-        const result = await updateNotificationSettings(request, accessToken);
-        if (mountedRef.current) setSettings(result);
-      } catch (error) {
-        if (!mountedRef.current) return;
-        setSettings(previousSettings);
-        setSaveErrorMessage(
-          error instanceof ApiError ? error.message : '알림 설정을 저장하지 못했습니다.',
-        );
-      } finally {
-        savingRef.current = false;
-        if (mountedRef.current) setIsSaving(false);
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveErrorMessage(undefined);
+
+    try {
+      const result = await updateNotificationSettings(request, accessToken);
+      if (mountedRef.current) {
+        setSavedSettings(result);
+        setDraftSettings(result);
       }
-    },
-    [accessToken, settings],
-  );
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setSaveErrorMessage(
+        error instanceof ApiError ? error.message : '알림 설정을 저장하지 못했습니다.',
+      );
+    } finally {
+      savingRef.current = false;
+      if (mountedRef.current) setIsSaving(false);
+    }
+  }, [accessToken, draftSettings, savedSettings]);
 
-  const setResponseReminder = (value: boolean) => void saveSettings({ responseReminder: value });
-  const setEvOverstay = (value: boolean) => void saveSettings({ evOverstay: value });
-  const setQuietHoursStart = (value: string) => void saveSettings({ quietHoursStart: value });
-  const setQuietHoursEnd = (value: string) => void saveSettings({ quietHoursEnd: value });
+  const setResponseReminder = (value: boolean) =>
+    setDraftSettings((current) => ({ ...current, responseReminder: value }));
+  const setEvOverstay = (value: boolean) =>
+    setDraftSettings((current) => ({ ...current, evOverstay: value }));
+  const setQuietHoursStart = (value: string) =>
+    setDraftSettings((current) => ({ ...current, quietHoursStart: value }));
+  const setQuietHoursEnd = (value: string) =>
+    setDraftSettings((current) => ({ ...current, quietHoursEnd: value }));
 
   return {
-    settings,
+    settings: draftSettings,
+    hasChanges: hasUnsavedChanges(draftSettings, savedSettings),
     isLoading,
     isSaving,
     loadErrorMessage,
     saveErrorMessage,
     reload: loadSettings,
+    save,
     setResponseReminder,
     setEvOverstay,
     setQuietHoursStart,

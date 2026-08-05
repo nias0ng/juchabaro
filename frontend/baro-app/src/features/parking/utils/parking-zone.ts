@@ -19,6 +19,13 @@ export type SpotCell = {
   spotType: ParkingZoneType;
 };
 
+// AISLE(통로) zone은 주차 칸 코드가 아니라서 "AISLE1-01" 같은 원본 코드를 그대로 보여주면
+// 사용자가 혼란스러워한다. 화면에 구역 번호를 보여주는 모든 곳에서 이 함수를 거친다.
+export function toDisplayZoneNumber(zoneNumber: string | null): string | null {
+  if (!zoneNumber?.trim()) return null;
+  return zoneNumber.trim().toUpperCase().startsWith('AISLE') ? '통로주차' : zoneNumber;
+}
+
 export type ParkingFloorKey = 'B1' | 'B2' | 'B3';
 
 export type ParkingFloorLayout = {
