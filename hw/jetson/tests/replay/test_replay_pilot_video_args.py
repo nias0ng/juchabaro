@@ -42,6 +42,8 @@ REQUIRED_THRESHOLD_ARGS = [
     "--assignment-min-overlap-ratio", "0.5",
     "--assignment-ambiguous-margin", "0.05",
     "--bad-parking-min-primary-overlap-ratio", "0.75",
+    "--bad-parking-min-secondary-overlap-ratio", "0.25",
+    "--out-of-zone-min-spot-overlap-ratio", "0.50",
     "--blocking-relation-confirm-seconds", "3.0",
     "--blocking-relation-clear-seconds", "3.0",
 ]
@@ -139,6 +141,8 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.assignment_min_overlap_ratio == 0.5
     assert policy.assignment_ambiguous_margin == 0.05
     assert policy.bad_parking_min_primary_overlap_ratio == 0.75
+    assert policy.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert policy.out_of_zone_min_spot_overlap_ratio == 0.50
     assert policy.zone_presence_min_overlap_ratio == 0.6
     assert policy.entry_zone_min_overlap_ratio == 0.40
     assert policy.parking_confirm_seconds == 600.0

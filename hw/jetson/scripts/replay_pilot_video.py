@@ -64,6 +64,8 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --reidentification-ambiguity-margin 0.08 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
         --bad-parking-min-primary-overlap-ratio 0.75 \\
+        --bad-parking-min-secondary-overlap-ratio 0.25 \\
+        --out-of-zone-min-spot-overlap-ratio 0.50 \\
         --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
@@ -210,6 +212,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="정상 주차로 인정할 1위 주차면 최소 포함률. 파일럿 실측값을 필수로 받는다.",
     )
     parser.add_argument(
+        "--bad-parking-min-secondary-overlap-ratio",
+        type=float,
+        required=True,
+        help="BAD_PARKING으로 보는 두 번째 주차면의 최소 차량 포함 비율.",
+    )
+    parser.add_argument(
+        "--out-of-zone-min-spot-overlap-ratio",
+        type=float,
+        required=True,
+        help="OUT_OF_ZONE이 아니기 위한 전체 주차면 union의 최소 차량 포함 비율.",
+    )
+    parser.add_argument(
         "--blocking-relation-confirm-seconds", type=float, required=True,
         help="이중주차 차단 관계 확정 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
     )
@@ -337,6 +351,12 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         assignment_ambiguous_margin=args.assignment_ambiguous_margin,
         bad_parking_min_primary_overlap_ratio=(
             args.bad_parking_min_primary_overlap_ratio
+        ),
+        bad_parking_min_secondary_overlap_ratio=(
+            args.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=(
+            args.out_of_zone_min_spot_overlap_ratio
         ),
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,

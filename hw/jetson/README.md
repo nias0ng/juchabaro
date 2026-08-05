@@ -301,6 +301,8 @@ python -m scripts.replay_pilot_video \
     --reidentification-ambiguity-margin 0.08 \
     --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \
     --bad-parking-min-primary-overlap-ratio 0.75 \
+    --bad-parking-min-secondary-overlap-ratio 0.25 \
+    --out-of-zone-min-spot-overlap-ratio 0.50 \
     --blocking-relation-confirm-seconds 1.0 \
     --blocking-relation-clear-seconds 1.0 \
     --out-events out/video1_events.jsonl \

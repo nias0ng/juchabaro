@@ -75,7 +75,6 @@ from src.parking.zone_registry import ZoneRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.storage.database import connect_database, open_database
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
-from src.tracking.motion_estimator import MotionEstimator
 
 LOGGER = logging.getLogger("watch_live_stream")
 
@@ -133,16 +132,22 @@ def build_parser() -> argparse.ArgumentParser:
     # (이 스크립트는 임계값 측정 도구가 아니라 눈으로 보는 용도라 기본값을 둔다.)
     parser.add_argument("--zone-entry-confirm-seconds", type=float, default=3.0)
     parser.add_argument("--zone-exit-confirm-seconds", type=float, default=3.0)
-    parser.add_argument("--parking-move-confirm-seconds", type=float, default=3.0)
+    parser.add_argument("--parking-move-confirm-seconds", type=float, default=0.5)
     parser.add_argument("--absence-confirmation-seconds", type=float, default=5.0)
     parser.add_argument("--trusted-sample-max-gap-seconds", type=float, default=1.0)
+    parser.add_argument("--reidentification-max-gap-seconds", type=float, default=4.0)
+    parser.add_argument("--reidentification-min-score", type=float, default=0.42)
+    parser.add_argument("--reidentification-ambiguity-margin", type=float, default=0.08)
     parser.add_argument("--assignment-min-overlap-ratio", type=float, default=0.5)
     parser.add_argument("--assignment-ambiguous-margin", type=float, default=0.05)
+    parser.add_argument("--bad-parking-min-primary-overlap-ratio", type=float, default=0.75)
+    parser.add_argument("--bad-parking-min-secondary-overlap-ratio", type=float, default=0.25)
+    parser.add_argument("--out-of-zone-min-spot-overlap-ratio", type=float, default=0.50)
     parser.add_argument("--blocking-relation-confirm-seconds", type=float, default=3.0)
     parser.add_argument("--blocking-relation-clear-seconds", type=float, default=3.0)
     parser.add_argument(
-        "--parking-confirm-seconds", type=float, default=10.0,
-        help="정차 후 주차로 확정하기까지 걸리는 시간(초). 시연용 기본값 10초 "
+        "--parking-confirm-seconds", type=float, default=5.0,
+        help="정차 후 주차로 확정하기까지 걸리는 시간(초). 시연용 기본값 5초 "
         "(실제 요구사항 값 600초와 다름 - 눈으로 빠르게 확인하려는 목적).",
     )
     parser.add_argument("--entry-zone-min-overlap-ratio", type=float, default=0.40)
@@ -150,7 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--incident-clear-seconds", type=float, default=0.0)
     parser.add_argument("--min-overlap-ratio", type=float, default=0.40)
 
-    parser.add_argument("--movement-epsilon", type=float, default=0.01)
+    parser.add_argument("--motion-window-seconds", type=float, default=0.75)
+    parser.add_argument("--motion-min-observation-span-seconds", type=float, default=0.20)
+    parser.add_argument("--motion-max-sample-gap-seconds", type=float, default=0.50)
+    parser.add_argument("--motion-stationary-threshold", type=float, default=0.03)
+    parser.add_argument("--motion-moving-threshold", type=float, default=0.10)
+    parser.add_argument("--motion-min-samples", type=int, default=3)
+    parser.add_argument("--motion-min-trend-consistency", type=float, default=0.60)
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--remap-balance", type=float, default=DEFAULT_REMAP_BALANCE)
@@ -183,13 +194,32 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         parking_move_confirm_seconds=args.parking_move_confirm_seconds,
         absence_confirmation_seconds=args.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=args.trusted_sample_max_gap_seconds,
+        reidentification_max_gap_seconds=args.reidentification_max_gap_seconds,
+        reidentification_min_score=args.reidentification_min_score,
+        reidentification_ambiguity_margin=args.reidentification_ambiguity_margin,
         incident_confirm_seconds=args.incident_confirm_seconds,
         incident_clear_seconds=args.incident_clear_seconds,
         zone_presence_min_overlap_ratio=args.min_overlap_ratio,
         assignment_min_overlap_ratio=args.assignment_min_overlap_ratio,
         assignment_ambiguous_margin=args.assignment_ambiguous_margin,
+        bad_parking_min_primary_overlap_ratio=(
+            args.bad_parking_min_primary_overlap_ratio
+        ),
+        bad_parking_min_secondary_overlap_ratio=(
+            args.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=args.out_of_zone_min_spot_overlap_ratio,
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
+        motion_window_seconds=args.motion_window_seconds,
+        motion_min_observation_span_seconds=(
+            args.motion_min_observation_span_seconds
+        ),
+        motion_max_sample_gap_seconds=args.motion_max_sample_gap_seconds,
+        motion_stationary_threshold=args.motion_stationary_threshold,
+        motion_moving_threshold=args.motion_moving_threshold,
+        motion_min_samples=args.motion_min_samples,
+        motion_min_trend_consistency=args.motion_min_trend_consistency,
     )
 
 
@@ -229,7 +259,6 @@ def run(args: argparse.Namespace) -> int:
                 detector=detector,
                 publication_preparer=JsonlPublicationPreparer(),
                 connection_factory=lambda: connect_database(database_path),
-                motion_estimator=MotionEstimator(movement_epsilon=args.movement_epsilon),
             ),
         )
 

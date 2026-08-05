@@ -20,7 +20,12 @@ from src.domain.models import (
     require_positive,
 )
 from src.session.models import EntryAttemptId
-from src.tracking.models import MotionSignal, ParkingSessionId, PhysicalVehicleId
+from src.tracking.models import (
+    MotionSignal,
+    ParkingSessionId,
+    PhysicalVehicleId,
+    TrackSegmentId,
+)
 
 
 ZoneId = NewType("ZoneId", int)
@@ -32,6 +37,7 @@ IncidentId = NewType("IncidentId", UUID)
 
 NormalizedPoint = tuple[float, float]
 NormalizedPolygon = tuple[NormalizedPoint, ...]
+_PLACEMENT_RATIO_TOLERANCE = 1e-9
 
 
 class ZoneType(str, Enum):
@@ -135,6 +141,127 @@ class AssignmentState(str, Enum):
     ASSIGNED = "ASSIGNED"
     AMBIGUOUS = "AMBIGUOUS"
     UNASSIGNED = "UNASSIGNED"
+
+
+class PlacementEvidenceSource(str, Enum):
+    """Rule evaluation에 사용한 공간 근거의 시간적 출처."""
+
+    EPHEMERAL_FRAME = "EPHEMERAL_FRAME"
+    PARKED_SNAPSHOT = "PARKED_SNAPSHOT"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ZoneOverlapEvidence:
+    """차량 footprint 대비 한 주차면의 포함 비율."""
+
+    zone_id: ZoneId
+    overlap_ratio: float
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.overlap_ratio <= 1.0:
+            raise ValueError("zone overlap ratio must be between 0 and 1")
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlacementEvidence:
+    """Assignment와 공간 위반 규칙이 함께 소비하는 순수 geometry 근거."""
+
+    representative_footprint: NormalizedPolygon
+    zone_definition_version: ZoneDefinitionVersion
+    observed_at: datetime
+    candidate_overlaps: tuple[ZoneOverlapEvidence, ...]
+    primary_zone_id: ZoneId | None
+    primary_overlap_ratio: float
+    secondary_zone_id: ZoneId | None
+    secondary_overlap_ratio: float
+    dominance_gap: float
+    spot_union_overlap_ratio: float
+    outside_spot_overlap_ratio: float
+
+    def __post_init__(self) -> None:
+        require_aware(self.observed_at, "observed_at")
+        require_positive(
+            self.zone_definition_version,
+            "zone_definition_version",
+        )
+        if len(self.representative_footprint) < 3:
+            raise ValueError("placement footprint requires at least three points")
+        for point in self.representative_footprint:
+            if len(point) != 2 or not all(
+                0.0 <= coordinate <= 1.0 for coordinate in point
+            ):
+                raise ValueError(
+                    "placement footprint must use normalized coordinates"
+                )
+        for name in (
+            "primary_overlap_ratio",
+            "secondary_overlap_ratio",
+            "dominance_gap",
+            "spot_union_overlap_ratio",
+            "outside_spot_overlap_ratio",
+        ):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+        expected_primary = (
+            None if not self.candidate_overlaps else self.candidate_overlaps[0].zone_id
+        )
+        expected_secondary = (
+            None
+            if len(self.candidate_overlaps) < 2
+            else self.candidate_overlaps[1].zone_id
+        )
+        if self.primary_zone_id != expected_primary:
+            raise ValueError("primary zone must match ranked candidate evidence")
+        if self.secondary_zone_id != expected_secondary:
+            raise ValueError("secondary zone must match ranked candidate evidence")
+        candidate_zone_ids = tuple(
+            item.zone_id for item in self.candidate_overlaps
+        )
+        if len(candidate_zone_ids) != len(set(candidate_zone_ids)):
+            raise ValueError("candidate overlap zone ids must be unique")
+        ranked = tuple(
+            (-item.overlap_ratio, int(item.zone_id))
+            for item in self.candidate_overlaps
+        )
+        if ranked != tuple(sorted(ranked)):
+            raise ValueError("candidate overlaps must use deterministic rank order")
+        expected_primary_ratio = (
+            0.0
+            if not self.candidate_overlaps
+            else self.candidate_overlaps[0].overlap_ratio
+        )
+        expected_secondary_ratio = (
+            0.0
+            if len(self.candidate_overlaps) < 2
+            else self.candidate_overlaps[1].overlap_ratio
+        )
+        expected_gap = expected_primary_ratio - expected_secondary_ratio
+        expected_union = min(
+            1.0,
+            sum(item.overlap_ratio for item in self.candidate_overlaps),
+        )
+        for actual, expected, name in (
+            (
+                self.primary_overlap_ratio,
+                expected_primary_ratio,
+                "primary overlap ratio",
+            ),
+            (
+                self.secondary_overlap_ratio,
+                expected_secondary_ratio,
+                "secondary overlap ratio",
+            ),
+            (self.dominance_gap, expected_gap, "dominance gap"),
+            (self.spot_union_overlap_ratio, expected_union, "spot union ratio"),
+        ):
+            if abs(actual - expected) > _PLACEMENT_RATIO_TOLERANCE:
+                raise ValueError(f"{name} must match candidate evidence")
+        if abs(
+            self.outside_spot_overlap_ratio
+            - (1.0 - self.spot_union_overlap_ratio)
+        ) > _PLACEMENT_RATIO_TOLERANCE:
+            raise ValueError("outside ratio must complement spot union ratio")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -438,6 +565,35 @@ class IncidentSignal:
 
 
 @dataclass(frozen=True, kw_only=True)
+class PlacementDiagnostic:
+    """한 frame에서 실제 rule 입력으로 사용한 비영속 placement 진단값."""
+
+    physical_vehicle_id: PhysicalVehicleId
+    track_segment_id: TrackSegmentId
+    source: PlacementEvidenceSource
+    evidence: PlacementEvidence
+    assignment: ParkingAssignment
+    parking_state: ParkingState | None
+    bad_parking_signal: IncidentSignal
+    out_of_zone_signal: IncidentSignal
+
+    def __post_init__(self) -> None:
+        expected_key = self.physical_vehicle_id
+        for signal, rule_code in (
+            (self.bad_parking_signal, "BAD_PARKING"),
+            (self.out_of_zone_signal, "OUT_OF_ZONE"),
+        ):
+            if (
+                signal.key.scope_type is not IncidentKeyScope.PHYSICAL_VEHICLE
+                or signal.key.scope_id != expected_key
+                or signal.key.rule_code != rule_code
+            ):
+                raise ValueError(
+                    "placement diagnostic signals must match vehicle and rule"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
 class Incident:
     """같은 IncidentKey를 Candidate부터 terminal까지 유지하는 aggregate."""
 
@@ -568,3 +724,4 @@ class ParkingPipelineResult:
     parking_transitions: tuple[ParkingTransition, ...] = ()
     blocking_relation_updates: tuple[BlockingRelation, ...] = ()
     incident_updates: tuple[Incident, ...] = ()
+    placement_diagnostics: tuple[PlacementDiagnostic, ...] = ()

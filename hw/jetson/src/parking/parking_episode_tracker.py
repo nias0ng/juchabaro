@@ -36,7 +36,6 @@ _NON_TERMINAL_STATES = {
     ParkingState.MOVE_PENDING,
 }
 
-
 class ParkingEpisodeTracker(Protocol):
     """신뢰 가능한 motion sample을 ParkingEpisode snapshot으로 변환한다."""
 
@@ -196,9 +195,10 @@ class InMemoryParkingEpisodeTracker:
     ) -> ParkingEpisode | None:
         """한 motion sample을 적용한다.
 
-        ParkingAssignment는 PARKED로 전이할 때 필수다. episode의
-        assignment는 느은 correlation 후에도 원래 PARKED projection을
-        재구성할 수 있게 확정 시점 snapshot으로 고정한다.
+        ParkingAssignment는 PARKED로 전이할 때 필수다. STOP_PENDING의
+        assignment는 아직 공개되지 않은 최초 trusted placement 후보이며,
+        PARKED부터는 늦은 correlation 뒤에도 원래 projection을 재구성할 수
+        있도록 고정된 snapshot이다.
         """
 
         if (
@@ -225,6 +225,7 @@ class InMemoryParkingEpisodeTracker:
                 parking_session_id=parking_session_id,
                 observation=observation,
                 observed_at=observed_at,
+                assignment=assignment,
             )
 
         previous_episode = slot.episode
@@ -345,6 +346,10 @@ class InMemoryParkingEpisodeTracker:
             observation=exit_observation,
             record_version=slot.episode.record_version + 1,
             updated_at=observed_at,
+            assignment=(
+                None if slot.episode.state is ParkingState.STOP_PENDING
+                else slot.episode.assignment
+            ),
             ended_at=observed_at,
             termination_reason=PHYSICAL_EXIT,
         )
@@ -358,6 +363,7 @@ class InMemoryParkingEpisodeTracker:
         parking_session_id: ParkingSessionId | None,
         observation: ObservationStatus,
         observed_at: datetime,
+        assignment: ParkingAssignment | None,
     ) -> ParkingEpisode:
         episode = ParkingEpisode(
             episode_id=ParkingEpisodeId(uuid4()),
@@ -375,6 +381,7 @@ class InMemoryParkingEpisodeTracker:
             created_at=observed_at,
             updated_at=observed_at,
             trusted_sample_max_gap_seconds=self._trusted_sample_max_gap_seconds,
+            assignment=assignment,
         )
         self._slots[physical_vehicle_id] = _EpisodeSlot(
             episode=episode,
@@ -400,6 +407,7 @@ class InMemoryParkingEpisodeTracker:
                 last_signal=signal,
                 record_version=slot.episode.record_version + 1,
                 updated_at=observed_at,
+                assignment=None,
                 ended_at=observed_at,
                 termination_reason=STOP_NOT_CONFIRMED,
             )
@@ -414,8 +422,14 @@ class InMemoryParkingEpisodeTracker:
             delta = 0.0
         trusted = slot.episode.stationary_trusted_seconds + delta
         becomes_parked = trusted >= slot.episode.parking_confirmation_seconds
-        if becomes_parked and assignment is None:
+        if becomes_parked and slot.episode.assignment is None and assignment is None:
             raise ValueError("assignment is required when ParkingEpisode becomes PARKED")
+
+        # Motion owner가 신뢰한 첫 STATIONARY placement를 latch한다. 그 뒤 여러
+        # frame의 detector bbox jitter가 PARKED snapshot을 바꾸지 않으며, 후보가
+        # episode와 함께 영속되므로 restart 전후에도 동일하다. 최초 sample에
+        # assignment가 없었던 직접 호출만 이후 첫 non-null 값을 latch한다.
+        representative_assignment = slot.episode.assignment or assignment
 
         slot.trusted_anchor_at = observed_at
         slot.episode = replace(
@@ -426,7 +440,7 @@ class InMemoryParkingEpisodeTracker:
             last_signal=signal,
             record_version=slot.episode.record_version + 1,
             updated_at=observed_at,
-            assignment=assignment if becomes_parked else None,
+            assignment=representative_assignment,
             parked_at=observed_at if becomes_parked else None,
             publication_revision=(
                 1
@@ -566,7 +580,6 @@ class InMemoryParkingEpisodeTracker:
                     else slot.episode.publication_revision
                 ),
             )
-
 
 def _is_reliable(signal: MotionSignal, observation: ObservationStatus) -> bool:
     return signal is not MotionSignal.UNKNOWN and observation.state is ObservationState.OBSERVED

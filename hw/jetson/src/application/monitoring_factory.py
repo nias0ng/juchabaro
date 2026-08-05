@@ -61,6 +61,8 @@ class MonitoringPolicy:
     assignment_min_overlap_ratio: float
     assignment_ambiguous_margin: float
     bad_parking_min_primary_overlap_ratio: float
+    bad_parking_min_secondary_overlap_ratio: float
+    out_of_zone_min_spot_overlap_ratio: float
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
     # MotionEstimator가 소유하는 ephemeral bbox evidence 정책이다. 아래 값은
@@ -155,6 +157,12 @@ def build_monitoring_pipeline(
         ),
         bad_parking_min_primary_overlap_ratio=(
             policy.bad_parking_min_primary_overlap_ratio
+        ),
+        bad_parking_min_secondary_overlap_ratio=(
+            policy.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=(
+            policy.out_of_zone_min_spot_overlap_ratio
         ),
     )
     frame_workflow = FrameObservationWorkflow(
