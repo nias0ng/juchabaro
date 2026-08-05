@@ -73,7 +73,8 @@ public class RestClientJetsonClient implements JetsonClient {
             JsonNode node = objectMapper.readTree(body);
             return node.path("result").path("applicationResult").asText("APPLIED");
         } catch (Exception e) {
-            return "APPLIED";   // 파싱 실패해도 2xx는 성공으로 간주
+            log.warn("Jetson 응답 파싱 실패(2xx라 성공 간주): body={}", body, e);
+            return "APPLIED";
         }
     }
 

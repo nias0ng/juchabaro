@@ -1,12 +1,15 @@
 package com.ssafy.parking.domain.hw.outbox;
 
+import tools.jackson.core.JacksonException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 
 import java.time.LocalDateTime;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class OutboxService {
@@ -14,7 +17,6 @@ public class OutboxService {
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
-    /** 트리거(T2~T4)에서 호출. 같은 (type:id:rev)는 중복 적재하지 않음(멱등). */
     @Transactional
     public void enqueue(OutboxCommandType type, String aggregateId, int revision,
                         Object payload, LocalDateTime deadlineAt) {
@@ -22,7 +24,13 @@ public class OutboxService {
         if (outboxRepository.findByIdempotencyKey(key).isPresent()) {
             return;
         }
-        String json = objectMapper.writeValueAsString(payload);
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(payload);
+        } catch (JacksonException e) {
+            log.error("Outbox 직렬화 실패 - key={}, type={}", key, type, e);
+            throw new IllegalStateException("Outbox payload 직렬화 실패: " + key, e);
+        }
         outboxRepository.save(OutboxMessage.builder()
                 .commandType(type)
                 .aggregateId(aggregateId)
