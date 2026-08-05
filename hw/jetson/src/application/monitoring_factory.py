@@ -30,6 +30,7 @@ from src.parking.zone_registry import ZoneRegistry
 from src.parking.zone_visit_tracker import InMemoryZoneVisitTracker
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
+from src.tracking.entity_resolver import GeometricEntityResolver
 from src.tracking.motion_estimator import MotionEstimator
 from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import Detector, EntityResolver
@@ -50,6 +51,9 @@ class MonitoringPolicy:
     parking_move_confirm_seconds: float
     absence_confirmation_seconds: float
     trusted_sample_max_gap_seconds: float
+    reidentification_max_gap_seconds: float
+    reidentification_min_score: float
+    reidentification_ambiguity_margin: float
     incident_confirm_seconds: float
     incident_clear_seconds: float
     zone_presence_min_overlap_ratio: float
@@ -149,10 +153,25 @@ def build_monitoring_pipeline(
         context_binding_coordinator=context_binding_coordinator,
         publication_preparer=dependencies.publication_preparer,
     )
+    entity_resolver = dependencies.entity_resolver
+    if entity_resolver is None:
+        if (
+            policy.reidentification_max_gap_seconds
+            >= policy.absence_confirmation_seconds
+        ):
+            raise ValueError(
+                "reidentification_max_gap_seconds must be smaller than "
+                "absence_confirmation_seconds"
+            )
+        entity_resolver = GeometricEntityResolver(
+            max_gap_seconds=policy.reidentification_max_gap_seconds,
+            minimum_score=policy.reidentification_min_score,
+            ambiguity_margin=policy.reidentification_ambiguity_margin,
+        )
     tracking_pipeline = TrackingPipeline(
         camera_id=dependencies.camera_id,
         detector=dependencies.detector,
-        entity_resolver=dependencies.entity_resolver,
+        entity_resolver=entity_resolver,
         motion_estimator=dependencies.motion_estimator,
         absence_confirmation_seconds=policy.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=(

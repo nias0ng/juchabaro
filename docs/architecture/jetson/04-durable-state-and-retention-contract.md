@@ -210,6 +210,16 @@ confirmedAt
 
 TrackSegment와 raw frame은 복구하지 않는다. 복구된 OPEN Incident를 새 incidentId로 만들거나 PARKED 차량이 이동했다고 추정하지 않는다.
 
+현재 `GeometricEntityResolver`의 bbox·velocity history는 process 안에서만 유지되고
+durable PhysicalVehicle snapshot에는 재식별 anchor가 없다. 따라서 process restart
+뒤 기존 ACTIVE 차량이 있는 동안에는 새 segment를 새 PhysicalVehicle로 만들지
+않고 `UNKNOWN / REIDENTIFICATION_UNCERTAIN` barrier를 적용한다. detection이 남아
+있으면 부재 timer도 멈추며, 정상 전체 영역이 빈 trusted sample에서만 기존 차량의
+absence confirmation을 재개한다. 9번의 즉시 재식별을 완성하려면 별도 저장소 ADR로
+정규화 geometry anchor, 관측 시각, schema version과 개인정보·retention 경계를
+정한 뒤 `RestartAwareEntityResolver`에 주입해야 한다. Zone·Parking·Incident나
+session 상태로 이 근거를 대체하지 않는다.
+
 store integrity가 실패하거나 writable하지 않으면 새 durable transition을 확정하거나 ACK가 필요한 delivery를 진행하지 않는다. health는 `NOT_READY / STORAGE_FAILURE`로 표시하고 진단만 수행한다.
 
 ## 7. Retention

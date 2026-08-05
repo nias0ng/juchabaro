@@ -198,6 +198,7 @@ class SessionObservationWorkflow:
             matching_observation_trusted = (
                 batch.full_area_observed
                 and batch.all_detections_tracked
+                and batch.all_identities_resolved
                 and batch.observation.state is ObservationState.OBSERVED
             )
 

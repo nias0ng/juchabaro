@@ -21,6 +21,9 @@ from src.domain.models import (
 )
 from src.tracking.entity_resolver import PassthroughEntityResolver
 from src.tracking.models import (
+    IdentityResolution,
+    IdentityResolutionOutcome,
+    IdentityResolutionReason,
     MotionSignal,
     PhysicalVehicle,
     PhysicalVehicleId,
@@ -125,6 +128,17 @@ class TrackingPipeline:
             self._entity_resolver.end_track_segments(
                 set(tracker_result.ended_track_segment_ids)
             )
+            identity_resolutions = tuple(
+                IdentityResolution(
+                    track_segment_id=item.track_segment_id,
+                    outcome=IdentityResolutionOutcome.UNRESOLVED,
+                    physical_vehicle_id=None,
+                    reason=(
+                        IdentityResolutionReason.RESTART_EVIDENCE_UNAVAILABLE
+                    ),
+                )
+                for item in tracker_result.observations
+            )
             return TrackingBatch(
                 camera_id=self._camera_id,
                 frame_id=frame.frame_id,
@@ -139,22 +153,51 @@ class TrackingPipeline:
                 absence_progress=presence_result.absence_progress,
                 observation=observation,
                 full_area_observed=full_area_observed,
-                all_detections_tracked=False,
+                # tracker coverage와 process-restart identity 불확실성은
+                # 서로 다른 owner의 사실이므로 한 축으로 합치지 않는다.
+                all_detections_tracked=tracker_result.all_detections_tracked,
+                all_identities_resolved=False,
+                identity_resolutions=identity_resolutions,
                 not_present_confirmed_vehicle_ids=(
                     presence_result.not_present_confirmed_vehicle_ids
                 ),
                 detection_count=tracker_result.detection_count,
                 detections=tracker_result.detections,
             )
+        identity_batch = self._entity_resolver.resolve_frame(
+            tracker_result.observations,
+            ended_track_segment_ids=set(
+                tracker_result.ended_track_segment_ids
+            ),
+        )
+        expected_segment_ids = {
+            item.track_segment_id for item in tracker_result.observations
+        }
+        resolved_segment_ids = {
+            item.track_segment_id for item in identity_batch.resolutions
+        }
+        if resolved_segment_ids != expected_segment_ids:
+            raise TrackingError(
+                "EntityResolver result must cover every observed TrackSegment "
+                "exactly once"
+            )
+
         batch_observation = self._batch_observation(
             observed_at=frame.captured_at,
             full_area_observed=full_area_observed,
+            all_identities_resolved=identity_batch.all_resolved,
         )
 
         vehicles: list[PhysicalVehicleSnapshot] = []
         observed_physical_vehicle_ids: set[PhysicalVehicleId] = set()
+        resolution_by_segment = {
+            item.track_segment_id: item for item in identity_batch.resolutions
+        }
         for observation in tracker_result.observations:
-            physical_vehicle_id = self._entity_resolver.resolve(observation)
+            resolution = resolution_by_segment[observation.track_segment_id]
+            physical_vehicle_id = resolution.physical_vehicle_id
+            if physical_vehicle_id is None:
+                continue
             observed_physical_vehicle_ids.add(physical_vehicle_id)
             motion_signal = (
                 self._motion_estimator.update(
@@ -162,6 +205,7 @@ class TrackingPipeline:
                     bbox=observation.bbox,
                 )
                 if full_area_observed
+                and batch_observation.state is ObservationState.OBSERVED
                 else MotionSignal.UNKNOWN
             )
             vehicles.append(
@@ -182,9 +226,9 @@ class TrackingPipeline:
             observed_at=frame.captured_at,
             trusted_full_area_sample=(
                 full_area_observed and tracker_result.all_detections_tracked
+                and identity_batch.all_resolved
             ),
         )
-        self._entity_resolver.end_track_segments(set(tracker_result.ended_track_segment_ids))
 
         return TrackingBatch(
             camera_id=self._camera_id,
@@ -197,6 +241,8 @@ class TrackingPipeline:
             observation=batch_observation,
             full_area_observed=full_area_observed,
             all_detections_tracked=tracker_result.all_detections_tracked,
+            all_identities_resolved=identity_batch.all_resolved,
+            identity_resolutions=identity_batch.resolutions,
             not_present_confirmed_vehicle_ids=presence_result.not_present_confirmed_vehicle_ids,
             detection_count=tracker_result.detection_count,
             detections=tracker_result.detections,
@@ -339,7 +385,14 @@ class TrackingPipeline:
         *,
         observed_at: datetime,
         full_area_observed: bool,
+        all_identities_resolved: bool,
     ) -> ObservationStatus:
+        if full_area_observed and not all_identities_resolved:
+            return ObservationStatus(
+                state=ObservationState.UNKNOWN,
+                reason=ObservationReason.REIDENTIFICATION_UNCERTAIN,
+                last_reliable_observed_at=self._last_reliable_observed_at,
+            )
         if full_area_observed:
             self._last_reliable_observed_at = observed_at
             return ObservationStatus(

@@ -39,6 +39,7 @@ DIAGNOSTIC_FIELDS = (
     "frameObservationReason",
     "fullAreaObserved",
     "allDetectionsTracked",
+    "allIdentitiesResolved",
     "pretrackDetectionCount",
     "projectedDetectionCount",
     "trackedVehicleCount",
@@ -48,6 +49,16 @@ DIAGNOSTIC_FIELDS = (
     "vehicleAlias",
     "physicalVehicleId",
     "trackSegmentId",
+    "identityOutcome",
+    "identityReason",
+    "identityCandidateCount",
+    "identityScore",
+    "identityRunnerUpScore",
+    "identityScoreMargin",
+    "reidentificationGapSeconds",
+    "identityCenterDistanceRatio",
+    "identityPredictedIou",
+    "identityAreaRatio",
     "confidence",
     "motionSignal",
     "vehicleObservation",
@@ -92,6 +103,7 @@ def diagnostic_rows(
 
     ``FRAME`` 행은 detection이 0건이어도 항상 한 행을 남긴다.
     ``DETECTION``은 threshold 통과 후 ByteTrack 적용 전 후보이고,
+    ``IDENTITY_RESOLUTION``은 EntityResolver의 결정과 근거이며,
     ``TRACKED_VEHICLE``은 ID가 부여돼 도메인에 전달된 관측이다.
     """
 
@@ -114,6 +126,7 @@ def diagnostic_rows(
             ),
             "fullAreaObserved": batch.full_area_observed,
             "allDetectionsTracked": batch.all_detections_tracked,
+            "allIdentitiesResolved": batch.all_identities_resolved,
             "pretrackDetectionCount": batch.detection_count,
             "projectedDetectionCount": len(batch.detections),
             "trackedVehicleCount": len(batch.vehicles),
@@ -138,6 +151,46 @@ def diagnostic_rows(
                     "classId": detection.class_id,
                     "confidence": detection.confidence,
                     **_bbox_values(detection.bbox),
+                }
+            )
+
+        for resolution in batch.identity_resolutions:
+            physical_vehicle_id = resolution.physical_vehicle_id
+            rows.append(
+                {
+                    **common,
+                    "rowType": "IDENTITY_RESOLUTION",
+                    "detectionStage": "POST_TRACK_IDENTITY",
+                    "vehicleAlias": (
+                        None
+                        if physical_vehicle_id is None
+                        else aliases.get(
+                            physical_vehicle_id,
+                            str(physical_vehicle_id)[:8],
+                        )
+                    ),
+                    "physicalVehicleId": (
+                        None
+                        if physical_vehicle_id is None
+                        else str(physical_vehicle_id)
+                    ),
+                    "trackSegmentId": int(resolution.track_segment_id),
+                    "identityOutcome": resolution.outcome.value,
+                    "identityReason": (
+                        None
+                        if resolution.reason is None
+                        else resolution.reason.value
+                    ),
+                    "identityCandidateCount": resolution.candidate_count,
+                    "identityScore": resolution.score,
+                    "identityRunnerUpScore": resolution.runner_up_score,
+                    "identityScoreMargin": resolution.score_margin,
+                    "reidentificationGapSeconds": resolution.gap_seconds,
+                    "identityCenterDistanceRatio": (
+                        resolution.center_distance_ratio
+                    ),
+                    "identityPredictedIou": resolution.predicted_iou,
+                    "identityAreaRatio": resolution.area_ratio,
                 }
             )
 

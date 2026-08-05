@@ -137,6 +137,35 @@ CANDIDATE → CANCELED
 - segment가 모두 소실되면 ACTIVE를 유지하고 observation을 DEGRADED 또는 UNKNOWN으로 둔다.
 - 재식별되면 새 segment를 같은 PhysicalVehicle에 연결한다.
 
+### 6.1 EntityResolver 결정 계약
+
+EntityResolver는 PhysicalVehicle 동일성의 유일한 owner다. tracker가 한 frame에서
+보고한 모든 `TrackObservation`과 확정 종료한 `TrackSegmentId`를 한 번에 받아
+다음 순서로 결정한다.
+
+1. 종료 segment의 active 연결만 해제하고 PhysicalVehicle의 짧은 runtime
+   geometry history는 보존한다.
+2. 계속 관측된 segment가 연결한 PhysicalVehicle을 먼저 예약한다.
+3. 새 segment와 미예약 PhysicalVehicle 후보를 시간 간격, bbox 중심 이동,
+   속도 예측 IoU, 면적·종횡비 일관성으로 hard gate와 score를 계산한다.
+4. frame 전체에서 최대 점수의 전역 1:1 배정을 구한다. 입력 순서와 UUID 문자열은
+   의미상 tie-break가 아니며 동일 PhysicalVehicle을 둘 이상의 segment에 배정하지 않는다.
+5. 최적 배정과 선택 edge를 금지한 차선 배정의 점수차가 ambiguity margin보다
+   작으면 연결을 확정하지 않는다.
+
+결과는 `CONTINUED / REIDENTIFIED / CREATED / UNRESOLVED`의 비영속
+`IdentityResolution`이다. `UNRESOLVED`는 새 PhysicalVehicle을 임의 생성하지
+않고 `allIdentitiesResolved=false`와 `UNKNOWN / REIDENTIFICATION_UNCERTAIN`을
+만든다. 이 sample에서는 부재, EntryMatch, ZoneVisit, ParkingEpisode,
+BlockingRelation과 Incident의 trusted time을 모두 멈춘다. 다음 frame에서 근거가
+충분해지면 같은 후보를 다시 평가한다.
+
+재식별 근거에는 현재·직전 bbox와 관측 시각만 사용할 수 있다. zone, assignment,
+PARKED, Incident, session·등록 차량 context와 YOLO confidence는 동일성의 결과나
+하위 owner의 결론이므로 score 근거로 되먹이지 않는다. `forgetPhysicalVehicle`은
+`NOT_PRESENT_CONFIRMED` 뒤 상위 종료 transaction이 commit된 후에만 호출하여
+history를 제거한다.
+
 ACTIVE를 정상 RETIRED로 만들려면 다음을 모두 만족해야 한다.
 
 1. 실제 Session EXIT 또는 `NOT_PRESENT_CONFIRMED`가 있다.
@@ -408,6 +437,9 @@ UNKNOWN
 | `parkingConfirmationDurationSeconds` | `[결정] 600` | PARKED 확정에 필요한 trusted stationary 시간 |
 | `absenceConfirmationDurationSeconds` | `[제안값] TBD` | 정상 전체 관측에서 물리 부재 확인 시간 |
 | `trustedSampleMaxGapSeconds` | `[제안값] TBD` | 연속 trusted frame으로 인정할 최대 sample 간격 |
+| `reidentificationMaxGapSeconds` | `[제안값] TBD` | 종료 segment history를 새 segment 후보로 사용할 최대 시간; absence confirmation보다 작아야 함 |
+| `reidentificationMinScore` | `[제안값] TBD` | 전역 1:1 geometry 배정 edge의 최소 수락 점수 |
+| `reidentificationAmbiguityMargin` | `[제안값] TBD` | 최적 배정과 선택 edge를 금지한 차선 배정 사이의 최소 점수차 |
 | `movementConfirmationDurationSeconds` | `[제안값] TBD` | PARKED 뒤 이동 확정 시간 |
 | zone entry/exit confirmation | `[제안값] TBD` | ZoneVisit 진입·이탈 debounce |
 | incident confirm/clear duration | `[제안값] rule별 TBD` | Incident OPEN·RESOLVE debounce |
@@ -423,7 +455,9 @@ PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `tru
 ## 15. Owner 경계
 
 1. tracking adapter는 TrackSegment만 생성·종료한다.
-2. EntityResolver만 PhysicalVehicle 동일성을 변경한다.
+2. EntityResolver만 PhysicalVehicle 동일성을 변경하며 frame 전체의 전역 1:1
+   결정과 ambiguity 보류를 소유한다. 다른 owner의 결과를 재식별 evidence로
+   되먹이지 않는다.
 3. EntryMatchCoordinator는 물리 매칭 결과를 만들고 ContextBindingCoordinator만 binding을 변경한다.
 4. ZoneVisitTracker와 ParkingEpisodeTracker는 각자의 시간적 사실만 소유한다.
 5. RuleEvaluator는 Incident를 저장하지 않는다.

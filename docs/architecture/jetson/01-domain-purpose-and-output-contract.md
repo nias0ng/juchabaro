@@ -37,7 +37,7 @@ flowchart LR
 | 계층 | 결과 | 책임 |
 |---|---|---|
 | 관측 | detection, track, frame health | 보이는 것을 보고하며 종료를 추정하지 않음 |
-| 동일성 | `PhysicalVehicle` | 여러 track segment의 물리적 연속성 |
+| 동일성 | `PhysicalVehicle` | `EntityResolver`가 한 frame 전체의 시공간 geometry를 전역 1:1로 비교해 여러 track segment의 물리적 연속성을 결정 |
 | 시간적 사실 | `ZoneVisit`, `ParkingEpisode`, `BlockingRelation` | 공간·정지·관계의 confirmation |
 | 규칙 평가 | `MATCHED / NOT_MATCHED / UNKNOWN` | 현재 규칙 술어만 계산하며 상태를 소유하지 않음 |
 | 사건 | `Incident` | 후보·OPEN·clear·RESOLVED와 중복 억제 |
@@ -80,6 +80,12 @@ UNKNOWN
 ```
 
 `NOT_PRESENT_CONFIRMED`의 구체적인 confirmation 시간은 설정값이며, 단순 tracker timeout과 같지 않다.
+
+`IdentityResolution(CONTINUED / REIDENTIFIED / CREATED / UNRESOLVED)`과
+`allIdentitiesResolved`는 이 세 상태축에 추가되는 영속 상태가 아니다. 이는
+EntityResolver의 이번 frame 결정을 설명하는 ephemeral projection이다. 결정이
+`UNRESOLVED`이면 observation은 `UNKNOWN / REIDENTIFICATION_UNCERTAIN`이고,
+Domain state와 Delivery state를 바꾸지 않은 채 trusted timer만 멈춘다.
 
 ### 3.3 Delivery state
 

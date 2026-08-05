@@ -129,6 +129,12 @@ def _render_selected_frame(frame: FrameTrace, run: ViewerRun) -> None:
     with tabs[0]:
         _render_changes(frame)
     with tabs[1]:
+        st.caption("EntityResolver decisions")
+        st.dataframe(
+            _identity_resolution_rows(frame, run),
+            use_container_width=True,
+        )
+        st.caption("Resolved PhysicalVehicle observations")
         st.dataframe(_tracking_rows(frame, run), use_container_width=True)
     with tabs[2]:
         st.dataframe(_zone_visit_rows(frame, run), use_container_width=True)
@@ -173,6 +179,9 @@ def _render_frame_status(frame: FrameTrace, run: ViewerRun) -> None:
         {
             "trackedVehicles": len(frame.tracking_batch.vehicles),
             "allDetectionsTracked": frame.tracking_batch.all_detections_tracked,
+            "allIdentitiesResolved": (
+                frame.tracking_batch.all_identities_resolved
+            ),
             "fullAreaObserved": frame.tracking_batch.full_area_observed,
             "activeIncidents": len(frame.result.active_incidents),
             "elapsedMs": frame.elapsed_ms,
@@ -260,7 +269,8 @@ def _render_diagnostic_export(run: ViewerRun) -> None:
 
     st.caption(
         "DETECTION은 설정 confidence threshold를 통과한 YOLO 후보이며 tracker 적용 전 값입니다. "
-        "TRACKED_VEHICLE은 tracker가 physical vehicle로 채택한 관측입니다. "
+        "IDENTITY_RESOLUTION은 TrackSegment→PhysicalVehicle 결정과 geometry 근거이며, "
+        "TRACKED_VEHICLE은 resolver가 physical vehicle로 확정한 관측입니다. "
         "탐지가 없는 프레임도 FRAME 행으로 항상 기록합니다."
     )
     metrics = st.columns(5)
@@ -322,6 +332,32 @@ def _tracking_rows(frame: FrameTrace, run: ViewerRun) -> list[dict[str, Any]]:
             ),
         }
         for vehicle in frame.tracking_batch.vehicles
+    ]
+
+
+def _identity_resolution_rows(
+    frame: FrameTrace,
+    run: ViewerRun,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "trackSegment": int(item.track_segment_id),
+            "outcome": item.outcome.value,
+            "vehicle": (
+                None
+                if item.physical_vehicle_id is None
+                else _alias(run, item.physical_vehicle_id)
+            ),
+            "reason": None if item.reason is None else item.reason.value,
+            "candidates": item.candidate_count,
+            "score": item.score,
+            "assignmentMargin": item.score_margin,
+            "gapSeconds": item.gap_seconds,
+            "centerDistanceRatio": item.center_distance_ratio,
+            "predictedIoU": item.predicted_iou,
+            "areaRatio": item.area_ratio,
+        }
+        for item in frame.tracking_batch.identity_resolutions
     ]
 
 

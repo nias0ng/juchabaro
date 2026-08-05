@@ -92,6 +92,26 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
 
         columns = st.columns(4)
+        reidentification_gap = columns[0].number_input(
+            "Re-ID max gap (s)",
+            min_value=0.001,
+            value=defaults.reidentification_max_gap_seconds,
+            help="이 시간 안의 끊긴 TrackSegment만 같은 PhysicalVehicle 후보로 봅니다.",
+        )
+        reidentification_score = columns[1].number_input(
+            "Re-ID min score",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.reidentification_min_score,
+        )
+        reidentification_margin = columns[2].number_input(
+            "Re-ID ambiguity margin",
+            min_value=0.0,
+            max_value=1.0,
+            value=defaults.reidentification_ambiguity_margin,
+        )
+
+        columns = st.columns(4)
         entry_overlap = columns[0].number_input(
             "Entry overlap", min_value=0.0, max_value=1.0, value=defaults.entry_zone_min_overlap_ratio
         )
@@ -155,6 +175,9 @@ def _render_policy_inputs() -> ViewerPolicy:
         parking_move_confirm_seconds=parking_move,
         absence_confirmation_seconds=absence,
         trusted_sample_max_gap_seconds=trusted_gap,
+        reidentification_max_gap_seconds=reidentification_gap,
+        reidentification_min_score=reidentification_score,
+        reidentification_ambiguity_margin=reidentification_margin,
         incident_confirm_seconds=incident_confirm,
         incident_clear_seconds=incident_clear,
         zone_presence_min_overlap_ratio=zone_overlap,

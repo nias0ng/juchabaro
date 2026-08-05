@@ -20,6 +20,9 @@ from src.domain.models import ObservationState, ObservationStatus
 from src.tracking.models import (
     BoundingBox,
     DetectionObservation,
+    IdentityResolution,
+    IdentityResolutionOutcome,
+    IdentityResolutionReason,
     MotionSignal,
     PhysicalVehicleSnapshot,
     TrackingBatch,
@@ -58,6 +61,19 @@ def _frame(*, with_detection: bool) -> SimpleNamespace:
     else:
         detections = ()
         vehicles = ()
+    identity_resolutions = (
+        (
+            IdentityResolution(
+                track_segment_id=7,
+                outcome=IdentityResolutionOutcome.CREATED,
+                physical_vehicle_id=VEHICLE_ID,
+                candidate_count=0,
+                reason=IdentityResolutionReason.NO_ELIGIBLE_CANDIDATE,
+            ),
+        )
+        if with_detection
+        else ()
+    )
     return SimpleNamespace(
         frame_id=7 if with_detection else 8,
         video_seconds=0.2 if with_detection else 0.233,
@@ -73,6 +89,7 @@ def _frame(*, with_detection: bool) -> SimpleNamespace:
             observation=observation,
             full_area_observed=True,
             all_detections_tracked=True,
+            identity_resolutions=identity_resolutions,
             detection_count=len(detections),
             detections=detections,
         ),
@@ -119,17 +136,23 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     assert [row["rowType"] for row in rows] == [
         "FRAME",
         "DETECTION",
+        "IDENTITY_RESOLUTION",
         "TRACKED_VEHICLE",
         "FRAME",
     ]
     detection = rows[1]
-    tracked = rows[2]
-    empty_frame = rows[3]
+    identity = rows[2]
+    tracked = rows[3]
+    empty_frame = rows[4]
     assert detection["detectionStage"] == "POST_THRESHOLD_PRE_TRACK"
     assert detection["confidence"] == pytest.approx(0.27)
     assert detection["detectionThreshold"] == pytest.approx(0.01)
     assert detection["modelPath"] == "hw/jetson/model/yolov8s.pt"
     assert detection["trackerConfig"] == "bytetrack.yaml"
+    assert identity["detectionStage"] == "POST_TRACK_IDENTITY"
+    assert identity["identityOutcome"] == "CREATED"
+    assert identity["identityReason"] == "NO_ELIGIBLE_CANDIDATE"
+    assert identity["trackSegmentId"] == 7
     assert tracked["detectionStage"] == "POST_TRACK"
     assert tracked["confidence"] == pytest.approx(0.31)
     assert tracked["vehicleAlias"] == "V1"
@@ -146,4 +169,12 @@ def test_csv_bytes_emits_utf8_bom_and_requested_header() -> None:
     assert payload.startswith(b"\xef\xbb\xbf")
     assert tuple(parsed[0]) == STATE_CHANGE_FIELDS
     assert parsed[0]["frame"] == "7"
-    assert set(DIAGNOSTIC_FIELDS).issuperset({"rowType", "confidence"})
+    assert set(DIAGNOSTIC_FIELDS).issuperset(
+        {
+            "rowType",
+            "confidence",
+            "allIdentitiesResolved",
+            "identityOutcome",
+            "identityScoreMargin",
+        }
+    )

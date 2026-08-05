@@ -12,9 +12,14 @@ from src.domain.models import (
     ObservationState,
     ObservationStatus,
 )
+from src.tracking.entity_resolver import GeometricEntityResolver
 from src.tracking.models import (
     BoundingBox,
     DetectionObservation,
+    IdentityResolution,
+    IdentityResolutionBatch,
+    IdentityResolutionOutcome,
+    IdentityResolutionReason,
     MotionSignal,
     PhysicalVehicle,
     PhysicalVehicleId,
@@ -77,10 +82,26 @@ class RestartAwareSingleVehicleResolver:
         self.restored_vehicles = vehicles
         self._physical_vehicle_id = vehicles[0].physical_vehicle_id
 
-    def resolve(self, _observation: TrackObservation) -> PhysicalVehicleId:
+    def resolve_frame(
+        self,
+        observations: tuple[TrackObservation, ...],
+        *,
+        ended_track_segment_ids,
+    ) -> IdentityResolutionBatch:
         if self._physical_vehicle_id is None:
             raise RuntimeError("restart candidates were not restored")
-        return self._physical_vehicle_id
+        if len(observations) != 1:
+            raise ValueError("test resolver expects exactly one observation")
+        self.end_track_segments(ended_track_segment_ids)
+        return IdentityResolutionBatch(
+            (
+                IdentityResolution(
+                    track_segment_id=observations[0].track_segment_id,
+                    outcome=IdentityResolutionOutcome.REIDENTIFIED,
+                    physical_vehicle_id=self._physical_vehicle_id,
+                ),
+            )
+        )
 
     def end_track_segments(self, _ended_track_segment_ids) -> None:
         return None
@@ -106,6 +127,23 @@ class SpyMotionEstimator(MotionEstimator):
     def forget(self, physical_vehicle_id) -> None:
         self.forget_calls.append(physical_vehicle_id)
         super().forget(physical_vehicle_id)
+
+
+class MissingResultEntityResolver:
+    """입력 segment를 누락하는 잘못된 resolver 계약 테스트 double."""
+
+    def resolve_frame(self, observations, *, ended_track_segment_ids):
+        self.end_track_segments(ended_track_segment_ids)
+        return IdentityResolutionBatch(())
+
+    def end_track_segments(self, ended_track_segment_ids) -> None:
+        return None
+
+    def forget_physical_vehicle(self, physical_vehicle_id) -> None:
+        return None
+
+    def reset_track_segments(self) -> None:
+        return None
 
 
 class _FullAreaTestTrackingPipeline(TrackingPipeline):
@@ -312,6 +350,93 @@ def test_adapter_confirmed_segment_end_only_detaches_segment():
     assert ended.ended_track_segment_ids == (1,)
     assert ended.unobserved_physical_vehicle_ids == (first.vehicles[0].physical_vehicle_id,)
     assert ended.not_present_confirmed_vehicle_ids == ()
+
+
+def test_geometric_segment_switch_preserves_identity_motion_and_presence():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    detector.results_by_frame_id[2] = _result(
+        _observation(
+            2,
+            seconds=0.5,
+            bbox=BoundingBox(0.105, 0.1, 0.205, 0.2),
+        ),
+        ended_track_segment_ids=(1,),
+    )
+    pipeline = _pipeline(
+        detector,
+        entity_resolver=GeometricEntityResolver(
+            max_gap_seconds=1.0,
+            minimum_score=0.42,
+            ambiguity_margin=0.08,
+        ),
+    )
+
+    first = pipeline.process(_make_frame(1))
+    switched = pipeline.process(_make_frame(2, seconds=0.5))
+
+    assert switched.vehicles[0].physical_vehicle_id == (
+        first.vehicles[0].physical_vehicle_id
+    )
+    assert switched.identity_resolutions[0].outcome is (
+        IdentityResolutionOutcome.REIDENTIFIED
+    )
+    assert switched.vehicles[0].motion_signal is MotionSignal.STATIONARY
+    assert switched.unobserved_physical_vehicle_ids == ()
+    assert switched.absence_progress == ()
+
+
+def test_ambiguous_identity_marks_unknown_and_freezes_absence():
+    left = BoundingBox(0.1, 0.1, 0.2, 0.2)
+    right = BoundingBox(0.2, 0.1, 0.3, 0.2)
+    middle = BoundingBox(0.15, 0.1, 0.25, 0.2)
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(
+        _observation(1, bbox=left),
+        _observation(2, bbox=right),
+    )
+    detector.results_by_frame_id[2] = _result(
+        _observation(3, seconds=1.0, bbox=middle),
+        ended_track_segment_ids=(1, 2),
+    )
+    pipeline = _pipeline(
+        detector,
+        entity_resolver=GeometricEntityResolver(
+            max_gap_seconds=2.0,
+            minimum_score=0.42,
+            ambiguity_margin=0.08,
+        ),
+    )
+
+    first = pipeline.process(_make_frame(1))
+    ambiguous = pipeline.process(_make_frame(2, seconds=1.0))
+
+    assert len(first.vehicles) == 2
+    assert ambiguous.vehicles == ()
+    assert ambiguous.all_detections_tracked is True
+    assert ambiguous.all_identities_resolved is False
+    assert ambiguous.observation.state is ObservationState.UNKNOWN
+    assert ambiguous.observation.reason is (
+        ObservationReason.REIDENTIFICATION_UNCERTAIN
+    )
+    assert ambiguous.identity_resolutions[0].outcome is (
+        IdentityResolutionOutcome.UNRESOLVED
+    )
+    assert {
+        item.trusted_seconds for item in ambiguous.absence_progress
+    } == {0.0}
+
+
+def test_pipeline_rejects_identity_result_that_does_not_cover_observations():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(1))
+    pipeline = _pipeline(
+        detector,
+        entity_resolver=MissingResultEntityResolver(),
+    )
+
+    with pytest.raises(TrackingError, match="cover every observed"):
+        pipeline.process(_make_frame(1))
 
 
 def test_unrelated_new_segment_does_not_freeze_previous_vehicle_absence():
@@ -564,7 +689,11 @@ def test_restart_with_visible_detection_pauses_identity_and_absence_until_empty(
         uncertain.observation.reason
         is ObservationReason.REIDENTIFICATION_UNCERTAIN
     )
-    assert uncertain.all_detections_tracked is False
+    assert uncertain.all_detections_tracked is True
+    assert uncertain.all_identities_resolved is False
+    assert uncertain.identity_resolutions[0].reason is (
+        IdentityResolutionReason.RESTART_EVIDENCE_UNAVAILABLE
+    )
     assert uncertain.absence_progress[0].trusted_seconds == 0.0
     assert first_empty.not_present_confirmed_vehicle_ids == ()
     assert confirmed.not_present_confirmed_vehicle_ids == (vehicle_id,)

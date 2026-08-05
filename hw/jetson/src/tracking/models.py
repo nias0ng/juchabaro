@@ -51,6 +51,29 @@ class MotionSignal(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class IdentityResolutionOutcome(str, Enum):
+    """한 frame 안에서 TrackSegment를 PhysicalVehicle에 연결한 결과."""
+
+    CONTINUED = "CONTINUED"
+    REIDENTIFIED = "REIDENTIFIED"
+    CREATED = "CREATED"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class IdentityResolutionReason(str, Enum):
+    """동일성 결정 또는 보류의 진단 근거.
+
+    이 값은 PhysicalVehicle domain state가 아니라 EntityResolver 내부
+    판단을 설명하는 비영속 관측값이다.
+    """
+
+    NO_ELIGIBLE_CANDIDATE = "NO_ELIGIBLE_CANDIDATE"
+    BELOW_MIN_SCORE = "BELOW_MIN_SCORE"
+    AMBIGUOUS_CANDIDATES = "AMBIGUOUS_CANDIDATES"
+    CANDIDATE_ALREADY_OCCUPIED = "CANDIDATE_ALREADY_OCCUPIED"
+    RESTART_EVIDENCE_UNAVAILABLE = "RESTART_EVIDENCE_UNAVAILABLE"
+
+
 @dataclass(frozen=True)
 class BoundingBox:
     """0~1 정규화 좌표의 ephemeral 차량 바운딩박스."""
@@ -80,6 +103,83 @@ class TrackObservation:
         require_aware(self.observed_at, "observed_at")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, kw_only=True)
+class IdentityResolution:
+    """한 TrackSegment에 대한 EntityResolver의 비영속 결정 projection.
+
+    ``candidate_count``는 geometry hard gate를 통과해 점수를 계산한 후보
+    수다. ``score_margin``은 REIDENTIFIED일 때 선택 edge를 금지한 차선의 전역
+    1:1 배정과 최적 배정의 점수차다. 그 밖의 결과에서는 진단용 1·2위
+    후보의 지역 점수차이며 identity domain state로 저장하지 않는다.
+    """
+
+    track_segment_id: TrackSegmentId
+    outcome: IdentityResolutionOutcome
+    physical_vehicle_id: PhysicalVehicleId | None
+    candidate_count: int = 0
+    score: float | None = None
+    runner_up_score: float | None = None
+    score_margin: float | None = None
+    gap_seconds: float | None = None
+    center_distance_ratio: float | None = None
+    predicted_iou: float | None = None
+    area_ratio: float | None = None
+    reason: IdentityResolutionReason | None = None
+
+    def __post_init__(self) -> None:
+        require_non_negative(self.candidate_count, "candidate_count")
+        for name in ("score", "runner_up_score", "predicted_iou"):
+            value = getattr(self, name)
+            if value is not None and not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+        for name in (
+            "score_margin",
+            "gap_seconds",
+            "center_distance_ratio",
+            "area_ratio",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                require_non_negative(value, name)
+        if self.outcome is IdentityResolutionOutcome.UNRESOLVED:
+            if self.physical_vehicle_id is not None:
+                raise ValueError("UNRESOLVED identity cannot select a PhysicalVehicle")
+            if self.reason is None:
+                raise ValueError("UNRESOLVED identity requires a reason")
+        elif self.physical_vehicle_id is None:
+            raise ValueError("resolved identity requires a PhysicalVehicle")
+
+
+@dataclass(frozen=True)
+class IdentityResolutionBatch:
+    """한 tracker frame 전체의 순서 독립적인 동일성 결정."""
+
+    resolutions: tuple[IdentityResolution, ...]
+
+    def __post_init__(self) -> None:
+        segment_ids = tuple(item.track_segment_id for item in self.resolutions)
+        if len(segment_ids) != len(set(segment_ids)):
+            raise ValueError("identity resolutions cannot repeat a TrackSegment id")
+        selected_ids = tuple(
+            item.physical_vehicle_id
+            for item in self.resolutions
+            if item.physical_vehicle_id is not None
+        )
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError(
+                "one PhysicalVehicle cannot be selected by multiple segments in one frame"
+            )
+
+    @property
+    def all_resolved(self) -> bool:
+        """모든 tracker segment의 physical identity가 결정됐는지 반환한다."""
+
+        return all(
+            item.outcome is not IdentityResolutionOutcome.UNRESOLVED
+            for item in self.resolutions
+        )
 
 
 @dataclass(frozen=True)
@@ -228,8 +328,9 @@ class TrackingBatch:
     """한 frame의 추적 결과와 관측 신뢰도를 묶는 비영속 값.
 
     TrackSegment 종료와 PhysicalVehicle 관측 소실은 실제 부재와 구분한다.
-    `all_detections_tracked=False`이면 ID 없는 tentative detection이
-    있으므로 부재 누적과 entry identity 매칭에 쓰지 않는다.
+    `all_detections_tracked=False`이면 tracker ID 없는 tentative detection이,
+    `all_identities_resolved=False`이면 PhysicalVehicle을 확정하지 못한
+    TrackSegment가 있으므로 부재 누적과 entry identity 매칭에 쓰지 않는다.
     RETIRED·EXIT·RESOLVE의 근거는 정상 전체 관측에서 확정한
     `not_present_confirmed_vehicle_ids`뿐이다. 한번 확정한 사실은 commit
     ack 전까지 반복되므로 현재 batch가 degraded여도 포함될 수 있다.
@@ -248,6 +349,10 @@ class TrackingBatch:
     not_present_confirmed_vehicle_ids: tuple[PhysicalVehicleId, ...] = ()
     detection_count: int | None = None
     detections: tuple[DetectionObservation, ...] = ()
+    # 기존 TrackingBatch positional 계약 뒤에 추가해 이전 adapter/test의
+    # 선택적 인자 위치를 바꾸지 않는다.
+    all_identities_resolved: bool = True
+    identity_resolutions: tuple[IdentityResolution, ...] = ()
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")
@@ -259,6 +364,48 @@ class TrackingBatch:
             if self.detection_count < len(self.detections):
                 raise ValueError(
                     "detection_count cannot be smaller than projected detections"
+                )
+
+        resolution_segment_ids = tuple(
+            item.track_segment_id for item in self.identity_resolutions
+        )
+        if len(resolution_segment_ids) != len(set(resolution_segment_ids)):
+            raise ValueError("identity resolutions cannot repeat a TrackSegment id")
+        unresolved_exists = any(
+            item.outcome is IdentityResolutionOutcome.UNRESOLVED
+            for item in self.identity_resolutions
+        )
+        if unresolved_exists and self.all_identities_resolved:
+            raise ValueError(
+                "all_identities_resolved cannot be true with UNRESOLVED decisions"
+            )
+        if (
+            self.identity_resolutions
+            and self.all_identities_resolved == unresolved_exists
+        ):
+            raise ValueError(
+                "all_identities_resolved must match identity resolution outcomes"
+            )
+        if self.identity_resolutions:
+            snapshots_by_segment = {
+                snapshot.track_segment_id: snapshot for snapshot in self.vehicles
+            }
+            resolved_by_segment = {
+                item.track_segment_id: item
+                for item in self.identity_resolutions
+                if item.physical_vehicle_id is not None
+            }
+            if set(snapshots_by_segment) != set(resolved_by_segment):
+                raise ValueError(
+                    "resolved identity decisions must match vehicle snapshots exactly"
+                )
+            if any(
+                snapshots_by_segment[segment_id].physical_vehicle_id
+                != resolution.physical_vehicle_id
+                for segment_id, resolution in resolved_by_segment.items()
+            ):
+                raise ValueError(
+                    "identity decision and vehicle snapshot PhysicalVehicle must match"
                 )
 
         observed_vehicle_ids = {

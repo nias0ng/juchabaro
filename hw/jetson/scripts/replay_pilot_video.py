@@ -49,14 +49,20 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --calibration ../../ai/tracking/camera_calibration.json \\
         --model-path ../../ai/training/runs/.../weights/best.pt \\
         --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \\
-        --parking-move-confirm-seconds 3.0 \\
+        --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \\
         --absence-confirmation-seconds 5.0 \\
         --trusted-sample-max-gap-seconds 1.0 \\
+        --reidentification-max-gap-seconds 4.0 \\
+        --reidentification-min-score 0.42 \\
+        --reidentification-ambiguity-margin 0.08 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
         --bad-parking-min-primary-overlap-ratio 0.75 \\
         --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
+
+위 5.0초 PARKED와 0.5초 movement 값은 현재 Pipeline Viewer 판정 테스트의
+명시적 override다. 일반 배포의 PARKED 값 600초를 바꾸는 기본값이 아니다.
 
 **실제 실행은 재현되지 않는다.** 위 예시는 결정론 테스트(`tests/replay/`,
 `tests/application/`)처럼 uuid4()를 몽키패치하지 않으므로, 같은 영상으로 두
@@ -143,6 +149,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--trusted-sample-max-gap-seconds", type=float, required=True,
         help="연속 관측으로 인정할 최대 프레임 간격(초). 영상 fps에 직접 매인 값이라 "
         "기본값을 두지 않는다(.env.example의 1.0은 5fps 파일럿 임시값).",
+    )
+    parser.add_argument(
+        "--reidentification-max-gap-seconds", type=float, required=True,
+        help="끊긴 TrackSegment를 같은 PhysicalVehicle 후보로 볼 최대 시간(초).",
+    )
+    parser.add_argument(
+        "--reidentification-min-score", type=float, required=True,
+        help="EntityResolver geometry 전역 배정의 최소 수락 점수.",
+    )
+    parser.add_argument(
+        "--reidentification-ambiguity-margin", type=float, required=True,
+        help="최적 1:1 identity 배정을 확정할 최소 전역 점수차.",
     )
     parser.add_argument(
         "--assignment-min-overlap-ratio", type=float, required=True,
@@ -263,6 +281,13 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         parking_move_confirm_seconds=args.parking_move_confirm_seconds,
         absence_confirmation_seconds=args.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=args.trusted_sample_max_gap_seconds,
+        reidentification_max_gap_seconds=(
+            args.reidentification_max_gap_seconds
+        ),
+        reidentification_min_score=args.reidentification_min_score,
+        reidentification_ambiguity_margin=(
+            args.reidentification_ambiguity_margin
+        ),
         incident_confirm_seconds=args.incident_confirm_seconds,
         incident_clear_seconds=args.incident_clear_seconds,
         zone_presence_min_overlap_ratio=args.min_overlap_ratio,

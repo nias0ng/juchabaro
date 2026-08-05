@@ -26,6 +26,7 @@ from src.parking.models import (
 )
 from src.parking.zone_registry import ZoneRegistry
 from src.storage.database import connect_database, open_database
+from src.tracking.entity_resolver import GeometricEntityResolver
 from src.tracking.models import TrackerFrameResult
 from src.tracking.protocols import ModelInfo
 
@@ -103,6 +104,9 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "parking_move_confirm_seconds": 1.0,
         "absence_confirmation_seconds": 5.0,
         "trusted_sample_max_gap_seconds": 1.0,
+        "reidentification_max_gap_seconds": 1.0,
+        "reidentification_min_score": 0.42,
+        "reidentification_ambiguity_margin": 0.08,
         "incident_confirm_seconds": 0.0,
         "incident_clear_seconds": 0.0,
         "zone_presence_min_overlap_ratio": 0.5,
@@ -142,6 +146,33 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
 
     assert frame_source.opened and frame_source.closed
     assert detector.opened and detector.closed
+    assert isinstance(
+        pipeline._tracking_pipeline._entity_resolver,
+        GeometricEntityResolver,
+    )
+
+
+def test_factory_rejects_reidentification_window_reaching_absence_commit(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-reidentification.db"
+    open_database(database_path).close()
+
+    with pytest.raises(ValueError, match="must be smaller"):
+        build_monitoring_pipeline(
+            zones=_zones(),
+            policy=_policy(
+                absence_confirmation_seconds=5.0,
+                reidentification_max_gap_seconds=5.0,
+            ),
+            dependencies=MonitoringDependencies(
+                camera_id="camera-1",
+                frame_source=_FrameSource(),
+                detector=_Detector(),
+                publication_preparer=_PublicationPreparer(),
+                connection_factory=lambda: connect_database(database_path),
+            ),
+        )
 
 
 def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> None:

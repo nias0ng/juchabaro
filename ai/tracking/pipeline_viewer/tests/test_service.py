@@ -35,6 +35,16 @@ def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:
     assert ViewerPolicy().confidence == 0.01
 
 
+def test_reidentification_window_bridges_observed_multisecond_id_switch() -> None:
+    policy = ViewerPolicy()
+
+    assert policy.reidentification_max_gap_seconds == 4.0
+    assert (
+        policy.reidentification_max_gap_seconds
+        < policy.absence_confirmation_seconds
+    )
+
+
 def test_allow_example_matches_current_entry_event_wire() -> None:
     raw = build_allow_example()
     payload = parse_entry_event(raw)

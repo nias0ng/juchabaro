@@ -84,6 +84,11 @@ class ViewerPolicy:
     parking_move_confirm_seconds: float = 3.0
     absence_confirmation_seconds: float = 5.0
     trusted_sample_max_gap_seconds: float = 1.0
+    # geometry-only runtime re-identification의 provisional 기준이다. 모델과
+    # zone/parking 결론은 이 점수에 포함하지 않으며 replay로 재조정한다.
+    reidentification_max_gap_seconds: float = 4.0
+    reidentification_min_score: float = 0.42
+    reidentification_ambiguity_margin: float = 0.08
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
     zone_presence_min_overlap_ratio: float = 0.40
@@ -109,6 +114,13 @@ class ViewerPolicy:
             parking_move_confirm_seconds=self.parking_move_confirm_seconds,
             absence_confirmation_seconds=self.absence_confirmation_seconds,
             trusted_sample_max_gap_seconds=self.trusted_sample_max_gap_seconds,
+            reidentification_max_gap_seconds=(
+                self.reidentification_max_gap_seconds
+            ),
+            reidentification_min_score=self.reidentification_min_score,
+            reidentification_ambiguity_margin=(
+                self.reidentification_ambiguity_margin
+            ),
             incident_confirm_seconds=self.incident_confirm_seconds,
             incident_clear_seconds=self.incident_clear_seconds,
             zone_presence_min_overlap_ratio=self.zone_presence_min_overlap_ratio,

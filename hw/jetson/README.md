@@ -195,11 +195,16 @@ python -m scripts.replay_pilot_video \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
-    --parking-move-confirm-seconds 3.0 \
+    --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \
     --absence-confirmation-seconds 5.0 \
     --trusted-sample-max-gap-seconds 1.0 \
+    --reidentification-max-gap-seconds 4.0 \
+    --reidentification-min-score 0.42 \
+    --reidentification-ambiguity-margin 0.08 \
     --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \
     --bad-parking-min-primary-overlap-ratio 0.75 \
+    --blocking-relation-confirm-seconds 1.0 \
+    --blocking-relation-clear-seconds 1.0 \
     --movement-epsilon 0.01 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
@@ -210,6 +215,10 @@ python -m scripts.replay_pilot_video \
 오염된다. 코드에 이미 확립된 기본값이 있는 값(`--entry-zone-min-overlap-ratio`,
 `--incident-confirm-seconds`, `--incident-clear-seconds`,
 `--parking-confirm-seconds`)만 그 값을 재사용한다.
+
+위 PARKED 5.0초와 movement 0.5초는 Pipeline Viewer 판정 테스트의 명시적
+override다. 일반 배포의 PARKED 600초 기본 정책을 변경하지 않는다. 재식별
+세 값도 아직 파일럿 export로 조정해야 하는 `[제안값]`이다.
 
 `--zones-file`은 464의 새 구역 정의 snapshot 포맷이어야 한다
 (`zoneDefinitionVersion`/`calibrationReference`/`zones`). `calibrationReference`가
