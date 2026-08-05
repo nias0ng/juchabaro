@@ -40,6 +40,10 @@ flowchart TD
 않는다. AssignmentResolver가 PhysicalVehicle footprint와 ZoneDefinition snapshot에서
 만드는 immutable ephemeral 계산값이고, ParkingEpisode·RuleEvaluator가 같은
 값을 서로 다른 책임으로 읽는다.
+`EgressBlockingEvidence`도 같은 이유로 node가 아니다.
+EgressBlockingResolver가 subject footprint와 정적 EgressAisleDefinition에서
+계산하며, BlockingRelationTracker와 RuleEvaluator가 현재 frame의 근거로만
+읽는다.
 
 ## 3. 관측과 tracking
 
@@ -163,7 +167,7 @@ Assignment 해석과 BAD_PARKING·OUT_OF_ZONE 해석은 동일 PlacementEvidence
 | 변화 | relation | DOUBLE_PARKING Incident |
 |---|---|---|
 | 차단 후보 생성 | CANDIDATE | 후보 평가 가능 |
-| geometry confirm | BLOCKING | MATCHED·OPEN 가능 |
+| 두 overlap 중 하나라도 임계값 이상으로 geometry confirm | BLOCKING | MATCHED·OPEN 가능 |
 | subject/victim 이동 | REEVALUATE | 직접 RESOLVE하지 않음 |
 | Candidate에서 정상 관측으로 차단 비성립 | CANCELED | Incident Candidate가 있으면 취소 |
 | BLOCKING·CLEAR_PENDING에서 차단 불성립 | CLEAR_PENDING → RESOLVED | relation 기반 Incident에 직접 종료 입력 전달 |

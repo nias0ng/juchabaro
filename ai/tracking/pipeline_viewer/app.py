@@ -166,6 +166,20 @@ def _render_policy_inputs() -> ViewerPolicy:
         blocking_clear = columns[1].number_input(
             "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
         )
+        blocking_subject_overlap = columns[2].number_input(
+            "Blocking subject overlap",
+            min_value=0.01,
+            max_value=1.0,
+            value=defaults.blocking_min_subject_overlap_ratio,
+            step=0.01,
+        )
+        blocking_egress_coverage = columns[3].number_input(
+            "Blocking egress coverage",
+            min_value=0.01,
+            max_value=1.0,
+            value=defaults.blocking_min_egress_coverage_ratio,
+            step=0.01,
+        )
 
         columns = st.columns(4)
         motion_window = columns[0].number_input(
@@ -261,6 +275,8 @@ def _render_policy_inputs() -> ViewerPolicy:
         out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap,
         blocking_relation_confirm_seconds=blocking_confirm,
         blocking_relation_clear_seconds=blocking_clear,
+        blocking_min_subject_overlap_ratio=blocking_subject_overlap,
+        blocking_min_egress_coverage_ratio=blocking_egress_coverage,
         entry_match_window_seconds=match_window,
         motion_window_seconds=motion_window,
         motion_min_observation_span_seconds=motion_min_span,
@@ -317,15 +333,20 @@ def main() -> None:
             st.caption(f"{video.name} · {video.size:,} bytes")
 
     st.subheader("Runtime 경로")
-    path_columns = st.columns(3)
+    path_columns = st.columns(4)
     model_path = Path(
         path_columns[0].text_input("YOLO model", value=str(paths.model))
     )
     zones_path = Path(
         path_columns[1].text_input("Zone definition", value=str(paths.zones))
     )
+    egress_aisles_path = Path(
+        path_columns[2].text_input(
+            "Egress aisle definition", value=str(paths.egress_aisles)
+        )
+    )
     calibration_path = Path(
-        path_columns[2].text_input("Calibration", value=str(paths.calibration))
+        path_columns[3].text_input("Calibration", value=str(paths.calibration))
     )
     st.caption("기본 모델 위치: hw/jetson/model/yolov8s.pt")
 
@@ -366,6 +387,7 @@ def main() -> None:
             paths=ViewerPaths(
                 model=model_path,
                 zones=zones_path,
+                egress_aisles=egress_aisles_path,
                 calibration=calibration_path,
             ),
             policy=policy,

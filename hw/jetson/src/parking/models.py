@@ -29,7 +29,9 @@ from src.tracking.models import (
 
 
 ZoneId = NewType("ZoneId", int)
+EgressAisleId = NewType("EgressAisleId", int)
 ZoneDefinitionVersion = NewType("ZoneDefinitionVersion", int)
+EgressAisleDefinitionVersion = NewType("EgressAisleDefinitionVersion", int)
 ZoneVisitId = NewType("ZoneVisitId", UUID)
 ParkingEpisodeId = NewType("ParkingEpisodeId", UUID)
 BlockingRelationId = NewType("BlockingRelationId", UUID)
@@ -265,6 +267,68 @@ class PlacementEvidence:
 
 
 @dataclass(frozen=True, kw_only=True)
+class EgressAisleDefinition:
+    """이중주차 관계 판정에만 사용하는 출차 공간 정의."""
+
+    egress_zone_id: EgressAisleId
+    parking_zone_id: ZoneId
+    polygon: NormalizedPolygon
+    egress_aisle_definition_version: EgressAisleDefinitionVersion
+    zone_definition_version: ZoneDefinitionVersion
+    calibration_reference: str
+
+    def __post_init__(self) -> None:
+        require_positive(self.egress_zone_id, "egress_zone_id")
+        require_positive(self.parking_zone_id, "parking_zone_id")
+        require_positive(
+            self.egress_aisle_definition_version,
+            "egress_aisle_definition_version",
+        )
+        require_positive(self.zone_definition_version, "zone_definition_version")
+        if not self.calibration_reference:
+            raise ValueError("calibration_reference must not be empty")
+        if len(self.polygon) < 3:
+            raise ValueError("egress aisle polygon requires at least three points")
+        for point in self.polygon:
+            if len(point) != 2 or not all(
+                0.0 <= coordinate <= 1.0 for coordinate in point
+            ):
+                raise ValueError(
+                    "egress aisle polygon coordinates must be normalized to [0, 1]"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
+class EgressBlockingEvidence:
+    """차량 footprint과 egress aisle의 immutable ephemeral 교차 근거."""
+
+    egress_zone_id: EgressAisleId
+    parking_zone_id: ZoneId
+    representative_footprint: NormalizedPolygon
+    subject_overlap_ratio: float
+    egress_coverage_ratio: float
+    intersection_area: float
+
+    def __post_init__(self) -> None:
+        require_positive(self.egress_zone_id, "egress_zone_id")
+        require_positive(self.parking_zone_id, "parking_zone_id")
+        for name in ("subject_overlap_ratio", "egress_coverage_ratio"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+        require_non_negative(self.intersection_area, "intersection_area")
+        if len(self.representative_footprint) < 3:
+            raise ValueError("egress blocking footprint requires at least three points")
+        for point in self.representative_footprint:
+            if len(point) != 2 or not all(
+                0.0 <= coordinate <= 1.0 for coordinate in point
+            ):
+                raise ValueError(
+                    "egress blocking footprint must use normalized coordinates"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
 class ZoneDefinition:
     """통제된 기동 시 배포하는 versioned 공간 정의."""
 
@@ -475,7 +539,9 @@ class BlockingRelation:
     blocking_relation_id: BlockingRelationId
     subject_physical_vehicle_id: PhysicalVehicleId
     victim_physical_vehicle_id: PhysicalVehicleId
-    egress_zone_id: ZoneId
+    # 기존 durable/API 필드명을 보존하지만 ID namespace는
+    # ZoneDefinition이 아닌 EgressAisleRegistry가 소유한다.
+    egress_zone_id: EgressAisleId
     state: BlockingRelationState
     observation: ObservationStatus
     confirm_trusted_seconds: float

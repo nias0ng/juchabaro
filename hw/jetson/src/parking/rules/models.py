@@ -7,7 +7,8 @@ confirm·clear 시간과 Incident lifecycle은 IncidentReducer의 책임이며 �
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 import math
 from typing import TYPE_CHECKING
@@ -15,6 +16,8 @@ from typing import TYPE_CHECKING
 from src.domain.models import ObservationStatus, require_aware
 from src.parking.models import (
     BlockingRelation,
+    BlockingRelationId,
+    EgressBlockingEvidence,
     ParkingAssignment,
     ParkingEpisode,
     PlacementEvidence,
@@ -49,6 +52,11 @@ class RuleContext:
     bad_parking_min_secondary_overlap_ratio: float
     out_of_zone_min_spot_overlap_ratio: float
     observed_at: datetime
+    # 현재 frame의 ephemeral geometry 근거다. relation·Incident
+    # lifecycle이나 새 상태축을 소유하지 않는다.
+    blocking_evidence: Mapping[
+        BlockingRelationId, EgressBlockingEvidence
+    ] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")

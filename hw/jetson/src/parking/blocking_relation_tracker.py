@@ -24,8 +24,9 @@ from src.parking.models import (
     BlockingRelation,
     BlockingRelationId,
     BlockingRelationState,
+    EgressAisleId,
+    ParkingEpisodeId,
     PresenceSignal,
-    ZoneId,
 )
 from src.parking.time_guard import ensure_forward_observation
 from src.tracking.models import PhysicalVehicleId
@@ -41,7 +42,7 @@ _NON_TERMINAL_STATES = {
     BlockingRelationState.CLEAR_PENDING,
 }
 
-_RelationKey = tuple[PhysicalVehicleId, PhysicalVehicleId, ZoneId]
+_RelationKey = tuple[PhysicalVehicleId, PhysicalVehicleId, EgressAisleId]
 
 
 class BlockingRelationTracker(Protocol):
@@ -52,10 +53,11 @@ class BlockingRelationTracker(Protocol):
         *,
         subject_physical_vehicle_id: PhysicalVehicleId,
         victim_physical_vehicle_id: PhysicalVehicleId,
-        egress_zone_id: ZoneId,
+        egress_zone_id: EgressAisleId,
         signal: PresenceSignal,
         observation: ObservationStatus,
         observed_at: datetime,
+        source_parking_episode_id: ParkingEpisodeId | None = None,
     ) -> BlockingRelation | None:
         """현재 snapshot 또는 이번 sample에서 생긴 terminal 전이를 반환한다."""
 
@@ -183,10 +185,11 @@ class InMemoryBlockingRelationTracker:
         *,
         subject_physical_vehicle_id: PhysicalVehicleId,
         victim_physical_vehicle_id: PhysicalVehicleId,
-        egress_zone_id: ZoneId,
+        egress_zone_id: EgressAisleId,
         signal: PresenceSignal,
         observation: ObservationStatus,
         observed_at: datetime,
+        source_parking_episode_id: ParkingEpisodeId | None = None,
     ) -> BlockingRelation | None:
         """한 차단 geometry sample을 적용해 현재 또는 terminal 관계 snapshot을 반환한다."""
 
@@ -226,6 +229,7 @@ class InMemoryBlockingRelationTracker:
                 subject_physical_vehicle_id,
                 victim_physical_vehicle_id,
                 egress_zone_id,
+                source_parking_episode_id,
                 observation,
                 observed_at,
             )
@@ -313,7 +317,8 @@ class InMemoryBlockingRelationTracker:
         key: _RelationKey,
         subject_physical_vehicle_id: PhysicalVehicleId,
         victim_physical_vehicle_id: PhysicalVehicleId,
-        egress_zone_id: ZoneId,
+        egress_zone_id: EgressAisleId,
+        source_parking_episode_id: ParkingEpisodeId | None,
         observation: ObservationStatus,
         observed_at: datetime,
     ) -> BlockingRelation:
@@ -322,6 +327,7 @@ class InMemoryBlockingRelationTracker:
             subject_physical_vehicle_id=subject_physical_vehicle_id,
             victim_physical_vehicle_id=victim_physical_vehicle_id,
             egress_zone_id=egress_zone_id,
+            source_parking_episode_id=source_parking_episode_id,
             state=BlockingRelationState.CANDIDATE,
             observation=observation,
             confirm_trusted_seconds=0.0,

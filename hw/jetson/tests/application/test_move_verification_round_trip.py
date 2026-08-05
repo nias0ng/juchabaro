@@ -130,7 +130,12 @@ def _settings(tmp_path: Path) -> Settings:
         zone_definition_path=(
             Path(__file__).parents[2]
             / "config"
-            / "zone_definition.pilot.json"
+            / "zone_definition.json"
+        ),
+        egress_aisle_path=(
+            Path(__file__).parents[2]
+            / "config"
+            / "egress_aisle.json"
         ),
         zone_entry_confirm_seconds=3.0,
         zone_exit_confirm_seconds=3.0,

@@ -24,6 +24,7 @@ from src.parking.models import (
     ZoneId,
     ZoneType,
 )
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.zone_registry import ZoneRegistry
 from src.storage.database import connect_database, open_database
 from src.tracking.entity_resolver import GeometricEntityResolver
@@ -95,6 +96,10 @@ def _zones() -> ZoneRegistry:
     )
 
 
+def _egress_aisles(zones: ZoneRegistry) -> EgressAisleRegistry:
+    return EgressAisleRegistry.empty(zones)
+
+
 def _policy(**overrides: float) -> MonitoringPolicy:
     values = {
         "zone_entry_confirm_seconds": 1.0,
@@ -117,6 +122,8 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "out_of_zone_min_spot_overlap_ratio": 0.50,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
+        "blocking_min_subject_overlap_ratio": 0.40,
+        "blocking_min_egress_coverage_ratio": 0.40,
         "motion_window_seconds": 0.75,
         "motion_min_observation_span_seconds": 0.20,
         "motion_max_sample_gap_seconds": 0.50,
@@ -135,8 +142,10 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     connection.close()
     frame_source = _FrameSource()
     detector = _Detector()
+    zones = _zones()
     pipeline = build_monitoring_pipeline(
-        zones=_zones(),
+        zones=zones,
+        egress_aisles=_egress_aisles(zones),
         policy=_policy(parking_move_confirm_seconds=0.5),
         dependencies=MonitoringDependencies(
             camera_id="camera-1",
@@ -177,8 +186,10 @@ def test_factory_rejects_reidentification_window_reaching_absence_commit(
     open_database(database_path).close()
 
     with pytest.raises(ValueError, match="must be smaller"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(
                 absence_confirmation_seconds=5.0,
                 reidentification_max_gap_seconds=5.0,
@@ -199,8 +210,10 @@ def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> Non
     connection.close()
 
     with pytest.raises(ValueError, match="entry_zone_min_overlap_ratio"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(entry_zone_min_overlap_ratio=0.0),
             dependencies=MonitoringDependencies(
                 camera_id="camera-1",
@@ -219,8 +232,10 @@ def test_factory_keeps_assignment_and_violation_thresholds_independent(
     connection = open_database(database_path)
     connection.close()
 
+    zones = _zones()
     pipeline = build_monitoring_pipeline(
-        zones=_zones(),
+        zones=zones,
+        egress_aisles=_egress_aisles(zones),
         policy=_policy(
             assignment_min_overlap_ratio=0.5,
             bad_parking_min_primary_overlap_ratio=0.49,
@@ -246,8 +261,10 @@ def test_factory_delegates_invalid_motion_policy_to_motion_owner(
     open_database(database_path).close()
 
     with pytest.raises(ValueError, match="stationary_threshold"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(
                 motion_stationary_threshold=0.10,
                 motion_moving_threshold=0.10,

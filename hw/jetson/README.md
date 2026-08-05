@@ -87,14 +87,27 @@ cp .env.example .env
 
 `.env` 파일을 열어 실행 환경에 맞는 값을 설정한다.
 
-기존 `.env`를 계속 사용하는 환경은 `.env.example`의 `MOTION_*` 일곱 값을
-명시적으로 추가해야 한다. 이 값들은 provisional이므로 누락 시 코드 기본값으로
+기존 `.env`를 계속 사용하는 환경은 `.env.example`의 `MOTION_*` 일곱 값과
+`EGRESS_AISLE_PATH`를 명시적으로 추가해야 한다. 누락 시 코드 기본값으로
 조용히 대체하지 않고 시작 단계에서 설정 오류로 중단한다.
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
-구역 JSON 경로를 지정한다. 개발용 예시는
-`config/zone_definition.pilot.json`이다. 구역 정보는 SQLite가 아니라 이 정적
+구역 JSON 경로를 지정한다. 기본 운영 정본은
+`config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
+full-frame 좌표계를 사용한다. 구역 정보는 SQLite가 아니라 이 정적
 JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
+
+`config/zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`replay_pilot_video.py`와 `watch_live_stream.py`용 설정이다. 메인 배포와
+Pipeline Viewer의 full-frame 입력에는 사용하지 않는다.
+
+`EGRESS_AISLE_PATH`는 이중주차 `BlockingRelation`에만 사용하는
+주차면별 출차 방해 영역 JSON 경로다. `ZoneDefinition`의
+Viewer overlay·side mask·ZoneVisit·`AISLE_BLOCK`에는 투영하지 않는다.
+기동 시 `zoneDefinitionVersion`과 `calibrationReference`가 현재
+Zone snapshot과 정확히 같은지 검증한다. 메인·Viewer는
+`config/egress_aisle.json`, crop replay·live는
+`config/egress_aisle.pilot.json`을 사용한다.
 
 `DATABASE_PATH`는 입차 접수·session correlation·사건 전이를 보존하는
 Jetson local SQLite 파일이다. 각 API 요청과 tracking worker는 connection을
@@ -283,6 +296,7 @@ http://<JETSON_IP>:8000/docs
 python -m scripts.replay_pilot_video \
     --video ../../docs/video/video1.mp4 \
     --zones-file config/zone_definition.pilot.json \
+    --egress-aisles-file config/egress_aisle.pilot.json \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \

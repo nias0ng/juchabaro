@@ -24,6 +24,7 @@ from src.application.session_observation_workflow import (
 from src.camera.frame_source import FrameSource
 from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
@@ -65,6 +66,10 @@ class MonitoringPolicy:
     out_of_zone_min_spot_overlap_ratio: float
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
+    # 이중주차 기하 evidence 전용 정책이다. ZoneVisit 임계값을
+    # 재사용하지 않고 파일럿 영상으로 독립 재조정한다.
+    blocking_min_subject_overlap_ratio: float
+    blocking_min_egress_coverage_ratio: float
     # MotionEstimator가 소유하는 ephemeral bbox evidence 정책이다. 아래 값은
     # ParkingEpisode의 주차/이동 확정 시간과 의미가 다르며 서로 대체하지 않는다.
     motion_window_seconds: float
@@ -97,6 +102,7 @@ class MonitoringDependencies:
 def build_monitoring_pipeline(
     *,
     zones: ZoneRegistry,
+    egress_aisles: EgressAisleRegistry,
     policy: MonitoringPolicy,
     dependencies: MonitoringDependencies,
 ) -> MonitoringPipeline:
@@ -117,6 +123,7 @@ def build_monitoring_pipeline(
     )
     parking_pipeline = ParkingPipeline(
         zones=zones,
+        egress_aisles=egress_aisles,
         zone_visit_tracker=InMemoryZoneVisitTracker(
             zone_definition_version=zones.zone_definition_version,
             entry_confirm_seconds=policy.zone_entry_confirm_seconds,
@@ -163,6 +170,12 @@ def build_monitoring_pipeline(
         ),
         out_of_zone_min_spot_overlap_ratio=(
             policy.out_of_zone_min_spot_overlap_ratio
+        ),
+        blocking_min_subject_overlap_ratio=(
+            policy.blocking_min_subject_overlap_ratio
+        ),
+        blocking_min_egress_coverage_ratio=(
+            policy.blocking_min_egress_coverage_ratio
         ),
     )
     frame_workflow = FrameObservationWorkflow(

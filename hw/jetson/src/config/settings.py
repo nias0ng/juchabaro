@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path
 
+    # ZoneVisit·Assignment에 속하지 않는 이중주차 판정용
+    # egress aisle snapshot. ZoneDefinition과 version·calibration을 기동 시 대조한다.
+    egress_aisle_path: Path
+
     # 구역 방문 확인시간(초). 기본값을 두지 않는 이유는 스펙 §4.7에 있다 —
     # zone_entry_confirm_seconds가 전용구역 진입 즉시 판정의 유일한 오탐
     # 방어선이고, 실측값은 T-18이 파일럿 영상 리플레이로 산출한다.

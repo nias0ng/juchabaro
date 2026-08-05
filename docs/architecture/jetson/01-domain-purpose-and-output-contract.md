@@ -27,6 +27,7 @@ flowchart LR
     ENTRY["입차 문맥"] --> FACT["시간적 도메인 사실"]
     ID --> FACT
     ZONE["ZoneDefinition"] --> FACT
+    EGRESS["EgressAisleDefinition"] --> FACT
     FACT --> RULE["삼상태 규칙 평가"]
     RULE --> INCIDENT["Incident lifecycle"]
     FACT --> OUTPUT["Domain handoff"]
@@ -105,6 +106,12 @@ BAD_PARKING·OUT_OF_ZONE signal은 같은 evidence를 각자의 정책으로
 해석하는 독립 projection이다. PlacementEvidence가 Incident lifecycle을
 소유하거나 제9의 상태축이 되지 않는다.
 
+`EgressBlockingEvidence`도 새 상태축이나 영속 scope가 아니다.
+`EgressBlockingResolver`가 현재 subject footprint와 배포된
+`EgressAisleDefinition` polygon으로 만드는 immutable ephemeral value이다.
+차량 면적 대비 겹침과 egress 면적 대비 점유율을 동시에
+제공하지만 `BlockingRelation` lifecycle은 가지지 않는다.
+
 ### 3.3 Delivery state
 
 공개하기로 확정한 handoff가 Backend에 적용됐는지를 나타낸다.
@@ -144,6 +151,8 @@ OPEN.delivery        = DELIVERED
 | `ParkingEpisode` | 정지 후보부터 주차 확정과 이동 확인까지의 행위 | 위반 Incident의 자동 수명 소유 |
 | `ParkingAssignment` | episode에서 안정화한 대표 주차 위치 | 독립 lifecycle |
 | `PlacementEvidence` | 한 footprint의 주차면 overlap을 정규화한 immutable ephemeral 계산값 | scope·timer·Incident lifecycle |
+| `EgressAisleDefinition` | 한 주차면의 출차 방해 판정 공간을 담은 정적 정의 | ZoneVisit·Assignment·AISLE_BLOCK 관측 zone |
+| `EgressBlockingEvidence` | subject footprint과 egress polygon의 두 정규화 overlap을 담은 immutable ephemeral 계산값 | scope·timer·Incident lifecycle |
 | `BlockingRelation` | subject·victim·egress 영역의 차단 관계 | 모든 공간 관계의 범용 graph |
 | `Incident` | 동일 규칙 위반의 후보·OPEN·해소 수명 | Backend 업무 완료 상태 소유 |
 | `MoveVerificationAttempt` | 이동 요청 뒤 현장 규칙을 다시 확인하는 한 번의 시도 | Backend 재알림·관리자 전환 결정 |
@@ -176,13 +185,13 @@ zoneDefinitionVersion
 calibration reference
 optional allowedDurationSeconds
 optional chargerClass
-optional egressZoneIds
+optional legacy egressZoneIds
 ```
 
 - ParkingAssignment 대상 타입은 `GENERAL / DISABLED / EV_CHARGING`이다.
 - `AISLE / ENTRY_EXIT`은 관측·판정용이며 주차면 assignment 대상이 아니다.
 - `allowedDurationSeconds`와 `chargerClass`는 `EV_CHARGING`에서만 유효하다.
-- `egressZoneIds`는 주차면에서 빠져나가는 경로를 나타내는 AISLE zone 참조이며 DOUBLE_PARKING 평가에 사용한다.
+- `egressZoneIds`는 기존 snapshot 파서와 자료를 위한 호환 metadata다. 현재 DOUBLE_PARKING 후보 생성은 이 필드를 읽지 않고 별도 `EgressAisleDefinition` snapshot을 사용한다.
 - 다섯 타입 모두 하나의 deployment `zoneId` namespace를 사용한다. Backend·Frontend는 그중 주차면 타입만 업무 화면에 projection할 수 있다.
 
 `[결정]` 활성 ZoneVisit은 시작 당시의 `zoneId + zoneDefinitionVersion`을 보존한다. 현재 한 대의 Jetson에는 version이 명시된 정적 JSON 설정을 배포한다. 실행 중 hot replacement와 동적 동기화 서비스는 지원하지 않으며, ZoneDefinition 변경은 active scope가 없는 통제된 기동 시점에 적용한다.
@@ -199,8 +208,7 @@ Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기
     {
       "zoneId": 1,
       "zoneType": "GENERAL",
-      "polygon": [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3]],
-      "egressZoneIds": [2]
+      "polygon": [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3]]
     },
     {
       "zoneId": 2,
@@ -219,8 +227,40 @@ Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기
   넓이가 양수인 convex polygon이어야 한다. 두 주차면의 내부는
   유의미한 넓이로 겹치지 않아야 하며, 넓이가 0인 공유 경계는 허용한다.
   이 제약으로 주차면별 overlap의 합을 spot union overlap으로 안전하게 사용한다.
-- `egressZoneIds`는 주차면 타입에서만 사용하며 같은 snapshot의 `AISLE`을 참조한다. 생략하면 빈 관계다.
+- legacy `egressZoneIds`를 넣은 기존 파일은 계속 읽을 수 있지만, 그 값은 DOUBLE_PARKING 실행 경로에 영향을 주지 않는다.
 - 구형 `EV_FAST`, `EV_SLOW`, `allowedMinutes`는 받지 않는다.
+
+### 5.4 EgressAisleDefinition 정적 JSON 배포 형식
+
+Jetson은 `EGRESS_AISLE_PATH`가 가리키는 별도 UTF-8 JSON 파일을
+기동 시 전체 적용한다. 이 snapshot은 ZoneVisit, ParkingAssignment,
+viewer 마스크와 `AISLE_BLOCK`에는 사용하지 않고
+`BlockingRelation` geometry에만 사용한다.
+
+```json
+{
+  "egressAisleDefinitionVersion": 1,
+  "zoneDefinitionVersion": 1,
+  "calibrationReference": "a5d846f6bfc40eb3",
+  "areas": [
+    {
+      "egressZoneId": 101,
+      "parkingZoneId": 1,
+      "polygon": [[0.3, 0.1], [0.5, 0.1], [0.5, 0.3], [0.3, 0.3]]
+    }
+  ]
+}
+```
+
+- `parkingZoneId`는 같은 배포의 ZoneDefinition에 존재하는
+  `GENERAL / DISABLED / EV_CHARGING` 주차면이어야 한다.
+- `zoneDefinitionVersion`과 `calibrationReference`는 ZoneDefinition snapshot과
+  정확히 같아야 하며, 하나라도 다르면 기동을 실패한다.
+- `egressZoneId`는 durable relation과 기존 API 필드명을 보존하는
+  식별자다. `zoneId`와 별도 namespace이며 ZoneDefinition 조회에
+  사용하지 않는다.
+- polygon은 같은 0~1 정규화 좌표계의 넓이가 양수인 convex
+  polygon이어야 한다. 실행 중 hot replacement는 지원하지 않는다.
 
 ## 6. 공통 도메인 결정
 
@@ -426,7 +466,34 @@ OUT_OF_ZONE을 먼저 분류하여 두 rule은 한 신뢰 sample에서 동시
 임계값 사이의 대소 관계를 강제하지 않는다. 따라서 `AMBIGUOUS`나
 `UNASSIGNED` 자체가 BAD_PARKING·OUT_OF_ZONE의 근거가 아니다.
 
-### 9.2 Incident 동일성
+### 9.2 EgressBlockingEvidence와 이중주차 geometry
+
+`EgressBlockingResolver`는 subject 차량 footprint `F`와 victim이
+점유한 주차면에 매핑된 egress polygon `E`에 대해 다음 값을
+같은 polygon intersection으로 계산한다.
+
+```text
+intersectionArea = area(F ∩ E)
+subjectOverlap   = intersectionArea / area(F)
+egressCoverage   = intersectionArea / area(E)
+```
+
+`subjectOverlap`만 쓰면 작은 egress polygon을 차량이 완전히 막아도
+상대적으로 낮은 값이 될 수 있다. `egressCoverage`를 같이 계산해 이
+크기 편향을 방지한다. 정상 관측에서 다음 술어를 사용한다.
+
+```text
+subjectOverlap >= blockingMinSubjectOverlap
+OR egressCoverage >= blockingMinEgressCoverage
+```
+
+두 비율 중 하나라도 임계값 이상이면 relation tracker에 `PRESENT`,
+둘 다 미만이면 `ABSENT`를 제공한다. 필수 관측이 신뢰할 수
+없으면 `UNKNOWN`으로 timer를 멈춘다. 이 술어는 Assignment·BAD_PARKING과
+같은 convex geometry 기초를 재사용하지만 PlacementEvidence나 그
+임계값을 재사용하지 않는다.
+
+### 9.3 Incident 동일성
 
 `IncidentKey`는 규칙마다 다음 값으로 고정한다. 평가 근거가 바뀌었다고 key를 새로 만들지 않는다.
 

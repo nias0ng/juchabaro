@@ -116,12 +116,12 @@ def test_parses_versioned_snapshot_into_canonical_zone_definitions(tmp_path: Pat
     assert not hasattr(registry.get(3), "allowed_minutes")
 
 
-def test_loads_tracked_pilot_deployment_snapshot() -> None:
-    path = Path(__file__).parents[2] / "config" / "zone_definition.pilot.json"
+def test_loads_tracked_main_deployment_snapshot() -> None:
+    path = Path(__file__).parents[2] / "config" / "zone_definition.json"
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(6)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(1)
     assert len(registry.all()) == 9
     assert registry.get(1).zone_type is ZoneType.GENERAL
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)

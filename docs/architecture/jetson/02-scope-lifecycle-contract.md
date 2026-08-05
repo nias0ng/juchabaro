@@ -117,6 +117,8 @@ Observation reason이나 지속 시간 자체는 termination reason이 아니다
 ParkingAssignment는 ParkingEpisode 안의 값이다. `PlacementEvidence`는
 AssignmentResolver가 현재 footprint와 ZoneDefinition snapshot으로 만드는
 immutable ephemeral value이며 domain scope, lifecycle, timer가 아니다.
+`EgressBlockingEvidence`도 subject footprint와 EgressAisleDefinition snapshot으로
+만드는 immutable ephemeral value이며 새 scope나 상태축이 아니다.
 EvidenceArtifact와 outbox는 domain scope가 아니라 저장·전달 workflow이며
 `04`에서 정의한다.
 
@@ -355,7 +357,11 @@ CANDIDATE → BLOCKING → CLEAR_PENDING → RESOLVED
      └→ CANCELED          ↘ BLOCKING
 ```
 
-identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim PhysicalVehicle과 `egressZoneId`를 포함한다. ParkingEpisode ID는 생성 근거로 보존할 수 있지만 수명을 소유하지 않는다. `egressZoneId`는 ZoneDefinition의 parking zone이 참조한 AISLE zone 중 하나다.
+identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim
+PhysicalVehicle과 `egressZoneId`를 포함한다. ParkingEpisode ID는 생성 근거로
+보존할 수 있지만 수명을 소유하지 않는다. `egressZoneId`는 별도
+EgressAisleDefinition snapshot이 부여한 식별자이며, 호환 필드명만
+유지하고 ZoneDefinition의 `zoneId` namespace에는 속하지 않는다.
 
 - Candidate에서 정상 geometry가 비성립하면 CANCELED
 - 정상 geometry에서 차단 조건이 confirm되면 BLOCKING
@@ -367,7 +373,13 @@ identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim
 
 관련 차량의 실제 physical exit가 먼저 확인되면 CANDIDATE는 `CANCELED / PHYSICAL_EXIT`, BLOCKING과 CLEAR_PENDING은 `RESOLVED / PHYSICAL_EXIT`가 된다.
 
-후보 계산은 PARKED 차량과 설정된 egress 영역으로 제한한다. 최대 차량·relation 수와 평가 주기는 성능 실측으로 정한다.
+후보는 PARKED victim의 안정된 `ASSIGNED` 주차면에 매핑된 egress
+영역과 다른 active subject 차량의 현재 footprint으로만 생성한다.
+정상 관측에서 `subjectOverlap >= θsubject OR egressCoverage >= θegress`를
+차단 geometry 성립으로 본다. 둘 다 미만이어야 비성립이며, 필수
+관측이 불신뢰면 `UNKNOWN`이다. 이 비율과 임계값은 Assignment·
+BAD_PARKING의 PlacementEvidence와 별도다. 최대 차량·relation 수와
+평가 주기는 성능 실측으로 정한다.
 
 `(subjectPhysicalVehicleId, victimPhysicalVehicleId, egressZoneId)`당 non-terminal BlockingRelation은 하나만 허용한다.
 

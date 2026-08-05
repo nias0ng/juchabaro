@@ -25,6 +25,10 @@ from src.domain.models import (
 )
 from src.parking.models import (
     AssignmentState,
+    BlockingRelation,
+    BlockingRelationId,
+    BlockingRelationState,
+    EgressAisleId,
     Incident,
     IncidentId,
     IncidentKey,
@@ -57,7 +61,10 @@ from src.session.models import (
     SessionAdministrativeState,
     SessionContext,
 )
-from src.storage.aggregate_repositories import ParkingEpisodeRepository
+from src.storage.aggregate_repositories import (
+    BlockingRelationRepository,
+    ParkingEpisodeRepository,
+)
 from src.storage.database import open_database
 from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.repositories import (
@@ -85,6 +92,9 @@ T1 = T0 + timedelta(seconds=5)
 VEHICLE_ID = PhysicalVehicleId(
     UUID("10000000-0000-4000-8000-000000000011")
 )
+SUBJECT_VEHICLE_ID = PhysicalVehicleId(
+    UUID("10000000-0000-4000-8000-000000000012")
+)
 ATTEMPT_ID = EntryAttemptId(
     UUID("20000000-0000-4000-8000-000000000011")
 )
@@ -97,6 +107,9 @@ EPISODE_ID = ParkingEpisodeId(
 SESSION_ID = ParkingSessionId(55)
 INCIDENT_ID = IncidentId(
     UUID("50000000-0000-4000-8000-000000000011")
+)
+BLOCKING_RELATION_ID = BlockingRelationId(
+    UUID("60000000-0000-4000-8000-000000000011")
 )
 
 OBSERVED_T0 = ObservationStatus(
@@ -153,12 +166,21 @@ class _ParkingPipeline:
         self.runtime_revision = 0
         self.exit_reasons: list[str] = []
         self.restored_episodes: tuple[ParkingEpisode, ...] = ()
+        self.restored_relations = ()
 
     def checkpoint_state(self):
-        return self.runtime_revision, self.restored_episodes
+        return (
+            self.runtime_revision,
+            self.restored_episodes,
+            self.restored_relations,
+        )
 
     def restore_state(self, checkpoint) -> None:
-        self.runtime_revision, self.restored_episodes = checkpoint
+        (
+            self.runtime_revision,
+            self.restored_episodes,
+            self.restored_relations,
+        ) = checkpoint
 
     def restore_active(
         self,
@@ -166,10 +188,12 @@ class _ParkingPipeline:
         zone_visits,
         parking_episodes,
         incidents,
+        blocking_relations,
     ) -> None:
         assert zone_visits == ()
         assert incidents == ()
         self.restored_episodes = parking_episodes
+        self.restored_relations = blocking_relations
 
     def process(self, _batch, **_correlations) -> ParkingPipelineResult:
         self.runtime_revision += 1
@@ -376,6 +400,30 @@ def _empty_result() -> ParkingPipelineResult:
     )
 
 
+def _blocking_relation_result() -> ParkingPipelineResult:
+    relation = BlockingRelation(
+        blocking_relation_id=BLOCKING_RELATION_ID,
+        subject_physical_vehicle_id=SUBJECT_VEHICLE_ID,
+        victim_physical_vehicle_id=VEHICLE_ID,
+        egress_zone_id=EgressAisleId(101),
+        state=BlockingRelationState.CANDIDATE,
+        observation=OBSERVED_T1,
+        confirm_trusted_seconds=0.0,
+        clear_trusted_seconds=0.0,
+        confirm_duration_seconds=2.0,
+        clear_duration_seconds=3.0,
+        record_version=1,
+        created_at=T1,
+        updated_at=T1,
+    )
+    return ParkingPipelineResult(
+        zone_visit_updates=(),
+        parking_episode_updates=(),
+        blocking_relation_updates=(relation,),
+        incident_transitions=(),
+    )
+
+
 def _batch(*, departure: bool = False) -> TrackingBatch:
     return TrackingBatch(
         camera_id="camera-1",
@@ -442,6 +490,40 @@ def test_frame_rolls_back_session_parking_outbox_and_runtime_then_retries(
         assert _outbox_count(connection) == 1
         assert session.runtime_revision == 1
         assert parking.runtime_revision == 1
+    finally:
+        connection.close()
+
+
+def test_frame_persists_and_restart_restores_active_blocking_relation(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "blocking-relation-frame.db")
+    session = _SessionWorkflow(ensure_vehicle=True)
+    parking = _ParkingPipeline(process_result=_blocking_relation_result())
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(
+                replace(
+                    _active_vehicle(),
+                    physical_vehicle_id=SUBJECT_VEHICLE_ID,
+                )
+            )
+
+        workflow.process(_batch(), connection=connection)
+
+        persisted = BlockingRelationRepository(connection).get(
+            BLOCKING_RELATION_ID
+        )
+        assert persisted is not None
+        assert persisted.egress_zone_id == EgressAisleId(101)
+
+        recovery = workflow.recover_runtime(
+            connection=connection,
+            recovered_at=T1 + timedelta(seconds=1),
+        )
+        assert recovery.blocking_relation_count == 1
+        assert parking.restored_relations == (persisted,)
     finally:
         connection.close()
 
