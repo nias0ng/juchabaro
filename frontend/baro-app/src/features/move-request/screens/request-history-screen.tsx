@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 
-import { AsyncStateView, GradientScreenBackground, ScreenHeader, Stack } from '@/components/ui';
+import { AsyncStateView, GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
@@ -27,28 +27,30 @@ export default function RequestHistoryScreen() {
       refreshing={isRefreshing}
       onRefresh={() => void refetch()}
     >
-      <ScreenHeader title="요청 내역" style={styles.header} />
+      <ResponsiveContainer>
+        <ScreenHeader title="요청 내역" style={styles.header} />
 
-      <AsyncStateView message={statusMessage} fill={false} style={styles.statusContainer}>
-        <Stack gap={Spacing.base} style={styles.content}>
-          {moveRequests.map((summary) => (
-            <RequestHistoryCard
-              key={summary.requestId}
-              display={toRequestSummaryDisplay(summary)}
-              status={summary.requestStatus}
-              onPress={() =>
-                router.push({
-                  pathname: '/resident/request-detail',
-                  params: {
-                    requestId: String(summary.requestId),
-                    viewMode: summary.requesterUserId === user?.userId ? 'requester' : 'recipient',
-                  },
-                })
-              }
-            />
-          ))}
-        </Stack>
-      </AsyncStateView>
+        <AsyncStateView message={statusMessage} fill={false}>
+          <Stack gap={Spacing.base} style={styles.content}>
+            {moveRequests.map((summary) => (
+              <RequestHistoryCard
+                key={summary.requestId}
+                display={toRequestSummaryDisplay(summary)}
+                status={summary.requestStatus}
+                onPress={() =>
+                  router.push({
+                    pathname: '/resident/request-detail',
+                    params: {
+                      requestId: String(summary.requestId),
+                      viewMode: summary.requesterUserId === user?.userId ? 'requester' : 'recipient',
+                    },
+                  })
+                }
+              />
+            ))}
+          </Stack>
+        </AsyncStateView>
+      </ResponsiveContainer>
     </GradientScreenBackground>
   );
 }

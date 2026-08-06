@@ -62,7 +62,7 @@ export function VisitorCarForm({
       />
 
       <View style={styles.noticeBanner}>
-        <Text style={styles.noticeText}>{'방문 차량은 등록 후 24시간 동안만 유효하며,\n이후 자동으로 목록에서 제거됩니다.'}</Text>
+        <Text style={styles.noticeText}>{'방문 차량은 임시로 등록되며,\n신청일 하루만 유효합니다.'}</Text>
       </View>
     </Stack>
   );

@@ -38,7 +38,7 @@ type VehicleCardProps = {
 export function VehicleCard({ vehicle, onDelete }: VehicleCardProps) {
   const isHousehold = vehicle.ownerType === 'RESIDENT';
 
-  const subtitle = isHousehold ? vehicle.vehicleModel : '24시간 임시 등록';
+  const subtitle = isHousehold ? vehicle.vehicleModel : '임시 등록';
 
   // TODO(vehicle-api): 방문 차량의 "방문 시작/종료"(visitDate 기반)를 보여주고 싶었지만, visitDate가
   // 등록(POST) 응답에만 있고 조회(GET) 응답엔 없어서 새로고침하면 값을 다시 받을 수 없다.

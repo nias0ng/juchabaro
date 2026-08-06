@@ -3,7 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 
-import { InfoRowCard, Screen } from '@/components/ui';
+import { InfoRowCard, ResponsiveContainer, Screen } from '@/components/ui';
 import { useMoveRequestDetail } from '@/features/move-request/hooks/use-move-request-detail';
 import { RedirectCountdown } from '@/features/notification/components/response-complete/redirect-countdown';
 import { useRedirectCountdown } from '@/features/notification/hooks/use-redirect-countdown';
@@ -45,48 +45,49 @@ export default function ResponseCompleteScreen() {
       edges={['top', 'right', 'left']}
       backgroundGradient={Gradients.responseComplete}
       backgroundGradientLocations={[0, 0.55, 1]}
-      contentContainerStyle={styles.content}
     >
-      {statusMessage || !detail || !latestResponse ? (
-        <View style={styles.statusContainer}>
-          <Text style={styles.statusText}>{statusMessage}</Text>
-        </View>
-      ) : (
-        <>
-          <View style={styles.iconOuter}>
-            <LinearGradient colors={Gradients.avatar} style={styles.iconInner} />
+      <ResponsiveContainer style={styles.content}>
+        {statusMessage || !detail || !latestResponse ? (
+          <View style={styles.statusContainer}>
+            <Text style={styles.statusText}>{statusMessage}</Text>
           </View>
+        ) : (
+          <>
+            <View style={styles.iconOuter}>
+              <LinearGradient colors={Gradients.avatar} style={styles.iconInner} />
+            </View>
 
-          <Text style={styles.title}>응답이 전달되었습니다</Text>
-          <Text style={styles.subtitle}>
-            {formatTimeLabel(detail.dueAt)}까지 이동해 주세요.{'\n'}이동이 확인되면 요청이 자동 종료됩니다.
-          </Text>
-
-          <View style={styles.summaryMargin}>
-            <InfoRowCard
-              rows={[
-                { label: '내 응답', value: formatEstimatedMinutesLabel(latestResponse.estimatedMinutes) },
-                {
-                  label: '차량',
-                  value: `${detail.targetVehicle.plateNumber} · ${toDisplayZoneNumber(detail.event.zoneNumber) ?? DEFAULT_LOCATION_LABEL}`,
-                },
-                { label: '이동 기한', value: formatTimeLabel(detail.dueAt) },
-              ]}
-              statusRow={{ label: '요청자에게 전달 완료', time: formatTimeLabel(latestResponse.respondedAt) }}
-            />
-          </View>
-
-          <View style={styles.noticeBox}>
-            <Text style={styles.noticeText}>
-              기한까지 이동이 확인되지 않으면 재안내 후,{'\n'}반복 시 관리사무소에 위반 이력이 전달됩니다.
+            <Text style={styles.title}>응답이 전달되었습니다</Text>
+            <Text style={styles.subtitle}>
+              {formatTimeLabel(detail.dueAt)}까지 이동해 주세요.{'\n'}이동이 확인되면 요청이 자동 종료됩니다.
             </Text>
-          </View>
 
-          <View style={styles.countdownMargin}>
-            <RedirectCountdown secondsLeft={secondsLeft} />
-          </View>
-        </>
-      )}
+            <View style={styles.summaryMargin}>
+              <InfoRowCard
+                rows={[
+                  { label: '내 응답', value: formatEstimatedMinutesLabel(latestResponse.estimatedMinutes) },
+                  {
+                    label: '차량',
+                    value: `${detail.targetVehicle.plateNumber} · ${toDisplayZoneNumber(detail.event.zoneNumber) ?? DEFAULT_LOCATION_LABEL}`,
+                  },
+                  { label: '이동 기한', value: formatTimeLabel(detail.dueAt) },
+                ]}
+                statusRow={{ label: '요청자에게 전달 완료', time: formatTimeLabel(latestResponse.respondedAt) }}
+              />
+            </View>
+
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>
+                기한까지 이동이 확인되지 않으면 재안내 후,{'\n'}반복 시 관리사무소에 위반 이력이 전달됩니다.
+              </Text>
+            </View>
+
+            <View style={styles.countdownMargin}>
+              <RedirectCountdown secondsLeft={secondsLeft} />
+            </View>
+          </>
+        )}
+      </ResponsiveContainer>
     </Screen>
   );
 }

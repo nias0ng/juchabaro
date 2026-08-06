@@ -1,14 +1,21 @@
 import { StyleSheet } from 'react-native';
 
-import { Palette } from '@/styles';
+import { MaxContentWidth, Palette } from '@/styles';
 
 export const styles = StyleSheet.create({
+  // 배경/구분선은 화면 전체 폭을 채우고, 실제 탭 아이콘 줄만 아래 tabsRow에서 폭을 제한한다 —
+  // 안 그러면 넓은 화면에서 탭 줄 양옆에 배경색이 안 칠해진 빈 여백이 생긴다.
   container: {
-    flexDirection: 'row',
     width: '100%',
     borderTopWidth: 1,
     paddingTop: 10,
     paddingBottom: 14,
+  },
+  tabsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    alignSelf: 'center',
   },
   tab: {
     flex: 1,
