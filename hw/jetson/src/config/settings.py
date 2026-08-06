@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     camera_width: int = Field(default=0, ge=0)
     camera_height: int = Field(default=0, ge=0)
 
+    # 데모용 라이브 오버레이 MJPEG 스트리밍. 운영 배포는 기본값(꺼짐)을
+    # 유지한다 — 켜면 매 프레임 JPEG 인코딩 비용이 판정 루프와 같은
+    # thread에서 발생한다.
+    live_stream_enabled: bool = False
+    live_stream_target_fps: float = Field(default=15.0, gt=0.0)
+    live_stream_jpeg_quality: int = Field(default=80, ge=1, le=100)
+
     # 파일 존재·형식과 calibration 파일 SHA fingerprint 일치는 concrete
     # factory의 기동 preflight에서 검증한다. remap balance와 zone 좌표계의
     # 호환성은 현재 calibrationReference만으로 검증할 수 없으므로 배포
@@ -108,9 +115,67 @@ class Settings(BaseSettings):
     reidentification_min_score: float
     reidentification_ambiguity_margin: float
 
-    # InMemoryIncidentReducer의 기존 즉시 전이 기본값.
+    # 아직 명시 정책이 없는 미래 규칙에만 적용하는 compatibility fallback.
+    # 현재 알려진 규칙은 아래 규칙별 값을 반드시 배포 설정으로 주입한다.
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
+
+    incident_disabled_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_disabled_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
 
     # 서로 의미가 다른 parking 판단값이므로 독립 설정으로 유지한다.
     zone_presence_min_overlap_ratio: float

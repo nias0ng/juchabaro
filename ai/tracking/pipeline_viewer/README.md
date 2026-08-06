@@ -63,6 +63,8 @@ PyTorch·TensorRT 설치가 별도로 필요하므로 이 PC용 Conda 절차를 
 - frame slider와 상태 변경 프레임 바로가기
 - EntryMatch, ZoneVisit, ParkingEpisode, BlockingRelation, Incident 상태 변화
 - 실제 `TrackingBatch`와 `FrameObservationResult` JSON 요약
+- 설정 UI를 Owner 흐름인 탐지·동일성 → 관측·Motion → Zone·Assignment →
+  Parking·Blocking → Incident 탭으로 분류
 - 기존 상태 변경 timeline의 명시적 CSV 다운로드
 - 프레임별 YOLO detection·identity·motion·Incident signal·placement evidence·차량 소실 진단 CSV 다운로드
 - 정상 commit 이후의 프레임만 표시하고 오류 발생 시 마지막 정상 프레임과
@@ -80,7 +82,9 @@ BAD_PARKING·OUT_OF_ZONE signal을 담습니다. Viewer/export가 이 값을 다
 계산하지 않으므로 domain 판정과 진단 CSV가 같은 근거를 가리킵니다.
 detection이 없는 프레임도 `FRAME` 행으로 남고 이 행의
 `policySnapshotJson`은 해당 실행에 실제 적용한 모든 Viewer policy를 canonical
-JSON으로 보존합니다. 따라서 threshold보다 낮아 YOLO 결과에서
+JSON으로 보존합니다. `assetSnapshotJson`은 같은 실행의 모델·zone·egress aisle·
+calibration 경로와 SHA-256, definition version, calibration fingerprint를
+보존합니다. 따라서 threshold보다 낮아 YOLO 결과에서
 제거된 후보는 export에도 나타나지 않습니다. 낮은 confidence 분포를 확인하려면
 Viewer 실행 전 threshold를 `0.01`처럼 낮추되, 후보 증가에 따른 오탐·처리시간
 증가를 함께 비교해야 합니다. 현재 Viewer의 진단용 provisional 기본값은

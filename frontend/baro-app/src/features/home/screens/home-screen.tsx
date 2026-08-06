@@ -59,7 +59,9 @@ export default function HomeScreen() {
   const {
     sessions,
     isLoading: isSessionsLoading,
+    isRefreshing: isSessionsRefreshing,
     error: sessionsError,
+    refetch: refetchSessions,
   } = useParkingSessions();
   const primarySession = pickPrimarySession(sessions);
   const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
@@ -71,7 +73,9 @@ export default function HomeScreen() {
   const {
     summary,
     isLoading: isSummaryLoading,
+    isRefreshing: isSummaryRefreshing,
     error: summaryError,
+    refetch: refetchSummary,
   } = useParkingZoneSummary();
   const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null;
 
@@ -81,7 +85,13 @@ export default function HomeScreen() {
       locations={[0, 0.46, 0.78]}
       style={styles.gradient}
     >
-      <Screen scroll edges={['top', 'right', 'left']} backgroundColor="transparent">
+      <Screen
+        scroll
+        edges={['top', 'right', 'left']}
+        backgroundColor="transparent"
+        refreshing={isSessionsRefreshing || isSummaryRefreshing}
+        onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
+      >
         <ResponsiveContainer style={styles.content}>
           <HomeTopBar
             unitLabel={unitLabel}

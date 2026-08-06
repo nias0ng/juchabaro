@@ -94,6 +94,56 @@ calibration·차량 tracking·`EGRESS_AISLE_PATH` 및 MonitoringPolicy 필수값
 중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
 배포 환경에 맞게 명시한다.
 
+단일 USB 카메라를 사용하는 Jetson 운영 배치는 다음 asset 경로를 사용한다.
+
+```dotenv
+CAMERA_ID=PARKING-CAMERA-01
+CAMERA_INDEX=0
+CALIBRATION_PATH=/home/e202/config/camera_calibration.json
+REMAP_BALANCE=0.5
+VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
+```
+
+시연 배포에서 판정 정책은 `.env` → `Settings` → `src.main`의 composition root →
+`MonitoringPolicy` 순서로 전달된다. 규칙별 Incident 값은
+`MonitoringPolicy.incident_rule_timings`를 거쳐 `InMemoryIncidentReducer`가 새
+Incident에 snapshot하므로, 실행 중 환경 변수가 바뀌어도 이미 진행 중인 timer의
+정책은 바뀌지 않는다.
+
+알려진 Incident 규칙은 아래 값을 모두 명시해야 한다. 전역
+`INCIDENT_CONFIRM_SECONDS`와 `INCIDENT_CLEAR_SECONDS`는 아직 규칙별 정책이 없는
+미래 규칙을 위한 compatibility fallback일 뿐이다.
+
+```dotenv
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CONFIRM_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CLEAR_SECONDS=0.0
+INCIDENT_BAD_PARKING_CONFIRM_SECONDS=0.5
+INCIDENT_BAD_PARKING_CLEAR_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CONFIRM_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CLEAR_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CONFIRM_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CLEAR_SECONDS=0.5
+INCIDENT_DOUBLE_PARKING_CONFIRM_SECONDS=0.0
+INCIDENT_DOUBLE_PARKING_CLEAR_SECONDS=0.0
+```
+
+현재 시연값은 `VEHICLE_TRACKING_CONFIDENCE=0.25`,
+`PARKING_CONFIRM_SECONDS=5.0`, `PARKING_MOVE_CONFIRM_SECONDS=0.5`다.
+`PARKING_CONFIRM_SECONDS=600.0`은 운영 요구값이며 실영상 검증을 마친 운영
+프로파일에서 별도로 적용한다. 이 값들은 provisional이므로 영상별 confidence 분포와
+Incident 오탐·미탐을 다시 측정한 뒤 조정한다.
+
+`config/camera_calibration.json`은 운영 배포용 calibration 정본이다. 이 파일의
+원시 바이트 SHA-256 앞 16자리는 `a26d3085c3d4fc4f`이며,
+`zone_definition.json`과 `egress_aisle.json`의 `calibrationReference`가 같은
+값이어야 한다. 해당 reference는 보정 수치로 사용하는 값이 아니라, 보정된
+frame과 polygon이 같은 좌표계인지 검증하는 식별자다. 파일을 다시 저장할 때
+줄바꿈이나 공백이 달라져도 지문이 바뀌므로 Git의 LF 바이트를 유지한다.
+
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
 `config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
@@ -164,10 +214,20 @@ Jetson은 `0.0.0.0:8000`에 수신 서버를 열며 실제 Backend base URL은 E
 POST /internal/entry-review-resolutions
 POST /internal/session-context-updates
 POST /internal/move-verifications
+GET  /live
+GET  /live/stream
 ```
 
-모든 요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
+아래 데모 전용 두 엔드포인트(`GET /live`, `GET /live/stream`)를 제외한 모든
+요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
 local `.env`의 `INTERNAL_API_KEY`에만 저장하고 Git에는 넣지 않는다.
+
+`GET /live`와 `GET /live/stream`은 라이브 시연 중 브라우저나 OBS로 판정
+오버레이를 보기 위한 데모 전용 표면이며 `X-Internal-API-Key`를 요구하지
+않는다. `LIVE_STREAM_ENABLED=true`일 때만 실제 오버레이 프레임을 낸다.
+`GET /live`는 정적 뷰어 페이지라 설정과 무관하게 200을 반환하므로,
+`LIVE_STREAM_ENABLED=false`에서는 그 페이지가 가리키는 `/live/stream`이
+503으로 응답한다.
 `Idempotency-Key`는 command identity·revision·payload와 함께 SQLite에 기간
 제한 없이 보존한다. 같은 key와 같은 payload는 재적용하지 않으며, 같은 key나
 identity·revision을 다른 payload에 사용하면 `409 IDEMPOTENCY_CONFLICT`다.
@@ -440,6 +500,16 @@ python -m scripts.replay_pilot_video \
     --out-of-zone-min-spot-overlap-ratio 0.50 \
     --blocking-relation-confirm-seconds 1.0 \
     --blocking-relation-clear-seconds 1.0 \
+    --incident-disabled-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-disabled-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-ev-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-overstay-confirm-seconds 0.0 --incident-ev-overstay-clear-seconds 0.0 \
+    --incident-bad-parking-confirm-seconds 0.5 --incident-bad-parking-clear-seconds 0.5 \
+    --incident-out-of-zone-confirm-seconds 0.5 --incident-out-of-zone-clear-seconds 0.5 \
+    --incident-aisle-block-confirm-seconds 0.5 --incident-aisle-block-clear-seconds 0.5 \
+    --incident-double-parking-confirm-seconds 0.0 \
+    --incident-double-parking-clear-seconds 0.0 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```

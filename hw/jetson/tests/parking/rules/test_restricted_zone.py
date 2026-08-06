@@ -1,5 +1,6 @@
 """전용구역 RuleEvaluator의 삼상태 계약을 검증한다."""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -22,7 +23,10 @@ from src.parking.models import (
     ZoneVisitState,
 )
 from src.parking.rules.models import RuleContext
-from src.parking.rules.restricted_zone import evaluate
+from src.parking.rules.restricted_zone import (
+    evaluate,
+    qualification_for_zone,
+)
 from src.parking.zone_registry import ZoneRegistry
 from src.session.models import SessionContext
 from src.tracking.models import (
@@ -148,6 +152,56 @@ def only_signal(context: RuleContext):
     return signals[0]
 
 
+@pytest.mark.parametrize(
+    ("zone_type", "is_disabled_vehicle", "is_electric", "expected"),
+    [
+        (ZoneType.DISABLED, True, False, True),
+        (ZoneType.DISABLED, False, True, False),
+        (ZoneType.DISABLED, None, True, None),
+        (ZoneType.EV_CHARGING, False, True, True),
+        (ZoneType.EV_CHARGING, True, False, False),
+        (ZoneType.EV_CHARGING, True, None, None),
+    ],
+)
+def test_qualification_for_zone_selects_the_zone_specific_attribute(
+    zone_type: ZoneType,
+    is_disabled_vehicle: bool | None,
+    is_electric: bool | None,
+    expected: bool | None,
+) -> None:
+    session_context = make_session(
+        is_disabled_vehicle=is_disabled_vehicle,
+        is_electric=is_electric,
+    )
+
+    assert qualification_for_zone(zone_type, session_context) is expected
+
+
+@pytest.mark.parametrize(
+    "zone_type",
+    [ZoneType.DISABLED, ZoneType.EV_CHARGING],
+)
+def test_qualification_for_zone_without_session_context_is_unknown(
+    zone_type: ZoneType,
+) -> None:
+    assert qualification_for_zone(zone_type, None) is None
+
+
+@pytest.mark.parametrize(
+    "zone_type",
+    [
+        ZoneType.GENERAL,
+        ZoneType.AISLE,
+        ZoneType.ENTRY_EXIT,
+    ],
+)
+def test_qualification_for_zone_rejects_unsupported_zone_type(
+    zone_type: ZoneType,
+) -> None:
+    with pytest.raises(ValueError):
+        qualification_for_zone(zone_type, None)
+
+
 def test_unqualified_disabled_zone_visit_is_matched_and_confirmable() -> None:
     signal = only_signal(
         make_context(
@@ -165,6 +219,11 @@ def test_unqualified_disabled_zone_visit_is_matched_and_confirmable() -> None:
     )
     assert signal.value is IncidentSignalValue.MATCHED
     assert signal.confirmable is True
+    assert signal.evidence == {
+        "isDisabledVehicle": False,
+        "zoneId": ZoneId(1),
+        "zoneType": ZoneType.DISABLED.value,
+    }
 
 
 def test_qualified_disabled_zone_visit_is_not_matched() -> None:
@@ -270,3 +329,38 @@ def test_general_zone_produces_no_restricted_zone_signal() -> None:
     )
 
     assert evaluate(context) == ()
+
+
+def test_missing_zone_definition_produces_both_unknown_signals_in_order() -> None:
+    context = make_context(
+        zone_type=ZoneType.DISABLED,
+        session_context=make_session(
+            is_disabled_vehicle=False,
+            is_electric=False,
+        ),
+    )
+    context = replace(
+        context,
+        zones=ZoneRegistry((make_zone(2, ZoneType.GENERAL),)),
+    )
+
+    signals = evaluate(context)
+
+    assert tuple(signal.key.rule_code for signal in signals) == (
+        "DISABLED_ZONE_UNAUTHORIZED",
+        "EV_ZONE_UNAUTHORIZED",
+    )
+    assert tuple(signal.value for signal in signals) == (
+        IncidentSignalValue.UNKNOWN,
+        IncidentSignalValue.UNKNOWN,
+    )
+    assert tuple(signal.confirmable for signal in signals) == (False, False)
+    expected_evidence = {
+        "reason": "ZONE_DEFINITION_UNAVAILABLE",
+        "zoneId": ZoneId(1),
+        "zoneVisitState": ZoneVisitState.INSIDE.value,
+    }
+    assert tuple(signal.evidence for signal in signals) == (
+        expected_evidence,
+        expected_evidence,
+    )

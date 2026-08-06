@@ -1,8 +1,9 @@
-"""장애인·전기차 전용구역의 무자격 점유 술어를 평가한다.
+"""장애인·전기차 전용구역의 차량 자격 의미와 무자격 점유 술어를 평가한다.
 
+구역 종류별 자격 속성 선택은 ``qualification_for_zone``이 소유하며,
+``evaluate``는 이를 camera 기반 ZoneVisit의 IncidentSignal로 변환한다.
 이 모듈은 상태를 소유하지 않는다. 방문 수명과 확인·해소 timer는 각각
-``ZoneVisitTracker``와 ``IncidentReducer``가 소유하며, 여기서는 현재 입력을
-``MATCHED / NOT_MATCHED / UNKNOWN`` 중 하나로만 해석한다.
+``ZoneVisitTracker``와 ``IncidentReducer``가 소유한다.
 """
 
 from __future__ import annotations
@@ -17,9 +18,32 @@ from src.parking.models import (
     ZoneVisitState,
 )
 from src.parking.rules.models import RuleContext
+from src.session.models import SessionContext
 
 DISABLED_ZONE_UNAUTHORIZED = "DISABLED_ZONE_UNAUTHORIZED"
 EV_ZONE_UNAUTHORIZED = "EV_ZONE_UNAUTHORIZED"
+
+
+def qualification_for_zone(
+    zone_type: ZoneType,
+    session_context: SessionContext | None,
+) -> bool | None:
+    """전용구역 종류에 대한 차량 자격 여부를 반환한다.
+
+    ``True``와 ``False``는 각각 자격 있음과 없음을, ``None``은 authoritative
+    context 또는 필요한 자격 값이 없어 판정할 수 없음을 뜻한다. 지원하지 않는
+    zone type에는 ``ValueError``를 발생시킨다.
+    """
+
+    if zone_type is ZoneType.DISABLED:
+        return (
+            None
+            if session_context is None
+            else session_context.is_disabled_vehicle
+        )
+    if zone_type is ZoneType.EV_CHARGING:
+        return None if session_context is None else session_context.is_electric
+    raise ValueError(f"차량 자격을 지원하지 않는 zone type입니다: {zone_type.value}")
 
 
 def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
@@ -49,21 +73,16 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
         if zone.zone_type is ZoneType.DISABLED:
             rule_code = DISABLED_ZONE_UNAUTHORIZED
             evidence_key = "isDisabledVehicle"
-            qualified = (
-                None
-                if context.session_context is None
-                else context.session_context.is_disabled_vehicle
-            )
         elif zone.zone_type is ZoneType.EV_CHARGING:
             rule_code = EV_ZONE_UNAUTHORIZED
             evidence_key = "isElectric"
-            qualified = (
-                None
-                if context.session_context is None
-                else context.session_context.is_electric
-            )
         else:
             continue
+
+        qualified = qualification_for_zone(
+            zone.zone_type,
+            context.session_context,
+        )
 
         if (
             context.observation.state is not ObservationState.OBSERVED

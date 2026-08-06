@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Accessibility, Car, ChevronDown, LayoutGrid, Pencil, Plug, Search } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
+import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -57,39 +58,61 @@ const zonesError = ref<string | null>(null)
 const spots = ref<ParkingSpotSummary[]>([])
 const summaryLoading = ref(false)
 const summaryError = ref<string | null>(null)
+let zonesRequestId = 0
+let summaryRequestId = 0
 
-async function loadZones() {
-  zonesLoading.value = true
-  zonesError.value = null
+async function loadZones(background = false) {
+  if (background && zonesLoading.value) return
+  const requestId = ++zonesRequestId
+  const showLoading = !background || zones.value.length === 0
+  if (showLoading) zonesLoading.value = true
+  if (!background) zonesError.value = null
   try {
     const accessToken = authStore.accessToken
     if (!accessToken) throw new Error('로그인이 필요합니다.')
     const result = await getZones(accessToken)
-    zones.value = result.zones
+    if (requestId === zonesRequestId) {
+      zones.value = result.zones
+      zonesError.value = null
+    }
   } catch (error) {
-    zonesError.value = error instanceof Error ? error.message : '구역 목록을 불러오지 못했습니다.'
+    if (requestId === zonesRequestId && showLoading) {
+      zonesError.value = error instanceof Error ? error.message : '구역 목록을 불러오지 못했습니다.'
+    }
   } finally {
-    zonesLoading.value = false
+    if (requestId === zonesRequestId && showLoading) zonesLoading.value = false
   }
 }
 
-async function loadSummary() {
-  summaryLoading.value = true
-  summaryError.value = null
+async function loadSummary(background = false) {
+  if (background && summaryLoading.value) return
+  const requestId = ++summaryRequestId
+  const showLoading = !background || spots.value.length === 0
+  if (showLoading) summaryLoading.value = true
+  if (!background) summaryError.value = null
   try {
     const accessToken = authStore.accessToken
     if (!accessToken) throw new Error('로그인이 필요합니다.')
     const result = await getParkingZoneSummary(accessToken)
-    spots.value = result.spots
+    if (requestId === summaryRequestId) {
+      spots.value = result.spots
+      summaryError.value = null
+    }
   } catch (error) {
-    summaryError.value = error instanceof Error ? error.message : '주차 구역 현황을 불러오지 못했습니다.'
+    if (requestId === summaryRequestId && showLoading) {
+      summaryError.value = error instanceof Error ? error.message : '주차 구역 현황을 불러오지 못했습니다.'
+    }
   } finally {
-    summaryLoading.value = false
+    if (requestId === summaryRequestId && showLoading) summaryLoading.value = false
   }
 }
 
 void loadZones()
 void loadSummary()
+useAutoRefresh(
+  () => Promise.all([loadZones(true), loadSummary(true)]).then(() => undefined),
+  30_000,
+)
 
 const typeFilter = ref<ZoneType | null>(null)
 const statusFilter = ref<OccupancyStatus | null>(null)
@@ -195,6 +218,7 @@ async function saveEdit() {
     zones.value = zones.value.map((z) => (z.zoneId === zoneId ? { ...z, ...updated } : z))
     selectedZoneId.value = updated.zoneId
     editDraft.value = null
+    await loadSummary(true)
   } catch (error) {
     saveError.value = error instanceof Error ? error.message : '구역 수정에 실패했습니다.'
   } finally {

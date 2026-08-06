@@ -1,8 +1,10 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 import { isPlateNumberValid, toApiPlateNumber } from '@/features/vehicle/validation/register-car';
+import { queryKeys } from '@/services/query-keys';
 
 import { postMoveRequest } from '../api/move-request-api';
 import type { MoveRequestCreateResult } from '../api/types';
@@ -22,6 +24,7 @@ function toZoneLabel(spotCode: string): string {
 /** E-02(이동 요청 작성) 폼의 입력 상태와 POST /move-requests 제출을 관리한다. */
 export function useRequestComposeForm() {
   const { accessToken } = useAuth();
+  const queryClient = useQueryClient();
   const { photos, maxPhotos, addPhoto, removePhoto } = useRequestPhotos();
 
   const [plateNumber, setPlateNumber] = useState('');
@@ -56,7 +59,7 @@ export function useRequestComposeForm() {
     setSubmitError(undefined);
 
     try {
-      return await postMoveRequest(
+      const result = await postMoveRequest(
         {
           targetPlateNumber: toApiPlateNumber(plateNumber),
           eventType: SITUATION_EVENT_TYPE[situation],
@@ -66,6 +69,8 @@ export function useRequestComposeForm() {
         },
         accessToken,
       );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.moveRequests.lists() });
+      return result;
     } catch (error) {
       setSubmitError(error instanceof ApiError ? error.message : '이동 요청을 보내지 못했습니다.');
       return null;

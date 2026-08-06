@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 
 import type { NotificationType } from '../api/types';
 
-type NotificationNavigationData = Record<string, unknown> & {
+export type NotificationNavigationData = Record<string, unknown> & {
   type?: unknown;
   notificationType?: unknown;
   requestId?: unknown;
@@ -15,7 +15,7 @@ const REQUEST_DETAIL_TYPES = new Set<NotificationType>([
   'EVENT_RESOLVED',
 ]);
 
-function getNotificationType(data: NotificationNavigationData): NotificationType | null {
+export function getNotificationType(data: NotificationNavigationData): NotificationType | null {
   const value = data.type ?? data.notificationType;
   if (
     value === 'MOVE_REQUEST' ||
@@ -30,7 +30,7 @@ function getNotificationType(data: NotificationNavigationData): NotificationType
   return null;
 }
 
-function getRequestId(value: unknown): string | null {
+export function getRequestId(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'string' && value.trim().length > 0) return value.trim();
   return null;
@@ -50,7 +50,7 @@ export function navigateFromNotification(
     if (requestId) {
       router.push({
         pathname: '/resident/request-detail',
-        params: { requestId },
+        params: { requestId, viewMode: 'recipient' },
       });
     } else {
       router.push('/resident');
@@ -62,7 +62,11 @@ export function navigateFromNotification(
     if (requestId) {
       router.push({
         pathname: '/resident/request-detail',
-        params: { requestId },
+        params: {
+          requestId,
+          // 상대방의 응답 알림은 요청을 보낸 사람에게 전달되므로 진행 현황을 읽기 전용으로 연다.
+          viewMode: type === 'MOVE_RESPONSE' ? 'requester' : 'recipient',
+        },
       });
     } else {
       router.push('/resident/requests');

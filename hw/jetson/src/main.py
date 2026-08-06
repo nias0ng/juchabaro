@@ -26,6 +26,7 @@ from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import router as entry_events_router
 from src.api.health_router import router as health_router
 from src.api.internal_commands_router import router as internal_commands_router
+from src.api.live_stream_router import router as live_stream_router
 from src.application.entry_event_intake import EntryEventIntake
 from src.application.entry_review_resolution_intake import (
     EntryReviewResolutionIntake,
@@ -36,7 +37,6 @@ from src.application.evidence_publication_worker import (
 )
 from src.application.monitoring_factory import (
     MonitoringDependencies,
-    MonitoringPolicy,
     build_monitoring_pipeline,
 )
 from src.application.monitoring_pipeline import MonitoringPipeline
@@ -63,10 +63,14 @@ from src.communication.backend_client import BackendClient
 from src.communication.backend_publication_preparer import (
     BackendPublicationPreparer,
 )
+from src.config.monitoring_policy import (
+    build_monitoring_policy as _build_monitoring_policy,
+)
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
-from src.parking.zone_registry import ZoneRegistry
+from src.live.overlay_publisher import OverlayPublisher
 from src.parking.egress_aisle_registry import EgressAisleRegistry
+from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
@@ -160,82 +164,6 @@ def _validate_monitoring_assets(
             "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
             f"{settings.vehicle_model_path}"
         )
-
-
-def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
-    """Settings의 monitoring 정책을 해석 없이 domain factory로 전달한다."""
-
-    return MonitoringPolicy(
-        zone_entry_confirm_seconds=settings.zone_entry_confirm_seconds,
-        zone_exit_confirm_seconds=settings.zone_exit_confirm_seconds,
-        entry_zone_min_overlap_ratio=(
-            settings.entry_zone_min_overlap_ratio
-        ),
-        parking_confirm_seconds=settings.parking_confirm_seconds,
-        parking_move_confirm_seconds=(
-            settings.parking_move_confirm_seconds
-        ),
-        absence_confirmation_seconds=(
-            settings.absence_confirmation_seconds
-        ),
-        trusted_sample_max_gap_seconds=(
-            settings.trusted_sample_max_gap_seconds
-        ),
-        reidentification_max_gap_seconds=(
-            settings.reidentification_max_gap_seconds
-        ),
-        reidentification_min_score=settings.reidentification_min_score,
-        reidentification_ambiguity_margin=(
-            settings.reidentification_ambiguity_margin
-        ),
-        incident_confirm_seconds=settings.incident_confirm_seconds,
-        incident_clear_seconds=settings.incident_clear_seconds,
-        zone_presence_min_overlap_ratio=(
-            settings.zone_presence_min_overlap_ratio
-        ),
-        assignment_min_overlap_ratio=(
-            settings.assignment_min_overlap_ratio
-        ),
-        assignment_ambiguous_margin=(
-            settings.assignment_ambiguous_margin
-        ),
-        bad_parking_min_primary_overlap_ratio=(
-            settings.bad_parking_min_primary_overlap_ratio
-        ),
-        bad_parking_min_secondary_overlap_ratio=(
-            settings.bad_parking_min_secondary_overlap_ratio
-        ),
-        out_of_zone_min_spot_overlap_ratio=(
-            settings.out_of_zone_min_spot_overlap_ratio
-        ),
-        blocking_relation_confirm_seconds=(
-            settings.blocking_relation_confirm_seconds
-        ),
-        blocking_relation_clear_seconds=(
-            settings.blocking_relation_clear_seconds
-        ),
-        blocking_min_subject_overlap_ratio=(
-            settings.blocking_min_subject_overlap_ratio
-        ),
-        blocking_min_egress_coverage_ratio=(
-            settings.blocking_min_egress_coverage_ratio
-        ),
-        motion_window_seconds=settings.motion_window_seconds,
-        motion_min_observation_span_seconds=(
-            settings.motion_min_observation_span_seconds
-        ),
-        motion_max_sample_gap_seconds=(
-            settings.motion_max_sample_gap_seconds
-        ),
-        motion_stationary_threshold=(
-            settings.motion_stationary_threshold
-        ),
-        motion_moving_threshold=settings.motion_moving_threshold,
-        motion_min_samples=settings.motion_min_samples,
-        motion_min_trend_consistency=(
-            settings.motion_min_trend_consistency
-        ),
-    )
 
 
 def build_runtime_monitoring_pipeline(
@@ -367,6 +295,15 @@ def create_app(
             evidence_capture_coordinator
         )
 
+        overlay_publisher: OverlayPublisher | None = None
+        if resolved_settings.live_stream_enabled:
+            overlay_publisher = OverlayPublisher(
+                zones=zones,
+                jpeg_quality=resolved_settings.live_stream_jpeg_quality,
+                target_fps=resolved_settings.live_stream_target_fps,
+            )
+        application.state.overlay_publisher = overlay_publisher
+
         monitoring_worker: MonitoringWorker | None = None
         if monitoring_pipeline_factory is not None:
             pipeline = monitoring_pipeline_factory(
@@ -388,7 +325,9 @@ def create_app(
                 pipeline.bind_evidence_capture_sink(
                     evidence_capture_coordinator
                 )
-            monitoring_worker = MonitoringWorker(pipeline)
+            monitoring_worker = MonitoringWorker(
+                pipeline, frame_observer=overlay_publisher
+            )
         application.state.monitoring_worker = monitoring_worker
 
         move_verification_worker = MoveVerificationExecutorWorker(
@@ -430,6 +369,11 @@ def create_app(
                     ),
                 )
             )
+        else:
+            logger.warning(
+                "BACKEND_HW_API_KEY가 비어 Backend publication worker를 "
+                "비활성화합니다."
+            )
         application.state.evidence_publication_worker = (
             evidence_publication_worker
         )
@@ -448,6 +392,7 @@ def create_app(
             move_verification_worker.start()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.start()
+                logger.info("Backend publication workers가 시작됐습니다.")
             yield
         finally:
             _stop_workers_best_effort(
@@ -473,6 +418,7 @@ def create_app(
     application.include_router(health_router)
     application.include_router(entry_events_router)
     application.include_router(internal_commands_router)
+    application.include_router(live_stream_router)
 
     return application
 

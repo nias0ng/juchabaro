@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from threading import Event, Thread
 
-from src.application.monitoring_pipeline import MonitoringPipeline
+from src.application.monitoring_pipeline import FrameObserver, MonitoringPipeline
 
 
 logger = logging.getLogger(__name__)
@@ -22,10 +22,21 @@ class MonitoringWorker:
     ``start()``는 model·camera open이 성공한 후에만 복귀하므로 기동
     실패를 API readiness로 숨기지 않는다. ``stop()``은 새 frame 시작을
     막고 진행 중인 frame의 transaction이 끝난 뒤 자원 정리를 기다린다.
+
+    ``frame_observer``는 그대로 ``pipeline.run()``에 전달만 한다 — 이
+    worker는 관측 내용을 해석하지 않는다. 콜백이 예외를 던지면
+    ``_run()``이 이를 치명 오류로 처리해 카메라·모델을 닫으므로, 예외
+    흡수 책임은 콜백 구현체에 있다.
     """
 
-    def __init__(self, pipeline: MonitoringPipeline) -> None:
+    def __init__(
+        self,
+        pipeline: MonitoringPipeline,
+        *,
+        frame_observer: FrameObserver | None = None,
+    ) -> None:
         self._pipeline = pipeline
+        self._frame_observer = frame_observer
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
@@ -72,6 +83,7 @@ class MonitoringWorker:
         try:
             self._pipeline.run(
                 stop_requested=self._stop_requested.is_set,
+                frame_observer=self._frame_observer,
             )
         except Exception as error:
             self._failure = error

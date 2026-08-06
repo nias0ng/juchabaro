@@ -1,14 +1,27 @@
-import { useAuthenticatedQuery } from '@/hooks/use-authenticated-query';
+import { useQuery } from '@tanstack/react-query';
+
+import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
+import { useAuth } from '@/providers/auth-provider';
+import { queryKeys } from '@/services/query-keys';
 
 import { getMyParkingSessions } from '../api/parking-api';
-import type { ParkingSession } from '../api/types';
 
 export function useParkingSessions() {
-  const { data: sessions, isLoading, error } = useAuthenticatedQuery<ParkingSession[]>(
-    getMyParkingSessions,
-    [],
-    '주차 세션을 불러오지 못했습니다.',
-  );
+  const { accessToken, status } = useAuth();
 
-  return { sessions, isLoading, error };
+  const query = useQuery({
+    queryKey: queryKeys.parking.sessions(),
+    queryFn: () => getMyParkingSessions(accessToken!),
+    enabled: status === 'authenticated' && !!accessToken,
+  });
+  useRefetchOnFocus(query.refetch, query.isStale);
+
+  return {
+    sessions: query.data ?? [],
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+    // 백그라운드 갱신 실패는 이미 화면에 표시된 데이터를 지우지 않는다 — 캐시가 없을 때만 오류로 노출한다.
+    error: query.data === undefined ? query.error : null,
+    refetch: query.refetch,
+  };
 }

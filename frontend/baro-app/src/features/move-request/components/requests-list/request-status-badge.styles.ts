@@ -24,6 +24,18 @@ export const styles = StyleSheet.create({
   textPending: {
     color: Palette.orange600,
   },
+  badgeReminder: {
+    backgroundColor: Palette.orange50,
+  },
+  textReminder: {
+    color: Palette.orange600,
+  },
+  badgeEscalated: {
+    backgroundColor: Palette.orange50,
+  },
+  textEscalated: {
+    color: Palette.orange600,
+  },
   badgeClosed: {
     backgroundColor: Palette.sky100,
   },

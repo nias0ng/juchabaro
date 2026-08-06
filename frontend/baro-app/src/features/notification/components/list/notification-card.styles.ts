@@ -43,4 +43,17 @@ export const styles = StyleSheet.create({
     fontSize: 11,
     color: Palette.gray400,
   },
+  deleteAction: {
+    width: 72,
+    marginLeft: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Palette.red500,
+    borderRadius: Radius.xl,
+  },
+  deleteActionText: {
+    fontSize: 13,
+    fontWeight: FontWeight.bold,
+    color: Palette.white,
+  },
 });

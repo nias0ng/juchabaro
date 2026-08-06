@@ -12,14 +12,20 @@ import { RequestReminderSection } from './request-reminder/request-reminder-sect
 import { RequestWaitingSection } from './request-waiting/request-waiting-section';
 
 const SUMMARY_TITLE = '고객님의 차량 이동을\n요청드립니다';
+const REQUESTER_SUMMARY_TITLE = '차량 이동을\n요청했습니다';
 const REMINDER_MESSAGE = '응답이 없으면 한 시간 후에 한 번 더 알려드리고,\n그 이후에는 관리사무소로 전달합니다.';
+const REQUESTER_PENDING_MESSAGE =
+  '차량 소유자에게 이동 요청을 전달했습니다.\n응답이 오면 진행 상황을 알려드립니다.';
 // REMINDER_SENT: 무응답으로 1차 재알림까지 나간 상태. 그래도 아직 응답은 받을 수 있다.
 const REMINDER_SENT_MESSAGE = '이미 한 번 알려드렸어요.\n계속 응답이 없으면 관리사무소로 전달됩니다.';
 // NEED_ADMIN: 재알림에도 계속 무응답이었거나, 사용자가 "이동 어려움"으로 응답해 관리사무소로 넘어간 상태.
 const NEED_ADMIN_MESSAGE = '관리사무소로 전달되었습니다.\n확인 후 별도로 연락드릴 예정입니다.';
-// 다음 재알림/에스컬레이션이 정확히 언제 일어나는지 백엔드가 아직 안 내려줘서, 실제 카운트다운 대신 안내 문구만 보여준다.
-const PENDING_COUNTDOWN_LABEL = '확인 중';
-const REMINDER_ACTION_LABEL = '검토없음';
+const ADMIN_ESCALATION_PENDING_MESSAGE =
+  '마지막 재알림 후 1시간 동안 응답이 없으면\n관리사무소로 이관됩니다.';
+const ADMIN_ESCALATED_MESSAGE =
+  '마지막 재알림 후 1시간 동안 응답이 없어\n관리사무소로 이관되었습니다.';
+const ADMIN_ESCALATED_DIRECT_MESSAGE =
+  '차량 이동이 어렵다는 응답에 따라\n관리사무소로 이관되었습니다.';
 
 type RequestDetailBodyProps = {
   vm: RequestDetailViewModel;
@@ -71,15 +77,31 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
     );
   }
 
-  if (vm.isReminderSentOverdue && vm.reminderDisplay) {
+  if (vm.showEscalationView && vm.escalationDisplay) {
+    const wasEscalatedAfterReminder = vm.escalationDisplay.escalationDueAt !== null;
+
     return (
       <RequestReminderSection
-        reminderRoundLabel={vm.reminderDisplay.reminderRoundLabel}
-        countdownLabel={PENDING_COUNTDOWN_LABEL}
+        badgeLabel={vm.isNeedAdmin ? '관리사무소 이관' : vm.escalationDisplay.reminderRoundLabel}
+        description={
+          vm.isNeedAdmin
+            ? wasEscalatedAfterReminder
+              ? ADMIN_ESCALATED_MESSAGE
+              : ADMIN_ESCALATED_DIRECT_MESSAGE
+            : ADMIN_ESCALATION_PENDING_MESSAGE
+        }
+        countdownLabel={
+          vm.isNeedAdmin
+            ? '이관 완료'
+            : vm.escalationDisplay.escalationDueAt
+              ? vm.escalationCountdown.label
+              : '확인 중'
+        }
+        countdownCaption={vm.isNeedAdmin ? '관리사무소 처리 중' : '관리사무소 이관까지'}
         plateNumber={display.plateNumber}
-        actionLabel={REMINDER_ACTION_LABEL}
-        timeline={vm.reminderDisplay.timeline}
-        pendingStep={vm.reminderDisplay.pendingStep}
+        actionLabel={vm.isNeedAdmin ? '이관 완료' : '이관 대기'}
+        timeline={vm.escalationDisplay.timeline}
+        pendingStep={vm.escalationDisplay.pendingStep}
       />
     );
   }
@@ -99,13 +121,19 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
   return (
     <RequestDetailSection
       photos={display.photos}
-      summaryTitle={SUMMARY_TITLE}
+      summaryTitle={vm.viewMode === 'requester' ? REQUESTER_SUMMARY_TITLE : SUMMARY_TITLE}
       reasonQuote={display.reasonQuote}
       violationType={display.violationTypeLabel}
       plateNumber={display.plateNumber}
       location={display.location}
       showActions={vm.showResponseActions}
-      reminderMessage={vm.isReminderSentNoResponse ? REMINDER_SENT_MESSAGE : REMINDER_MESSAGE}
+      reminderMessage={
+        vm.viewMode === 'requester'
+          ? REQUESTER_PENDING_MESSAGE
+          : vm.isReminderSentNoResponse
+            ? REMINDER_SENT_MESSAGE
+            : REMINDER_MESSAGE
+      }
       noticeMessage={vm.isNeedAdmin ? NEED_ADMIN_MESSAGE : undefined}
       isAutoEscalation={vm.isAutoEscalationType}
       occupancyElapsedLabel={vm.occupancyElapsedLabel}

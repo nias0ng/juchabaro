@@ -9,12 +9,18 @@ crop하지 않은 full-frame 좌표계로 복원한 것이다.
 두 파일을 서로 바꿔 사용하면 정규화된 x좌표와 실제 frame 폭이 어긋난다.
 
 `zone_definition.json`은 `스크린샷 2026-08-03 오후 7.20.12.png`의
-카메라 영상 구간(3024×1702)에 `ai/tracking/camera_calibration.json`과
+카메라 영상 구간(3024×1702)에 `camera_calibration.json`과
 `remap balance=0.5`를 적용한 frame을 기준으로 잡은 배포 설정이다. 원본
 스크린샷의 위·아래 검은 레터박스는 remap 전에 제외했다. 좌표는
 보정 frame 너비와 높이로 나눈 0~1 정규화 값이다.
 version 1의 꼭짓점은 crop 도입 전 `zone_definition.pilot.json` version 5의
 full-frame 폴리곤을 그대로 복원한다.
+
+`camera_calibration.json`은 `ai/tracking/camera_calibration.json`과 같은
+캘리브레이션 수치를 가진 운영 배포용 복사본이다. Viewer·live·replay는 기존
+`ai/tracking` 경로를 계속 사용한다. 두 파일의 JSON 수치가 달라지면 안 되며,
+운영 파일의 원시 바이트 SHA-256 앞 16자리와 이 디렉터리 snapshot들의
+`calibrationReference`가 일치해야 한다.
 
 | zoneId | 임시 위치 | zoneType | entryExitRole |
 |---:|---|---|---|

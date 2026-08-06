@@ -35,6 +35,7 @@ DIAGNOSTIC_FIELDS = (
     "rowType",
     "diagnosticSchemaVersion",
     "policySnapshotJson",
+    "assetSnapshotJson",
     "detectionStage",
     "detectionThreshold",
     "modelPath",
@@ -120,7 +121,7 @@ DIAGNOSTIC_FIELDS = (
     "elapsedMs",
 )
 
-DIAGNOSTIC_SCHEMA_VERSION = 4
+DIAGNOSTIC_SCHEMA_VERSION = 5
 
 
 def state_change_rows(frames: Sequence[FrameTrace]) -> list[dict[str, Any]]:
@@ -148,6 +149,7 @@ def diagnostic_rows(
     model_path: str,
     tracker_config: str,
     policy_snapshot_json: str,
+    asset_snapshot_json: str,
 ) -> list[dict[str, Any]]:
     """프레임·pre-track detection·차량 관측을 한 CSV용 테이블로 평탄화한다.
 
@@ -200,6 +202,7 @@ def diagnostic_rows(
                 "rowType": "FRAME",
                 "diagnosticSchemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
                 "policySnapshotJson": policy_snapshot_json,
+                "assetSnapshotJson": asset_snapshot_json,
             }
         )
 

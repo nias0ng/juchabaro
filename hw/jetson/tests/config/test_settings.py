@@ -19,6 +19,20 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
         "reidentification_max_gap_seconds",
         "reidentification_min_score",
         "reidentification_ambiguity_margin",
+        "incident_disabled_zone_unauthorized_confirm_seconds",
+        "incident_disabled_zone_unauthorized_clear_seconds",
+        "incident_ev_zone_unauthorized_confirm_seconds",
+        "incident_ev_zone_unauthorized_clear_seconds",
+        "incident_ev_overstay_confirm_seconds",
+        "incident_ev_overstay_clear_seconds",
+        "incident_bad_parking_confirm_seconds",
+        "incident_bad_parking_clear_seconds",
+        "incident_out_of_zone_confirm_seconds",
+        "incident_out_of_zone_clear_seconds",
+        "incident_aisle_block_confirm_seconds",
+        "incident_aisle_block_clear_seconds",
+        "incident_double_parking_confirm_seconds",
+        "incident_double_parking_clear_seconds",
         "zone_presence_min_overlap_ratio",
         "assignment_min_overlap_ratio",
         "assignment_ambiguous_margin",
@@ -69,6 +83,38 @@ def test_settings_reject_invalid_device_configuration(
 ) -> None:
     with pytest.raises(ValidationError) as exc_info:
         Settings(_env_file=None, **{field_name: invalid_value})
+
+    error_fields = {
+        error["loc"][0]
+        for error in exc_info.value.errors()
+    }
+    assert error_fields == {field_name}
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "incident_disabled_zone_unauthorized_confirm_seconds",
+        "incident_disabled_zone_unauthorized_clear_seconds",
+        "incident_ev_zone_unauthorized_confirm_seconds",
+        "incident_ev_zone_unauthorized_clear_seconds",
+        "incident_ev_overstay_confirm_seconds",
+        "incident_ev_overstay_clear_seconds",
+        "incident_bad_parking_confirm_seconds",
+        "incident_bad_parking_clear_seconds",
+        "incident_out_of_zone_confirm_seconds",
+        "incident_out_of_zone_clear_seconds",
+        "incident_aisle_block_confirm_seconds",
+        "incident_aisle_block_clear_seconds",
+        "incident_double_parking_confirm_seconds",
+        "incident_double_parking_clear_seconds",
+    ),
+)
+def test_rule_specific_incident_timing_rejects_negative_values(
+    field_name: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, **{field_name: -0.1})
 
     error_fields = {
         error["loc"][0]

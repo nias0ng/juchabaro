@@ -27,9 +27,8 @@ export const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   mapCell: {
-    flex: 1,
-    maxWidth: 32,
-    aspectRatio: 0.78,
+    width: 32,
+    height: 41,
     borderRadius: 7,
     backgroundColor: Palette.gray100,
     alignItems: 'center',
@@ -54,13 +53,8 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sideCell: {
-    flexGrow: 0,
-    flexShrink: 0,
-    flexBasis: 'auto',
     width: 40,
-    maxWidth: 40,
     height: 32,
-    aspectRatio: undefined,
   },
   gapSlot: {
     width: 48,
@@ -90,11 +84,8 @@ export const styles = StyleSheet.create({
     gap: 5,
   },
   mainCell: {
-    flexGrow: 0,
-    flexShrink: 0,
-    flexBasis: 'auto',
     width: 32,
-    maxWidth: 32,
+    height: 41,
   },
   mapCellOther: {
     backgroundColor: Palette.violet300,

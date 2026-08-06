@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -70,7 +71,10 @@ def _confirmation() -> PublicationConfirmation:
     )
 
 
-def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(tmp_path: Path) -> None:
+def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
+    tmp_path: Path,
+    caplog,
+) -> None:
     database = tmp_path / "jetson.db"
     root = tmp_path / "evidence"
     ready = _seed_ready(database, root)
@@ -78,7 +82,16 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(tmp_path: Path) -> N
     publisher = _publisher(database, root, client, now=lambda: NOW)
 
     assert publisher.recover() == 0
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.evidence_publication_worker",
+    ):
+        assert publisher.publish_once() is True
+
+    assert "Backend evidence publication 전송이 완료됐습니다." in caplog.text
+    assert "publicationType=UPLOAD" in caplog.text
+    assert "applicationStatus=APPLIED" in caplog.text
+    assert "imageId" not in caplog.text
 
     delivered = _artifact(database, ready.evidence_id)
     request, key = client.uploads[0]
@@ -104,6 +117,7 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(tmp_path: Path) -> N
 
 def test_retryable_api_8_failure_uses_durable_exponential_backoff(
     tmp_path: Path,
+    caplog,
 ) -> None:
     database = tmp_path / "jetson.db"
     root = tmp_path / "evidence"
@@ -118,7 +132,15 @@ def test_retryable_api_8_failure_uses_durable_exponential_backoff(
     publisher = _publisher(database, root, client, now=lambda: now[0])
     publisher.recover()
 
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.WARNING,
+        logger="src.application.evidence_publication_worker",
+    ):
+        assert publisher.publish_once() is True
+    assert "Backend evidence publication 재시도가 예약됐습니다." in caplog.text
+    assert "publicationType=UPLOAD" in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "RetryableBackendPublicationError: offline" in caplog.text
     waiting = _artifact(database, ready.evidence_id)
     assert waiting.state is EvidenceState.READY
     assert waiting.delivery_state is DeliveryState.RETRY_WAIT
@@ -246,6 +268,7 @@ def test_restart_recovers_in_flight_upload_and_retries_same_identity(
 
 def test_terminal_api_9_failure_is_not_automatically_retried(
     tmp_path: Path,
+    caplog,
 ) -> None:
     database = tmp_path / "jetson.db"
     root = tmp_path / "evidence"
@@ -256,7 +279,18 @@ def test_terminal_api_9_failure_is_not_automatically_retried(
     publisher = _publisher(database, root, client, now=lambda: NOW)
     publisher.recover()
 
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.ERROR,
+        logger="src.application.evidence_publication_worker",
+    ):
+        assert publisher.publish_once() is True
+    assert (
+        "Backend evidence publication이 영구 실패로 격리됐습니다."
+        in caplog.text
+    )
+    assert "publicationType=UNAVAILABLE" in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "TerminalBackendPublicationError: invalid" in caplog.text
     terminal = _artifact(database, failed.evidence_id)
     assert terminal.delivery_state is DeliveryState.FAILED_TERMINAL
     assert publisher.publish_once() is False
