@@ -22,9 +22,11 @@ import threading
 from typing import Any
 from uuid import UUID
 
+from src.domain.models import DeliveryState
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -492,6 +494,14 @@ class EvidenceSpool:
                 raise EvidenceStateError(
                     f"cannot evict evidence in {artifact.state.value} state"
                 )
+            if (
+                artifact.publication_kind is EvidencePublicationKind.UPLOAD
+                and artifact.backend_acked_at is None
+                and artifact.delivery_state is not DeliveryState.FAILED_TERMINAL
+            ):
+                raise EvidenceStateError(
+                    "cannot evict an unacknowledged dispatched upload"
+                )
             if not self._binary_matches(artifact):
                 failed = self._mark_failed(
                     artifact,
@@ -705,6 +715,33 @@ class EvidenceSpool:
                 disposition=EvidenceRetentionDisposition.LOST_OR_CORRUPTED,
             )
 
+        if (
+            pending.publication_kind is EvidencePublicationKind.UPLOAD
+            and pending.backend_acked_at is None
+            and pending.delivery_state is not DeliveryState.FAILED_TERMINAL
+        ):
+            if self._binary_matches(pending):
+                ready = replace(
+                    pending,
+                    state=EvidenceState.READY,
+                    retention_disposition=None,
+                    record_version=pending.record_version + 1,
+                    updated_at=at,
+                )
+                self._save(
+                    ready,
+                    expected_record_version=pending.record_version,
+                )
+                return ready
+            final_path = self._final_path(pending.evidence_id)
+            self._unlink_managed(final_path)
+            return self._mark_failed(
+                pending,
+                at=at,
+                error="dispatched upload binary was lost during eviction recovery",
+                disposition=pending.retention_disposition,
+            )
+
         final_path = self._final_path(pending.evidence_id)
         self._unlink_managed(final_path)
         evicted = replace(
@@ -728,14 +765,35 @@ class EvidenceSpool:
         byte_size: int | None = None,
         checksum: str | None = None,
     ) -> EvidenceArtifact:
+        upload_outcome_unknown = (
+            artifact.publication_kind is EvidencePublicationKind.UPLOAD
+            and artifact.backend_acked_at is None
+        )
         failed = replace(
             artifact,
             state=EvidenceState.FAILED,
             local_path=None,
             byte_size=artifact.byte_size if byte_size is None else byte_size,
             checksum=artifact.checksum if checksum is None else checksum,
-            last_error=error,
-            retention_disposition=disposition,
+            last_error=artifact.last_error or error,
+            retention_disposition=(
+                artifact.retention_disposition or disposition
+            ),
+            delivery_state=(
+                DeliveryState.FAILED_TERMINAL
+                if upload_outcome_unknown
+                else artifact.delivery_state
+            ),
+            next_delivery_attempt_at=(
+                None
+                if upload_outcome_unknown
+                else artifact.next_delivery_attempt_at
+            ),
+            last_delivery_error=(
+                f"UPLOAD_OUTCOME_UNKNOWN: {error}"
+                if upload_outcome_unknown
+                else artifact.last_delivery_error
+            ),
             record_version=artifact.record_version + 1,
             updated_at=at,
         )
@@ -767,6 +825,11 @@ class EvidenceSpool:
         return (
             artifact.publication_revision is not None
             and artifact.backend_acked_at is None
+            and artifact.publication_kind
+            not in {
+                EvidencePublicationKind.UPLOAD,
+                EvidencePublicationKind.AMBIGUOUS,
+            }
         )
 
     def _save(self, artifact: EvidenceArtifact, *, expected_record_version: int) -> None:

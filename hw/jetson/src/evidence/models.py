@@ -49,6 +49,14 @@ class EvidenceRetentionDisposition(str, Enum):
     RESOURCE_LIMIT = "RESOURCE_LIMIT"
 
 
+class EvidencePublicationKind(str, Enum):
+    """Backend dispatch 경로를 고정하는 evidence publication 종류."""
+
+    UPLOAD = "UPLOAD"
+    UNAVAILABLE = "UNAVAILABLE"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
 @dataclass(frozen=True, kw_only=True)
 class EvidenceArtifact:
     """하나의 immutable evidence capture identity와 로컬 상태."""
@@ -62,6 +70,7 @@ class EvidenceArtifact:
     created_at: datetime
     updated_at: datetime
     publication_revision: int | None = None
+    publication_kind: EvidencePublicationKind | None = None
     local_path: Path | None = None
     byte_size: int | None = None
     checksum: str | None = None

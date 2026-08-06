@@ -231,6 +231,7 @@ def test_lifespan_stops_producers_before_publication_consumers(
 
     with TestClient(application) as client:
         assert client.get("/health").status_code == 200
+        assert application.state.publication_runtime_lock.is_acquired is True
         assert all(
             worker.start_count == 1
             for worker in workers.values()
@@ -252,6 +253,7 @@ def test_lifespan_stops_producers_before_publication_consumers(
     ]
     assert all(worker.start_count == 1 for worker in workers.values())
     assert all(worker.stop_count == 1 for worker in workers.values())
+    assert application.state.publication_runtime_lock.is_acquired is False
 
 
 def test_lifespan_continues_cleanup_after_worker_stop_failure(
@@ -287,6 +289,7 @@ def test_lifespan_continues_cleanup_after_worker_stop_failure(
     ]
     assert all(worker.start_count == 1 for worker in workers.values())
     assert all(worker.stop_count == 1 for worker in workers.values())
+    assert application.state.publication_runtime_lock.is_acquired is False
 
 
 def test_lifespan_preserves_startup_error_during_cleanup_failure(
@@ -409,7 +412,7 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
         try:
                 assert connection.execute(
                     "SELECT COUNT(*) FROM schema_migrations"
-                ).fetchone()[0] == 7
+                ).fetchone()[0] == 8
         finally:
             connection.close()
 

@@ -75,6 +75,7 @@ from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
+from src.storage.publication_runtime_lock import PublicationRuntimeLock
 from src.tracking.adapters.side_masking_detector import (
     SideMaskingDetector,
     compute_mask_ratios_from_zones,
@@ -253,7 +254,7 @@ def create_app(
         return connect_database(resolved_settings.database_path)
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI):
+    async def runtime_lifespan(application: FastAPI):
         """Migration 후 application을 조립하고 종료 시 worker를 회수한다."""
 
         _prepare_database_path(resolved_settings.database_path)
@@ -424,6 +425,19 @@ def create_app(
                 suppress_errors=sys.exc_info()[1] is not None,
             )
 
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        publication_runtime_lock = PublicationRuntimeLock(
+            _publication_runtime_lock_path(resolved_settings)
+        )
+        application.state.publication_runtime_lock = publication_runtime_lock
+        publication_runtime_lock.acquire()
+        try:
+            async with runtime_lifespan(application):
+                yield
+        finally:
+            publication_runtime_lock.release()
+
     application = FastAPI(
         title=resolved_settings.app_name,
         version="0.1.0",
@@ -453,6 +467,20 @@ def _prepare_database_path(database_path: Path) -> None:
 
     if str(database_path) != ":memory:":
         database_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _publication_runtime_lock_path(settings: Settings) -> Path:
+    """DB file 단위의 process lock 경로를 결정한다."""
+
+    if str(settings.database_path) == ":memory:":
+        return (
+            settings.evidence_spool_path.parent
+            / f".{settings.evidence_spool_path.name}.publication.lock"
+        )
+    database_path = settings.database_path.resolve(strict=False)
+    return database_path.with_name(
+        f".{database_path.name}.publication.lock"
+    )
 
 
 configure_logging()

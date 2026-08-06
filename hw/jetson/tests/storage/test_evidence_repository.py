@@ -13,6 +13,7 @@ from src.domain.models import DeliveryState
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -316,7 +317,66 @@ def test_delivery_claim_accepts_delivered_parent_or_retained_receipt(
         assert claimed is not None
         assert claimed.evidence_id == ready.evidence_id
         assert claimed.state is EvidenceState.UPLOADING
+        assert claimed.publication_kind is None
         assert claimed.delivery_state is DeliveryState.IN_FLIGHT
+    finally:
+        connection.close()
+
+
+def test_upload_dispatch_kind_is_immutable_and_protects_unacknowledged_binary(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    repository = EvidenceArtifactRepository(connection)
+    artifact = _reserved(captured_at=NOW - timedelta(days=8))
+    try:
+        with UnitOfWork(connection):
+            repository.add(artifact)
+        ready = _ready(
+            connection,
+            repository,
+            artifact,
+            tmp_path / f"{artifact.evidence_id}.jpg",
+        )
+        _set_parent_state(connection, ready, DeliveryState.DELIVERED)
+
+        with UnitOfWork(connection):
+            claimed = repository.claim_next_delivery(now=NOW)
+            assert claimed is not None
+            dispatched = repository.mark_upload_dispatch_started(
+                claimed.evidence_id,
+                expected_record_version=claimed.record_version,
+                started_at=NOW,
+            )
+        assert dispatched.publication_kind is EvidencePublicationKind.UPLOAD
+
+        with UnitOfWork(connection):
+            waiting = repository.schedule_retry(
+                dispatched.evidence_id,
+                expected_record_version=dispatched.record_version,
+                next_attempt_at=NOW + timedelta(seconds=1),
+                error="offline",
+            )
+        assert waiting.state is EvidenceState.READY
+        assert waiting.publication_kind is EvidencePublicationKind.UPLOAD
+        assert waiting not in repository.list_retention_candidates(
+            acknowledged_before=NOW,
+            unacknowledged_before=NOW,
+        )
+        assert waiting not in repository.list_pressure_candidates()
+
+        invalid = replace(
+            waiting,
+            publication_kind=EvidencePublicationKind.UNAVAILABLE,
+            record_version=waiting.record_version + 1,
+            updated_at=waiting.updated_at + timedelta(seconds=1),
+        )
+        with pytest.raises(EvidenceArtifactConflictError, match="immutable"):
+            with UnitOfWork(connection):
+                repository.save(
+                    invalid,
+                    expected_record_version=waiting.record_version,
+                )
     finally:
         connection.close()
 

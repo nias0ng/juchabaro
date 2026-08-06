@@ -26,6 +26,7 @@ from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -74,6 +75,7 @@ class _WorkerPublisher:
     def __init__(self, *, fail_recovery: bool = False) -> None:
         self.fail_recovery = fail_recovery
         self.recover_count = 0
+        self.recover_in_flight_count = 0
         self.publish_count = 0
         self.closed_count = 0
         self.entered_publish = Event()
@@ -89,8 +91,35 @@ class _WorkerPublisher:
         self.entered_publish.set()
         return False
 
+    def recover_in_flight(self) -> int:
+        self.recover_in_flight_count += 1
+        return 0
+
     def close(self) -> None:
         self.closed_count += 1
+
+
+class _RecoveringWorkerPublisher(_WorkerPublisher):
+    def __init__(self, *, fail_first_runtime_recovery: bool = False) -> None:
+        super().__init__()
+        self.fail_first_runtime_recovery = fail_first_runtime_recovery
+        self.resumed = Event()
+
+    def recover_in_flight(self) -> int:
+        self.recover_in_flight_count += 1
+        if (
+            self.fail_first_runtime_recovery
+            and self.recover_in_flight_count == 1
+        ):
+            raise RuntimeError("recovery storage busy")
+        return 0
+
+    def publish_once(self) -> bool:
+        self.publish_count += 1
+        if self.publish_count == 1:
+            raise RuntimeError("local ACK persistence failed")
+        self.resumed.set()
+        return False
 
 
 def _next_result(results):
@@ -168,6 +197,26 @@ def test_worker_prepare_failure_does_not_start_http_loop() -> None:
     assert publisher.publish_count == 0
 
 
+def test_worker_recovers_in_flight_and_continues_after_item_failure() -> None:
+    publisher = _RecoveringWorkerPublisher(
+        fail_first_runtime_recovery=True
+    )
+    worker = EvidencePublicationWorker(
+        publisher,
+        poll_interval_seconds=0.01,
+    )
+
+    worker.start()
+    assert publisher.resumed.wait(timeout=1.0)
+    assert worker.is_running is True
+    worker.stop()
+
+    assert publisher.recover_count == 1
+    assert publisher.recover_in_flight_count == 2
+    assert publisher.closed_count == 1
+    assert worker.failure is None
+
+
 def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
     tmp_path: Path,
     caplog,
@@ -203,6 +252,7 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
     assert request.incident_id == ready.incident_id
     assert key == f"EvidenceArtifact:{ready.evidence_id}:1"
     assert delivered.state is EvidenceState.ACKNOWLEDGED
+    assert delivered.publication_kind is EvidencePublicationKind.UPLOAD
     assert delivered.delivery_state is DeliveryState.DELIVERED
     assert delivered.delivery_attempt_count == 1
     assert delivered.backend_acked_at == NOW
@@ -226,6 +276,44 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
         is DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
         for event in diagnostics.events
     )
+
+
+def test_ack_persistence_failure_retries_exact_api_8_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "jetson.db"
+    root = tmp_path / "evidence"
+    ready = _seed_ready(database, root)
+    client = _Client()
+    publisher = _publisher(database, root, client, now=lambda: NOW)
+    publisher.recover()
+    real_mark_delivered = publisher._mark_delivered
+    failures = [RuntimeError("local ACK commit failed")]
+
+    def fail_once(artifact, confirmation) -> None:
+        if failures:
+            raise failures.pop()
+        real_mark_delivered(artifact, confirmation)
+
+    monkeypatch.setattr(publisher, "_mark_delivered", fail_once)
+
+    with pytest.raises(RuntimeError, match="local ACK commit failed"):
+        publisher.publish_once()
+    assert publisher.recover_in_flight() == 1
+    assert publisher.publish_once() is True
+
+    assert len(client.uploads) == 2
+    first_request, first_key = client.uploads[0]
+    second_request, second_key = client.uploads[1]
+    assert first_request == second_request
+    assert first_key == second_key == (
+        f"EvidenceArtifact:{ready.evidence_id}:1"
+    )
+    delivered = _artifact(database, ready.evidence_id)
+    assert delivered.publication_kind is EvidencePublicationKind.UPLOAD
+    assert delivered.delivery_state is DeliveryState.DELIVERED
+    assert delivered.delivery_attempt_count == 2
 
 
 def test_evidence_waits_for_incident_ack_then_publishes_without_identity_change(
@@ -309,6 +397,7 @@ def test_retryable_api_8_failure_uses_durable_exponential_backoff(
     assert "RetryableBackendPublicationError: offline" in caplog.text
     waiting = _artifact(database, ready.evidence_id)
     assert waiting.state is EvidenceState.READY
+    assert waiting.publication_kind is EvidencePublicationKind.UPLOAD
     assert waiting.delivery_state is DeliveryState.RETRY_WAIT
     assert waiting.next_delivery_attempt_at == NOW + timedelta(seconds=1)
     assert "offline" in waiting.last_delivery_error
@@ -341,6 +430,7 @@ def test_failed_capture_is_reported_by_api_9(tmp_path: Path) -> None:
     assert request.unavailable_at == failed.updated_at
     assert key == f"EvidenceUnavailable:{failed.evidence_id}:1"
     assert delivered.state is EvidenceState.FAILED
+    assert delivered.publication_kind is EvidencePublicationKind.UNAVAILABLE
     assert delivered.delivery_state is DeliveryState.DELIVERED
     assert delivered.backend_acked_at == NOW
 
@@ -363,6 +453,7 @@ def test_retryable_api_9_failure_reuses_the_same_publication_identity(
 
     assert publisher.publish_once() is True
     waiting = _artifact(database, failed.evidence_id)
+    assert waiting.publication_kind is EvidencePublicationKind.UNAVAILABLE
     assert waiting.delivery_state is DeliveryState.RETRY_WAIT
     assert waiting.next_delivery_attempt_at == NOW + timedelta(seconds=1)
 
@@ -392,6 +483,7 @@ def test_corrupted_api_8_binary_falls_back_to_retryable_api_9(
     assert publisher.publish_once() is True
     unavailable = _artifact(database, ready.evidence_id)
     assert unavailable.state is EvidenceState.FAILED
+    assert unavailable.publication_kind is None
     assert unavailable.delivery_state is DeliveryState.PENDING
     assert (
         unavailable.retention_disposition
@@ -401,6 +493,79 @@ def test_corrupted_api_8_binary_falls_back_to_retryable_api_9(
     assert _artifact(database, ready.evidence_id).delivery_state is (
         DeliveryState.DELIVERED
     )
+    assert _artifact(database, ready.evidence_id).publication_kind is (
+        EvidencePublicationKind.UNAVAILABLE
+    )
+
+
+def test_dispatched_api_8_never_switches_to_api_9_after_binary_loss(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "jetson.db"
+    root = tmp_path / "evidence"
+    ready = _seed_ready(database, root)
+    now = [NOW]
+    client = _Client(
+        upload_results=(RetryableBackendPublicationError("ACK lost"),)
+    )
+    publisher = _publisher(database, root, client, now=lambda: now[0])
+    publisher.recover()
+
+    assert publisher.publish_once() is True
+    waiting = _artifact(database, ready.evidence_id)
+    assert waiting.publication_kind is EvidencePublicationKind.UPLOAD
+    assert waiting.delivery_state is DeliveryState.RETRY_WAIT
+    assert ready.local_path is not None
+    ready.local_path.write_bytes(b"corrupted after dispatch")
+
+    now[0] = NOW + timedelta(seconds=1)
+    assert publisher.publish_once() is True
+    terminal = _artifact(database, ready.evidence_id)
+    assert terminal.state is EvidenceState.FAILED
+    assert terminal.publication_kind is EvidencePublicationKind.UPLOAD
+    assert terminal.delivery_state is DeliveryState.FAILED_TERMINAL
+    assert terminal.local_path is None
+    assert terminal.last_delivery_error is not None
+    assert terminal.last_delivery_error.startswith("UPLOAD_OUTCOME_UNKNOWN:")
+    assert publisher.publish_once() is False
+    assert [key for _, key in client.uploads] == [
+        f"EvidenceArtifact:{ready.evidence_id}:1"
+    ]
+    assert client.unavailable == []
+
+
+def test_restart_with_dispatched_upload_and_missing_binary_does_not_send_api_9(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "jetson.db"
+    root = tmp_path / "evidence"
+    ready = _seed_ready(database, root)
+    connection = connect_database(database)
+    try:
+        with UnitOfWork(connection):
+            repository = EvidenceArtifactRepository(connection)
+            claimed = repository.claim_next_delivery(now=NOW)
+            assert claimed is not None
+            dispatched = repository.mark_upload_dispatch_started(
+                claimed.evidence_id,
+                expected_record_version=claimed.record_version,
+                started_at=NOW,
+            )
+    finally:
+        connection.close()
+    assert dispatched.publication_kind is EvidencePublicationKind.UPLOAD
+    assert ready.local_path is not None
+    ready.local_path.unlink()
+
+    client = _Client()
+    restarted = _publisher(database, root, client, now=lambda: NOW)
+    assert restarted.recover() == 0
+    terminal = _artifact(database, ready.evidence_id)
+    assert terminal.delivery_state is DeliveryState.FAILED_TERMINAL
+    assert terminal.publication_kind is EvidencePublicationKind.UPLOAD
+    assert restarted.publish_once() is False
+    assert client.uploads == []
+    assert client.unavailable == []
 
 
 def test_restart_recovers_in_flight_upload_and_retries_same_identity(
