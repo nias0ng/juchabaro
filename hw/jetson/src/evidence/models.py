@@ -1,8 +1,9 @@
-"""Incident publication과 독립적으로 진행되는 evidence metadata 계약.
+"""Incident와 별도 lifecycle로 capture·retention하는 evidence metadata 계약.
 
 이미지 binary는 SQLite BLOB이 아니라 제한된 file spool에 둔다. 이 모델은
 checksum·크기·로컬 파일 상태와 손실 사실만 영속하며 원본 CCTV 영상이나
-durable ring buffer를 표현하지 않는다.
+durable ring buffer를 표현하지 않는다. 다만 Backend publication eligibility는
+Incident OPEN application ACK를 선행조건으로 요구한다.
 """
 
 from __future__ import annotations

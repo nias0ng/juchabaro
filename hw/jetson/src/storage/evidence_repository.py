@@ -299,28 +299,54 @@ class EvidenceArtifactRepository:
         return tuple(_artifact_from_row(row) for row in rows)
 
     def claim_next_delivery(self, *, now: datetime) -> EvidenceArtifact | None:
-        """전송 가능한 API 8·9 대상 하나를 ``IN_FLIGHT``으로 claim한다."""
+        """Incident OPEN ACK가 확인된 API 8·9 대상 하나를 claim한다."""
 
         require_write_transaction(self._connection)
         now_us = datetime_to_epoch_microseconds(now)
         row = self._connection.execute(
             """
-            SELECT * FROM evidence_artifacts
-            WHERE publication_revision IS NOT NULL
-              AND backend_acked_at_us IS NULL
-              AND workflow_state IN ('READY', 'FAILED', 'EVICTED')
+            SELECT evidence.*
+            FROM evidence_artifacts AS evidence
+            WHERE evidence.publication_revision IS NOT NULL
+              AND evidence.backend_acked_at_us IS NULL
+              AND evidence.workflow_state IN ('READY', 'FAILED', 'EVICTED')
               AND (
-                    delivery_state IS NULL
-                    OR delivery_state IN ('PENDING', 'RETRY_WAIT')
+                    evidence.delivery_state IS NULL
+                    OR evidence.delivery_state IN ('PENDING', 'RETRY_WAIT')
               )
               AND (
-                    next_delivery_attempt_at_us IS NULL
-                    OR next_delivery_attempt_at_us <= ?
+                    evidence.next_delivery_attempt_at_us IS NULL
+                    OR evidence.next_delivery_attempt_at_us <= ?
+              )
+              AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM outbox AS parent
+                        WHERE parent.aggregate_type = 'Incident'
+                          AND parent.aggregate_id = evidence.incident_id
+                          AND parent.destination = 'backend'
+                          AND parent.publication_revision =
+                              evidence.publication_revision
+                          AND parent.transition_type = 'OPEN'
+                          AND parent.delivery_state = 'DELIVERED'
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM delivery_receipts AS receipt
+                        WHERE receipt.aggregate_type = 'Incident'
+                          AND receipt.aggregate_id = evidence.incident_id
+                          AND receipt.destination = 'backend'
+                          AND receipt.publication_revision =
+                              evidence.publication_revision
+                    )
               )
             ORDER BY
-                COALESCE(next_delivery_attempt_at_us, updated_at_us),
-                updated_at_us,
-                evidence_id
+                COALESCE(
+                    evidence.next_delivery_attempt_at_us,
+                    evidence.updated_at_us
+                ),
+                evidence.updated_at_us,
+                evidence.evidence_id
             LIMIT 1
             """,
             (now_us,),

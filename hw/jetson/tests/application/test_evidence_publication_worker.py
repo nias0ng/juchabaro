@@ -30,6 +30,7 @@ from src.parking.models import IncidentId
 from src.storage.database import connect_database, open_database
 from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.models import PublicationApplicationStatus
+from src.storage.repositories import OutboxRepository
 from src.storage.unit_of_work import UnitOfWork
 
 
@@ -138,6 +139,59 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
         is DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
         for event in diagnostics.events
     )
+
+
+def test_evidence_waits_for_incident_ack_then_publishes_without_identity_change(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "jetson.db"
+    root = tmp_path / "evidence"
+    ready = _seed_ready(database, root, parent_delivered=False)
+    client = _Client()
+    publisher = _publisher(database, root, client, now=lambda: NOW)
+
+    assert publisher.recover() == 0
+    assert publisher.publish_once() is False
+    waiting = _artifact(database, ready.evidence_id)
+    assert waiting.delivery_state is None
+    assert waiting.delivery_attempt_count == 0
+    assert client.uploads == []
+
+    connection = connect_database(database)
+    try:
+        _deliver_parent_open(connection, ready)
+    finally:
+        connection.close()
+
+    assert publisher.publish_once() is True
+    assert [key for _, key in client.uploads] == [
+        f"EvidenceArtifact:{ready.evidence_id}:1"
+    ]
+
+
+def test_evidence_unavailable_also_waits_for_incident_ack(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "jetson.db"
+    root = tmp_path / "evidence"
+    failed = _seed_failed(database, parent_delivered=False)
+    client = _Client()
+    publisher = _publisher(database, root, client, now=lambda: NOW)
+
+    assert publisher.recover() == 0
+    assert publisher.publish_once() is False
+    assert client.unavailable == []
+
+    connection = connect_database(database)
+    try:
+        _deliver_parent_open(connection, failed)
+    finally:
+        connection.close()
+
+    assert publisher.publish_once() is True
+    assert [key for _, key in client.unavailable] == [
+        f"EvidenceUnavailable:{failed.evidence_id}:1"
+    ]
 
 
 def test_retryable_api_8_failure_uses_durable_exponential_backoff(
@@ -357,24 +411,37 @@ def _reserved(*, now: datetime = NOW) -> EvidenceArtifact:
     )
 
 
-def _seed_ready(database: Path, root: Path) -> EvidenceArtifact:
+def _seed_ready(
+    database: Path,
+    root: Path,
+    *,
+    parent_delivered: bool = True,
+) -> EvidenceArtifact:
     connection = open_database(database)
     artifact = _reserved()
     try:
         with UnitOfWork(connection):
             EvidenceArtifactRepository(connection).add(artifact)
-        return EvidenceSpool(
+            _enqueue_parent_open(connection, artifact)
+        ready = EvidenceSpool(
             connection=connection,
             root=root,
             spool_cap_bytes=1_000_000,
             filesystem_floor_ratio=0.0,
             capture_stop_free_ratio=0.0,
         ).store_jpeg(artifact.evidence_id, JPEG, now=NOW)
+        if parent_delivered:
+            _deliver_parent_open(connection, artifact)
+        return ready
     finally:
         connection.close()
 
 
-def _seed_failed(database: Path) -> EvidenceArtifact:
+def _seed_failed(
+    database: Path,
+    *,
+    parent_delivered: bool = True,
+) -> EvidenceArtifact:
     connection = open_database(database)
     artifact = _reserved()
     failed = replace(
@@ -390,9 +457,51 @@ def _seed_failed(database: Path) -> EvidenceArtifact:
             repository = EvidenceArtifactRepository(connection)
             repository.add(artifact)
             repository.save(failed, expected_record_version=1)
+            _enqueue_parent_open(connection, artifact)
+        if parent_delivered:
+            _deliver_parent_open(connection, artifact)
         return failed
     finally:
         connection.close()
+
+
+def _enqueue_parent_open(
+    connection,
+    artifact: EvidenceArtifact,
+) -> None:
+    revision = artifact.publication_revision
+    assert revision is not None
+    OutboxRepository(connection).enqueue(
+        delivery_id=f"incident:{artifact.incident_id}:{revision}",
+        aggregate_type="Incident",
+        aggregate_id=str(artifact.incident_id),
+        destination="backend",
+        publication_revision=revision,
+        transition_type="OPEN",
+        payload=f'{{"incidentId":"{artifact.incident_id}"}}'.encode(),
+        idempotency_key=f"Incident:{artifact.incident_id}:{revision}",
+        created_at_us=1,
+    )
+
+
+def _deliver_parent_open(
+    connection,
+    artifact: EvidenceArtifact,
+) -> None:
+    repository = OutboxRepository(connection)
+    with UnitOfWork(connection):
+        claimed = repository.claim_next(destination="backend", now_us=2)
+    assert claimed is not None
+    assert claimed.aggregate_id == str(artifact.incident_id)
+    with UnitOfWork(connection):
+        repository.mark_delivered(
+            claimed.delivery_id,
+            expected_record_version=claimed.record_version,
+            application_status=PublicationApplicationStatus.APPLIED,
+            confirmed_payload_hash=claimed.payload_hash,
+            confirmed_at_us=3,
+            receipt_expires_at_us=1_000,
+        )
 
 
 def _artifact(database: Path, evidence_id: EvidenceId) -> EvidenceArtifact:
