@@ -14,6 +14,10 @@ from src.domain.models import ObservationState, ObservationStatus
 from src.live.live_overlay_renderer import draw_overlay, encode_jpeg, render_overlay_jpeg
 from src.parking.models import (
     AssignmentState,
+    Incident,
+    IncidentId,
+    IncidentKey,
+    IncidentState,
     ParkingAssignment,
     ParkingEpisode,
     ParkingEpisodeId,
@@ -107,12 +111,14 @@ def _result(
     *,
     zone_visits: tuple[ZoneVisit, ...] = (),
     episodes: tuple[ParkingEpisode, ...] = (),
+    incidents: tuple[Incident, ...] = (),
 ) -> FrameObservationResult:
     return FrameObservationResult(
         parking_result=ParkingPipelineResult(
             zone_visit_updates=zone_visits,
             parking_episode_updates=episodes,
             incident_transitions=(),
+            incident_updates=incidents,
         ),
         retired_physical_vehicle_ids=(),
     )
@@ -346,3 +352,120 @@ def test_render_overlay_jpeg_composes_draw_and_encode() -> None:
 
     decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert _approx_row_has_color(decoded, 20, INSIDE_COLOR)
+
+
+def _incident(
+    rule_code: str,
+    *,
+    state: IncidentState = IncidentState.OPEN,
+    incident_suffix: int = 1,
+) -> Incident:
+    was_opened = state in {
+        IncidentState.OPEN,
+        IncidentState.CLEAR_PENDING,
+        IncidentState.RESOLVED,
+    }
+    is_terminal = state in {IncidentState.RESOLVED, IncidentState.CANCELED}
+    return Incident(
+        incident_id=IncidentId(
+            UUID(f"40000000-0000-4000-8000-00000000000{incident_suffix}")
+        ),
+        key=IncidentKey.for_zone_visit(
+            ZoneVisitId(UUID("20000000-0000-4000-8000-000000000001")), rule_code
+        ),
+        physical_vehicle_id=VEHICLE_ID,
+        state=state,
+        observation=OBSERVED,
+        confirm_trusted_seconds=0.0,
+        clear_trusted_seconds=0.0,
+        confirm_duration_seconds=0.0,
+        clear_duration_seconds=0.0,
+        record_version=1,
+        publication_revision=0,
+        first_observed_at=NOW,
+        created_at=NOW,
+        updated_at=NOW,
+        trusted_sample_max_gap_seconds=1.0,
+        zone_id=ZoneId(1),
+        confirmed_at=NOW if was_opened else None,
+        resolved_at=NOW if state is IncidentState.RESOLVED else None,
+        terminated_at=NOW if is_terminal else None,
+        termination_reason="test" if is_terminal else None,
+    )
+
+
+INCIDENT_COLOR = (40, 40, 255)
+
+
+def _region_has_color(
+    canvas: np.ndarray,
+    color: tuple[int, int, int],
+    *,
+    y_start: int,
+    y_end: int,
+) -> bool:
+    for y in range(y_start, y_end):
+        if _row_has_color(canvas, y, color):
+            return True
+    return False
+
+
+def test_draw_overlay_paints_incident_banner_when_incident_is_open() -> None:
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+    result = _result(incidents=(_incident("DISABLED_ZONE_UNAUTHORIZED"),))
+
+    canvas = draw_overlay(
+        _frame(size=400), _tracking_batch((vehicle,)), result, zones=_zone_registry()
+    )
+
+    assert _region_has_color(canvas, INCIDENT_COLOR, y_start=0, y_end=40)
+
+
+def test_draw_overlay_paints_incident_badge_under_the_vehicle_bbox() -> None:
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+    result = _result(incidents=(_incident("AISLE_BLOCK"),))
+
+    canvas = draw_overlay(
+        _frame(size=400), _tracking_batch((vehicle,)), result, zones=_zone_registry()
+    )
+
+    # bbox 아래(y=240 이후)에 배지가 그려진다.
+    assert _region_has_color(canvas, INCIDENT_COLOR, y_start=241, y_end=290)
+
+
+def test_draw_overlay_does_not_paint_resolved_incident() -> None:
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+    result = _result(
+        incidents=(_incident("AISLE_BLOCK", state=IncidentState.RESOLVED),)
+    )
+
+    canvas = draw_overlay(
+        _frame(size=400), _tracking_batch((vehicle,)), result, zones=_zone_registry()
+    )
+
+    assert not _region_has_color(canvas, INCIDENT_COLOR, y_start=0, y_end=400)
+
+
+def test_draw_overlay_does_not_paint_candidate_incident() -> None:
+    """CANDIDATE는 아직 확정 전이라 화면에 띄우지 않는다."""
+
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+    result = _result(
+        incidents=(_incident("AISLE_BLOCK", state=IncidentState.CANDIDATE),)
+    )
+
+    canvas = draw_overlay(
+        _frame(size=400), _tracking_batch((vehicle,)), result, zones=_zone_registry()
+    )
+
+    assert not _region_has_color(canvas, INCIDENT_COLOR, y_start=0, y_end=400)
+
+
+def test_draw_overlay_paints_nothing_extra_when_there_are_no_incidents() -> None:
+    vehicle = _vehicle(BoundingBox(x1=0.2, y1=0.2, x2=0.6, y2=0.6))
+
+    canvas = draw_overlay(
+        _frame(size=400), _tracking_batch((vehicle,)), _result(), zones=_zone_registry()
+    )
+
+    assert not _region_has_color(canvas, INCIDENT_COLOR, y_start=0, y_end=400)
