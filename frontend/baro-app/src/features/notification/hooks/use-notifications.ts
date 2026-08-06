@@ -1,8 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { getNotifications } from '@/features/notification/api/notification-api';
 import type { NotificationSummary } from '@/features/notification/api/types';
+import {
+  addDismissedNotificationId,
+  getDismissedNotificationIds,
+} from '@/features/notification/services/dismissed-notifications-storage';
 import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
 import { useAuth } from '@/providers/auth-provider';
 import { queryKeys } from '@/services/query-keys';
@@ -29,12 +33,29 @@ export function useNotifications() {
   });
   useRefetchOnFocus(query.refetch, query.isStale);
 
+  // 스와이프로 지운 알림은 서버 삭제 API가 없어 기기에만 기록해두고, 다음 조회 결과에서도 계속 걸러낸다.
+  const [dismissedIds, setDismissedIds] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    let isMounted = true;
+    getDismissedNotificationIds().then((ids) => {
+      if (isMounted) setDismissedIds(ids);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const dismissNotification = (notificationId: number) => {
+    setDismissedIds((prev) => new Set(prev).add(notificationId));
+    void addDismissedNotificationId(notificationId);
+  };
+
   const filteredNotifications = useMemo(() => {
-    const notifications = query.data ?? [];
+    const visible = (query.data ?? []).filter((item) => !dismissedIds.has(item.notificationId));
     return tab === 'all'
-      ? notifications
-      : notifications.filter((item) => MOVE_REQUEST_TAB_TYPES.has(item.notificationType));
-  }, [query.data, tab]);
+      ? visible
+      : visible.filter((item) => MOVE_REQUEST_TAB_TYPES.has(item.notificationType));
+  }, [query.data, tab, dismissedIds]);
 
   return {
     notifications: filteredNotifications,
@@ -45,5 +66,6 @@ export function useNotifications() {
     refetch: query.refetch,
     tab,
     setTab,
+    dismissNotification,
   };
 }
