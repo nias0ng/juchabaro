@@ -1,0 +1,37 @@
+{
+  "egressAisleDefinitionVersion": 1,
+  "zoneDefinitionVersion": 1,
+  "calibrationReference": "a26d3085c3d4fc4f",
+  "areas": [
+    {
+      "egressZoneId": 101,
+      "parkingZoneId": 1,
+      "polygon": [[0.399, 0.451], [0.539063, 0.451], [0.539063, 0.6], [0.392, 0.6]]
+    },
+    {
+      "egressZoneId": 102,
+      "parkingZoneId": 2,
+      "polygon": [[0.392, 0.6], [0.539063, 0.6], [0.539063, 0.769], [0.385, 0.769]]
+    },
+    {
+      "egressZoneId": 103,
+      "parkingZoneId": 3,
+      "polygon": [[0.385, 0.769], [0.539063, 0.769], [0.539063, 0.934], [0.378, 0.934]]
+    },
+    {
+      "egressZoneId": 104,
+      "parkingZoneId": 4,
+      "polygon": [[0.474531, 0.412], [0.612, 0.412], [0.615, 0.605], [0.474531, 0.605]]
+    },
+    {
+      "egressZoneId": 105,
+      "parkingZoneId": 5,
+      "polygon": [[0.474531, 0.605], [0.615, 0.605], [0.617, 0.769], [0.474531, 0.769]]
+    },
+    {
+      "egressZoneId": 106,
+      "parkingZoneId": 6,
+      "polygon": [[0.474531, 0.769], [0.617, 0.769], [0.619, 0.93], [0.474531, 0.93]]
+    }
+  ]
+}

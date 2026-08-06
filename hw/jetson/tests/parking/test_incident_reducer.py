@@ -10,6 +10,7 @@ from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     BlockingRelationId,
     IncidentKey,
+    IncidentRuleTiming,
     IncidentSignal,
     IncidentSignalValue,
     IncidentState,
@@ -106,6 +107,92 @@ def test_trusted_sample_max_gap_must_be_positive() -> None:
     for invalid_gap in (0, 0.0000001, 0.0000006):
         with pytest.raises(ValueError, match="trusted_sample_max_gap_seconds"):
             InMemoryIncidentReducer(trusted_sample_max_gap_seconds=invalid_gap)
+
+
+def test_rule_timing_overrides_default_only_for_new_matching_rule() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=1.0,
+        clear_duration_seconds=2.0,
+        rule_timings=(
+            IncidentRuleTiming(
+                rule_code="BAD_PARKING",
+                confirm_duration_seconds=3.0,
+                clear_duration_seconds=4.0,
+            ),
+        ),
+    )
+
+    overridden = reduce(
+        reducer,
+        vehicle_key("BAD_PARKING"),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+    ).incident
+    fallback = reduce(
+        reducer,
+        vehicle_key("OUT_OF_ZONE"),
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+    ).incident
+
+    assert overridden.confirm_duration_seconds == 3.0
+    assert overridden.clear_duration_seconds == 4.0
+    assert fallback.confirm_duration_seconds == 1.0
+    assert fallback.clear_duration_seconds == 2.0
+
+
+def test_restored_incident_keeps_snapshotted_timing_after_policy_change() -> None:
+    original = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        rule_timings=(
+            IncidentRuleTiming(
+                rule_code="BAD_PARKING",
+                confirm_duration_seconds=5.0,
+                clear_duration_seconds=6.0,
+            ),
+        ),
+    )
+    candidate = reduce(
+        original,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+    ).incident
+    changed = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=8.0,
+        clear_duration_seconds=9.0,
+    )
+    changed.restore_active((candidate,))
+
+    continued = reduce(
+        changed,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+    ).incident
+
+    assert continued.confirm_duration_seconds == 5.0
+    assert continued.clear_duration_seconds == 6.0
+
+
+def test_duplicate_rule_timing_is_rejected() -> None:
+    timing = IncidentRuleTiming(
+        rule_code="BAD_PARKING",
+        confirm_duration_seconds=0.0,
+        clear_duration_seconds=0.0,
+    )
+
+    with pytest.raises(ValueError, match="duplicate Incident timing"):
+        InMemoryIncidentReducer(
+            trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+            rule_timings=(timing, timing),
+        )
 
 
 def test_confirm_timer_opens_once_after_consecutive_trusted_samples() -> None:

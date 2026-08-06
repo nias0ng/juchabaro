@@ -61,6 +61,7 @@ evidenceId                                ├─ capture ─ upload·retry ─ r
 |---|---|---|---|
 | `vehicleId` | Backend가 생성하는 등록 차량 기준 정보 | Backend `Vehicle` namespace | Backend 기준 정보 수명주기를 따른다. Jetson은 opaque ID로 취급하며 `physicalVehicleId`로 사용하지 않는다. |
 | `zoneId` | 공유 ZoneDefinition이 정의하는 주차면·`AISLE`·`ENTRY_EXIT` 공간 | 한 deployment | 해석에는 함께 배포된 `zoneDefinitionVersion`이 필요하다. 같은 deployment에서 다른 물리 공간에 재할당하지 않는다. |
+| `egressZoneId` | 정적 EgressAisleDefinition이 부여하는 주차면별 출차 방해 판정 공간 | 한 deployment의 egress snapshot | durable relation·API 호환 필드명을 보존하지만 `zoneId`와 별도 namespace다. 해석에는 egress·zone version과 calibration reference가 필요하며 다른 물리 공간에 재할당하지 않는다. |
 | `trackSegmentId` | ByteTrack이 생성한 한 연속 추적 구간 | 한 tracker process·stream runtime | 구간마다 새 ID를 사용한다. process 재시작을 넘는 저장·외부 correlation에는 사용하지 않는다. |
 | `physicalVehicleId` | Jetson이 동일 실차로 판단한 관측 가설 | UUID namespace | 가설 생성부터 후보 취소 또는 physical departure와 child 정리 후 `RETIRED`까지 유효하다. 여러 `trackSegmentId`를 포함할 수 있고 terminal 후 재사용하지 않는다. |
 | `entryAttemptId` | Backend 호출 전에 entry capture upstream이 생성하는 한 번의 물리적 입차 인식·판단 시도 | UUID namespace | `ALLOW`, `DENY`, `REVIEW_PENDING`과 그 최종 해소를 같은 ID로 correlation한다. authoritative `sessionId`는 최대 하나다. 같은 입차 시도의 session 교체는 지원하지 않으며, 별도의 실제 입차 시도에만 새 `entryAttemptId`와 `sessionId`를 사용한다. 현재 Raspberry Pi wire `trackingId`는 이 의미의 alias다. |
@@ -97,6 +98,7 @@ evidenceId                                ├─ capture ─ upload·retry ─ r
 | `sessionId` | `ParkingSessionId` (`int`) | Jetson `tracking/models.py`; Backend `ParkingSession` DB가 생성 | Backend 응답 → Raspberry Pi → Jetson 입차 context |
 | `vehicleId` | `VehicleId` (`int`) | Jetson `tracking/models.py`; Backend 차량 등록 DB가 생성 | Backend 응답 → Raspberry Pi → Jetson 입차 context |
 | `zoneId` | `ZoneId` (`int`) | Jetson `parking/models.py`; 공유 ZoneDefinition snapshot 제작 과정이 생성 | Jetson `ZoneRegistry`; Backend·Frontend projection |
+| `egressZoneId` | `EgressAisleId` (`int`) | Jetson `parking/models.py`; EgressAisleDefinition snapshot 제작 과정이 생성 | Jetson `EgressAisleRegistry` → `BlockingRelation`; 외부 전달 여부는 후속 API 계약 |
 | `zoneVisitId` | `ZoneVisitId` (`UUID`) | Jetson `parking/models.py`; `parking/zone_visit_tracker.py` | Jetson domain → 규칙·`IncidentKey`; 외부 전달 여부는 후속 API 계약 |
 | `parkingEpisodeId` | `ParkingEpisodeId` (`UUID`) | Jetson `parking/models.py`; `parking/parking_episode_tracker.py` | `ParkingEpisode` → 규칙; Jetson → Backend handoff |
 | `contextBindingId` | `ContextBindingId` (`UUID`) | 목표 Jetson domain type; `ContextBinding` 생성 시 | Jetson domain 내부; 외부 전달 여부는 후속 API 계약 |
@@ -117,6 +119,7 @@ Jetson은 `eventId`와 `requestId`를 생성하지 않는다. 수신한 `request
 | `publicationRevision` | Jetson aggregate owner; aggregate별 단조 증가 | 같은 aggregate가 외부에 공개한 전이 순서 |
 | `recordVersion` | Jetson local store; record별 단조 증가 | local record의 동시성 제어 version |
 | `zoneDefinitionVersion` | ZoneDefinition 배포 주체; deployment별 단조 증가 | 함께 배포된 ZoneDefinition snapshot의 version |
+| `egressAisleDefinitionVersion` | EgressAisleDefinition 배포 주체; deployment별 단조 증가 | 함께 배포된 egress snapshot의 version. 같은 snapshot의 `zoneDefinitionVersion`·calibration reference와 함께 해석한다. |
 | `decisionRevision` | Backend; `entryAttemptId`별 단조 증가 | 초기 결정과 `REVIEW_PENDING` 해소 순서. 확정된 결정을 다시 쓰는 권한이 아니다. |
 | `contextRevision` | Backend; `entryAttemptId`의 authoritative context stream별 단조 증가 | 같은 session/context와, 존재하는 경우 그 immutable binding에 대한 행정 상태·자격·context 갱신 순서. 다른 session이나 physical vehicle로 rebinding하는 권한이 아니다. |
 | `verificationAttempt` | Backend command owner; `requestId`별 단조 증가 | 이동 재확인 순번. 이동 확인 command identity는 (`requestId`, `verificationAttempt`)다. |

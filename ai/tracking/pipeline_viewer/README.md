@@ -64,7 +64,7 @@ PyTorch·TensorRT 설치가 별도로 필요하므로 이 PC용 Conda 절차를 
 - EntryMatch, ZoneVisit, ParkingEpisode, BlockingRelation, Incident 상태 변화
 - 실제 `TrackingBatch`와 `FrameObservationResult` JSON 요약
 - 기존 상태 변경 timeline의 명시적 CSV 다운로드
-- 프레임별 YOLO detection·identity·motion·placement evidence·차량 소실 진단 CSV 다운로드
+- 프레임별 YOLO detection·identity·motion·Incident signal·placement evidence·차량 소실 진단 CSV 다운로드
 - 정상 commit 이후의 프레임만 표시하고 오류 발생 시 마지막 정상 프레임과
   원래 예외를 함께 보존
 
@@ -72,7 +72,9 @@ PyTorch·TensorRT 설치가 별도로 필요하므로 이 PC용 Conda 절차를 
 post-NMS, pre-track 후보입니다. `IDENTITY_RESOLUTION`은 EntityResolver 결정,
 `MOTION_ESTIMATE`는 bbox·관측 시각 time-window의 signal·reason·정규화 지표이고,
 `TRACKED_VEHICLE` 행은 ByteTrack ID와 PhysicalVehicle ID가 부여되어 도메인으로
-전달된 관측입니다. `PLACEMENT_EVIDENCE` 행은 pipeline이 실제 규칙 입력으로
+전달된 관측입니다. `INCIDENT_SIGNAL` 행은 RuleEvaluator가 reducer에 실제 전달한
+`MATCHED / NOT_MATCHED / UNKNOWN`, confirmable, evidence와 reducer가 선택한
+rule별 confirm/clear scalar를 담습니다. `PLACEMENT_EVIDENCE` 행은 pipeline이 실제 규칙 입력으로
 사용한 footprint source, zone별 overlap, assignment 해석과
 BAD_PARKING·OUT_OF_ZONE signal을 담습니다. Viewer/export가 이 값을 다시
 계산하지 않으므로 domain 판정과 진단 CSV가 같은 근거를 가리킵니다.

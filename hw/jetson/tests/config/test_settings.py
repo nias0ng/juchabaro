@@ -27,6 +27,8 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
         "out_of_zone_min_spot_overlap_ratio",
         "blocking_relation_confirm_seconds",
         "blocking_relation_clear_seconds",
+        "blocking_min_subject_overlap_ratio",
+        "blocking_min_egress_coverage_ratio",
     ):
         assert fields[name].is_required()
 

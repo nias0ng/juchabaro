@@ -44,6 +44,7 @@ from src.parking.models import (
     ZoneType,
 )
 from src.parking.zone_registry import ZoneRegistry
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.replay.zone_visit_publisher import DedupingZoneVisitPublisher, ZoneVisitJsonlPublisher
 from src.storage.database import connect_database, open_database
@@ -108,6 +109,8 @@ def _policy() -> MonitoringPolicy:
         out_of_zone_min_spot_overlap_ratio=0.50,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
+        blocking_min_subject_overlap_ratio=0.40,
+        blocking_min_egress_coverage_ratio=0.40,
         motion_window_seconds=0.75,
         motion_min_observation_span_seconds=0.20,
         motion_max_sample_gap_seconds=0.50,
@@ -215,8 +218,10 @@ def _run_zone_visit_replay(tmp_path: Path, *, run_label: str, t0: datetime) -> t
 
     raw_update_count = 0
     with events_path.open("w", encoding="utf-8", newline="\n") as events_handle:
+        zones = ZoneRegistry((DISABLED_ZONE, ENTRY_ZONE))
         pipeline = build_monitoring_pipeline(
-            zones=ZoneRegistry((DISABLED_ZONE, ENTRY_ZONE)),
+            zones=zones,
+            egress_aisles=EgressAisleRegistry.empty(zones),
             policy=_policy(),
             dependencies=MonitoringDependencies(
                 camera_id="cam-1",

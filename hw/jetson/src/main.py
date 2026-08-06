@@ -66,6 +66,7 @@ from src.communication.backend_publication_preparer import (
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
 from src.parking.zone_registry import ZoneRegistry
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
@@ -118,6 +119,7 @@ class RuntimeContext:
 
     settings: Settings
     zones: ZoneRegistry
+    egress_aisles: EgressAisleRegistry
     connection_factory: DatabaseConnectionFactory
     publication_preparer: BackendPublicationPreparer
     evidence_capture_coordinator: EvidenceCaptureCoordinator
@@ -212,6 +214,12 @@ def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
         blocking_relation_clear_seconds=(
             settings.blocking_relation_clear_seconds
         ),
+        blocking_min_subject_overlap_ratio=(
+            settings.blocking_min_subject_overlap_ratio
+        ),
+        blocking_min_egress_coverage_ratio=(
+            settings.blocking_min_egress_coverage_ratio
+        ),
         motion_window_seconds=settings.motion_window_seconds,
         motion_min_observation_span_seconds=(
             settings.motion_min_observation_span_seconds
@@ -275,6 +283,7 @@ def build_runtime_monitoring_pipeline(
     )
     return build_monitoring_pipeline(
         zones=context.zones,
+        egress_aisles=context.egress_aisles,
         policy=_build_monitoring_policy(settings),
         dependencies=dependencies,
     )
@@ -318,8 +327,13 @@ def create_app(
         zones = ZoneRegistry.from_file(
             resolved_settings.zone_definition_path
         )
+        egress_aisles = EgressAisleRegistry.from_file(
+            resolved_settings.egress_aisle_path,
+            zones=zones,
+        )
         entry_match_coordinator = EntryMatchCoordinator(zones=zones)
         application.state.zone_registry = zones
+        application.state.egress_aisle_registry = egress_aisles
         application.state.entry_match_coordinator = entry_match_coordinator
         application.state.entry_event_intake = EntryEventIntake(
             entry_match_coordinator,
@@ -359,6 +373,7 @@ def create_app(
                 RuntimeContext(
                     settings=resolved_settings,
                     zones=zones,
+                    egress_aisles=egress_aisles,
                     connection_factory=connection_factory,
                     publication_preparer=publication_preparer,
                     evidence_capture_coordinator=(

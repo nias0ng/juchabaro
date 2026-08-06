@@ -32,6 +32,7 @@ from pipeline_viewer.service import (  # noqa: E402
     run_viewer_pipeline,
 )
 from pipeline_viewer.ui import render_run  # noqa: E402
+from src.parking.models import IncidentRuleTiming  # noqa: E402
 
 
 ENTRY_JSON_KEY = "jetson_viewer_entry_json"
@@ -91,6 +92,34 @@ def _render_policy_inputs() -> ViewerPolicy:
         incident_clear = columns[3].number_input(
             "Incident clear (s)", min_value=0.0, value=defaults.incident_clear_seconds
         )
+
+        st.caption(
+            "규칙별 Incident confirm/clear (provisional). 위 전역 값은 목록에 "
+            "없는 future rule의 fallback으로만 사용합니다."
+        )
+        incident_rule_timings: list[IncidentRuleTiming] = []
+        for default_timing in defaults.incident_rule_timings:
+            columns = st.columns((2, 1, 1))
+            columns[0].code(default_timing.rule_code)
+            rule_confirm = columns[1].number_input(
+                f"{default_timing.rule_code} confirm (s)",
+                min_value=0.0,
+                value=default_timing.confirm_duration_seconds,
+                label_visibility="collapsed",
+            )
+            rule_clear = columns[2].number_input(
+                f"{default_timing.rule_code} clear (s)",
+                min_value=0.0,
+                value=default_timing.clear_duration_seconds,
+                label_visibility="collapsed",
+            )
+            incident_rule_timings.append(
+                IncidentRuleTiming(
+                    rule_code=default_timing.rule_code,
+                    confirm_duration_seconds=rule_confirm,
+                    clear_duration_seconds=rule_clear,
+                )
+            )
 
         columns = st.columns(4)
         reidentification_gap = columns[0].number_input(
@@ -165,6 +194,20 @@ def _render_policy_inputs() -> ViewerPolicy:
         )
         blocking_clear = columns[1].number_input(
             "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
+        )
+        blocking_subject_overlap = columns[2].number_input(
+            "Blocking subject overlap",
+            min_value=0.01,
+            max_value=1.0,
+            value=defaults.blocking_min_subject_overlap_ratio,
+            step=0.01,
+        )
+        blocking_egress_coverage = columns[3].number_input(
+            "Blocking egress coverage",
+            min_value=0.01,
+            max_value=1.0,
+            value=defaults.blocking_min_egress_coverage_ratio,
+            step=0.01,
         )
 
         columns = st.columns(4)
@@ -251,6 +294,7 @@ def _render_policy_inputs() -> ViewerPolicy:
         reidentification_ambiguity_margin=reidentification_margin,
         incident_confirm_seconds=incident_confirm,
         incident_clear_seconds=incident_clear,
+        incident_rule_timings=tuple(incident_rule_timings),
         zone_presence_min_overlap_ratio=zone_overlap,
         assignment_min_overlap_ratio=assignment_overlap,
         assignment_ambiguous_margin=ambiguous_margin,
@@ -261,6 +305,8 @@ def _render_policy_inputs() -> ViewerPolicy:
         out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap,
         blocking_relation_confirm_seconds=blocking_confirm,
         blocking_relation_clear_seconds=blocking_clear,
+        blocking_min_subject_overlap_ratio=blocking_subject_overlap,
+        blocking_min_egress_coverage_ratio=blocking_egress_coverage,
         entry_match_window_seconds=match_window,
         motion_window_seconds=motion_window,
         motion_min_observation_span_seconds=motion_min_span,
@@ -317,15 +363,20 @@ def main() -> None:
             st.caption(f"{video.name} · {video.size:,} bytes")
 
     st.subheader("Runtime 경로")
-    path_columns = st.columns(3)
+    path_columns = st.columns(4)
     model_path = Path(
         path_columns[0].text_input("YOLO model", value=str(paths.model))
     )
     zones_path = Path(
         path_columns[1].text_input("Zone definition", value=str(paths.zones))
     )
+    egress_aisles_path = Path(
+        path_columns[2].text_input(
+            "Egress aisle definition", value=str(paths.egress_aisles)
+        )
+    )
     calibration_path = Path(
-        path_columns[2].text_input("Calibration", value=str(paths.calibration))
+        path_columns[3].text_input("Calibration", value=str(paths.calibration))
     )
     st.caption("기본 모델 위치: hw/jetson/model/yolov8s.pt")
 
@@ -366,6 +417,7 @@ def main() -> None:
             paths=ViewerPaths(
                 model=model_path,
                 zones=zones_path,
+                egress_aisles=egress_aisles_path,
                 calibration=calibration_path,
             ),
             policy=policy,

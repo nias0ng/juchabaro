@@ -17,6 +17,7 @@
     python -m scripts.watch_live_stream \\
         --video ../../docs/video/video1.mp4 \\
         --zones-file config/zone_definition.pilot.json \\
+        --egress-aisles-file config/egress_aisle.pilot.json \\
         --calibration ../../ai/tracking/camera_calibration.json \\
         --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260729-153946/weights/best.pt
 
@@ -24,6 +25,7 @@
     python -m scripts.watch_live_stream \\
         --camera-index 0 \\
         --zones-file config/zone_definition.pilot.json \\
+        --egress-aisles-file config/egress_aisle.pilot.json \\
         --calibration ../../ai/tracking/camera_calibration.json \\
         --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260729-153946/weights/best.pt
 
@@ -72,6 +74,7 @@ from src.camera.frame_source import (
 from src.live.live_overlay_renderer import render_overlay_jpeg
 from src.live.live_stream_loop import LiveStreamLoop
 from src.parking.zone_registry import ZoneRegistry
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.storage.database import connect_database, open_database
 from src.tracking.adapters.ultralytics_bytetrack import UltralyticsVehicleTracker
@@ -122,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-width", type=int, default=0, help="웹캠 요청 해상도 폭. 0이면 장치 기본값")
     parser.add_argument("--camera-height", type=int, default=0, help="웹캠 요청 해상도 높이. 0이면 장치 기본값")
     parser.add_argument("--zones-file", type=Path, required=True)
+    parser.add_argument("--egress-aisles-file", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--camera-id", default="WATCH-LIVE")
@@ -145,6 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-of-zone-min-spot-overlap-ratio", type=float, default=0.50)
     parser.add_argument("--blocking-relation-confirm-seconds", type=float, default=3.0)
     parser.add_argument("--blocking-relation-clear-seconds", type=float, default=3.0)
+    parser.add_argument("--blocking-min-subject-overlap-ratio", type=float, default=0.40)
+    parser.add_argument("--blocking-min-egress-coverage-ratio", type=float, default=0.40)
     parser.add_argument(
         "--parking-confirm-seconds", type=float, default=5.0,
         help="정차 후 주차로 확정하기까지 걸리는 시간(초). 시연용 기본값 5초 "
@@ -211,6 +217,12 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         out_of_zone_min_spot_overlap_ratio=args.out_of_zone_min_spot_overlap_ratio,
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
+        blocking_min_subject_overlap_ratio=(
+            args.blocking_min_subject_overlap_ratio
+        ),
+        blocking_min_egress_coverage_ratio=(
+            args.blocking_min_egress_coverage_ratio
+        ),
         motion_window_seconds=args.motion_window_seconds,
         motion_min_observation_span_seconds=(
             args.motion_min_observation_span_seconds
@@ -225,6 +237,10 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
 
 def run(args: argparse.Namespace) -> int:
     zones = ZoneRegistry.from_file(args.zones_file)
+    egress_aisles = EgressAisleRegistry.from_file(
+        args.egress_aisles_file,
+        zones=zones,
+    )
     workspace = Path(tempfile.mkdtemp(prefix="watch-live-stream-"))
     try:
         database_path = workspace / "watch.db"
@@ -252,6 +268,7 @@ def run(args: argparse.Namespace) -> int:
         )
         pipeline = build_monitoring_pipeline(
             zones=zones,
+            egress_aisles=egress_aisles,
             policy=build_policy(args),
             dependencies=MonitoringDependencies(
                 camera_id=args.camera_id,

@@ -1,6 +1,7 @@
 """Parking aggregate snapshot과 SQLite row를 연결하는 repository.
 
-이 모듈은 ``ZoneVisit``, ``ParkingEpisode``, ``Incident``의 영속 조회와
+이 모듈은 ``ZoneVisit``, ``ParkingEpisode``, ``BlockingRelation``,
+``Incident``의 영속 조회와
 optimistic write만 담당한다. transaction은 호출 application이 ``UnitOfWork``로
 소유하며, 공개 전이의 outbox 직렬화·enqueue도 같은 application
 transaction에서 조정한다.
@@ -20,6 +21,10 @@ from uuid import UUID
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.models import (
     AssignmentState,
+    BlockingRelation,
+    BlockingRelationId,
+    BlockingRelationState,
+    EgressAisleId,
     Incident,
     IncidentId,
     IncidentKey,
@@ -55,6 +60,10 @@ class ZoneVisitConflictError(RuntimeError):
 
 class ParkingEpisodeConflictError(RuntimeError):
     """ParkingEpisode identity·scalar·correlation이 durable row와 충돌했다."""
+
+
+class BlockingRelationConflictError(RuntimeError):
+    """BlockingRelation identity·scalar·cardinality가 durable row와 충돌했다."""
 
 
 class IncidentConflictError(RuntimeError):
@@ -352,6 +361,53 @@ def _parking_episode_from_row(row: sqlite3.Row) -> ParkingEpisode:
         ),
         record_version=int(row["record_version"]),
         publication_revision=int(row["publication_revision"]),
+        created_at=datetime_from_epoch_microseconds(int(row["created_at_us"])),
+        updated_at=datetime_from_epoch_microseconds(int(row["updated_at_us"])),
+    )
+
+
+def _blocking_relation_from_row(row: sqlite3.Row) -> BlockingRelation:
+    return BlockingRelation(
+        blocking_relation_id=BlockingRelationId(
+            uuid_from_text(str(row["blocking_relation_id"]))
+        ),
+        subject_physical_vehicle_id=PhysicalVehicleId(
+            uuid_from_text(str(row["subject_physical_vehicle_id"]))
+        ),
+        victim_physical_vehicle_id=PhysicalVehicleId(
+            uuid_from_text(str(row["victim_physical_vehicle_id"]))
+        ),
+        egress_zone_id=EgressAisleId(int(row["egress_zone_id"])),
+        source_parking_episode_id=(
+            ParkingEpisodeId(
+                uuid_from_text(str(row["source_parking_episode_id"]))
+            )
+            if row["source_parking_episode_id"] is not None
+            else None
+        ),
+        state=BlockingRelationState(str(row["domain_state"])),
+        observation=_observation_from_row(row),
+        confirm_trusted_seconds=_microseconds_to_seconds(
+            int(row["confirm_trusted_duration_us"])
+        ),
+        clear_trusted_seconds=_microseconds_to_seconds(
+            int(row["clear_trusted_duration_us"])
+        ),
+        confirm_duration_seconds=_microseconds_to_seconds(
+            int(row["confirm_duration_us"])
+        ),
+        clear_duration_seconds=_microseconds_to_seconds(
+            int(row["clear_duration_us"])
+        ),
+        confirmed_at=_optional_datetime_from_row(row, "confirmed_at_us"),
+        resolved_at=_optional_datetime_from_row(row, "resolved_at_us"),
+        terminated_at=_optional_datetime_from_row(row, "terminated_at_us"),
+        termination_reason=(
+            str(row["termination_reason"])
+            if row["termination_reason"] is not None
+            else None
+        ),
+        record_version=int(row["record_version"]),
         created_at=datetime_from_epoch_microseconds(int(row["created_at_us"])),
         updated_at=datetime_from_epoch_microseconds(int(row["updated_at_us"])),
     )
@@ -863,6 +919,215 @@ class ParkingEpisodeRepository:
             ) from error
         if new_version != episode.record_version:  # pragma: no cover
             raise RuntimeError("optimistic update returned an unexpected record version")
+
+
+# [BlockingRelation]
+
+
+class BlockingRelationRepository:
+    """subject·victim·egress별 non-terminal 관계를 보존한다."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(
+        self, blocking_relation_id: BlockingRelationId
+    ) -> BlockingRelation | None:
+        row = self._connection.execute(
+            "SELECT * FROM blocking_relations WHERE blocking_relation_id = ?",
+            (uuid_to_text(blocking_relation_id),),
+        ).fetchone()
+        return _blocking_relation_from_row(row) if row is not None else None
+
+    def list_active(self) -> tuple[BlockingRelation, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM blocking_relations
+            WHERE domain_state IN ('CANDIDATE', 'BLOCKING', 'CLEAR_PENDING')
+            ORDER BY created_at_us, blocking_relation_id
+            """
+        ).fetchall()
+        return tuple(_blocking_relation_from_row(row) for row in rows)
+
+    def add(self, relation: BlockingRelation) -> None:
+        require_write_transaction(self._connection)
+        observation_state, observation_reason, last_reliable_at_us = (
+            _observation_columns(relation.observation)
+        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO blocking_relations(
+                    blocking_relation_id, subject_physical_vehicle_id,
+                    victim_physical_vehicle_id, egress_zone_id,
+                    source_parking_episode_id, domain_state,
+                    observation_state, observation_reason,
+                    last_reliable_observed_at_us,
+                    confirm_trusted_duration_us, clear_trusted_duration_us,
+                    confirm_duration_us, clear_duration_us,
+                    confirmed_at_us, resolved_at_us,
+                    termination_reason, terminated_at_us,
+                    record_version, created_at_us, updated_at_us
+                ) VALUES (
+                    :blocking_relation_id, :subject_physical_vehicle_id,
+                    :victim_physical_vehicle_id, :egress_zone_id,
+                    :source_parking_episode_id, :domain_state,
+                    :observation_state, :observation_reason,
+                    :last_reliable_observed_at_us,
+                    :confirm_trusted_duration_us, :clear_trusted_duration_us,
+                    :confirm_duration_us, :clear_duration_us,
+                    :confirmed_at_us, :resolved_at_us,
+                    :termination_reason, :terminated_at_us,
+                    :record_version, :created_at_us, :updated_at_us
+                )
+                """,
+                {
+                    "blocking_relation_id": uuid_to_text(
+                        relation.blocking_relation_id
+                    ),
+                    "subject_physical_vehicle_id": uuid_to_text(
+                        relation.subject_physical_vehicle_id
+                    ),
+                    "victim_physical_vehicle_id": uuid_to_text(
+                        relation.victim_physical_vehicle_id
+                    ),
+                    "egress_zone_id": int(relation.egress_zone_id),
+                    "source_parking_episode_id": (
+                        uuid_to_text(relation.source_parking_episode_id)
+                        if relation.source_parking_episode_id is not None
+                        else None
+                    ),
+                    "domain_state": relation.state.value,
+                    "observation_state": observation_state,
+                    "observation_reason": observation_reason,
+                    "last_reliable_observed_at_us": last_reliable_at_us,
+                    "confirm_trusted_duration_us": _seconds_to_microseconds(
+                        relation.confirm_trusted_seconds
+                    ),
+                    "clear_trusted_duration_us": _seconds_to_microseconds(
+                        relation.clear_trusted_seconds
+                    ),
+                    "confirm_duration_us": _seconds_to_microseconds(
+                        relation.confirm_duration_seconds
+                    ),
+                    "clear_duration_us": _seconds_to_microseconds(
+                        relation.clear_duration_seconds
+                    ),
+                    "confirmed_at_us": _optional_datetime_to_storage(
+                        relation.confirmed_at
+                    ),
+                    "resolved_at_us": _optional_datetime_to_storage(
+                        relation.resolved_at
+                    ),
+                    "termination_reason": relation.termination_reason,
+                    "terminated_at_us": _optional_datetime_to_storage(
+                        relation.terminated_at
+                    ),
+                    "record_version": relation.record_version,
+                    "created_at_us": datetime_to_epoch_microseconds(
+                        relation.created_at
+                    ),
+                    "updated_at_us": datetime_to_epoch_microseconds(
+                        relation.updated_at
+                    ),
+                },
+            )
+        except sqlite3.IntegrityError as error:
+            raise BlockingRelationConflictError(
+                "BlockingRelation violates an identity, FK, state, or cardinality contract"
+            ) from error
+
+    def save(
+        self,
+        relation: BlockingRelation,
+        *,
+        expected_record_version: int,
+    ) -> None:
+        require_write_transaction(self._connection)
+        _require_advanced_record_version(
+            aggregate_name="BlockingRelation",
+            record_version=relation.record_version,
+            expected_record_version=expected_record_version,
+        )
+        existing = self.get(relation.blocking_relation_id)
+        if existing is None:
+            _raise_missing_for_update(
+                "BlockingRelation", relation.blocking_relation_id
+            )
+        assert existing is not None
+        if (
+            relation.subject_physical_vehicle_id
+            != existing.subject_physical_vehicle_id
+            or relation.victim_physical_vehicle_id
+            != existing.victim_physical_vehicle_id
+            or relation.egress_zone_id != existing.egress_zone_id
+            or relation.source_parking_episode_id
+            != existing.source_parking_episode_id
+            or relation.created_at != existing.created_at
+            or _seconds_to_microseconds(relation.confirm_duration_seconds)
+            != _seconds_to_microseconds(existing.confirm_duration_seconds)
+            or _seconds_to_microseconds(relation.clear_duration_seconds)
+            != _seconds_to_microseconds(existing.clear_duration_seconds)
+        ):
+            raise BlockingRelationConflictError(
+                "BlockingRelation identity and applied confirmation scalars are immutable"
+            )
+        _require_not_reactivated(
+            aggregate_name="BlockingRelation",
+            existing_state=existing.state,
+            incoming_state=relation.state,
+            terminal_states={
+                BlockingRelationState.RESOLVED,
+                BlockingRelationState.CANCELED,
+            },
+            error_type=BlockingRelationConflictError,
+        )
+
+        observation_state, observation_reason, last_reliable_at_us = (
+            _observation_columns(relation.observation)
+        )
+        try:
+            new_version = optimistic_update(
+                self._connection,
+                table="blocking_relations",
+                key_column="blocking_relation_id",
+                key_value=uuid_to_text(relation.blocking_relation_id),
+                expected_record_version=expected_record_version,
+                next_record_version=relation.record_version,
+                changes={
+                    "domain_state": relation.state.value,
+                    "observation_state": observation_state,
+                    "observation_reason": observation_reason,
+                    "last_reliable_observed_at_us": last_reliable_at_us,
+                    "confirm_trusted_duration_us": _seconds_to_microseconds(
+                        relation.confirm_trusted_seconds
+                    ),
+                    "clear_trusted_duration_us": _seconds_to_microseconds(
+                        relation.clear_trusted_seconds
+                    ),
+                    "confirmed_at_us": _optional_datetime_to_storage(
+                        relation.confirmed_at
+                    ),
+                    "resolved_at_us": _optional_datetime_to_storage(
+                        relation.resolved_at
+                    ),
+                    "termination_reason": relation.termination_reason,
+                    "terminated_at_us": _optional_datetime_to_storage(
+                        relation.terminated_at
+                    ),
+                    "updated_at_us": datetime_to_epoch_microseconds(
+                        relation.updated_at
+                    ),
+                },
+            )
+        except sqlite3.IntegrityError as error:
+            raise BlockingRelationConflictError(
+                "BlockingRelation update violates the durable state contract"
+            ) from error
+        if new_version != relation.record_version:  # pragma: no cover
+            raise RuntimeError(
+                "optimistic update returned an unexpected record version"
+            )
 
 
 # [Incident]

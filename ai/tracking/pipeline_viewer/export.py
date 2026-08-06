@@ -108,11 +108,19 @@ DIAGNOSTIC_FIELDS = (
     "outOfZoneReason",
     "outOfZoneReasonsJson",
     "outOfZoneConfirmable",
+    "incidentScopeType",
+    "incidentScopeId",
+    "incidentRuleCode",
+    "incidentSignalValue",
+    "incidentSignalConfirmable",
+    "incidentSignalEvidenceJson",
+    "incidentConfirmSeconds",
+    "incidentClearSeconds",
     "endedTrackSegmentIds",
     "elapsedMs",
 )
 
-DIAGNOSTIC_SCHEMA_VERSION = 3
+DIAGNOSTIC_SCHEMA_VERSION = 4
 
 
 def state_change_rows(frames: Sequence[FrameTrace]) -> list[dict[str, Any]]:
@@ -148,6 +156,8 @@ def diagnostic_rows(
     ``IDENTITY_RESOLUTION``은 EntityResolver의 결정과 근거이며,
     ``MOTION_ESTIMATE``는 MotionEstimator의 시간 창 판정과 근거이고,
     ``TRACKED_VEHICLE``은 ID가 부여돼 도메인에 전달된 관측이다.
+    ``INCIDENT_SIGNAL``은 reducer에 실제 전달한 삼상태 rule 입력과 선택된
+    confirm/clear 정책을 보존한다.
     ``PLACEMENT_EVIDENCE``는 pipeline이 규칙 평가에 실제 사용한
     geometry·assignment·BAD_PARKING/OUT_OF_ZONE 근거를 재계산 없이 보존한다.
     """
@@ -328,6 +338,38 @@ def diagnostic_rows(
                         else progress.confirmed_at.isoformat()
                     ),
                     "notPresentConfirmed": physical_vehicle_id in confirmed_ids,
+                }
+            )
+
+        for diagnostic in (
+            frame.result.parking_result.incident_signal_diagnostics
+        ):
+            signal = diagnostic.signal
+            timing = diagnostic.timing
+            rows.append(
+                {
+                    **common,
+                    "rowType": "INCIDENT_SIGNAL",
+                    "vehicleAlias": aliases.get(
+                        diagnostic.physical_vehicle_id,
+                        str(diagnostic.physical_vehicle_id)[:8],
+                    ),
+                    "physicalVehicleId": str(
+                        diagnostic.physical_vehicle_id
+                    ),
+                    "trackSegmentId": int(diagnostic.track_segment_id),
+                    "incidentScopeType": signal.key.scope_type.value,
+                    "incidentScopeId": str(signal.key.scope_id),
+                    "incidentRuleCode": signal.key.rule_code,
+                    "incidentSignalValue": signal.value.value,
+                    "incidentSignalConfirmable": signal.confirmable,
+                    "incidentSignalEvidenceJson": _canonical_json(
+                        signal.evidence
+                    ),
+                    "incidentConfirmSeconds": (
+                        timing.confirm_duration_seconds
+                    ),
+                    "incidentClearSeconds": timing.clear_duration_seconds,
                 }
             )
 

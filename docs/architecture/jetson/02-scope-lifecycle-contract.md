@@ -117,6 +117,8 @@ Observation reason이나 지속 시간 자체는 termination reason이 아니다
 ParkingAssignment는 ParkingEpisode 안의 값이다. `PlacementEvidence`는
 AssignmentResolver가 현재 footprint와 ZoneDefinition snapshot으로 만드는
 immutable ephemeral value이며 domain scope, lifecycle, timer가 아니다.
+`EgressBlockingEvidence`도 subject footprint와 EgressAisleDefinition snapshot으로
+만드는 immutable ephemeral value이며 새 scope나 상태축이 아니다.
 EvidenceArtifact와 outbox는 domain scope가 아니라 저장·전달 workflow이며
 `04`에서 정의한다.
 
@@ -355,7 +357,11 @@ CANDIDATE → BLOCKING → CLEAR_PENDING → RESOLVED
      └→ CANCELED          ↘ BLOCKING
 ```
 
-identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim PhysicalVehicle과 `egressZoneId`를 포함한다. ParkingEpisode ID는 생성 근거로 보존할 수 있지만 수명을 소유하지 않는다. `egressZoneId`는 ZoneDefinition의 parking zone이 참조한 AISLE zone 중 하나다.
+identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim
+PhysicalVehicle과 `egressZoneId`를 포함한다. ParkingEpisode ID는 생성 근거로
+보존할 수 있지만 수명을 소유하지 않는다. `egressZoneId`는 별도
+EgressAisleDefinition snapshot이 부여한 식별자이며, 호환 필드명만
+유지하고 ZoneDefinition의 `zoneId` namespace에는 속하지 않는다.
 
 - Candidate에서 정상 geometry가 비성립하면 CANCELED
 - 정상 geometry에서 차단 조건이 confirm되면 BLOCKING
@@ -367,7 +373,13 @@ identity는 `blockingRelationId`로 고정하며 subject PhysicalVehicle, victim
 
 관련 차량의 실제 physical exit가 먼저 확인되면 CANDIDATE는 `CANCELED / PHYSICAL_EXIT`, BLOCKING과 CLEAR_PENDING은 `RESOLVED / PHYSICAL_EXIT`가 된다.
 
-후보 계산은 PARKED 차량과 설정된 egress 영역으로 제한한다. 최대 차량·relation 수와 평가 주기는 성능 실측으로 정한다.
+후보는 PARKED victim의 안정된 `ASSIGNED` 주차면에 매핑된 egress
+영역과 다른 active subject 차량의 현재 footprint으로만 생성한다.
+정상 관측에서 `subjectOverlap >= θsubject OR egressCoverage >= θegress`를
+차단 geometry 성립으로 본다. 둘 다 미만이어야 비성립이며, 필수
+관측이 불신뢰면 `UNKNOWN`이다. 이 비율과 임계값은 Assignment·
+BAD_PARKING의 PlacementEvidence와 별도다. 최대 차량·relation 수와
+평가 주기는 성능 실측으로 정한다.
 
 `(subjectPhysicalVehicleId, victimPhysicalVehicleId, egressZoneId)`당 non-terminal BlockingRelation은 하나만 허용한다.
 
@@ -445,6 +457,29 @@ parking rule에서 ParkingEpisode의 MOVEMENT_CONFIRMED 종료는 직접 종료 
 
 Incident는 CANDIDATE부터 같은 `incidentId`를 유지한다. publication revision은 OPEN부터 단조 증가한다. RESOLVED 뒤 신뢰 가능한 clear 구간을 거쳐 같은 규칙이 재성립하면 새 Incident를 만든다.
 
+### 12.4 규칙별 confirm/clear 정책
+
+`IncidentReducer`는 새 CANDIDATE를 만들 때 `ruleCode`로 timing 정책을 한 번
+선택하고 `confirmDurationSeconds`와 `clearDurationSeconds`를 Incident에
+snapshot한다. 진행 중 Incident와 restart로 복원한 Incident는 이후 runtime
+정책이 바뀌어도 저장된 scalar를 계속 사용한다. 명시되지 않은 future rule만
+전역 compatibility fallback을 사용하며, 같은 ruleCode의 override를 둘 이상
+등록하는 구성은 시작 시 거부한다.
+
+RuleEvaluator는 이 정책을 읽거나 timer를 누적하지 않는다. Viewer 진단은
+reducer가 선택한 값을 조회해 실제 `IncidentSignal`과 함께 내보낼 수 있지만,
+판정값을 다시 계산하지 않는다.
+
+| 규칙 그룹 | confirm의 의미 | clear의 의미 |
+|---|---|---|
+| 전용구역 무자격·EV 초과 | 이미 확인된 ZoneVisit과 authoritative context에서 위반 술어가 연속으로 신뢰됨 | 같은 visit이 유지되는 동안 자격·초과 술어가 연속으로 false임 |
+| BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK | PARKED 의존성과 유효한 placement 입력을 만족한 위반 술어가 연속으로 신뢰됨 | 유효한 재평가 sample에서 위반 술어가 연속으로 false임 |
+| DOUBLE_PARKING | BlockingRelation owner가 confirm한 관계 신호가 연속으로 신뢰됨 | 관계가 nonterminal인 동안 해소 신호가 연속으로 신뢰됨 |
+
+ZoneVisit ENDED, BlockingRelation RESOLVED, `PHYSICAL_VEHICLE_LEFT`처럼 상위
+owner가 이미 확정한 직접 종료 입력은 rule의 clear debounce를 다시 적용하지
+않는다. 이는 관측 기반 `NOT_MATCHED`와 scope 종료 사실을 구분하기 위함이다.
+
 ## 13. MoveVerificationAttempt
 
 ```text
@@ -498,11 +533,38 @@ UNKNOWN
 | `badParkingMinPrimaryOverlap` | `[제안값] TBD` | OUT_OF_ZONE이 아닌 sample에서 단일 주차면이 확보해야 할 최소 overlap |
 | `badParkingMinSecondaryOverlap` | `[제안값] TBD` | 두 번째 주차면 침범으로 BAD_PARKING을 시작하는 overlap |
 | `outOfZoneMinSpotOverlap` | `[제안값] TBD` | 전체 주차면 합집합 안에 있음을 인정할 최소 overlap |
-| incident confirm/clear duration | `[제안값] rule별 TBD` | Incident OPEN·RESOLVE debounce |
+| rule별 incident confirm/clear duration | `[제안값] 아래 표` | 새 Incident에 snapshot하는 OPEN·RESOLVE debounce; 직접 종료 입력에는 미적용 |
 | entry match deadline | `[후속 계약] TBD` | 입차 문맥과 차량 매칭 제한 시간 |
 | EV allowed duration·clock | `[후속 계약] 법령 근거 필요` | EV_OVERSTAY 값과 UNKNOWN 중 wall-clock 처리 |
 
-설정값을 profile 객체로 감싸지 않는다. 해당 값이 진행 중 판단에 영향을 주면 scope 생성 시 실제 scalar 값을 snapshot한다.
+### 실영상 replay 기반 Incident timing 제안
+
+아래 값은 2026-08-05 Pipeline Viewer replay 세 건에서 얻은 provisional
+권장값이다. YOLO confidence `0.25`, parking confirm `5.0s`, movement confirm
+`0.5s`, zone entry/exit `1.0s/5.0s`, BlockingRelation confirm/clear
+`1.0s/1.0s` 조건에 종속된다. Viewer의 compatibility 기본값을 변경하는 결정은
+아니며, 추가 영상과 Jetson target 성능 측정 뒤 다시 조정한다.
+
+| 규칙 | confirm | clear | 근거 |
+|---|---:|---:|---|
+| `DISABLED_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | ZoneVisit owner가 entry `1.0s`, exit `5.0s`를 이미 확인하고 terminal visit은 직접 종료한다. |
+| `EV_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | 제한구역 점유는 확인된 ZoneVisit을 소비하므로 Incident에서 같은 debounce를 반복하지 않는다. |
+| `EV_OVERSTAY` | `0.0s` | `0.0s` | allowed-duration 임계 통과 자체가 누적 사실이고 ZoneVisit 종료가 직접 전파된다. |
+| `BAD_PARKING` | `0.5s` | `0.5s` | PARKED `5.0s` 뒤의 placement 신호를 한 번 더 짧게 안정화하되 실제 위반 신호 `4.833s/5.533s`는 보존한다. |
+| `OUT_OF_ZONE` | `0.5s` | `0.5s` | 복도 주차의 최초 confirmable 신호가 `10.501s` 유지되어 `0.5s` debounce로 실제 사건을 보존한다. |
+| `AISLE_BLOCK` | `0.5s` | `0.5s` | OUT_OF_ZONE과 같은 PARKED/placement 경계를 사용하고 단일 frame geometry 전이를 걸러낸다. |
+| `DOUBLE_PARKING` | `0.0s` | `0.0s` | BlockingRelation owner의 `1.0s/1.0s`를 소비하므로 Incident에서 이중 지연하지 않는다. |
+
+placement 규칙을 실제 `IncidentReducer`에 재적용했을 때 `0.5s/0.5s`는 두
+BAD_PARKING OPEN을 각각 약 `0.533s` 지연했고 RESOLVE를 약 `0.533s`,
+`0.967s` 지연하면서 전이를 모두 보존했다. clear `1.0s`는 두 번째 RESOLVE를
+약 `2.767s` 지연했으므로 이 표본에서는 채택하지 않는다. `UNKNOWN` 구간은
+trusted time을 늘리거나 clear로 승격하지 않는다.
+
+설정값을 profile 상태로 감싸지 않는다. 해당 값이 진행 중 판단에 영향을 주면
+scope 생성 시 실제 scalar 값을 snapshot한다. Incident rule timing 묶음은
+composition 입력일 뿐 durable profile identity가 아니며, 각 Incident에는 선택된
+두 scalar만 저장한다.
 
 현재 reference implementation의 assignment·placement 다섯 threshold
 (`assignmentMinOverlap`, `assignmentAmbiguityMargin`,

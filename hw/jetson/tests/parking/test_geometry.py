@@ -205,4 +205,3 @@ def test_polygon_centroid_rejects_sliver_polygon_within_epsilon() -> None:
     sliver = ((0.0, 0.0), (1.0, 0.0), (1.0, 1e-13), (0.0, 1e-13))
     with pytest.raises(ValueError, match="area"):
         polygon_centroid(sliver)
-

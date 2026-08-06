@@ -12,6 +12,8 @@ def test_build_policy_populates_identity_motion_and_placement_fields() -> None:
             "pilot.mp4",
             "--zones-file",
             "zones.json",
+            "--egress-aisles-file",
+            "egress.json",
             "--calibration",
             "calibration.json",
             "--model-path",
@@ -28,6 +30,8 @@ def test_build_policy_populates_identity_motion_and_placement_fields() -> None:
     assert policy.bad_parking_min_primary_overlap_ratio == 0.75
     assert policy.bad_parking_min_secondary_overlap_ratio == 0.25
     assert policy.out_of_zone_min_spot_overlap_ratio == 0.50
+    assert policy.blocking_min_subject_overlap_ratio == 0.40
+    assert policy.blocking_min_egress_coverage_ratio == 0.40
     assert policy.parking_confirm_seconds == 5.0
     assert policy.parking_move_confirm_seconds == 0.5
     assert policy.motion_window_seconds == 0.75

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path
 
+    # ZoneVisit·Assignment에 속하지 않는 이중주차 판정용
+    # egress aisle snapshot. ZoneDefinition과 version·calibration을 기동 시 대조한다.
+    egress_aisle_path: Path
+
     # USB camera 장치와 요청 해상도. width/height의 0은 장치 기본 해상도를
     # 사용한다는 OpenCvWebcamFrameSource 계약이다.
     camera_id: str
@@ -120,6 +124,11 @@ class Settings(BaseSettings):
     # 있으므로 배포가 명시한다.
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
+
+    # 별도 EgressAisle snapshot과 subject footprint 사이의 이중주차 geometry
+    # 기준. viewer/replay의 provisional 값을 배포가 명시한다.
+    blocking_min_subject_overlap_ratio: float
+    blocking_min_egress_coverage_ratio: float
 
     # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
     # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.

@@ -14,6 +14,7 @@ import pytest
 from src.application.monitoring_factory import MonitoringPolicy
 from src.camera.frame_source import calibration_fingerprint
 from src.config.settings import Settings
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.models import (
     ZoneDefinition,
     ZoneDefinitionVersion,
@@ -53,6 +54,7 @@ def _settings(
         evidence_spool_path=tmp_path / "evidence",
         evidence_spool_cap_bytes=8 * 1024 * 1024,
         zone_definition_path=tmp_path / "zones.json",
+        egress_aisle_path=tmp_path / "egress.json",
         camera_id="RUNTIME-CAMERA",
         camera_index=2,
         camera_width=1920,
@@ -79,6 +81,8 @@ def _settings(
         out_of_zone_min_spot_overlap_ratio=0.51,
         blocking_relation_confirm_seconds=1.5,
         blocking_relation_clear_seconds=1.6,
+        blocking_min_subject_overlap_ratio=0.43,
+        blocking_min_egress_coverage_ratio=0.44,
         absence_confirmation_seconds=10.0,
         trusted_sample_max_gap_seconds=1.4,
         motion_window_seconds=0.8,
@@ -133,9 +137,11 @@ def _context(
         )
 
     evidence_capture_coordinator = object()
+    egress_aisles = EgressAisleRegistry.empty(zones)
     context = main.RuntimeContext(
         settings=settings,
         zones=zones,
+        egress_aisles=egress_aisles,
         connection_factory=connection_factory,
         publication_preparer=publication_preparer,
         evidence_capture_coordinator=evidence_capture_coordinator,
@@ -284,10 +290,12 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
     passed = calls["build"]
     assert set(passed) == {
         "zones",
+        "egress_aisles",
         "policy",
         "dependencies",
     }
     assert passed["zones"] is zones
+    assert passed["egress_aisles"] is context.egress_aisles
     assert passed["policy"] == main._build_monitoring_policy(settings)
     assert passed["dependencies"].frame_source is remap
     assert passed["dependencies"].detector is masking
@@ -338,6 +346,8 @@ def test_monitoring_policy_maps_all_settings_without_interpretation(
         out_of_zone_min_spot_overlap_ratio=0.51,
         blocking_relation_confirm_seconds=1.5,
         blocking_relation_clear_seconds=1.6,
+        blocking_min_subject_overlap_ratio=0.43,
+        blocking_min_egress_coverage_ratio=0.44,
         motion_window_seconds=0.8,
         motion_min_observation_span_seconds=0.21,
         motion_max_sample_gap_seconds=0.4,

@@ -132,6 +132,11 @@ def _settings(tmp_path: Path) -> Settings:
             / "config"
             / "zone_definition.json"
         ),
+        egress_aisle_path=(
+            Path(__file__).parents[1]
+            / "config"
+            / "egress_aisle.json"
+        ),
         zone_entry_confirm_seconds=3.0,
         zone_exit_confirm_seconds=3.0,
         absence_confirmation_seconds=5.0,
@@ -315,6 +320,10 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
         assert pipeline.entered_run.wait(timeout=1.0)
         assert client.get("/health").status_code == 200
         assert application.state.zone_registry.zone_definition_version == 1
+        assert (
+            application.state.egress_aisle_registry.zone_definition_version
+            == 1
+        )
         assert application.state.monitoring_worker.is_running is True
         assert application.state.move_verification_worker.is_running is True
         assert application.state.publication_preparer is (
@@ -332,6 +341,10 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
 
     assert len(received_contexts) == 1
     assert received_contexts[0].zones is application.state.zone_registry
+    assert (
+        received_contexts[0].egress_aisles
+        is application.state.egress_aisle_registry
+    )
     assert pipeline.opened is True
     assert pipeline.closed.is_set()
     assert application.state.monitoring_worker.is_running is False

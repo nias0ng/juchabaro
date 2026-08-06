@@ -17,6 +17,7 @@ REQUIRED_ENV = {
     "EVIDENCE_SPOOL_PATH": "data/test-evidence",
     "EVIDENCE_SPOOL_CAP_BYTES": str(8 * 1024 * 1024),
     "ZONE_DEFINITION_PATH": "config/zone_definition.json",
+    "EGRESS_AISLE_PATH": "config/egress_aisle.json",
     # 아래 monitoring 값은 Settings 파싱을 위한 테스트 전용 값이다.
     # 운영 임계값을 나타내지 않는다.
     "CAMERA_ID": "TEST-CAMERA",
@@ -37,6 +38,8 @@ REQUIRED_ENV = {
     "OUT_OF_ZONE_MIN_SPOT_OVERLAP_RATIO": "0.50",
     "BLOCKING_RELATION_CONFIRM_SECONDS": "1.0",
     "BLOCKING_RELATION_CLEAR_SECONDS": "1.0",
+    "BLOCKING_MIN_SUBJECT_OVERLAP_RATIO": "0.40",
+    "BLOCKING_MIN_EGRESS_COVERAGE_RATIO": "0.40",
     "ABSENCE_CONFIRMATION_SECONDS": "5.0",
     "TRUSTED_SAMPLE_MAX_GAP_SECONDS": "1.0",
     "MOTION_WINDOW_SECONDS": "0.75",

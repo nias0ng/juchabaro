@@ -9,12 +9,17 @@ import pytest
 
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     AssignmentState,
     BlockingRelationState,
+    EgressAisleDefinition,
+    EgressAisleDefinitionVersion,
+    EgressAisleId,
     EntryExitRole,
     IncidentSignalValue,
+    IncidentRuleTiming,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
@@ -111,6 +116,21 @@ def zone(
         allowed_duration_seconds=allowed_duration_seconds,
         charger_class="FAST" if zone_type is ZoneType.EV_CHARGING else None,
         egress_zone_ids=egress_zone_ids,
+    )
+
+
+def egress(
+    egress_zone_id: int,
+    parking_zone_id: int,
+    polygon,
+) -> EgressAisleDefinition:
+    return EgressAisleDefinition(
+        egress_zone_id=EgressAisleId(egress_zone_id),
+        parking_zone_id=ZoneId(parking_zone_id),
+        polygon=polygon,
+        egress_aisle_definition_version=EgressAisleDefinitionVersion(1),
+        zone_definition_version=VERSION,
+        calibration_reference=CALIBRATION,
     )
 
 
@@ -227,6 +247,7 @@ def batch(
 def make_pipeline(
     zones: tuple[ZoneDefinition, ...],
     *,
+    egress_areas: tuple[EgressAisleDefinition, ...] = (),
     entry_seconds: float = 1.0,
     exit_seconds: float = 1.0,
     parking_seconds: float = 600.0,
@@ -242,8 +263,18 @@ def make_pipeline(
     out_of_zone_overlap_ratio: float = 0.50,
     blocking_confirm_seconds: float = 0.0,
     blocking_clear_seconds: float = 0.0,
+    blocking_subject_overlap_ratio: float = 0.5,
+    blocking_egress_coverage_ratio: float = 0.5,
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = (),
 ):
     registry = ZoneRegistry(zones)
+    egress_registry = EgressAisleRegistry(
+        egress_areas,
+        egress_aisle_definition_version=EgressAisleDefinitionVersion(1),
+        zone_definition_version=registry.zone_definition_version,
+        calibration_reference=registry.calibration_reference,
+        zones=registry,
+    )
     visit_tracker = InMemoryZoneVisitTracker(
         zone_definition_version=registry.zone_definition_version,
         entry_confirm_seconds=entry_seconds,
@@ -259,6 +290,7 @@ def make_pipeline(
         trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
         confirm_duration_seconds=incident_confirm_seconds,
         clear_duration_seconds=incident_clear_seconds,
+        rule_timings=incident_rule_timings,
     )
     relation_tracker = InMemoryBlockingRelationTracker(
         confirm_duration_seconds=blocking_confirm_seconds,
@@ -267,6 +299,7 @@ def make_pipeline(
     )
     pipeline = ParkingPipeline(
         zones=registry,
+        egress_aisles=egress_registry,
         zone_visit_tracker=visit_tracker,
         parking_episode_tracker=episode_tracker,
         incident_reducer=reducer,
@@ -279,8 +312,44 @@ def make_pipeline(
             bad_parking_secondary_overlap_ratio
         ),
         out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap_ratio,
+        blocking_min_subject_overlap_ratio=blocking_subject_overlap_ratio,
+        blocking_min_egress_coverage_ratio=blocking_egress_coverage_ratio,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
+
+
+def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None:
+    bad_timing = IncidentRuleTiming(
+        rule_code=BAD_PARKING,
+        confirm_duration_seconds=2.0,
+        clear_duration_seconds=3.0,
+    )
+    out_timing = IncidentRuleTiming(
+        rule_code=OUT_OF_ZONE,
+        confirm_duration_seconds=4.0,
+        clear_duration_seconds=5.0,
+    )
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, GENERAL_B),
+        parking_seconds=1.0,
+        incident_rule_timings=(bad_timing, out_timing),
+    )
+
+    result = pipeline.process(batch(0, snapshot(0, bbox=AMBIGUOUS)))
+    diagnostics = {
+        item.signal.key.rule_code: item
+        for item in result.incident_signal_diagnostics
+    }
+
+    assert diagnostics[BAD_PARKING].signal.value is IncidentSignalValue.MATCHED
+    assert diagnostics[BAD_PARKING].timing == bad_timing
+    assert diagnostics[OUT_OF_ZONE].signal.value is (
+        IncidentSignalValue.NOT_MATCHED
+    )
+    assert diagnostics[OUT_OF_ZONE].timing == out_timing
+    candidate = updates_for(result, BAD_PARKING)[-1]
+    assert candidate.confirm_duration_seconds == 2.0
+    assert candidate.clear_duration_seconds == 3.0
 
 
 def transitions_for(result, rule_code: str):
@@ -1046,16 +1115,53 @@ AISLE_POLYGON = ((0.30, 0.0), (0.70, 0.0), (0.70, 1.0), (0.30, 1.0))
 AISLE_BLOCKING_BBOX = BoundingBox(0.35, 0.40, 0.55, 0.60)
 
 
+def test_small_egress_uses_coverage_ratio_for_blocking() -> None:
+    """egress가 작아 차량 대비 overlap이 낮아도 완전 점유는 차단이다."""
+
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    small_egress = egress(
+        9,
+        5,
+        ((0.40, 0.45), (0.45, 0.45), (0.45, 0.50), (0.40, 0.50)),
+    )
+    pipeline, _, _, _, _ = make_pipeline(
+        (spot_with_egress,),
+        egress_areas=(small_egress,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+        blocking_subject_overlap_ratio=0.5,
+        blocking_egress_coverage_ratio=0.8,
+    )
+
+    def two_car_batch(seconds: float) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(seconds, vehicle=CAR, bbox=ASSIGNED_FIRST),
+            snapshot(
+                seconds,
+                vehicle=OTHER_CAR,
+                bbox=AISLE_BLOCKING_BBOX,
+            ),
+        )
+
+    pipeline.process(two_car_batch(0))
+    parked = pipeline.process(two_car_batch(1))
+
+    assert [
+        relation.state for relation in parked.blocking_relation_updates
+    ] == [BlockingRelationState.BLOCKING]
+
+
 def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
-    """victim이 PARKED되고 subject가 egress AISLE을 막으면 BlockingRelation이
+    """victim이 PARKED되고 subject가 egress aisle을 막으면 BlockingRelation이
     실제로 만들어지고, double_parking 규칙이 그 신호로 Incident를 열고 닫는다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    egress_area = egress(9, 5, AISLE_POLYGON)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress_area,),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
@@ -1089,7 +1195,8 @@ def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
     relation = parked.blocking_relation_updates[0]
     assert relation.subject_physical_vehicle_id == OTHER_CAR
     assert relation.victim_physical_vehicle_id == CAR
-    assert relation.egress_zone_id == aisle.zone_id
+    assert relation.egress_zone_id == egress_area.egress_zone_id
+    assert relation.source_parking_episode_id == parked.parking_episode_updates[0].episode_id
     assert relation_tracker.active_relations(OTHER_CAR) == (relation,)
 
     opened = transitions_for(parked, DOUBLE_PARKING)
@@ -1120,12 +1227,10 @@ def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
 def test_blocking_relation_ends_when_victim_physically_exits() -> None:
     """victim의 확정 출차는 관계와 double_parking Incident를 함께 끝낸다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
@@ -1166,12 +1271,10 @@ def test_blocking_relation_holds_when_victim_observation_is_unreliable() -> None
     계속 aisle에 있어도 victim 관측이 흔들리면 관계는 clear로 넘어가지
     않고 BLOCKING을 유지한다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
