@@ -120,6 +120,30 @@ def signed_polygon_area(points: Sequence[tuple[float, float]]) -> float:
     return total / 2.0
 
 
+def polygon_centroid(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
+    """shoelace 가중 중심을 반환한다.
+
+    꼭짓점 순서(시계/반시계)와 시작 꼭짓점에 무관하다. 면적이 0인
+    degenerate polygon은 중심이 정의되지 않으므로 거부한다. 모듈의 다른
+    함수와 같은 epsilon 관례를 따라, 절대값이 ``_GEOMETRY_EPSILON``
+    이하인 면적도 degenerate로 본다 — sliver polygon의 불안정한 중심을
+    막는다.
+    """
+
+    area = signed_polygon_area(points)
+    if abs(area) <= _GEOMETRY_EPSILON:
+        raise ValueError("polygon centroid requires a non-zero area")
+
+    weighted_x = 0.0
+    weighted_y = 0.0
+    for index, (x1, y1) in enumerate(points):
+        x2, y2 = points[(index + 1) % len(points)]
+        cross = x1 * y2 - x2 * y1
+        weighted_x += (x1 + x2) * cross
+        weighted_y += (y1 + y2) * cross
+    return (weighted_x / (6.0 * area), weighted_y / (6.0 * area))
+
+
 def is_convex_polygon(points: Sequence[tuple[float, float]]) -> bool:
     """넓이가 양수인 simple polygon이 convex인지 반환한다."""
 

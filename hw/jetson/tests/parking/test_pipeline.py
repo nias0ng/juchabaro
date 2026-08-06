@@ -75,7 +75,17 @@ SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
 SECOND_SPOT = ((0.30, 0.10), (0.50, 0.10), (0.50, 0.30), (0.30, 0.30))
 EXIT_SPOT = ((0.60, 0.10), (0.80, 0.10), (0.80, 0.30), (0.60, 0.30))
-IN_EXIT = BoundingBox(0.62, 0.12, 0.78, 0.28)
+AISLE_STRIP = ((0.10, 0.50), (0.90, 0.50), (0.90, 0.95), (0.10, 0.95))
+# 판정은 bbox 폴리곤 겹침이 아니라 bbox 중심의 기준선 기준 부호로 한다
+# (571 finding 1). 기준선은 AISLE_STRIP 중심(0.5, 0.725)에서
+# EXIT_SPOT 중심(0.7, 0.2)으로 향하는 단위벡터 (0.356, -0.934)가 정의한다.
+# IN_EXIT_OUTWARD의 중심 (0.76, 0.13)은 이 축에 투영하면 EXIT_SPOT
+# 중심보다 +0.0868만큼 외부 방향이고, IN_EXIT_INWARD의 중심 (0.64, 0.27)은
+# -0.0868만큼 내부 방향이다 — 부호가 반대이므로 두 이름이 실제로 가리키는
+# 쪽을 가른다. 두 bbox 모두 EXIT_SPOT 안에 완전히 포함되어 있어
+# 존재 판정(overlap_ratio)에는 영향이 없다.
+IN_EXIT_OUTWARD = BoundingBox(0.72, 0.10, 0.80, 0.16)
+IN_EXIT_INWARD = BoundingBox(0.60, 0.24, 0.68, 0.30)
 
 
 def at(seconds: float) -> datetime:
@@ -118,6 +128,7 @@ EXIT_ZONE = zone(
     EXIT_SPOT,
     entry_exit_role=EntryExitRole.EXIT,
 )
+AISLE_ZONE = zone(7, ZoneType.AISLE, AISLE_STRIP)
 ENTRY_ZONE = zone(
     8,
     ZoneType.ENTRY_EXIT,
@@ -1218,9 +1229,11 @@ def test_zone_presence_and_assignment_thresholds_are_independent() -> None:
 def test_open_exit_zone_visit_counts_as_traversal() -> None:
     """마지막으로 관측된 위치가 출차 구역이면 통과로 인정한다(565)."""
 
-    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
-    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
-    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT)))
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_OUTWARD)))
     pipeline.process(batch(2, unobserved=(CAR,)))
 
     assert pipeline.exit_zone_traversal_observed(CAR) is True
@@ -1233,8 +1246,10 @@ def test_entering_visit_below_confirmation_still_counts_as_traversal() -> None:
     미탐되고, 그 세션은 영구히 닫히지 않는다.
     """
 
-    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=10.0)
-    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=10.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
     pipeline.process(batch(1, unobserved=(CAR,)))
 
     assert pipeline.exit_zone_traversal_observed(CAR) is True
@@ -1252,8 +1267,10 @@ def test_parking_zone_visit_alone_is_not_traversal() -> None:
 def test_entry_role_zone_visit_is_not_traversal() -> None:
     """같은 ENTRY_EXIT 구역이라도 role이 ENTRY면 출차 근거가 아니다(565)."""
 
-    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, ENTRY_ZONE), entry_seconds=1.0)
-    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, ENTRY_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
     pipeline.process(batch(1, unobserved=(CAR,)))
 
     assert pipeline.exit_zone_traversal_observed(CAR) is False
@@ -1262,8 +1279,10 @@ def test_entry_role_zone_visit_is_not_traversal() -> None:
 def test_traversal_is_no_longer_observed_after_physical_exit() -> None:
     """읽기 순서 회귀: physical_exit()이 방문을 종료시키면 근거가 사라진다(565)."""
 
-    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
-    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
     pipeline.process(batch(1, unobserved=(CAR,)))
     assert pipeline.exit_zone_traversal_observed(CAR) is True
 
@@ -1276,10 +1295,17 @@ def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
     """설정 교체로 사라진 zone의 방문은 예외 없이 통과 미인정으로 처리한다(565).
 
     이 경로는 departure commit 중에 실행되므로 예외를 던지면 차량 종료
-    자체가 실패한다.
+    자체가 실패한다. registry에 실제 EXIT 구역을 두어(571), 차량이 이미
+    outward 접촉을 만든 상태에서 알 수 없는 zoneId의 방문이 섞여도 결과가
+    그대로 유지되고 예외도 나지 않는지를 확인한다 — EXIT 구역이 없어
+    접촉 집합이 항상 비어 있던 이전 registry로는 이 방문이 아무것도
+    가르지 못했다.
     """
 
-    pipeline, visit_tracker, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=1.0)
+    pipeline, visit_tracker, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
     visit_tracker.update(
         physical_vehicle_id=CAR,
         zone_id=ZoneId(999),
@@ -1288,4 +1314,120 @@ def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
         observed_at=at(0),
     )
 
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_inward_side_contact_alone_is_not_traversal() -> None:
+    """출차 통로 안쪽에만 있던 차량은 통과로 인정하지 않는다(571).
+
+    565에서는 이 경우도 통과였다 — 이 태스크가 좁히는 지점이다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
     assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_outward_side_contact_while_stationary_is_traversal() -> None:
+    """외부측에 정지해 있어도 통과로 인정한다(571).
+
+    방향 조건을 쓰지 않는다는 결정을 고정한다 — 차단기 앞 정지 중
+    추적이 끊겨도 세션이 미결되지 않아야 한다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(
+        batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD, motion=MotionSignal.STATIONARY))
+    )
+    pipeline.process(
+        batch(1, snapshot(1, bbox=IN_EXIT_OUTWARD, motion=MotionSignal.STATIONARY))
+    )
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_returning_to_inward_side_overwrites_outward_contact() -> None:
+    """매 프레임 덮어쓰기 검증(571) — 외부측 접촉이 오래 남지 않는다."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_unobserved_frames_preserve_the_last_outward_contact() -> None:
+    """미관측 프레임은 접촉 상태를 지우지 않는다(571).
+
+    부재 확정까지 5초가 걸리므로, 그동안 값이 유지돼야 판정이 성립한다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    for seconds in (1, 2, 3, 4, 5):
+        pipeline.process(batch(seconds, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_degraded_frame_does_not_overwrite_outward_contact() -> None:
+    """신뢰할 수 없는 관측은 접촉 상태를 갱신하지 않는다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(
+        batch(
+            1,
+            snapshot(
+                1,
+                bbox=IN_EXIT_INWARD,
+                observation=degraded(last_reliable=0),
+            ),
+            batch_observation=degraded(last_reliable=0),
+        )
+    )
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_registry_without_aisle_never_confirms_traversal() -> None:
+    """외부 방향을 유도할 수 없으면 통과를 확정하지 않는다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_checkpoint_round_trip_preserves_outward_contact() -> None:
+    """frame UnitOfWork 롤백이 접촉 상태도 함께 되돌린다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    checkpoint = pipeline.checkpoint_state()
+
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+    pipeline.restore_state(checkpoint)
+    assert pipeline.exit_zone_traversal_observed(CAR) is True

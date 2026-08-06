@@ -10,9 +10,12 @@ session correlation을 고정하고 child scope를 종료한다. 모든 변경�
 카메라 화각이므로, 주차장 안에 있으면서 화각만 벗어난 차량과 실제로 나간
 차량을 부재만으로 구분할 수 없다. 그래서 출차 구역(``ENTRY_EXIT`` /
 ``EXIT``) 통과가 관측된 부재만 SessionExit으로 발행하고, 통과가 관측되지
-않은 부재는 로컬 수명주기만 닫는다. 후자의 session은 Jetson이 닫지 않으므로
-행정 종료가 필요하며, 진단을 위해 PhysicalVehicle의 termination_reason에
-``ABSENCE_WITHOUT_EXIT_EVIDENCE``를 남긴다.
+않은 부재는 로컬 수명주기만 닫는다. 통과 판정은 마지막 관측 위치가 출차
+구역 안이라는 것만으로는 부족하고, 그 구역의 **외부측**(가장 가까운
+``AISLE`` 중심에서 먼 쪽)에 도달했어야 한다(571) — 출차 통로 안쪽에 정지한
+채 가려진 차량을 출차로 오인하지 않기 위해서다. 후자의 session은 Jetson이
+닫지 않으므로 행정 종료가 필요하며, 진단을 위해 PhysicalVehicle의
+termination_reason에 ``ABSENCE_WITHOUT_EXIT_EVIDENCE``를 남긴다.
 """
 
 from __future__ import annotations
