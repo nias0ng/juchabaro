@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue';
 import { useAutoRefresh } from '@/composables/use-auto-refresh';
 import { useClientPagination } from '@/composables/use-client-pagination';
 import { downloadCsv } from '@/composables/use-csv-export';
-import type { AdminEventSummary, EventStatus, EventType } from '@/features/parking-events/api/types';
-import { eventStatusLabel, eventTypeLabel, formatTime, localDateString, todayDateString } from '@/features/parking-events/data';
+import type { AdminEventSummary, EventType, RequestType } from '@/features/parking-events/api/types';
+import { eventStatusLabel, eventTypeLabel, formatTime, localDateString, requestTypeLabel, todayDateString } from '@/features/parking-events/data';
 import { useParkingEventStore } from '@/features/parking-events/store';
 
 const PAGE_SIZE = 10;
@@ -12,10 +12,23 @@ const PAGE_SIZE = 10;
 // 조건에 맞는 사건을 넉넉히 받아온 뒤 차량 번호 검색과 페이지네이션은 화면에서 처리한다.
 const FETCH_SIZE = 200;
 
+// "전체 상태" 필터는 EventStatus 5개(감지됨/이동요청됨/관리자 확인 필요/완료/오탐 종결)를
+// 그대로 다 보여주지 않는다 — 관리자가 실제로 구분해서 봐야 하는 건 이동요청이 자동/수동으로
+// 걸렸는지, 그리고 완료됐는지 3가지뿐이다. 감지됨·관리자 확인 필요·오탐 종결 사건은 "전체"를
+// 고르면 그대로 목록에 나오지만, 따로 골라보는 옵션은 없다. 백엔드 EventStatus 계약 자체는
+// 바꾸지 않고, 프런트엔드에서 보여주는 옵션과 필터링 방식만 이렇게 재구성한다.
+export type EventKindFilter = RequestType | 'RESOLVED';
+
+export const EVENT_KIND_OPTIONS: EventKindFilter[] = ['AUTO', 'MANUAL', 'RESOLVED'];
+
+export function eventKindLabel(kind: EventKindFilter): string {
+  return kind === 'RESOLVED' ? eventStatusLabel('RESOLVED') : requestTypeLabel(kind);
+}
+
 export function useEventListFilters() {
   const parkingEventStore = useParkingEventStore();
 
-  const statusFilter = ref<EventStatus | null>(null);
+  const statusFilter = ref<EventKindFilter | null>(null);
   const typeFilter = ref<EventType | null>(null);
   // 날짜를 고르지 않으면(null) 전체 날짜를 최근 발생 순으로 보여준다.
   const dateFilter = ref<string | null>(null);
@@ -30,9 +43,14 @@ export function useEventListFilters() {
   }
 
   function loadEvents(background = false) {
+    // statusFilter가 'RESOLVED'면 그 상태를 그대로 서버에 보내고, 'AUTO'/'MANUAL'이면
+    // 서버에는 'REQUESTED'로 요청한 뒤 아래 filteredRows에서 requestType으로 한 번 더
+    // 걸러낸다(자동/수동은 EventStatus가 아니라 이동요청의 requestType이라 서버 쿼리
+    // 파라미터로 직접 표현할 수 없다).
+    const eventStatus = statusFilter.value === 'RESOLVED' ? 'RESOLVED' : statusFilter.value ? 'REQUESTED' : undefined;
     return parkingEventStore.fetchEvents({
       date: dateFilter.value ?? undefined,
-      eventStatus: statusFilter.value ?? undefined,
+      eventStatus,
       eventType: typeFilter.value ?? undefined,
       size: FETCH_SIZE,
     }, { background });
@@ -41,6 +59,9 @@ export function useEventListFilters() {
   const filteredRows = computed(() => {
     const query = carQuery.value.trim().replaceAll(' ', '');
     let rows = parkingEventStore.events;
+    if (statusFilter.value === 'AUTO' || statusFilter.value === 'MANUAL') {
+      rows = rows.filter((r) => r.requestType === statusFilter.value);
+    }
     if (query) rows = rows.filter((r) => r.plateNumber.replaceAll(' ', '').includes(query));
     if (needAdminOnly.value) rows = rows.filter((r) => r.requestStatus === 'NEED_ADMIN');
     return rows;

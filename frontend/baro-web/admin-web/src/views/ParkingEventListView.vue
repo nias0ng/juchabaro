@@ -17,7 +17,6 @@ import TableFooter from '@/components/ui/TableFooter.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
 import {
-  EVENT_STATUS_OPTIONS,
   EVENT_TYPE_OPTIONS,
   eventStatusLabel,
   eventTypeLabel,
@@ -27,7 +26,7 @@ import {
   typeTone,
 } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-import { useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
+import { EVENT_KIND_OPTIONS, eventKindLabel, useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
 
 type DropdownName = 'status' | 'type' | 'date'
 
@@ -65,13 +64,13 @@ const selectedRow = computed(
         <div ref="filterBarRef" class="panel filter-bar">
           <div class="dropdown-wrap">
             <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
-              {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
+              {{ statusFilter ? eventKindLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
             </FilterChip>
             <FilterOptionList
               v-if="openDropdown === 'status'"
-              :options="EVENT_STATUS_OPTIONS"
+              :options="EVENT_KIND_OPTIONS"
               :selected="statusFilter"
-              :label-for="eventStatusLabel"
+              :label-for="eventKindLabel"
               width="144px"
               @select="statusFilter = $event; openDropdown = null"
             />
