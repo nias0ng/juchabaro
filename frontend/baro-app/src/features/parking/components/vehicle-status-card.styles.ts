@@ -29,9 +29,6 @@ export const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 3.5,
-    backgroundColor: Palette.gray400,
-  },
-  statusDotEv: {
     backgroundColor: Palette.blue500,
   },
   statusDotViolation: {
@@ -40,9 +37,6 @@ export const styles = StyleSheet.create({
   statusLabel: {
     fontSize: 12,
     fontWeight: FontWeight.bold,
-    color: Palette.gray600,
-  },
-  statusLabelEv: {
     color: Palette.blue500,
   },
   statusLabelViolation: {

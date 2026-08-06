@@ -57,20 +57,8 @@ export function VehicleStatusCard({
     <View style={styles.card}>
       <View style={styles.headerGroup}>
         <View style={styles.statusRow}>
-          <View
-            style={[
-              styles.statusDot,
-              !isViolation && session.isEvCharging && styles.statusDotEv,
-              isViolation && styles.statusDotViolation,
-            ]}
-          />
-          <Text
-            style={[
-              styles.statusLabel,
-              !isViolation && session.isEvCharging && styles.statusLabelEv,
-              isViolation && styles.statusLabelViolation,
-            ]}
-          >
+          <View style={[styles.statusDot, isViolation && styles.statusDotViolation]} />
+          <Text style={[styles.statusLabel, isViolation && styles.statusLabelViolation]}>
             {session.statusLabel}
           </Text>
           <Text style={styles.statusTime}>{session.statusTime}</Text>
