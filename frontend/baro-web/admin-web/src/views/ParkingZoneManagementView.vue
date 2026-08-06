@@ -7,6 +7,9 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import FilterOptionList from '@/components/ui/FilterOptionList.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import ParkingSpotMap from '@/features/parking-zones/components/ParkingSpotMap.vue'
 import {
@@ -84,92 +87,66 @@ const STATS = computed(() => [
         <h3>구역 목록</h3>
         <div ref="filterBarRef" class="filter-bar">
           <div class="dropdown-wrap">
-            <button type="button" class="chip" :class="{ active: !!typeFilter }" @click="toggleDropdown('type')">
+            <FilterChip :active="!!typeFilter" @click="toggleDropdown('type')">
               {{ typeFilter ? zoneTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'type'" class="dropdown-menu wide">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === null }"
-                @click="typeFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in ZONE_TYPE_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === opt }"
-                @click="typeFilter = opt; openDropdown = null"
-              >
-                {{ zoneTypeLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'type'"
+              :options="ZONE_TYPE_OPTIONS"
+              :selected="typeFilter"
+              :label-for="zoneTypeLabel"
+              width="160px"
+              @select="typeFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button type="button" class="chip" :class="{ active: !!statusFilter }" @click="toggleDropdown('status')">
+            <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
               {{ statusFilter ? occupancyLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'status'" class="dropdown-menu">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === null }"
-                @click="statusFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in OCCUPANCY_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === opt }"
-                @click="statusFilter = opt; openDropdown = null"
-              >
-                {{ occupancyLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'status'"
+              :options="OCCUPANCY_OPTIONS"
+              :selected="statusFilter"
+              :label-for="occupancyLabel"
+              width="128px"
+              @select="statusFilter = $event; openDropdown = null"
+            />
           </div>
 
           <SearchBox v-model="codeQuery" placeholder="구역 번호 검색" input-width="112px" />
         </div>
 
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th v-for="h in ['구역 번호', '층', '유형', '상태', '허용 시간']" :key="h">{{ h }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
-              <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
-              <tr
-                v-for="zone in filteredRows"
-                v-else
-                :key="zone.zoneId"
-                class="row"
-                :class="{ selected: selectedZone?.zoneId === zone.zoneId }"
-                @click="selectZoneId(zone.zoneId)"
-              >
-                <td class="strong" :class="{ 'text-primary': selectedZone?.zoneId === zone.zoneId }">{{ zone.zoneNumber }}</td>
-                <td class="muted">{{ zoneFloorOf(zone.zoneNumber) ?? '-' }}</td>
-                <td><StatusTag :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
-                <td>
-                  <StatusTag v-if="occupancyOf(zone.zoneId)" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
-                    {{ occupancyLabel(occupancyOf(zone.zoneId)!) }}
-                  </StatusTag>
-                  <span v-else class="muted">정보 없음</span>
-                </td>
-                <td class="muted nowrap">{{ allowedTimeLabel(zone.allowedMinutes) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <DataTable clickable-rows>
+          <thead>
+            <tr>
+              <th v-for="h in ['구역 번호', '층', '유형', '상태', '허용 시간']" :key="h">{{ h }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
+            <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
+            <tr
+              v-for="zone in filteredRows"
+              v-else
+              :key="zone.zoneId"
+              class="row"
+              :class="{ selected: selectedZone?.zoneId === zone.zoneId }"
+              @click="selectZoneId(zone.zoneId)"
+            >
+              <td class="strong" :class="{ 'text-primary': selectedZone?.zoneId === zone.zoneId }">{{ zone.zoneNumber }}</td>
+              <td class="muted">{{ zoneFloorOf(zone.zoneNumber) ?? '-' }}</td>
+              <td><StatusTag :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
+              <td>
+                <StatusTag v-if="occupancyOf(zone.zoneId)" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
+                  {{ occupancyLabel(occupancyOf(zone.zoneId)!) }}
+                </StatusTag>
+                <span v-else class="muted">정보 없음</span>
+              </td>
+              <td class="muted nowrap">{{ allowedTimeLabel(zone.allowedMinutes) }}</td>
+            </tr>
+          </tbody>
+        </DataTable>
       </section>
 
       <div class="side-col">
@@ -415,124 +392,8 @@ const STATS = computed(() => [
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  white-space: nowrap;
-  cursor: pointer;
-  color: inherit;
-}
-
-.chip.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 500;
-}
-
-.dropdown-menu {
-  position: absolute;
-  left: 0;
-  top: 100%;
-  z-index: 10;
-  margin-top: var(--spacing-sm);
-  width: 128px;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: var(--panel-card);
-  padding: 6px;
-  box-shadow: var(--panel-shadow-card);
-}
-
-.dropdown-menu.wide {
-  width: 160px;
-}
-
-.dropdown-item {
-  display: block;
-  width: 100%;
-  border: none;
-  background: none;
-  border-radius: 6px;
-  padding: 6px var(--spacing-base);
-  text-align: left;
-  cursor: pointer;
-  color: inherit;
-}
-
-.dropdown-item:hover {
-  background: var(--panel-muted);
-}
-
-.dropdown-item.selected {
-  color: var(--panel-primary);
-  font-weight: 600;
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.row:hover {
-  background: var(--panel-muted);
-}
-
-.row.selected {
-  background: var(--panel-primary-soft);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
 .strong.text-primary {
   color: var(--panel-primary);
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
-}
-
-.nowrap {
-  white-space: nowrap;
 }
 
 .map-header {

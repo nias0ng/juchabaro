@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown, Download } from '@lucide/vue'
+import { ChevronDown } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import FilterOptionList from '@/components/ui/FilterOptionList.vue'
+import ExportButton from '@/components/ui/ExportButton.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import TableFooter from '@/components/ui/TableFooter.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
 import {
-  EVENT_STATUS_OPTIONS,
   EVENT_TYPE_OPTIONS,
   eventStatusLabel,
   eventTypeLabel,
@@ -23,7 +26,7 @@ import {
   typeTone,
 } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-import { useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
+import { EVENT_KIND_OPTIONS, eventKindLabel, useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
 
 type DropdownName = 'status' | 'type' | 'date'
 
@@ -60,71 +63,37 @@ const selectedRow = computed(
       <div>
         <div ref="filterBarRef" class="panel filter-bar">
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!statusFilter }"
-              @click="toggleDropdown('status')"
-            >
-              {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'status'" class="dropdown-menu">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === null }"
-                @click="statusFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_STATUS_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === opt }"
-                @click="statusFilter = opt; openDropdown = null"
-              >
-                {{ eventStatusLabel(opt) }}
-              </button>
-            </div>
+            <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
+              {{ statusFilter ? eventKindLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'status'"
+              :options="EVENT_KIND_OPTIONS"
+              :selected="statusFilter"
+              :label-for="eventKindLabel"
+              width="144px"
+              @select="statusFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!typeFilter }"
-              @click="toggleDropdown('type')"
-            >
+            <FilterChip :active="!!typeFilter" @click="toggleDropdown('type')">
               {{ typeFilter ? eventTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'type'" class="dropdown-menu wide">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === null }"
-                @click="typeFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_TYPE_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === opt }"
-                @click="typeFilter = opt; openDropdown = null"
-              >
-                {{ eventTypeLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'type'"
+              :options="EVENT_TYPE_OPTIONS"
+              :selected="typeFilter"
+              :label-for="eventTypeLabel"
+              width="180px"
+              @select="typeFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button type="button" class="chip" :class="{ active: !!dateFilter }" @click="toggleDropdown('date')">
+            <FilterChip :active="!!dateFilter" @click="toggleDropdown('date')">
               {{ dateFilter ? formatDate(dateFilter) : '날짜' }} <ChevronDown :size="14" />
-            </button>
+            </FilterChip>
             <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
               <button
                 type="button"
@@ -142,81 +111,70 @@ const selectedRow = computed(
             </div>
           </div>
 
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: needAdminOnly }"
-            @click="toggleNeedAdminOnly"
-          >
-            관리자 확인
-          </button>
+          <FilterChip :active="needAdminOnly" @click="toggleNeedAdminOnly">관리자 확인</FilterChip>
 
           <SearchBox v-model="carQuery" placeholder="차량 번호 검색" input-width="128px" />
 
-          <button type="button" class="export-btn" @click="exportCsv">
-            <Download :size="16" /> 내보내기
-          </button>
+          <ExportButton @click="exportCsv" />
         </div>
 
         <div class="panel table-panel">
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
-                    {{ h }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <TableStateRow
-                  v-if="parkingEventStore.eventsLoading"
-                  :colspan="7"
-                  variant="loading"
-                  message="불러오는 중입니다…"
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <TableStateRow
-                  v-else-if="parkingEventStore.eventsError"
-                  :colspan="7"
-                  variant="error"
-                  :message="parkingEventStore.eventsError"
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <TableStateRow
-                  v-else-if="pagedRows.length === 0"
-                  :colspan="7"
-                  variant="empty"
-                  message="조건에 맞는 사건이 없습니다."
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <tr
-                  v-for="r in pagedRows"
-                  v-else
-                  :key="r.eventId"
-                  class="row"
-                  :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
-                  @click="parkingEventStore.setSelectedEventId(r.eventId)"
-                >
-                  <td class="strong">#{{ r.eventId }}</td>
-                  <td class="nowrap">{{ r.plateNumber }}</td>
-                  <td class="nowrap">
-                    <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
-                    <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
-                  </td>
-                  <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
-                  <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
-                  <td class="muted">{{ formatTime(r.detectedAt) }}</td>
-                  <td>
-                    <div class="row-actions">
-                      <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                      <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <DataTable clickable-rows>
+            <thead>
+              <tr>
+                <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
+                  {{ h }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <TableStateRow
+                v-if="parkingEventStore.eventsLoading"
+                :colspan="7"
+                variant="loading"
+                message="불러오는 중입니다…"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="parkingEventStore.eventsError"
+                :colspan="7"
+                variant="error"
+                :message="parkingEventStore.eventsError"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="pagedRows.length === 0"
+                :colspan="7"
+                variant="empty"
+                message="조건에 맞는 사건이 없습니다."
+                horizontal-padding="var(--spacing-base)"
+              />
+              <tr
+                v-for="r in pagedRows"
+                v-else
+                :key="r.eventId"
+                class="row"
+                :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
+                @click="parkingEventStore.setSelectedEventId(r.eventId)"
+              >
+                <td class="strong">#{{ r.eventId }}</td>
+                <td class="nowrap">{{ r.plateNumber }}</td>
+                <td class="nowrap">
+                  <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
+                  <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
+                </td>
+                <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
+                <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
+                <td class="muted">{{ formatTime(r.detectedAt) }}</td>
+                <td>
+                  <div class="row-actions">
+                    <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
+                    <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </DataTable>
           <TableFooter
             :total="filteredRows.length"
             :range-start="rangeStart"
@@ -271,28 +229,6 @@ const selectedRow = computed(
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.chip.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 500;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -305,10 +241,6 @@ const selectedRow = computed(
   background: var(--panel-card);
   padding: 6px;
   box-shadow: var(--panel-shadow-card);
-}
-
-.dropdown-menu.wide {
-  width: 180px;
 }
 
 .dropdown-menu.date-menu {
@@ -340,82 +272,8 @@ const selectedRow = computed(
   font-weight: 600;
 }
 
-.export-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--panel-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--panel-on-primary);
-  white-space: nowrap;
-  box-shadow: var(--panel-shadow-pop);
-  cursor: pointer;
-}
-
 .table-panel {
   padding: var(--spacing-md);
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.row:hover {
-  background: var(--panel-muted);
-}
-
-.row.selected {
-  background: var(--panel-primary-soft);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
 }
 
 .row-actions {
