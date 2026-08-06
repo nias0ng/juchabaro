@@ -65,8 +65,20 @@ from src.communication.backend_publication_preparer import (
 )
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
-from src.parking.zone_registry import ZoneRegistry
 from src.parking.egress_aisle_registry import EgressAisleRegistry
+from src.parking.models import IncidentRuleTiming
+from src.parking.rules.bad_parking import (
+    AISLE_BLOCK,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+)
+from src.parking.rules.double_parking import DOUBLE_PARKING
+from src.parking.rules.ev_overstay import EV_OVERSTAY
+from src.parking.rules.restricted_zone import (
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
+)
+from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
@@ -162,6 +174,78 @@ def _validate_monitoring_assets(
         )
 
 
+def _build_incident_rule_timings(
+    settings: Settings,
+) -> tuple[IncidentRuleTiming, ...]:
+    """배포 설정의 규칙별 debounce 값을 domain 정책 객체로 변환한다."""
+
+    return (
+        IncidentRuleTiming(
+            rule_code=DISABLED_ZONE_UNAUTHORIZED,
+            confirm_duration_seconds=(
+                settings.incident_disabled_zone_unauthorized_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_disabled_zone_unauthorized_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=EV_ZONE_UNAUTHORIZED,
+            confirm_duration_seconds=(
+                settings.incident_ev_zone_unauthorized_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_ev_zone_unauthorized_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=EV_OVERSTAY,
+            confirm_duration_seconds=(
+                settings.incident_ev_overstay_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_ev_overstay_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=BAD_PARKING,
+            confirm_duration_seconds=(
+                settings.incident_bad_parking_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_bad_parking_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=OUT_OF_ZONE,
+            confirm_duration_seconds=(
+                settings.incident_out_of_zone_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_out_of_zone_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=AISLE_BLOCK,
+            confirm_duration_seconds=(
+                settings.incident_aisle_block_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_aisle_block_clear_seconds
+            ),
+        ),
+        IncidentRuleTiming(
+            rule_code=DOUBLE_PARKING,
+            confirm_duration_seconds=(
+                settings.incident_double_parking_confirm_seconds
+            ),
+            clear_duration_seconds=(
+                settings.incident_double_parking_clear_seconds
+            ),
+        ),
+    )
+
+
 def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
     """Settings의 monitoring 정책을 해석 없이 domain factory로 전달한다."""
 
@@ -190,6 +274,7 @@ def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
         ),
         incident_confirm_seconds=settings.incident_confirm_seconds,
         incident_clear_seconds=settings.incident_clear_seconds,
+        incident_rule_timings=_build_incident_rule_timings(settings),
         zone_presence_min_overlap_ratio=(
             settings.zone_presence_min_overlap_ratio
         ),
