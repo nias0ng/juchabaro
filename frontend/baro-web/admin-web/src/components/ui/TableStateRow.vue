@@ -16,7 +16,7 @@ withDefaults(
       :colspan="colspan"
       class="empty"
       :class="{ error: variant === 'error' }"
-      :style="{ paddingLeft: horizontalPadding, paddingRight: horizontalPadding }"
+      :style="{ '--table-state-row-padding-x': horizontalPadding }"
     >
       {{ message }}
     </td>
@@ -25,8 +25,8 @@ withDefaults(
 
 <style scoped>
 .empty {
-  padding-top: 40px;
-  padding-bottom: 40px;
+  padding-block: 40px;
+  padding-inline: var(--table-state-row-padding-x, var(--spacing-sm));
   text-align: center;
   color: var(--panel-muted-foreground);
 }
