@@ -1,6 +1,6 @@
 """MotionEstimator의 시간 기반 PhysicalVehicle별 evidence 계약."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -14,7 +14,7 @@ from src.tracking.models import (
 from src.tracking.motion_estimator import MotionEstimator
 
 
-START = datetime(2026, 8, 5, tzinfo=UTC)
+START = datetime(2026, 8, 5, tzinfo=timezone.utc)
 
 
 def at(seconds: float) -> datetime:

@@ -1,8 +1,10 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
 import { Keyboard } from 'react-native';
 
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
+import { queryKeys } from '@/services/query-keys';
 
 import { registerVehicle } from '../api/vehicle-api';
 import type {
@@ -40,6 +42,7 @@ const INITIAL_VISITOR_VALUES: VisitorCarFormValues = {
  */
 export function useRegisterCarForm(onRegistered: () => void, initialCarType: RegisterCarType = 'household') {
   const { accessToken } = useAuth();
+  const queryClient = useQueryClient();
 
   const [step, setStep] = useState<RegisterCarStep>(initialCarType);
   const [carType, setCarType] = useState<RegisterCarType>(initialCarType);
@@ -138,13 +141,15 @@ export function useRegisterCarForm(onRegistered: () => void, initialCarType: Reg
         );
       }
 
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vehicles.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.parking.sessions() });
       onRegistered();
     } catch (error) {
       setErrorMessage(error instanceof ApiError ? error.message : '차량 등록에 실패했습니다.');
     } finally {
       setIsRegistering(false);
     }
-  }, [isRegistering, carType, householdValues, visitorValues, accessToken, onRegistered]);
+  }, [isRegistering, carType, householdValues, visitorValues, accessToken, onRegistered, queryClient]);
 
   return {
     step,

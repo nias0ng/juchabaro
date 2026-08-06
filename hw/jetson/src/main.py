@@ -37,7 +37,6 @@ from src.application.evidence_publication_worker import (
 )
 from src.application.monitoring_factory import (
     MonitoringDependencies,
-    MonitoringPolicy,
     build_monitoring_pipeline,
 )
 from src.application.monitoring_pipeline import MonitoringPipeline
@@ -64,11 +63,14 @@ from src.communication.backend_client import BackendClient
 from src.communication.backend_publication_preparer import (
     BackendPublicationPreparer,
 )
+from src.config.monitoring_policy import (
+    build_monitoring_policy as _build_monitoring_policy,
+)
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
 from src.live.overlay_publisher import OverlayPublisher
-from src.parking.zone_registry import ZoneRegistry
 from src.parking.egress_aisle_registry import EgressAisleRegistry
+from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
@@ -162,82 +164,6 @@ def _validate_monitoring_assets(
             "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
             f"{settings.vehicle_model_path}"
         )
-
-
-def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
-    """Settings의 monitoring 정책을 해석 없이 domain factory로 전달한다."""
-
-    return MonitoringPolicy(
-        zone_entry_confirm_seconds=settings.zone_entry_confirm_seconds,
-        zone_exit_confirm_seconds=settings.zone_exit_confirm_seconds,
-        entry_zone_min_overlap_ratio=(
-            settings.entry_zone_min_overlap_ratio
-        ),
-        parking_confirm_seconds=settings.parking_confirm_seconds,
-        parking_move_confirm_seconds=(
-            settings.parking_move_confirm_seconds
-        ),
-        absence_confirmation_seconds=(
-            settings.absence_confirmation_seconds
-        ),
-        trusted_sample_max_gap_seconds=(
-            settings.trusted_sample_max_gap_seconds
-        ),
-        reidentification_max_gap_seconds=(
-            settings.reidentification_max_gap_seconds
-        ),
-        reidentification_min_score=settings.reidentification_min_score,
-        reidentification_ambiguity_margin=(
-            settings.reidentification_ambiguity_margin
-        ),
-        incident_confirm_seconds=settings.incident_confirm_seconds,
-        incident_clear_seconds=settings.incident_clear_seconds,
-        zone_presence_min_overlap_ratio=(
-            settings.zone_presence_min_overlap_ratio
-        ),
-        assignment_min_overlap_ratio=(
-            settings.assignment_min_overlap_ratio
-        ),
-        assignment_ambiguous_margin=(
-            settings.assignment_ambiguous_margin
-        ),
-        bad_parking_min_primary_overlap_ratio=(
-            settings.bad_parking_min_primary_overlap_ratio
-        ),
-        bad_parking_min_secondary_overlap_ratio=(
-            settings.bad_parking_min_secondary_overlap_ratio
-        ),
-        out_of_zone_min_spot_overlap_ratio=(
-            settings.out_of_zone_min_spot_overlap_ratio
-        ),
-        blocking_relation_confirm_seconds=(
-            settings.blocking_relation_confirm_seconds
-        ),
-        blocking_relation_clear_seconds=(
-            settings.blocking_relation_clear_seconds
-        ),
-        blocking_min_subject_overlap_ratio=(
-            settings.blocking_min_subject_overlap_ratio
-        ),
-        blocking_min_egress_coverage_ratio=(
-            settings.blocking_min_egress_coverage_ratio
-        ),
-        motion_window_seconds=settings.motion_window_seconds,
-        motion_min_observation_span_seconds=(
-            settings.motion_min_observation_span_seconds
-        ),
-        motion_max_sample_gap_seconds=(
-            settings.motion_max_sample_gap_seconds
-        ),
-        motion_stationary_threshold=(
-            settings.motion_stationary_threshold
-        ),
-        motion_moving_threshold=settings.motion_moving_threshold,
-        motion_min_samples=settings.motion_min_samples,
-        motion_min_trend_consistency=(
-            settings.motion_min_trend_consistency
-        ),
-    )
 
 
 def build_runtime_monitoring_pipeline(
@@ -443,6 +369,11 @@ def create_app(
                     ),
                 )
             )
+        else:
+            logger.warning(
+                "BACKEND_HW_API_KEY가 비어 Backend publication worker를 "
+                "비활성화합니다."
+            )
         application.state.evidence_publication_worker = (
             evidence_publication_worker
         )
@@ -461,6 +392,7 @@ def create_app(
             move_verification_worker.start()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.start()
+                logger.info("Backend publication workers가 시작됐습니다.")
             yield
         finally:
             _stop_workers_best_effort(

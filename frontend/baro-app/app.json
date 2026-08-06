@@ -1,20 +1,20 @@
 {
   "expo": {
-    "name": "baro-app",
+    "name": "주차바로",
     "slug": "baro-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/baro-icon.png",
+    "icon": "./assets/images/app-icon.png",
     "scheme": "baroapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/app-icon.png"
     },
     "android": {
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
-        "foregroundImage": "./assets/images/baro-icon.png"
+        "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.chaewon105steam.baroapp"

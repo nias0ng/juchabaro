@@ -48,6 +48,9 @@ export const useParkingEventStore = defineStore('parking-event', () => {
   const history = ref<AdminHistoryItem[]>([]);
   const historyLoading = ref(false);
   const historyError = ref<string | null>(null);
+  let eventsRequestId = 0;
+  let historyRequestId = 0;
+  const detailRequestIds: Record<number, number> = {};
 
   function setSelectedEventId(eventId: number | null) {
     selectedEventId.value = eventId;
@@ -57,9 +60,15 @@ export const useParkingEventStore = defineStore('parking-event', () => {
     events.value = events.value.map((row) => (row.eventId === eventId ? { ...row, ...patch } : row));
   }
 
-  async function fetchEvents(params: AdminEventListParams = {}): Promise<void> {
-    eventsLoading.value = true;
-    eventsError.value = null;
+  async function fetchEvents(
+    params: AdminEventListParams = {},
+    options: { background?: boolean } = {},
+  ): Promise<void> {
+    if (options.background && eventsLoading.value) return;
+    const requestId = ++eventsRequestId;
+    const showLoading = !options.background || events.value.length === 0;
+    if (showLoading) eventsLoading.value = true;
+    if (!options.background) eventsError.value = null;
     try {
       const accessToken = requireAccessToken();
       let found: AdminEventSummary[];
@@ -79,63 +88,88 @@ export const useParkingEventStore = defineStore('parking-event', () => {
         }
       }
 
+      if (requestId !== eventsRequestId) return;
       events.value = found;
+      eventsError.value = null;
       if (selectedEventId.value === null && found.length > 0) {
         selectedEventId.value = found[0]!.eventId;
       }
     } catch (error) {
-      eventsError.value = error instanceof Error ? error.message : '사건 목록을 불러오지 못했습니다.';
+      if (requestId === eventsRequestId && showLoading) {
+        eventsError.value = error instanceof Error ? error.message : '사건 목록을 불러오지 못했습니다.';
+      }
     } finally {
-      eventsLoading.value = false;
+      if (requestId === eventsRequestId && showLoading) eventsLoading.value = false;
     }
   }
 
-  async function fetchEventDetail(eventId: number): Promise<void> {
-    detailLoading[eventId] = true;
-    detailError[eventId] = null;
+  async function fetchEventDetail(eventId: number, options: { background?: boolean } = {}): Promise<void> {
+    if (options.background && detailLoading[eventId]) return;
+    const requestId = (detailRequestIds[eventId] ?? 0) + 1;
+    detailRequestIds[eventId] = requestId;
+    const showLoading = !eventDetails[eventId];
+    if (showLoading) detailLoading[eventId] = true;
+    if (!options.background) detailError[eventId] = null;
     try {
-      eventDetails[eventId] = await getEventDetail(eventId, requireAccessToken());
+      const result = await getEventDetail(eventId, requireAccessToken());
+      if (detailRequestIds[eventId] === requestId) {
+        eventDetails[eventId] = result;
+        detailError[eventId] = null;
+      }
     } catch (error) {
-      detailError[eventId] = error instanceof Error ? error.message : '사건 상세를 불러오지 못했습니다.';
+      if (detailRequestIds[eventId] === requestId && showLoading) {
+        detailError[eventId] = error instanceof Error ? error.message : '사건 상세를 불러오지 못했습니다.';
+      }
     } finally {
-      detailLoading[eventId] = false;
+      if (detailRequestIds[eventId] === requestId && showLoading) detailLoading[eventId] = false;
     }
   }
 
-  async function fetchHistory(params: AdminHistoryParams = {}): Promise<void> {
-    historyLoading.value = true;
-    historyError.value = null;
+  async function fetchHistory(
+    params: AdminHistoryParams = {},
+    options: { background?: boolean } = {},
+  ): Promise<void> {
+    if (options.background && historyLoading.value) return;
+    const requestId = ++historyRequestId;
+    const showLoading = !options.background || history.value.length === 0;
+    if (showLoading) historyLoading.value = true;
+    if (!options.background) historyError.value = null;
     try {
       const result = await getEventHistory(params, requireAccessToken());
-      history.value = result.history;
+      if (requestId === historyRequestId) {
+        history.value = result.history;
+        historyError.value = null;
+      }
     } catch (error) {
-      historyError.value = error instanceof Error ? error.message : '처리 이력을 불러오지 못했습니다.';
+      if (requestId === historyRequestId && showLoading) {
+        historyError.value = error instanceof Error ? error.message : '처리 이력을 불러오지 못했습니다.';
+      }
     } finally {
-      historyLoading.value = false;
+      if (requestId === historyRequestId && showLoading) historyLoading.value = false;
     }
   }
 
   async function completeEvent(eventId: number, memo: string): Promise<void> {
     await completeEventRequest(eventId, { memo }, requireAccessToken());
     patchEventSummary(eventId, { eventStatus: 'RESOLVED' });
-    await fetchEventDetail(eventId);
+    await fetchEventDetail(eventId, { background: true });
   }
 
   async function dismissEvent(eventId: number, memo: string): Promise<void> {
     await dismissEventRequest(eventId, { memo }, requireAccessToken());
     patchEventSummary(eventId, { eventStatus: 'DISMISSED' });
-    await fetchEventDetail(eventId);
+    await fetchEventDetail(eventId, { background: true });
   }
 
   async function acknowledgeEvent(eventId: number, memo: string): Promise<void> {
     await acknowledgeEventRequest(eventId, { memo }, requireAccessToken());
     // 상태는 바뀌지 않고 처리 이력에만 기록되므로 상세만 다시 불러온다.
-    await fetchEventDetail(eventId);
+    await fetchEventDetail(eventId, { background: true });
   }
 
   async function sendReminder(eventId: number): Promise<void> {
     await sendReminderRequest(eventId, requireAccessToken());
-    await fetchEventDetail(eventId);
+    await fetchEventDetail(eventId, { background: true });
   }
 
   return {

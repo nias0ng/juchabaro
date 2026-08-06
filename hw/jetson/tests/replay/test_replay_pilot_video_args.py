@@ -48,7 +48,22 @@ REQUIRED_THRESHOLD_ARGS = [
     "--blocking-relation-clear-seconds", "3.0",
     "--blocking-min-subject-overlap-ratio", "0.4",
     "--blocking-min-egress-coverage-ratio", "0.4",
+    "--incident-disabled-zone-unauthorized-confirm-seconds", "0.0",
+    "--incident-disabled-zone-unauthorized-clear-seconds", "0.0",
+    "--incident-ev-zone-unauthorized-confirm-seconds", "0.0",
+    "--incident-ev-zone-unauthorized-clear-seconds", "0.0",
+    "--incident-ev-overstay-confirm-seconds", "0.0",
+    "--incident-ev-overstay-clear-seconds", "0.0",
+    "--incident-bad-parking-confirm-seconds", "0.5",
+    "--incident-bad-parking-clear-seconds", "0.5",
+    "--incident-out-of-zone-confirm-seconds", "0.5",
+    "--incident-out-of-zone-clear-seconds", "0.5",
+    "--incident-aisle-block-confirm-seconds", "0.5",
+    "--incident-aisle-block-clear-seconds", "0.5",
+    "--incident-double-parking-confirm-seconds", "0.0",
+    "--incident-double-parking-clear-seconds", "0.0",
 ]
+REQUIRED_THRESHOLD_FLAGS = REQUIRED_THRESHOLD_ARGS[::2]
 
 
 def _parse(
@@ -118,8 +133,8 @@ def test_defaults_match_documented_baseline_values():
     args = _parse()
 
     assert args.tracker_config == "bytetrack.yaml"
-    assert args.confidence == 0.5
-    assert args.min_overlap_ratio == 0.40
+    assert args.confidence == 0.25
+    assert args.zone_presence_min_overlap_ratio == 0.40
     assert args.remap_balance == 0.5
     assert args.crop_left_px == 0
     assert args.crop_right_px == 0
@@ -174,6 +189,11 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.blocking_relation_clear_seconds == 3.0
     assert policy.blocking_min_subject_overlap_ratio == 0.4
     assert policy.blocking_min_egress_coverage_ratio == 0.4
+    by_rule = {timing.rule_code: timing for timing in policy.incident_rule_timings}
+    assert by_rule["BAD_PARKING"].confirm_duration_seconds == 0.5
+    assert by_rule["BAD_PARKING"].clear_duration_seconds == 0.5
+    assert by_rule["DOUBLE_PARKING"].confirm_duration_seconds == 0.0
+    assert by_rule["DOUBLE_PARKING"].clear_duration_seconds == 0.0
 
 
 def test_missing_calibration_is_rejected(tmp_path):
@@ -217,22 +237,7 @@ def test_valid_args_pass_validation(tmp_path):
 
 @pytest.mark.parametrize(
     "flag",
-    [
-        "--zone-entry-confirm-seconds",
-        "--zone-exit-confirm-seconds",
-        "--parking-move-confirm-seconds",
-        "--absence-confirmation-seconds",
-        "--trusted-sample-max-gap-seconds",
-        "--reidentification-max-gap-seconds",
-        "--reidentification-min-score",
-        "--reidentification-ambiguity-margin",
-        "--assignment-min-overlap-ratio",
-        "--assignment-ambiguous-margin",
-        "--blocking-relation-confirm-seconds",
-        "--blocking-relation-clear-seconds",
-        "--blocking-min-subject-overlap-ratio",
-        "--blocking-min-egress-coverage-ratio",
-    ],
+    REQUIRED_THRESHOLD_FLAGS,
 )
 def test_each_threshold_flag_is_required(flag):
     """실측 대상 임계값은 하나라도 빠지면 파싱 단계에서 멈춘다."""

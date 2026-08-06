@@ -260,6 +260,7 @@ def _render_diagnostic_export(run: ViewerRun) -> None:
         model_path=str(run.model_path),
         tracker_config=run.tracker_config,
         policy_snapshot_json=run.policy_snapshot_json,
+        asset_snapshot_json=run.asset_snapshot_json,
     )
     detection_rows = [row for row in rows if row["rowType"] == "DETECTION"]
     tracked_rows = [row for row in rows if row["rowType"] == "TRACKED_VEHICLE"]

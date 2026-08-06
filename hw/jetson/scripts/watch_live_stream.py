@@ -60,7 +60,6 @@ sys.stderr.reconfigure(errors="replace")
 
 from src.application.monitoring_factory import (
     MonitoringDependencies,
-    MonitoringPolicy,
     build_monitoring_pipeline,
 )
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
@@ -70,6 +69,10 @@ from src.camera.frame_source import (
     OpenCvWebcamFrameSource,
     RemapFrameSource,
     VideoFileFrameSource,
+)
+from src.config.monitoring_policy import (
+    INCIDENT_RULE_TIMING_SPECS,
+    build_monitoring_policy,
 )
 from src.live.live_overlay_renderer import render_overlay_jpeg
 from src.live.live_stream_loop import LiveStreamLoop
@@ -134,8 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 판정 임계값 — replay_pilot_video.py 문서의 예시값을 그대로 기본값으로 쓴다.
     # (이 스크립트는 임계값 측정 도구가 아니라 눈으로 보는 용도라 기본값을 둔다.)
-    parser.add_argument("--zone-entry-confirm-seconds", type=float, default=3.0)
-    parser.add_argument("--zone-exit-confirm-seconds", type=float, default=3.0)
+    parser.add_argument("--zone-entry-confirm-seconds", type=float, default=1.0)
+    parser.add_argument("--zone-exit-confirm-seconds", type=float, default=5.0)
     parser.add_argument("--parking-move-confirm-seconds", type=float, default=0.5)
     parser.add_argument("--absence-confirmation-seconds", type=float, default=5.0)
     parser.add_argument("--trusted-sample-max-gap-seconds", type=float, default=1.0)
@@ -147,8 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bad-parking-min-primary-overlap-ratio", type=float, default=0.75)
     parser.add_argument("--bad-parking-min-secondary-overlap-ratio", type=float, default=0.25)
     parser.add_argument("--out-of-zone-min-spot-overlap-ratio", type=float, default=0.50)
-    parser.add_argument("--blocking-relation-confirm-seconds", type=float, default=3.0)
-    parser.add_argument("--blocking-relation-clear-seconds", type=float, default=3.0)
+    parser.add_argument("--blocking-relation-confirm-seconds", type=float, default=1.0)
+    parser.add_argument("--blocking-relation-clear-seconds", type=float, default=1.0)
     parser.add_argument("--blocking-min-subject-overlap-ratio", type=float, default=0.40)
     parser.add_argument("--blocking-min-egress-coverage-ratio", type=float, default=0.40)
     parser.add_argument(
@@ -159,7 +162,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entry-zone-min-overlap-ratio", type=float, default=0.40)
     parser.add_argument("--incident-confirm-seconds", type=float, default=0.0)
     parser.add_argument("--incident-clear-seconds", type=float, default=0.0)
-    parser.add_argument("--min-overlap-ratio", type=float, default=0.40)
+    for spec in INCIDENT_RULE_TIMING_SPECS:
+        parser.add_argument(
+            f"--{spec.confirm_field.replace('_', '-')}",
+            type=float,
+            default=spec.default_confirm_seconds,
+            help=f"{spec.rule_code} 확정 debounce(초).",
+        )
+        parser.add_argument(
+            f"--{spec.clear_field.replace('_', '-')}",
+            type=float,
+            default=spec.default_clear_seconds,
+            help=f"{spec.rule_code} 해소 debounce(초).",
+        )
+    parser.add_argument(
+        "--min-overlap-ratio",
+        dest="zone_presence_min_overlap_ratio",
+        type=float,
+        default=0.40,
+    )
 
     parser.add_argument("--motion-window-seconds", type=float, default=0.75)
     parser.add_argument("--motion-min-observation-span-seconds", type=float, default=0.20)
@@ -169,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--motion-min-samples", type=int, default=3)
     parser.add_argument("--motion-min-trend-consistency", type=float, default=0.60)
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
-    parser.add_argument("--confidence", type=float, default=0.5)
+    parser.add_argument("--confidence", type=float, default=0.25)
     parser.add_argument("--remap-balance", type=float, default=DEFAULT_REMAP_BALANCE)
     parser.add_argument(
         "--crop-left-px", type=int, default=0,
@@ -191,48 +212,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
-    return MonitoringPolicy(
-        zone_entry_confirm_seconds=args.zone_entry_confirm_seconds,
-        zone_exit_confirm_seconds=args.zone_exit_confirm_seconds,
-        entry_zone_min_overlap_ratio=args.entry_zone_min_overlap_ratio,
-        parking_confirm_seconds=args.parking_confirm_seconds,
-        parking_move_confirm_seconds=args.parking_move_confirm_seconds,
-        absence_confirmation_seconds=args.absence_confirmation_seconds,
-        trusted_sample_max_gap_seconds=args.trusted_sample_max_gap_seconds,
-        reidentification_max_gap_seconds=args.reidentification_max_gap_seconds,
-        reidentification_min_score=args.reidentification_min_score,
-        reidentification_ambiguity_margin=args.reidentification_ambiguity_margin,
-        incident_confirm_seconds=args.incident_confirm_seconds,
-        incident_clear_seconds=args.incident_clear_seconds,
-        zone_presence_min_overlap_ratio=args.min_overlap_ratio,
-        assignment_min_overlap_ratio=args.assignment_min_overlap_ratio,
-        assignment_ambiguous_margin=args.assignment_ambiguous_margin,
-        bad_parking_min_primary_overlap_ratio=(
-            args.bad_parking_min_primary_overlap_ratio
-        ),
-        bad_parking_min_secondary_overlap_ratio=(
-            args.bad_parking_min_secondary_overlap_ratio
-        ),
-        out_of_zone_min_spot_overlap_ratio=args.out_of_zone_min_spot_overlap_ratio,
-        blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
-        blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
-        blocking_min_subject_overlap_ratio=(
-            args.blocking_min_subject_overlap_ratio
-        ),
-        blocking_min_egress_coverage_ratio=(
-            args.blocking_min_egress_coverage_ratio
-        ),
-        motion_window_seconds=args.motion_window_seconds,
-        motion_min_observation_span_seconds=(
-            args.motion_min_observation_span_seconds
-        ),
-        motion_max_sample_gap_seconds=args.motion_max_sample_gap_seconds,
-        motion_stationary_threshold=args.motion_stationary_threshold,
-        motion_moving_threshold=args.motion_moving_threshold,
-        motion_min_samples=args.motion_min_samples,
-        motion_min_trend_consistency=args.motion_min_trend_consistency,
-    )
+def build_policy(args: argparse.Namespace):
+    """CLI 입력을 main·Viewer·replay와 같은 config owner에서 조립한다."""
+
+    return build_monitoring_policy(args)
 
 
 def run(args: argparse.Namespace) -> int:

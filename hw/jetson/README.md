@@ -94,6 +94,56 @@ calibration·차량 tracking·`EGRESS_AISLE_PATH` 및 MonitoringPolicy 필수값
 중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
 배포 환경에 맞게 명시한다.
 
+단일 USB 카메라를 사용하는 Jetson 운영 배치는 다음 asset 경로를 사용한다.
+
+```dotenv
+CAMERA_ID=PARKING-CAMERA-01
+CAMERA_INDEX=0
+CALIBRATION_PATH=/home/e202/config/camera_calibration.json
+REMAP_BALANCE=0.5
+VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
+```
+
+시연 배포에서 판정 정책은 `.env` → `Settings` → `src.main`의 composition root →
+`MonitoringPolicy` 순서로 전달된다. 규칙별 Incident 값은
+`MonitoringPolicy.incident_rule_timings`를 거쳐 `InMemoryIncidentReducer`가 새
+Incident에 snapshot하므로, 실행 중 환경 변수가 바뀌어도 이미 진행 중인 timer의
+정책은 바뀌지 않는다.
+
+알려진 Incident 규칙은 아래 값을 모두 명시해야 한다. 전역
+`INCIDENT_CONFIRM_SECONDS`와 `INCIDENT_CLEAR_SECONDS`는 아직 규칙별 정책이 없는
+미래 규칙을 위한 compatibility fallback일 뿐이다.
+
+```dotenv
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CONFIRM_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CLEAR_SECONDS=0.0
+INCIDENT_BAD_PARKING_CONFIRM_SECONDS=0.5
+INCIDENT_BAD_PARKING_CLEAR_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CONFIRM_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CLEAR_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CONFIRM_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CLEAR_SECONDS=0.5
+INCIDENT_DOUBLE_PARKING_CONFIRM_SECONDS=0.0
+INCIDENT_DOUBLE_PARKING_CLEAR_SECONDS=0.0
+```
+
+현재 시연값은 `VEHICLE_TRACKING_CONFIDENCE=0.25`,
+`PARKING_CONFIRM_SECONDS=5.0`, `PARKING_MOVE_CONFIRM_SECONDS=0.5`다.
+`PARKING_CONFIRM_SECONDS=600.0`은 운영 요구값이며 실영상 검증을 마친 운영
+프로파일에서 별도로 적용한다. 이 값들은 provisional이므로 영상별 confidence 분포와
+Incident 오탐·미탐을 다시 측정한 뒤 조정한다.
+
+`config/camera_calibration.json`은 운영 배포용 calibration 정본이다. 이 파일의
+원시 바이트 SHA-256 앞 16자리는 `a26d3085c3d4fc4f`이며,
+`zone_definition.json`과 `egress_aisle.json`의 `calibrationReference`가 같은
+값이어야 한다. 해당 reference는 보정 수치로 사용하는 값이 아니라, 보정된
+frame과 polygon이 같은 좌표계인지 검증하는 식별자다. 파일을 다시 저장할 때
+줄바꿈이나 공백이 달라져도 지문이 바뀌므로 Git의 LF 바이트를 유지한다.
+
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
 `config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
@@ -450,6 +500,16 @@ python -m scripts.replay_pilot_video \
     --out-of-zone-min-spot-overlap-ratio 0.50 \
     --blocking-relation-confirm-seconds 1.0 \
     --blocking-relation-clear-seconds 1.0 \
+    --incident-disabled-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-disabled-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-ev-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-overstay-confirm-seconds 0.0 --incident-ev-overstay-clear-seconds 0.0 \
+    --incident-bad-parking-confirm-seconds 0.5 --incident-bad-parking-clear-seconds 0.5 \
+    --incident-out-of-zone-confirm-seconds 0.5 --incident-out-of-zone-clear-seconds 0.5 \
+    --incident-aisle-block-confirm-seconds 0.5 --incident-aisle-block-clear-seconds 0.5 \
+    --incident-double-parking-confirm-seconds 0.0 \
+    --incident-double-parking-clear-seconds 0.0 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```

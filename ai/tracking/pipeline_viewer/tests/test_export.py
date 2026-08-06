@@ -294,6 +294,7 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
         model_path="hw/jetson/model/yolov8s.pt",
         tracker_config="bytetrack.yaml",
         policy_snapshot_json='{"parking_confirm_seconds":5.0}',
+        asset_snapshot_json='{"model":{"sha256":"abc"}}',
     )
 
     assert [row["rowType"] for row in rows] == [
@@ -379,9 +380,10 @@ def test_diagnostic_export_keeps_empty_frames_and_separates_stages() -> None:
     assert placement["outOfZoneConfirmable"] is False
     assert empty_frame["pretrackDetectionCount"] == 0
     assert empty_frame["trackedVehicleCount"] == 0
-    assert rows[0]["diagnosticSchemaVersion"] == 4
+    assert rows[0]["diagnosticSchemaVersion"] == 5
     assert rows[0]["policySnapshotJson"] == '{"parking_confirm_seconds":5.0}'
-    assert empty_frame["diagnosticSchemaVersion"] == 4
+    assert rows[0]["assetSnapshotJson"] == '{"model":{"sha256":"abc"}}'
+    assert empty_frame["diagnosticSchemaVersion"] == 5
 
 
 def test_diagnostic_export_preserves_out_of_zone_rule_reason() -> None:
@@ -392,6 +394,7 @@ def test_diagnostic_export_preserves_out_of_zone_rule_reason() -> None:
         model_path="model.pt",
         tracker_config="bytetrack.yaml",
         policy_snapshot_json="{}",
+        asset_snapshot_json="{}",
     )
 
     placement = next(
@@ -426,6 +429,7 @@ def test_csv_bytes_emits_utf8_bom_and_requested_header() -> None:
             "identityOutcome",
             "identityScoreMargin",
             "policySnapshotJson",
+            "assetSnapshotJson",
             "motionReason",
             "motionNormalizedTrend",
             "candidateOverlapsJson",
