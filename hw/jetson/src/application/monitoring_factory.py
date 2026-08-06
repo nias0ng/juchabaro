@@ -103,6 +103,9 @@ class MonitoringDependencies:
     actuator_port: ActuatorPort | None = None
     evidence_capture_sink: EvidenceCaptureSink | None = None
     diagnostics_sink: DiagnosticsSink | None = None
+    # 실시간 카메라는 startup에서 첫 capture·추론 비용을 지불한다. 리플레이는
+    # 첫 기록 프레임을 소비하면 안 되므로 기본적으로 끈다.
+    startup_warm_up: bool = False
 
 
 def build_monitoring_pipeline(
@@ -241,4 +244,5 @@ def build_monitoring_pipeline(
         actuator_command_planner=dependencies.actuator_command_planner,
         actuator_port=dependencies.actuator_port,
         evidence_capture_sink=dependencies.evidence_capture_sink,
+        warm_up_on_open=dependencies.startup_warm_up,
     )

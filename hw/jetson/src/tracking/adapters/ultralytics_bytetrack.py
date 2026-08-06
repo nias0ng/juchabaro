@@ -107,25 +107,38 @@ class UltralyticsVehicleTracker:
         except Exception as exc:
             raise TrackingError(f"YOLO 모델 로드에 실패했습니다(model={self._model_path}): {exc}") from exc
 
+    def warm_up(self, frame: CapturedFrame) -> None:
+        """실제 tracking 상태를 만들지 않고 predictor·CUDA를 초기화한다.
+
+        ``predict()``를 사용하므로 ByteTrack callback과 segment는 생성되지 않는다.
+        입력은 운영 경로와 같은 크기·색상 순서를 사용하되 결과는 폐기한다.
+        """
+
+        if self._model is None:
+            raise TrackingError("트래커가 초기화되지 않았습니다.")
+        self._frame_dimensions(frame)
+        cv2 = _import_cv2()
+        try:
+            source_bgr = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
+            self._model.predict(
+                source=source_bgr,
+                conf=self._confidence,
+                verbose=False,
+            )
+        except Exception as exc:
+            raise TrackingError(f"YOLO warm-up에 실패했습니다: {exc}") from exc
+        finally:
+            # 공용 postprocess callback이 predict warm-up에서도 호출될 수 있다.
+            # 첫 실제 track 결과가 warm-up 진단값을 재사용하지 않게 비운다.
+            self._pretrack_detection_count = None
+            self._pretrack_detections = None
+
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         """YOLO/ByteTrack 관측·detection coverage·segment 종료를 반환한다."""
 
         if self._model is None:
             raise TrackingError("트래커가 초기화되지 않았습니다.")
-        shape = getattr(frame.image, "shape", None)
-        if shape is None or len(shape) < 2:
-            raise TrackingError("프레임 이미지 크기를 확인할 수 없습니다.")
-        image_height, image_width = int(shape[0]), int(shape[1])
-        if image_height <= 0 or image_width <= 0:
-            # 카메라가 순간적으로 빈 프레임을 반환해도 나눗셈까지
-            # 진행하지 않는다.
-            raise TrackingError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
-        if image_width != frame.width or image_height != frame.height:
-            raise TrackingError(
-                "frame metadata does not match image shape: "
-                f"metadata={frame.width}x{frame.height}, "
-                f"image={image_width}x{image_height}"
-            )
+        image_height, image_width = self._frame_dimensions(frame)
         cv2 = _import_cv2()
         # CapturedFrame.image는 RGB인데 Ultralytics는 ndarray source를 BGR로
         # 해석한다. 학습 이미지는 cv2.imwrite로 BGR 저장했으므로
@@ -177,6 +190,26 @@ class UltralyticsVehicleTracker:
             raise TrackingError(
                 f"YOLO/ByteTrack frame 처리에 실패했습니다: {exc}"
             ) from exc
+
+    @staticmethod
+    def _frame_dimensions(frame: CapturedFrame) -> tuple[int, int]:
+        """프레임 배열과 metadata가 일치하는지 확인하고 ``(H, W)``를 반환한다."""
+
+        shape = getattr(frame.image, "shape", None)
+        if shape is None or len(shape) < 2:
+            raise TrackingError("프레임 이미지 크기를 확인할 수 없습니다.")
+        image_height, image_width = int(shape[0]), int(shape[1])
+        if image_height <= 0 or image_width <= 0:
+            # 카메라가 순간적으로 빈 프레임을 반환해도 나눗셈까지
+            # 진행하지 않는다.
+            raise TrackingError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
+        if image_width != frame.width or image_height != frame.height:
+            raise TrackingError(
+                "frame metadata does not match image shape: "
+                f"metadata={frame.width}x{frame.height}, "
+                f"image={image_width}x{image_height}"
+            )
+        return image_height, image_width
 
     def _to_observations(
         self,

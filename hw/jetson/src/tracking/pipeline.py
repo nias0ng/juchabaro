@@ -96,6 +96,16 @@ class TrackingPipeline:
 
         self._detector.open()
 
+    def warm_up(self, frame: CapturedFrame) -> None:
+        """도메인 관측 상태를 변경하지 않고 detector 초기화를 완료한다."""
+
+        if frame.camera_id != self._camera_id:
+            raise TrackingError(
+                "warm-up frame camera_id does not match the tracking pipeline: "
+                f"expected={self._camera_id}, actual={frame.camera_id}"
+            )
+        self._detector.warm_up(frame)
+
     def process(
         self,
         frame: CapturedFrame,

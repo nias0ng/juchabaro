@@ -216,6 +216,7 @@ def build_runtime_monitoring_pipeline(
         diagnostics_sink=(
             context.diagnostics_sink or LoggingDiagnosticsAdapter()
         ),
+        startup_warm_up=True,
     )
     return build_monitoring_pipeline(
         zones=context.zones,

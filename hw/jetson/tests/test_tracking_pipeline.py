@@ -44,6 +44,7 @@ class FakeDetector:
     def __init__(self) -> None:
         self.results_by_frame_id: dict[int, TrackerFrameResult] = {}
         self.error_frame_ids: set[int] = set()
+        self.warm_up_frames: list[CapturedFrame] = []
         self.opened = False
         self.closed = False
 
@@ -58,6 +59,9 @@ class FakeDetector:
 
     def open(self) -> None:
         self.opened = True
+
+    def warm_up(self, frame: CapturedFrame) -> None:
+        self.warm_up_frames.append(frame)
 
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         if frame.frame_id in self.error_frame_ids:
@@ -243,6 +247,29 @@ def test_open_and_close_delegate_to_detector():
 
     assert detector.opened
     assert detector.closed
+
+
+def test_warm_up_delegates_without_advancing_tracking_state():
+    detector = FakeDetector()
+    pipeline = _pipeline(detector)
+    frame = _make_frame(7)
+
+    pipeline.warm_up(frame)
+
+    assert detector.warm_up_frames == [frame]
+    assert pipeline._last_frame_id == 0
+    assert pipeline._last_reliable_observed_at is None
+
+
+def test_warm_up_rejects_another_camera_frame():
+    detector = FakeDetector()
+    pipeline = _pipeline(detector)
+    frame = replace(_make_frame(7), camera_id="cam-2")
+
+    with pytest.raises(TrackingError, match="warm-up frame camera_id"):
+        pipeline.warm_up(frame)
+
+    assert detector.warm_up_frames == []
 
 
 def test_caller_certified_frame_is_a_healthy_full_area_observation():

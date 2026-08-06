@@ -347,6 +347,7 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         passed["dependencies"].diagnostics_sink,
         main.LoggingDiagnosticsAdapter,
     )
+    assert passed["dependencies"].startup_warm_up is True
 
 
 def test_monitoring_policy_maps_all_settings_without_interpretation(

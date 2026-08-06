@@ -46,6 +46,7 @@ class _FakeInnerDetector:
 
     def __init__(self, *, result: TrackerFrameResult | None = None) -> None:
         self.received_frames: list[CapturedFrame] = []
+        self.warm_up_frames: list[CapturedFrame] = []
         self.opened = False
         self.closed = False
         self._result = result or TrackerFrameResult(
@@ -63,6 +64,9 @@ class _FakeInnerDetector:
 
     def open(self) -> None:
         self.opened = True
+
+    def warm_up(self, frame: CapturedFrame) -> None:
+        self.warm_up_frames.append(frame)
 
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         self.received_frames.append(frame)
@@ -293,6 +297,22 @@ def test_track_returns_inner_result_unchanged():
     result = detector.track(frame)
 
     assert result is expected_result
+
+
+def test_warm_up_uses_the_same_masked_input_without_tracking():
+    inner = _FakeInnerDetector()
+    detector = SideMaskingDetector(inner=inner)
+    original = _filled_image(width=100)
+    frame = _make_frame(original, width=100, height=original.shape[0])
+
+    detector.warm_up(frame)
+
+    assert inner.received_frames == []
+    assert len(inner.warm_up_frames) == 1
+    warmed_image = inner.warm_up_frames[0].image
+    assert np.all(warmed_image[:, :18] == 0)
+    assert np.all(warmed_image[:, 81:] == 0)
+    assert np.all(warmed_image[:, 18:81] == FILL_VALUE)
 
 
 def test_model_info_open_close_delegate_exactly_to_inner():
