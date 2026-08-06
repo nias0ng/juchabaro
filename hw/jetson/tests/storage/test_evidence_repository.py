@@ -10,7 +10,12 @@ from uuid import uuid4
 import pytest
 
 from src.domain.models import DeliveryState
-from src.evidence.models import EvidenceArtifact, EvidenceId, EvidenceState
+from src.evidence.models import (
+    EvidenceArtifact,
+    EvidenceId,
+    EvidenceRetentionDisposition,
+    EvidenceState,
+)
 from src.parking.models import IncidentId
 from src.storage.database import open_database
 from src.storage.evidence_repository import (
@@ -188,6 +193,54 @@ def test_repository_requires_uow_round_trips_and_rejects_stale_updates(
                     redirected,
                     expected_record_version=uploading.record_version,
                 )
+    finally:
+        connection.close()
+
+
+def test_mark_capture_failed_is_transactional_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    repository = EvidenceArtifactRepository(connection)
+    artifact = _reserved()
+    try:
+        with UnitOfWork(connection):
+            repository.add(artifact)
+        connection.execute(
+            "UPDATE evidence_artifacts SET local_path = ? WHERE evidence_id = ?",
+            (str(tmp_path / "stale-reservation.jpg"), str(artifact.evidence_id)),
+        )
+
+        with pytest.raises(TransactionStateError):
+            repository.mark_capture_failed(
+                artifact.evidence_id,
+                failed_at=NOW,
+                error="capture failed: renderer unavailable",
+            )
+
+        with UnitOfWork(connection):
+            failed = repository.mark_capture_failed(
+                artifact.evidence_id,
+                failed_at=NOW,
+                error="capture failed: renderer unavailable",
+            )
+
+        assert failed.state is EvidenceState.FAILED
+        assert failed.local_path is None
+        assert failed.last_error == "capture failed: renderer unavailable"
+        assert (
+            failed.retention_disposition
+            is EvidenceRetentionDisposition.LOST_OR_CORRUPTED
+        )
+        assert failed.record_version == artifact.record_version + 1
+
+        with UnitOfWork(connection):
+            repeated = repository.mark_capture_failed(
+                artifact.evidence_id,
+                failed_at=NOW + timedelta(seconds=1),
+                error="a retry must not rewrite terminal metadata",
+            )
+        assert repeated == failed
     finally:
         connection.close()
 

@@ -298,6 +298,47 @@ class EvidenceArtifactRepository:
         ).fetchall()
         return tuple(_artifact_from_row(row) for row in rows)
 
+    def mark_capture_failed(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        failed_at: datetime,
+        error: str,
+        disposition: EvidenceRetentionDisposition = (
+            EvidenceRetentionDisposition.LOST_OR_CORRUPTED
+        ),
+    ) -> EvidenceArtifact:
+        """재현 불가능한 RESERVED capture를 durable FAILED로 종결한다."""
+
+        require_write_transaction(self._connection)
+        require_aware(failed_at, "failed_at")
+        if not error:
+            raise ValueError("error must not be empty")
+
+        current = self.get(evidence_id)
+        if current is None:
+            raise EvidenceArtifactConflictError(
+                f"unknown evidence identity: {evidence_id}"
+            )
+        if current.state is EvidenceState.FAILED:
+            return current
+        if current.state is not EvidenceState.RESERVED:
+            raise EvidenceArtifactConflictError(
+                f"evidence {evidence_id} is {current.state.value}, not RESERVED"
+            )
+
+        failed = replace(
+            current,
+            state=EvidenceState.FAILED,
+            local_path=None,
+            last_error=error,
+            retention_disposition=disposition,
+            record_version=current.record_version + 1,
+            updated_at=max(current.updated_at, failed_at),
+        )
+        self.save(failed, expected_record_version=current.record_version)
+        return failed
+
     def claim_next_delivery(self, *, now: datetime) -> EvidenceArtifact | None:
         """Incident OPEN ACK가 확인된 API 8·9 대상 하나를 claim한다."""
 

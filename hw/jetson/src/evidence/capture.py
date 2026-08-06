@@ -13,6 +13,7 @@ import logging
 import math
 from pathlib import Path
 import sqlite3
+import time
 
 import cv2
 import numpy as np
@@ -27,14 +28,19 @@ from src.diagnostics import (
     emit_best_effort,
 )
 from src.evidence.capture_models import EvidenceCaptureIntent, EvidenceCropKind
-from src.evidence.models import EvidenceRetentionDisposition
+from src.evidence.models import (
+    EvidenceId,
+    EvidenceRetentionDisposition,
+    EvidenceState,
+)
 from src.evidence.spool import (
     EvidenceRecoveryReport,
     EvidenceSpool,
-    EvidenceSpoolError,
 )
 from src.parking.models import ZoneDefinition
 from src.parking.zone_registry import SPOT_ZONE_TYPES, ZoneRegistry
+from src.storage.evidence_repository import EvidenceArtifactRepository
+from src.storage.unit_of_work import UnitOfWork
 from src.tracking.models import BoundingBox, TrackingBatch
 
 
@@ -43,6 +49,21 @@ logger = logging.getLogger(__name__)
 ConnectionFactory = Callable[[], sqlite3.Connection]
 _TARGET_ASPECT_RATIO = 16 / 9
 _LARGE_CONTEXT_RULES = frozenset({"OUT_OF_ZONE", "AISLE_BLOCK"})
+_INCOMPLETE_CAPTURE_STATES = frozenset(
+    {EvidenceState.RESERVED, EvidenceState.WRITING}
+)
+# 영속 delivery retry와 별개인 process-local filesystem 재조정 pacing이다.
+_PENDING_RETRY_BASE_SECONDS = 1.0
+_PENDING_RETRY_MAX_SECONDS = 30.0
+
+
+@dataclass(frozen=True)
+class _PendingCapture:
+    """Frame을 다시 만들 수 없는 capture의 bounded runtime retry 상태."""
+
+    intent: EvidenceCaptureIntent
+    attempt_count: int
+    next_attempt_at: float
 
 
 class EvidenceCaptureError(RuntimeError):
@@ -367,7 +388,7 @@ class IncidentEvidenceRenderer:
 
 
 class EvidenceCaptureCoordinator:
-    """commit 뒤 capture intent를 JPEG spool state로 완성한다."""
+    """commit 뒤 capture intent를 종결하거나 ID별 재조정 대상으로 보존한다."""
 
     def __init__(
         self,
@@ -380,13 +401,18 @@ class EvidenceCaptureCoordinator:
         capture_stop_free_ratio: float,
         policy: EvidenceCapturePolicy | None = None,
         diagnostics_sink: DiagnosticsSink | None = None,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if not callable(monotonic_clock):
+            raise ValueError("monotonic_clock must be callable")
         self._connection_factory = connection_factory
         self._renderer = IncidentEvidenceRenderer(zones=zones, policy=policy)
         self._spool_path = spool_path
         self._spool_cap_bytes = spool_cap_bytes
         self._filesystem_floor_ratio = filesystem_floor_ratio
         self._capture_stop_free_ratio = capture_stop_free_ratio
+        self._pending_captures: dict[EvidenceId, _PendingCapture] = {}
+        self._monotonic_clock = monotonic_clock
         self._diagnostics_sink = (
             diagnostics_sink
             if diagnostics_sink is not None
@@ -398,13 +424,59 @@ class EvidenceCaptureCoordinator:
 
         connection = self._connection_factory()
         try:
-            return EvidenceSpool(
+            report = EvidenceSpool(
                 connection=connection,
                 root=self._spool_path,
                 spool_cap_bytes=self._spool_cap_bytes,
                 filesystem_floor_ratio=self._filesystem_floor_ratio,
                 capture_stop_free_ratio=self._capture_stop_free_ratio,
             ).recover()
+            self._pending_captures.clear()
+            return report
+        finally:
+            connection.close()
+
+    def flush_pending(self) -> None:
+        """소스 종료 시 후속 frame 없이도 보류 capture를 한 번 재조정한다."""
+
+        if not self._pending_captures:
+            return
+        pending_intents = tuple(
+            pending.intent for pending in self._pending_captures.values()
+        )
+        try:
+            connection = self._connection_factory()
+        except Exception as error:
+            logger.exception("종료 전 Evidence 보류 상태를 열지 못했습니다.")
+            for intent in pending_intents:
+                self._observe_capture(
+                    intent,
+                    intents=pending_intents,
+                    result="CAPTURE_FLUSH_FAILED",
+                    severity=DiagnosticSeverity.ERROR,
+                    error=error,
+                )
+            return
+
+        try:
+            try:
+                spool = EvidenceSpool(
+                    connection=connection,
+                    root=self._spool_path,
+                    spool_cap_bytes=self._spool_cap_bytes,
+                    filesystem_floor_ratio=self._filesystem_floor_ratio,
+                    capture_stop_free_ratio=self._capture_stop_free_ratio,
+                )
+            except Exception as error:
+                logger.exception("종료 전 Evidence spool을 열지 못했습니다.")
+                self._fail_without_spool(
+                    connection,
+                    pending_intents,
+                    error=error,
+                )
+                self._remember_incomplete(connection, pending_intents)
+                return
+            self._reconcile_pending(connection, spool, force=True)
         finally:
             connection.close()
 
@@ -414,103 +486,406 @@ class EvidenceCaptureCoordinator:
         batch: TrackingBatch,
         intents: tuple[EvidenceCaptureIntent, ...],
     ) -> None:
-        """각 예약을 독립 처리해 한 이미지 실패가 다음 이미지를 막지 않게 한다."""
+        """각 예약을 종결하고 일시적 미종결 상태는 다음 호출에서
+        재조정한다.
+        """
 
         if not intents:
-            return
-        connection: sqlite3.Connection | None = None
+            if not self._pending_captures or not self._has_due_pending():
+                return
+
+        for intent in intents:
+            self._observe_capture(
+                intent,
+                intents=intents,
+                result="CAPTURE_REQUESTED",
+            )
+
         try:
             connection = self._connection_factory()
-            spool = EvidenceSpool(
-                connection=connection,
-                root=self._spool_path,
-                spool_cap_bytes=self._spool_cap_bytes,
-                filesystem_floor_ratio=self._filesystem_floor_ratio,
-                capture_stop_free_ratio=self._capture_stop_free_ratio,
-            )
         except Exception as error:
-            if connection is not None:
-                connection.close()
-            logger.exception("Evidence spool을 열지 못해 capture를 연기합니다.")
-            for intent in intents:
+            logger.exception(
+                "Evidence DB 연결을 열지 못해 다음 frame에서 재조정합니다."
+            )
+            now = self._monotonic_clock()
+            due_pending = tuple(
+                pending.intent
+                for pending in self._pending_captures.values()
+                if pending.next_attempt_at <= now
+            )
+            deferred_intents = self._merge_intents(due_pending, intents)
+            for intent in deferred_intents:
+                self._defer_pending(intent)
                 self._observe_capture(
                     intent,
-                    intents=intents,
-                    result="CAPTURE_DEFERRED",
+                    intents=deferred_intents,
+                    result="CAPTURE_RECOVERY_PENDING",
                     severity=DiagnosticSeverity.ERROR,
                     error=error,
                 )
             return
 
         try:
-            for intent in intents:
-                self._observe_capture(
-                    intent,
-                    intents=intents,
-                    result="CAPTURE_REQUESTED",
+            pending_intents = tuple(
+                pending.intent for pending in self._pending_captures.values()
+            )
+            all_intents = self._merge_intents(pending_intents, intents)
+            try:
+                spool = EvidenceSpool(
+                    connection=connection,
+                    root=self._spool_path,
+                    spool_cap_bytes=self._spool_cap_bytes,
+                    filesystem_floor_ratio=self._filesystem_floor_ratio,
+                    capture_stop_free_ratio=self._capture_stop_free_ratio,
                 )
+            except Exception as error:
+                logger.exception("Evidence spool을 열지 못했습니다.")
+                finalization_errors = self._fail_without_spool(
+                    connection,
+                    all_intents,
+                    error=error,
+                )
+                incomplete_ids = self._remember_incomplete(
+                    connection,
+                    all_intents,
+                )
+                if finalization_errors or incomplete_ids:
+                    logger.error(
+                        "Evidence spool 초기화 실패 뒤 미종결 예약을 "
+                        "보류합니다: %s",
+                        ", ".join(incomplete_ids),
+                    )
+                return
+
+            self._reconcile_pending(connection, spool)
+
+            finalization_errors: list[Exception] = []
+            for intent in intents:
                 try:
-                    payload = self._renderer.render_jpeg(frame, batch, intent)
+                    self._capture_one(
+                        connection,
+                        spool,
+                        frame,
+                        batch,
+                        intent,
+                        intents=intents,
+                    )
                 except Exception as error:
-                    message = _capture_error_text(error)
-                    try:
-                        spool.fail_reservation(
-                            intent.evidence_id,
-                            error=message,
-                            disposition=(
-                                EvidenceRetentionDisposition.LOST_OR_CORRUPTED
-                            ),
-                            now=intent.captured_at,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Evidence capture 실패 상태를 기록하지 못했습니다: %s",
-                            intent.evidence_id,
-                        )
-                    else:
-                        logger.warning(
-                            "Evidence capture를 완료하지 못했습니다(%s): %s",
-                            intent.evidence_id,
-                            message,
-                        )
+                    finalization_errors.append(error)
+                    logger.exception(
+                        "Evidence capture를 종결하지 못했습니다: %s",
+                        intent.evidence_id,
+                    )
                     self._observe_capture(
                         intent,
                         intents=intents,
-                        result="CAPTURE_FAILED",
+                        result="CAPTURE_FINALIZATION_FAILED",
+                        severity=DiagnosticSeverity.ERROR,
+                        error=error,
+                    )
+
+            incomplete_ids = self._remember_incomplete(connection, intents)
+            if finalization_errors or incomplete_ids:
+                logger.error(
+                    "Evidence capture 미종결 예약을 다음 frame으로 이관합니다: %s",
+                    ", ".join(incomplete_ids),
+                )
+        finally:
+            connection.close()
+
+    def _capture_one(
+        self,
+        connection: sqlite3.Connection,
+        spool: EvidenceSpool,
+        frame: CapturedFrame,
+        batch: TrackingBatch,
+        intent: EvidenceCaptureIntent,
+        *,
+        intents: tuple[EvidenceCaptureIntent, ...],
+    ) -> None:
+        """한 intent를 종결하되 재현 불가능한 frame 오류는 FAILED로
+        보존한다.
+        """
+
+        try:
+            payload = self._renderer.render_jpeg(frame, batch, intent)
+        except Exception as error:
+            message = _capture_error_text(error)
+            spool.fail_reservation(
+                intent.evidence_id,
+                error=message,
+                disposition=EvidenceRetentionDisposition.LOST_OR_CORRUPTED,
+                now=intent.captured_at,
+            )
+            logger.warning(
+                "Evidence capture를 완료하지 못했습니다(%s): %s",
+                intent.evidence_id,
+                message,
+            )
+            self._observe_capture(
+                intent,
+                intents=intents,
+                result="CAPTURE_FAILED",
+                severity=DiagnosticSeverity.ERROR,
+                error=error,
+            )
+            return
+
+        try:
+            stored = spool.store_jpeg(
+                intent.evidence_id,
+                payload,
+                now=intent.captured_at,
+            )
+        except Exception as error:
+            logger.exception(
+                "Evidence JPEG를 durable spool에 기록하지 못했습니다: %s",
+                intent.evidence_id,
+            )
+            self._finalize_store_failure(
+                connection,
+                spool,
+                intent,
+                error=error,
+            )
+            self._observe_capture(
+                intent,
+                intents=intents,
+                result="SPOOL_STORE_FAILED",
+                severity=DiagnosticSeverity.ERROR,
+                error=error,
+            )
+            return
+
+        if stored.state in _INCOMPLETE_CAPTURE_STATES:
+            raise EvidenceCaptureError(
+                f"evidence {intent.evidence_id} remained {stored.state.value}"
+            )
+        self._observe_capture(
+            intent,
+            intents=intents,
+            result="CAPTURE_READY",
+            byte_size=stored.byte_size,
+        )
+
+    @staticmethod
+    def _finalize_store_failure(
+        connection: sqlite3.Connection,
+        spool: EvidenceSpool,
+        intent: EvidenceCaptureIntent,
+        *,
+        error: Exception,
+    ) -> None:
+        """저장 오류 지점에 따라 RESERVED 또는 WRITING을 즉시 종결한다."""
+
+        artifact = EvidenceArtifactRepository(connection).get(intent.evidence_id)
+        if artifact is None:
+            raise EvidenceCaptureError(
+                f"unknown evidence identity: {intent.evidence_id}"
+            ) from error
+        if artifact.state is EvidenceState.RESERVED:
+            spool.fail_reservation(
+                intent.evidence_id,
+                error=_capture_error_text(error),
+                disposition=EvidenceRetentionDisposition.LOST_OR_CORRUPTED,
+                now=intent.captured_at,
+            )
+            return
+        if artifact.state is EvidenceState.WRITING:
+            reconciled = spool.reconcile_interrupted_write(
+                intent.evidence_id,
+            )
+            if reconciled.state in _INCOMPLETE_CAPTURE_STATES:
+                raise EvidenceCaptureError(
+                    f"evidence {intent.evidence_id} remained "
+                    f"{reconciled.state.value} after reconciliation"
+                ) from error
+
+    @staticmethod
+    def _merge_intents(
+        pending: tuple[EvidenceCaptureIntent, ...],
+        current: tuple[EvidenceCaptureIntent, ...],
+    ) -> tuple[EvidenceCaptureIntent, ...]:
+        merged = {intent.evidence_id: intent for intent in pending}
+        merged.update({intent.evidence_id: intent for intent in current})
+        return tuple(merged.values())
+
+    def _reconcile_pending(
+        self,
+        connection: sqlite3.Connection,
+        spool: EvidenceSpool,
+        *,
+        force: bool = False,
+    ) -> None:
+        """이전 frame에서 남은 RESERVED/WRITING을 ID별로 재조정한다."""
+
+        repository = EvidenceArtifactRepository(connection)
+        now = self._monotonic_clock()
+        pending_records = tuple(
+            pending
+            for pending in self._pending_captures.values()
+            if force or pending.next_attempt_at <= now
+        )
+        pending_intents = tuple(pending.intent for pending in pending_records)
+        for pending in pending_records:
+            intent = pending.intent
+            try:
+                artifact = repository.get(intent.evidence_id)
+                if artifact is None:
+                    self._pending_captures.pop(intent.evidence_id, None)
+                    error = EvidenceCaptureError(
+                        f"unknown evidence identity: {intent.evidence_id}; "
+                        "pending retry abandoned"
+                    )
+                    logger.error("%s", error)
+                    self._observe_capture(
+                        intent,
+                        intents=pending_intents,
+                        result="CAPTURE_RECOVERY_ABANDONED",
                         severity=DiagnosticSeverity.ERROR,
                         error=error,
                     )
                     continue
+                if artifact.state is EvidenceState.RESERVED:
+                    artifact = spool.fail_reservation(
+                        intent.evidence_id,
+                        error=(
+                            "capture failed: source frame was not retained after "
+                            "metadata connection failure"
+                        ),
+                    )
+                elif artifact.state is EvidenceState.WRITING:
+                    artifact = spool.reconcile_interrupted_write(
+                        intent.evidence_id,
+                    )
+                if artifact.state in _INCOMPLETE_CAPTURE_STATES:
+                    raise EvidenceCaptureError(
+                        f"evidence {intent.evidence_id} remained "
+                        f"{artifact.state.value} after reconciliation"
+                    )
+            except Exception as error:
+                self._defer_pending(intent)
+                logger.exception(
+                    "보류 Evidence capture를 재조정하지 못했습니다: %s",
+                    intent.evidence_id,
+                )
+                self._observe_capture(
+                    intent,
+                    intents=pending_intents,
+                    result="CAPTURE_FINALIZATION_FAILED",
+                    severity=DiagnosticSeverity.ERROR,
+                    error=error,
+                )
+                continue
 
-                try:
-                    stored = spool.store_jpeg(
-                        intent.evidence_id,
-                        payload,
-                        now=intent.captured_at,
-                    )
-                except EvidenceSpoolError as error:
-                    # store_jpeg은 가능한 실패를 FAILED metadata로 먼저 보존한다.
-                    logger.exception(
-                        "Evidence JPEG를 durable spool에 기록하지 못했습니다: %s",
-                        intent.evidence_id,
-                    )
-                    self._observe_capture(
-                        intent,
-                        intents=intents,
-                        result="SPOOL_STORE_FAILED",
-                        severity=DiagnosticSeverity.ERROR,
-                        error=error,
-                    )
-                else:
-                    self._observe_capture(
-                        intent,
-                        intents=intents,
-                        result="CAPTURE_READY",
-                        byte_size=stored.byte_size,
-                    )
-        finally:
-            assert connection is not None
-            connection.close()
+            self._pending_captures.pop(intent.evidence_id, None)
+            self._observe_capture(
+                intent,
+                intents=pending_intents,
+                result=f"CAPTURE_RECOVERED_{artifact.state.value}",
+                severity=(
+                    DiagnosticSeverity.ERROR
+                    if artifact.state is EvidenceState.FAILED
+                    else DiagnosticSeverity.WARNING
+                ),
+                byte_size=artifact.byte_size,
+            )
+
+    def _fail_without_spool(
+        self,
+        connection: sqlite3.Connection,
+        intents: tuple[EvidenceCaptureIntent, ...],
+        *,
+        error: Exception,
+    ) -> list[Exception]:
+        """Spool이 열리지 않아도 RESERVED metadata를 개별 transaction으로
+        종결한다.
+        """
+
+        repository = EvidenceArtifactRepository(connection)
+        failures: list[Exception] = []
+        for intent in intents:
+            try:
+                with UnitOfWork(connection):
+                    artifact = repository.get(intent.evidence_id)
+                    if artifact is None:
+                        raise EvidenceCaptureError(
+                            f"unknown evidence identity: {intent.evidence_id}"
+                        )
+                    if artifact.state is EvidenceState.RESERVED:
+                        repository.mark_capture_failed(
+                            intent.evidence_id,
+                            failed_at=intent.captured_at,
+                            error=_capture_error_text(error),
+                        )
+                    elif artifact.state is EvidenceState.WRITING:
+                        raise EvidenceCaptureError(
+                            f"evidence {intent.evidence_id} requires WRITING recovery"
+                        )
+            except Exception as finalization_error:
+                failures.append(finalization_error)
+                logger.exception(
+                    "Spool 초기화 실패 뒤 Evidence 예약을 종결하지 "
+                    "못했습니다: %s",
+                    intent.evidence_id,
+                )
+                self._observe_capture(
+                    intent,
+                    intents=intents,
+                    result="CAPTURE_FINALIZATION_FAILED",
+                    severity=DiagnosticSeverity.ERROR,
+                    error=finalization_error,
+                )
+            else:
+                self._observe_capture(
+                    intent,
+                    intents=intents,
+                    result="SPOOL_OPEN_FAILED",
+                    severity=DiagnosticSeverity.ERROR,
+                    error=error,
+                )
+        return failures
+
+    def _remember_incomplete(
+        self,
+        connection: sqlite3.Connection,
+        intents: tuple[EvidenceCaptureIntent, ...],
+    ) -> tuple[str, ...]:
+        repository = EvidenceArtifactRepository(connection)
+        incomplete: list[str] = []
+        for intent in intents:
+            artifact = repository.get(intent.evidence_id)
+            if artifact is None:
+                raise EvidenceCaptureError(
+                    f"unknown evidence identity: {intent.evidence_id}"
+                )
+            if artifact.state in _INCOMPLETE_CAPTURE_STATES:
+                incomplete.append(str(intent.evidence_id))
+                self._defer_pending(intent)
+            else:
+                self._pending_captures.pop(intent.evidence_id, None)
+        return tuple(incomplete)
+
+    def _has_due_pending(self) -> bool:
+        now = self._monotonic_clock()
+        return any(
+            pending.next_attempt_at <= now
+            for pending in self._pending_captures.values()
+        )
+
+    def _defer_pending(self, intent: EvidenceCaptureIntent) -> None:
+        current = self._pending_captures.get(intent.evidence_id)
+        attempt_count = 1 if current is None else current.attempt_count + 1
+        exponent = min(attempt_count - 1, 10)
+        delay = min(
+            _PENDING_RETRY_BASE_SECONDS * (2**exponent),
+            _PENDING_RETRY_MAX_SECONDS,
+        )
+        self._pending_captures[intent.evidence_id] = _PendingCapture(
+            intent=intent,
+            attempt_count=attempt_count,
+            next_attempt_at=self._monotonic_clock() + delay,
+        )
 
     def _observe_capture(
         self,

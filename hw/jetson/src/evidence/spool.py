@@ -30,6 +30,7 @@ from src.evidence.models import (
 )
 from src.storage.evidence_repository import (
     MAX_EVIDENCE_ARTIFACTS_PER_INCIDENT,
+    EvidenceArtifactConflictError,
     EvidenceArtifactRepository,
 )
 from src.storage.unit_of_work import UnitOfWork
@@ -323,18 +324,40 @@ class EvidenceSpool:
             raise ValueError("error must not be empty")
         at = now or _utc_now()
         with self._lock:
+            try:
+                with UnitOfWork(self._connection):
+                    return self._repository.mark_capture_failed(
+                        evidence_id,
+                        failed_at=at,
+                        error=error,
+                        disposition=disposition,
+                    )
+            except EvidenceArtifactConflictError as conflict:
+                raise EvidenceStateError(str(conflict)) from conflict
+
+    def reconcile_interrupted_write(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        now: datetime | None = None,
+    ) -> EvidenceArtifact:
+        """단일 WRITING artifact를 현재 final file 기준 READY/FAILED로 종결한다."""
+
+        at = now or _utc_now()
+        with self._lock:
             artifact = self._require_artifact(evidence_id)
-            if artifact.state is EvidenceState.FAILED:
-                return artifact
-            if artifact.state is not EvidenceState.RESERVED:
+            if artifact.state is not EvidenceState.WRITING:
                 raise EvidenceStateError(
-                    f"evidence {evidence_id} is {artifact.state.value}, not RESERVED"
+                    f"evidence {evidence_id} is {artifact.state.value}, not WRITING"
                 )
-            return self._mark_failed(
+            # rename 뒤 directory fsync가 실패한 경우 file이 현재 보인다는 사실만으로
+            # READY를 선언할 수 없다. directory entry를 다시 durable하게 만든 뒤
+            # 기존 startup recovery와 동일한 binary 검증을 수행한다.
+            self._fsync_directory()
+            return self._recover_writing(
                 artifact,
+                final_path=self._final_path(evidence_id),
                 at=at,
-                error=error,
-                disposition=disposition,
             )
 
     def recover(self, *, now: datetime | None = None) -> EvidenceRecoveryReport:
