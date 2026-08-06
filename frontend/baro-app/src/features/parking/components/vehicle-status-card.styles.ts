@@ -29,7 +29,10 @@ export const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 3.5,
-    backgroundColor: Palette.emerald500,
+    backgroundColor: Palette.gray400,
+  },
+  statusDotEv: {
+    backgroundColor: Palette.blue500,
   },
   statusDotViolation: {
     backgroundColor: Palette.red500,
@@ -37,7 +40,10 @@ export const styles = StyleSheet.create({
   statusLabel: {
     fontSize: 12,
     fontWeight: FontWeight.bold,
-    color: Palette.emerald500,
+    color: Palette.gray600,
+  },
+  statusLabelEv: {
+    color: Palette.blue500,
   },
   statusLabelViolation: {
     color: Palette.red500,
@@ -72,28 +78,7 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Palette.gray975,
   },
-  evTimeBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: Radius.md,
-    backgroundColor: Palette.violet50,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-  },
-  evTimeBoxWarning: {
-    backgroundColor: Palette.orange50,
-  },
-  evTimeLabel: {
-    fontSize: 11.5,
-    color: Palette.gray600,
-  },
-  evTimeValue: {
-    fontSize: 12.5,
-    fontWeight: FontWeight.bold,
-    color: Palette.violet600,
-  },
-  evTimeValueWarning: {
+  fieldValueWarning: {
     color: Palette.red500,
   },
   emptyText: {
@@ -101,14 +86,11 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
-  additionalCountBadge: {
-    alignSelf: 'flex-start',
-    borderRadius: Radius.full,
-    backgroundColor: Palette.violet50,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    fontSize: 11,
-    fontWeight: FontWeight.bold,
-    color: Palette.violet600,
+  additionalCountText: {
+    alignSelf: 'center',
+    marginLeft: Spacing.xxs,
+    fontSize: 12.5,
+    fontWeight: FontWeight.semibold,
+    color: Palette.gray500,
   },
 });

@@ -16,18 +16,23 @@ const VALUE_COLOR_STYLE: Record<CongestionLevel, object> = {
   HIGH: styles.valueHigh,
 };
 
-type ParkingCongestionBadgeProps = {
-  level: CongestionLevel;
-  /** "여유 · 14%" 형태. "혼잡도"라는 접두어는 이 컴포넌트가 직접 붙인다. */
-  valueLabel: string;
+const LEVEL_LABEL: Record<CongestionLevel, string> = {
+  LOW: '여유',
+  MEDIUM: '보통',
+  HIGH: '혼잡',
 };
 
-export function ParkingCongestionBadge({ level, valueLabel }: ParkingCongestionBadgeProps) {
+type ParkingCongestionBadgeProps = {
+  level: CongestionLevel;
+  rateLabel: string;
+};
+
+export function ParkingCongestionBadge({ level, rateLabel }: ParkingCongestionBadgeProps) {
   return (
     <View style={styles.row}>
-      <Text style={styles.prefix}>혼잡도</Text>
+      <Text style={styles.metric}>혼잡도 {rateLabel}</Text>
       <View style={[styles.pill, PILL_STYLE[level]]}>
-        <Text style={[styles.value, VALUE_COLOR_STYLE[level]]}>{valueLabel}</Text>
+        <Text style={[styles.value, VALUE_COLOR_STYLE[level]]}>{LEVEL_LABEL[level]}</Text>
       </View>
     </View>
   );

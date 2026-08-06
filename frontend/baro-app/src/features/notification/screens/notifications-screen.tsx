@@ -12,6 +12,8 @@ import { useNotifications, type NotificationTab } from '@/features/notification/
 import { navigateFromNotification } from '@/features/notification/utils/notification-navigation';
 import { Spacing } from '@/styles';
 
+import { styles } from './notifications-screen.styles';
+
 const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
   { key: 'all', label: '전체' },
   { key: 'moveRequest', label: '이동 요청' },
@@ -48,7 +50,7 @@ export default function NotificationsScreen() {
           <SegmentedControl options={TAB_OPTIONS} value={tab} onChange={setTab} />
 
           <AsyncStateView message={statusMessage}>
-            <Stack gap={Spacing.base}>
+            <Stack gap={Spacing.base} style={styles.list}>
               {notifications.map((notification) => (
                 <NotificationCard
                   key={notification.notificationId}

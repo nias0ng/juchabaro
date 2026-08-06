@@ -8,7 +8,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xs,
   },
-  prefix: {
+  metric: {
     fontSize: 13,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,

@@ -120,12 +120,14 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
 
   return (
     <RequestDetailSection
+      requestId={display.requestId}
       photos={display.photos}
       summaryTitle={vm.viewMode === 'requester' ? REQUESTER_SUMMARY_TITLE : SUMMARY_TITLE}
       reasonQuote={display.reasonQuote}
       violationType={display.violationTypeLabel}
       plateNumber={display.plateNumber}
       location={display.location}
+      requestedAtLabel={display.requestedAtLabel}
       showActions={vm.showResponseActions}
       reminderMessage={
         vm.viewMode === 'requester'

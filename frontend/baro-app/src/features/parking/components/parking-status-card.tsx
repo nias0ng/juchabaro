@@ -46,7 +46,10 @@ export function ParkingStatusCard({
       <View style={styles.card}>
         {status ? (
           <View style={styles.congestionPill}>
-            <ParkingCongestionBadge level={status.congestionLevel} valueLabel={status.congestionValueLabel} />
+            <ParkingCongestionBadge
+              level={status.congestionLevel}
+              rateLabel={status.congestionRateLabel}
+            />
           </View>
         ) : null}
 
