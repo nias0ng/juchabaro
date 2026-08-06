@@ -39,7 +39,8 @@ public class InboundIdempotencyService {
             inboundReceiptRepository.saveAndFlush(InboundReceipt.builder()
                     .endpoint(endpoint).idempotencyKey(idempotencyKey).payloadHash(hash).build());
         } catch (DataIntegrityViolationException e) {
-            // 동시 요청 경쟁: 다른 트랜잭션이 같은 키를 먼저 삽입함 → 500 대신 재시도 신호(409)
+            // 동시 요청 경쟁: 다른 트랜잭션이 같은 키를 먼저 삽입함.
+            // 확정된 payload 충돌(409)와 구분해 동일 요청을 재시도하도록 503을 보낸다.
             throw new BusinessException(ErrorCode.HW_IDEMPOTENCY_IN_PROGRESS);
         }
     }

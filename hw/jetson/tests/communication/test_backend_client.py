@@ -148,6 +148,35 @@ def test_publish_treats_network_and_5xx_as_retryable() -> None:
         server_client.close()
 
 
+def test_idempotency_in_progress_503_retries_but_conflict_409_is_terminal(
+) -> None:
+    publication = _publication()
+    in_progress_client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(lambda _: httpx.Response(503)),
+    )
+    conflict_client = BackendClient(
+        base_url="http://backend:8080",
+        hw_api_key="key",
+        transport=httpx.MockTransport(lambda _: httpx.Response(409)),
+    )
+    try:
+        with pytest.raises(
+            RetryableBackendPublicationError,
+            match="503",
+        ):
+            in_progress_client.publish(publication)
+        with pytest.raises(
+            TerminalBackendPublicationError,
+            match="409",
+        ):
+            conflict_client.publish(publication)
+    finally:
+        in_progress_client.close()
+        conflict_client.close()
+
+
 def test_publish_accepts_already_applied_after_lost_ack() -> None:
     publication = _publication()
     ack = _ack(publication)
