@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown, Download, Search } from '@lucide/vue'
+import { ChevronDown, Download } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import AppPagination from '@/components/ui/AppPagination.vue'
+import SearchBox from '@/components/ui/SearchBox.vue'
+import TableStateRow from '@/components/ui/TableStateRow.vue'
+import TableFooter from '@/components/ui/TableFooter.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
 import {
@@ -149,10 +151,7 @@ const selectedRow = computed(
             관리자 확인
           </button>
 
-          <div class="search-box">
-            <Search :size="16" />
-            <input v-model="carQuery" type="text" placeholder="차량 번호 검색">
-          </div>
+          <SearchBox v-model="carQuery" placeholder="차량 번호 검색" input-width="128px" />
 
           <button type="button" class="export-btn" @click="exportCsv">
             <Download :size="16" /> 내보내기
@@ -170,15 +169,27 @@ const selectedRow = computed(
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="parkingEventStore.eventsLoading">
-                  <td colspan="7" class="empty">불러오는 중입니다…</td>
-                </tr>
-                <tr v-else-if="parkingEventStore.eventsError">
-                  <td colspan="7" class="empty error">{{ parkingEventStore.eventsError }}</td>
-                </tr>
-                <tr v-else-if="pagedRows.length === 0">
-                  <td colspan="7" class="empty">조건에 맞는 사건이 없습니다.</td>
-                </tr>
+                <TableStateRow
+                  v-if="parkingEventStore.eventsLoading"
+                  :colspan="7"
+                  variant="loading"
+                  message="불러오는 중입니다…"
+                  horizontal-padding="var(--spacing-base)"
+                />
+                <TableStateRow
+                  v-else-if="parkingEventStore.eventsError"
+                  :colspan="7"
+                  variant="error"
+                  :message="parkingEventStore.eventsError"
+                  horizontal-padding="var(--spacing-base)"
+                />
+                <TableStateRow
+                  v-else-if="pagedRows.length === 0"
+                  :colspan="7"
+                  variant="empty"
+                  message="조건에 맞는 사건이 없습니다."
+                  horizontal-padding="var(--spacing-base)"
+                />
                 <tr
                   v-for="r in pagedRows"
                   v-else
@@ -206,12 +217,14 @@ const selectedRow = computed(
               </tbody>
             </table>
           </div>
-          <div class="footer">
-            <span>전체 {{ filteredRows.length }}건 중 {{ rangeStart }}-{{ rangeEnd }} 표시</span>
-            <div class="pagination-wrap">
-              <AppPagination :page="safePage" :total-pages="totalPages" @page-change="page = $event" />
-            </div>
-          </div>
+          <TableFooter
+            :total="filteredRows.length"
+            :range-start="rangeStart"
+            :range-end="rangeEnd"
+            :page="safePage"
+            :total-pages="totalPages"
+            @page-change="page = $event"
+          />
         </div>
       </div>
 
@@ -327,25 +340,6 @@ const selectedRow = computed(
   font-weight: 600;
 }
 
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-base);
-  color: var(--panel-muted-foreground);
-}
-
-.search-box input {
-  width: 128px;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: var(--font-size-sm);
-}
-
 .export-btn {
   display: inline-flex;
   align-items: center;
@@ -392,16 +386,6 @@ th {
 
 td {
   padding: 14px var(--spacing-sm);
-}
-
-.empty {
-  padding: 40px var(--spacing-base);
-  text-align: center;
-  color: var(--panel-muted-foreground);
-}
-
-.empty.error {
-  color: var(--panel-danger);
 }
 
 .row {
@@ -460,21 +444,6 @@ td {
 
 .link-btn:hover {
   background: var(--panel-muted);
-}
-
-.footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-top: 20px;
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.pagination-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 .detail-panel {
