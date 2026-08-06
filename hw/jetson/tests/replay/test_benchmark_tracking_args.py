@@ -22,6 +22,32 @@ def test_video_source_defaults_start_at_beginning() -> None:
     assert args.tracker == "bytetrack.yaml"
     assert args.half is False
     assert args.imgsz is None
+    assert args.fourcc is None
+    assert args.camera_fps == 0.0
+
+
+def test_camera_capture_mode_arguments_are_parsed() -> None:
+    args = build_parser().parse_args(
+        [
+            "--model",
+            "best.pt",
+            "--camera-index",
+            "0",
+            "--width",
+            "1280",
+            "--height",
+            "720",
+            "--fourcc",
+            "MJPG",
+            "--camera-fps",
+            "30",
+        ]
+    )
+
+    assert args.width == 1280
+    assert args.height == 720
+    assert args.fourcc == "MJPG"
+    assert args.camera_fps == 30.0
 
 
 def test_start_seconds_selects_a_segment_with_vehicles() -> None:

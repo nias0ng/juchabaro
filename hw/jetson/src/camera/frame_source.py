@@ -261,6 +261,8 @@ class OpenCvWebcamFrameSource:
     camera_index: int
     width: int = 0
     height: int = 0
+    fourcc: str | None = None
+    fps: float = 0.0
     _capture: Any | None = field(default=None, init=False, repr=False)
     _next_frame_id: int = field(default=1, init=False, repr=False)
 
@@ -274,6 +276,18 @@ class OpenCvWebcamFrameSource:
         # cv2가 정의하지 않은 값을 받게 된다.
         if self.width < 0 or self.height < 0:
             raise ValueError(f"width/height는 음수일 수 없습니다: width={self.width}, height={self.height}")
+        if not math.isfinite(self.fps) or self.fps < 0.0:
+            raise ValueError(f"fps는 0 이상의 유한값이어야 합니다: fps={self.fps}")
+        if self.fourcc is not None:
+            normalized = self.fourcc.strip().upper()
+            if len(normalized) != 4 or not all(
+                32 <= ord(char) <= 126 for char in normalized
+            ):
+                raise ValueError(
+                    "fourcc는 printable ASCII 네 글자여야 합니다: "
+                    f"fourcc={self.fourcc!r}"
+                )
+            self.fourcc = normalized
 
     def open(self) -> None:
         """웹캠 장치를 연다. 이미 열려 있으면 아무 일도 하지 않는다."""
@@ -282,13 +296,73 @@ class OpenCvWebcamFrameSource:
             return
         cv2 = _import_cv2()
         capture = cv2.VideoCapture(self.camera_index)
+        # V4L2는 format·resolution·fps 조합으로 capture mode를 협상한다.
+        # YUYV를 먼저 고른 뒤 fps만 요청하면 720p가 10fps로 고정될 수 있으므로
+        # 압축 포맷을 가장 먼저 요청한다.
+        if self.fourcc is not None:
+            capture.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*self.fourcc),
+            )
         if self.width:
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height:
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if self.fps:
+            capture.set(cv2.CAP_PROP_FPS, self.fps)
         if not capture.isOpened():
             capture.release()
             raise FrameSourceError(f"웹캠 장치를 열 수 없습니다: index={self.camera_index}")
+
+        actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = float(capture.get(cv2.CAP_PROP_FPS))
+        actual_fourcc_code = int(capture.get(cv2.CAP_PROP_FOURCC))
+        actual_fourcc = "".join(
+            chr((actual_fourcc_code >> (8 * index)) & 0xFF)
+            for index in range(4)
+        ).rstrip("\x00")
+
+        LOGGER.info(
+            "웹캠 capture mode가 협상됐습니다. "
+            "cameraId=%s index=%d requested=%sx%s@%s fourcc=%s "
+            "actual=%sx%s@%s fourcc=%s",
+            self.camera_id,
+            self.camera_index,
+            self.width or "default",
+            self.height or "default",
+            self.fps or "default",
+            self.fourcc or "default",
+            actual_width,
+            actual_height,
+            actual_fps,
+            actual_fourcc or "unknown",
+        )
+
+        mismatches: list[str] = []
+        if self.width and actual_width != self.width:
+            mismatches.append(f"width={actual_width}(requested={self.width})")
+        if self.height and actual_height != self.height:
+            mismatches.append(f"height={actual_height}(requested={self.height})")
+        if self.fps and not math.isclose(
+            actual_fps,
+            self.fps,
+            rel_tol=0.01,
+            abs_tol=0.1,
+        ):
+            mismatches.append(f"fps={actual_fps}(requested={self.fps})")
+        if self.fourcc is not None and actual_fourcc != self.fourcc:
+            mismatches.append(
+                f"fourcc={actual_fourcc or 'unknown'}(requested={self.fourcc})"
+            )
+        if mismatches:
+            LOGGER.warning(
+                "웹캠이 요청한 capture mode를 그대로 적용하지 않았습니다. "
+                "cameraId=%s index=%d mismatches=%s",
+                self.camera_id,
+                self.camera_index,
+                ",".join(mismatches),
+            )
         self._capture = capture
 
     def capture(self) -> CapturedFrame:

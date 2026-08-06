@@ -30,6 +30,16 @@ class FakeVideoCapture:
     def set(self, prop, value):
         self.set_calls.append((prop, value))
 
+    def get(self, prop):
+        for set_prop, value in reversed(self.set_calls):
+            if set_prop == prop:
+                return value
+        if prop == cv2.CAP_PROP_FRAME_WIDTH:
+            return self._frames[0].shape[1] if self._frames else 0
+        if prop == cv2.CAP_PROP_FRAME_HEIGHT:
+            return self._frames[0].shape[0] if self._frames else 0
+        return 0
+
     def read(self):
         if self._index >= len(self._frames):
             return False, None
@@ -57,6 +67,18 @@ def test_rejects_negative_width_or_height(width, height):
     """음수는 0("요청 생략")과 달리 truthy라 그대로 capture.set()에 넘어간다."""
     with pytest.raises(ValueError):
         OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0, width=width, height=height)
+
+
+@pytest.mark.parametrize("fps", [-1.0, float("nan"), float("inf")])
+def test_rejects_invalid_fps(fps):
+    with pytest.raises(ValueError):
+        OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0, fps=fps)
+
+
+@pytest.mark.parametrize("fourcc", ["", "YUYV1", "한글AB"])
+def test_rejects_invalid_fourcc(fourcc):
+    with pytest.raises(ValueError):
+        OpenCvWebcamFrameSource(camera_id="cam-1", camera_index=0, fourcc=fourcc)
 
 
 def test_open_opens_the_device_at_given_index(monkeypatch):
@@ -116,6 +138,29 @@ def test_requested_resolution_is_applied_via_set(monkeypatch):
 
     assert (cv2.CAP_PROP_FRAME_WIDTH, 1280) in fake.set_calls
     assert (cv2.CAP_PROP_FRAME_HEIGHT, 720) in fake.set_calls
+
+
+def test_requested_capture_mode_is_applied_before_resolution(monkeypatch):
+    fake = FakeVideoCapture([make_bgr_frame(width=1280, height=720)])
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+    source = OpenCvWebcamFrameSource(
+        camera_id="cam-1",
+        camera_index=0,
+        width=1280,
+        height=720,
+        fourcc="mjpg",
+        fps=30.0,
+    )
+
+    source.open()
+
+    assert source.fourcc == "MJPG"
+    assert fake.set_calls == [
+        (cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")),
+        (cv2.CAP_PROP_FRAME_WIDTH, 1280),
+        (cv2.CAP_PROP_FRAME_HEIGHT, 720),
+        (cv2.CAP_PROP_FPS, 30.0),
+    ]
 
 
 def test_zero_resolution_skips_set_calls(monkeypatch):

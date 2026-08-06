@@ -181,6 +181,8 @@ def build_runtime_monitoring_pipeline(
         camera_index=settings.camera_index,
         width=settings.camera_width,
         height=settings.camera_height,
+        fourcc=settings.camera_fourcc,
+        fps=settings.camera_fps,
     )
     frame_source = RemapFrameSource(
         inner=webcam,
