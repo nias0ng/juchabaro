@@ -16,7 +16,8 @@ class _BlockingPipeline:
     def open(self) -> None:
         self.opened = True
 
-    def run(self, *, stop_requested) -> int:
+    def run(self, *, stop_requested, frame_observer=None) -> int:
+        del frame_observer
         self.entered_run.set()
         while not stop_requested():
             self.closed.wait(0.01)
@@ -32,8 +33,8 @@ class _OpenFailingPipeline(_BlockingPipeline):
 
 
 class _RunFailingPipeline(_BlockingPipeline):
-    def run(self, *, stop_requested) -> int:
-        del stop_requested
+    def run(self, *, stop_requested, frame_observer=None) -> int:
+        del stop_requested, frame_observer
         self.entered_run.set()
         raise RuntimeError("inference failed")
 
@@ -83,3 +84,42 @@ def test_worker_cannot_be_started_twice() -> None:
             worker.start()
     finally:
         worker.stop()
+
+
+class _ObserverCapturingPipeline(_BlockingPipeline):
+    def __init__(self) -> None:
+        super().__init__()
+        self.received_observer: object = "not-called"
+
+    def run(self, *, stop_requested, frame_observer=None) -> int:
+        self.received_observer = frame_observer
+        self.entered_run.set()
+        while not stop_requested():
+            self.closed.wait(0.01)
+        return 0
+
+
+def test_worker_forwards_frame_observer_to_pipeline_run() -> None:
+    pipeline = _ObserverCapturingPipeline()
+
+    def observer(frame, tracking_batch, result) -> None:
+        del frame, tracking_batch, result
+
+    worker = MonitoringWorker(pipeline, frame_observer=observer)
+
+    worker.start()
+    assert pipeline.entered_run.wait(timeout=1.0)
+    worker.stop()
+
+    assert pipeline.received_observer is observer
+
+
+def test_worker_forwards_none_when_no_frame_observer_configured() -> None:
+    pipeline = _ObserverCapturingPipeline()
+    worker = MonitoringWorker(pipeline)
+
+    worker.start()
+    assert pipeline.entered_run.wait(timeout=1.0)
+    worker.stop()
+
+    assert pipeline.received_observer is None

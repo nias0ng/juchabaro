@@ -18,7 +18,15 @@ import numpy as np
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.camera.models import CapturedFrame
-from src.parking.models import ParkingEpisode, ParkingState, ZoneType, ZoneVisit, ZoneVisitState
+from src.parking.models import (
+    Incident,
+    IncidentState,
+    ParkingEpisode,
+    ParkingState,
+    ZoneType,
+    ZoneVisit,
+    ZoneVisitState,
+)
 from src.parking.zone_registry import ZoneRegistry
 from src.tracking.models import PhysicalVehicleId, TrackingBatch
 
@@ -55,6 +63,11 @@ _PARKING_EPISODE_COLORS: dict[ParkingState, tuple[int, int, int]] = {
     ParkingState.MOVE_PENDING: (255, 0, 255),
 }
 _ACTIVE_PARKING_STATES = frozenset(_PARKING_EPISODE_COLORS)
+# 사건 표시색은 bbox 상태 팔레트와 다른 축이다 — bbox 색은 주차·구역 상태를
+# 계속 나타내고, 사건은 그 위에 겹쳐 그리는 별도 배지·배너로만 쓴다.
+_INCIDENT_COLOR = (40, 40, 255)
+_INCIDENT_BANNER_HEIGHT = 40
+_ACTIVE_INCIDENT_STATES = frozenset({IncidentState.OPEN, IncidentState.CLEAR_PENDING})
 _DEFAULT_JPEG_QUALITY = 80
 
 
@@ -75,6 +88,7 @@ def draw_overlay(
     canvas = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
     _draw_zones(canvas, zones)
     _draw_vehicles(canvas, tracking_batch, result)
+    _draw_incidents(canvas, tracking_batch, result)
     return canvas
 
 
@@ -145,6 +159,80 @@ def _draw_vehicles(
             canvas, f"#{short_id} {label_suffix}".rstrip(), (x1, max(12, y1 - 6)),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
         )
+
+
+def _draw_incidents(
+    canvas: np.ndarray,
+    tracking_batch: TrackingBatch,
+    result: FrameObservationResult,
+) -> None:
+    """확정된 사건을 차량별 배지와 상단 배너로 그린다.
+
+    `incident_transitions`가 아니라 `incident_updates`를 읽는다 — 전자는 OPEN·
+    RESOLVE가 일어난 프레임에만 값이 있어 배지가 한 프레임만 번쩍인다.
+    """
+
+    height, width = canvas.shape[:2]
+    incidents_by_vehicle = _index_incidents(result.parking_result.incident_updates)
+    if not incidents_by_vehicle:
+        return
+
+    for vehicle in tracking_batch.vehicles:
+        incidents = incidents_by_vehicle.get(vehicle.physical_vehicle_id)
+        if not incidents:
+            continue
+        x1 = int(vehicle.bbox.x1 * width)
+        y2 = int(vehicle.bbox.y2 * height)
+        for offset, incident in enumerate(incidents):
+            baseline = min(height - 4, y2 + 18 + offset * 18)
+            cv2.putText(
+                canvas, incident.key.rule_code, (x1, baseline),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, _INCIDENT_COLOR, 2,
+            )
+
+    _draw_incident_banner(canvas, incidents_by_vehicle)
+
+
+def _draw_incident_banner(
+    canvas: np.ndarray,
+    incidents_by_vehicle: Mapping[PhysicalVehicleId, tuple[Incident, ...]],
+) -> None:
+    """발표장 뒷자리에서도 읽히도록 활성 규칙코드를 상단에 크게 띄운다."""
+
+    rule_codes = sorted(
+        {
+            incident.key.rule_code
+            for incidents in incidents_by_vehicle.values()
+            for incident in incidents
+        }
+    )
+    width = canvas.shape[1]
+    cv2.rectangle(
+        canvas, (0, 0), (width, _INCIDENT_BANNER_HEIGHT), (0, 0, 0), thickness=-1
+    )
+    cv2.putText(
+        canvas, " / ".join(rule_codes), (8, _INCIDENT_BANNER_HEIGHT - 12),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, _INCIDENT_COLOR, 2,
+    )
+
+
+def _index_incidents(
+    incidents: tuple[Incident, ...]
+) -> Mapping[PhysicalVehicleId, tuple[Incident, ...]]:
+    """확정된(OPEN·CLEAR_PENDING) 사건만 차량별로 모은다.
+
+    CANDIDATE는 아직 확정 전이고 RESOLVED·CANCELED는 끝났으므로 그리지 않는다.
+    """
+
+    grouped: dict[PhysicalVehicleId, list[Incident]] = {}
+    for incident in incidents:
+        if incident.state not in _ACTIVE_INCIDENT_STATES:
+            continue
+        grouped.setdefault(incident.physical_vehicle_id, []).append(incident)
+    return {
+        vehicle_id: tuple(sorted(group, key=lambda item: item.key.rule_code))
+        for vehicle_id, group in grouped.items()
+    }
 
 
 def _index_episodes(

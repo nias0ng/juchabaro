@@ -214,10 +214,20 @@ Jetson은 `0.0.0.0:8000`에 수신 서버를 열며 실제 Backend base URL은 E
 POST /internal/entry-review-resolutions
 POST /internal/session-context-updates
 POST /internal/move-verifications
+GET  /live
+GET  /live/stream
 ```
 
-모든 요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
+아래 데모 전용 두 엔드포인트(`GET /live`, `GET /live/stream`)를 제외한 모든
+요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
 local `.env`의 `INTERNAL_API_KEY`에만 저장하고 Git에는 넣지 않는다.
+
+`GET /live`와 `GET /live/stream`은 라이브 시연 중 브라우저나 OBS로 판정
+오버레이를 보기 위한 데모 전용 표면이며 `X-Internal-API-Key`를 요구하지
+않는다. `LIVE_STREAM_ENABLED=true`일 때만 실제 오버레이 프레임을 낸다.
+`GET /live`는 정적 뷰어 페이지라 설정과 무관하게 200을 반환하므로,
+`LIVE_STREAM_ENABLED=false`에서는 그 페이지가 가리키는 `/live/stream`이
+503으로 응답한다.
 `Idempotency-Key`는 command identity·revision·payload와 함께 SQLite에 기간
 제한 없이 보존한다. 같은 key와 같은 payload는 재적용하지 않으며, 같은 key나
 identity·revision을 다른 payload에 사용하면 `409 IDEMPOTENCY_CONFLICT`다.

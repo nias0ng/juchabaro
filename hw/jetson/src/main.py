@@ -26,6 +26,7 @@ from src.api.error_handlers import register_error_handlers
 from src.api.entry_events_router import router as entry_events_router
 from src.api.health_router import router as health_router
 from src.api.internal_commands_router import router as internal_commands_router
+from src.api.live_stream_router import router as live_stream_router
 from src.application.entry_event_intake import EntryEventIntake
 from src.application.entry_review_resolution_intake import (
     EntryReviewResolutionIntake,
@@ -67,6 +68,7 @@ from src.config.monitoring_policy import (
 )
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
+from src.live.overlay_publisher import OverlayPublisher
 from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
@@ -293,6 +295,15 @@ def create_app(
             evidence_capture_coordinator
         )
 
+        overlay_publisher: OverlayPublisher | None = None
+        if resolved_settings.live_stream_enabled:
+            overlay_publisher = OverlayPublisher(
+                zones=zones,
+                jpeg_quality=resolved_settings.live_stream_jpeg_quality,
+                target_fps=resolved_settings.live_stream_target_fps,
+            )
+        application.state.overlay_publisher = overlay_publisher
+
         monitoring_worker: MonitoringWorker | None = None
         if monitoring_pipeline_factory is not None:
             pipeline = monitoring_pipeline_factory(
@@ -314,7 +325,9 @@ def create_app(
                 pipeline.bind_evidence_capture_sink(
                     evidence_capture_coordinator
                 )
-            monitoring_worker = MonitoringWorker(pipeline)
+            monitoring_worker = MonitoringWorker(
+                pipeline, frame_observer=overlay_publisher
+            )
         application.state.monitoring_worker = monitoring_worker
 
         move_verification_worker = MoveVerificationExecutorWorker(
@@ -405,6 +418,7 @@ def create_app(
     application.include_router(health_router)
     application.include_router(entry_events_router)
     application.include_router(internal_commands_router)
+    application.include_router(live_stream_router)
 
     return application
 
