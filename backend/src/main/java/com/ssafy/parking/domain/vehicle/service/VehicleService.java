@@ -121,8 +121,13 @@ public class VehicleService {
             throw new BusinessException(ErrorCode.VEHICLE_DELETE_ACCESS_DENIED);
         }
 
-        // TODO(409): 진행 중 주차세션/이동요청 있으면 VEHICLE_HAS_ACTIVE_RECORD 예외
-        //   (주차세션/이동요청 도메인 구현 후 체크 추가)
+        // 진행 중(미출차) 주차 세션이 있으면 삭제 거부 (409)
+        boolean hasActiveSession = parkingSessionRepository
+                .findFirstByVehicle_IdAndExitTimeIsNullOrderByEntryTimeDesc(vehicleId)
+                .isPresent();
+        if (hasActiveSession) {
+            throw new BusinessException(ErrorCode.VEHICLE_HAS_ACTIVE_RECORD);
+        }
 
         vehicle.markDeleted();                     // 소프트 삭제 (status = DELETED)
         vehicleRepository.saveAndFlush(vehicle);
