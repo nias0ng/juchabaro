@@ -18,7 +18,7 @@ import { QuickActionGrid, type QuickAction } from '../components/quick-action-gr
 
 const DEFAULT_AVATAR_INITIAL = '바';
 const DEFAULT_UNIT_LABEL = '동/호수 정보 없음';
-const PARKING_STATUS_TITLE = '주차 현황 · 지하 1층';
+const PARKING_STATUS_TITLE = '주차 현황';
 
 const quickActions: QuickAction[] = [
   {

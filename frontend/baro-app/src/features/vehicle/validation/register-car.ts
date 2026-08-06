@@ -47,6 +47,13 @@ export function toApiPlateNumber(plateNumber: string): string {
   return plateNumber.replace(' ', '');
 }
 
+const PLATE_NUMBER_DISPLAY_PATTERN = /^([0-9]{2,3}[가-힣])([0-9]{4})$/;
+
+export function formatPlateNumberDisplay(plateNumber: string): string {
+  const match = plateNumber.match(PLATE_NUMBER_DISPLAY_PATTERN);
+  return match ? `${match[1]} ${match[2]}` : plateNumber;
+}
+
 /** 폼에 저장된 "YYYY.MM.DD"를 API가 요구하는 "YYYY-MM-DD"로 변환한다. */
 export function toApiVisitDate(visitDate: string): string {
   return visitDate.replaceAll('.', '-');

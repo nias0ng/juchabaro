@@ -5,17 +5,19 @@ import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   card: {
     width: '100%',
-    minHeight: Spacing.xxxl * 2 + Spacing.xl,
     marginBottom: Spacing.base,
     backgroundColor: Palette.white,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
-    gap: Spacing.base,
+    gap: Spacing.sm,
     ...Shadows.card,
   },
   emptyCard: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  topGroup: {
+    gap: Spacing.xs,
   },
   headerGroup: {
     gap: Spacing.none,
@@ -80,11 +82,24 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
+  valueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  additionalCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xxs,
+  },
   additionalCountText: {
-    alignSelf: 'center',
-    marginLeft: Spacing.xxs,
     fontSize: 12.5,
     fontWeight: FontWeight.semibold,
-    color: Palette.gray500,
+    color: Palette.violet500,
+  },
+  additionalCountChevron: {
+    fontSize: 14,
+    fontWeight: FontWeight.semibold,
+    color: Palette.violet500,
   },
 });
