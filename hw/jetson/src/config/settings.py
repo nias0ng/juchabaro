@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     camera_width: int = Field(default=0, ge=0)
     camera_height: int = Field(default=0, ge=0)
 
+    # 데모용 라이브 오버레이 MJPEG 스트리밍. 운영 배포는 기본값(꺼짐)을
+    # 유지한다 — 켜면 매 프레임 JPEG 인코딩 비용이 판정 루프와 같은
+    # thread에서 발생한다.
+    live_stream_enabled: bool = False
+    live_stream_target_fps: float = Field(default=15.0, gt=0.0)
+    live_stream_jpeg_quality: int = Field(default=80, ge=1, le=100)
+
     # 파일 존재·형식과 calibration 파일 SHA fingerprint 일치는 concrete
     # factory의 기동 preflight에서 검증한다. remap balance와 zone 좌표계의
     # 호환성은 현재 calibrationReference만으로 검증할 수 없으므로 배포

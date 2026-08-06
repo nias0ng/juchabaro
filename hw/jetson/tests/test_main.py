@@ -16,12 +16,13 @@ class _BlockingPipeline:
         self.opened = False
         self.entered_run = Event()
         self.closed = Event()
+        self.received_frame_observer: object | None = None
 
     def open(self) -> None:
         self.opened = True
 
     def run(self, *, stop_requested, frame_observer=None) -> int:
-        del frame_observer
+        self.received_frame_observer = frame_observer
         self.entered_run.set()
         while not stop_requested():
             self.closed.wait(0.01)
@@ -74,7 +75,7 @@ def _install_lifecycle_worker_spies(
     workers: dict[str, _LifecycleWorker] = {}
 
     def worker_constructor(name: str):
-        def construct(_owner) -> _LifecycleWorker:
+        def construct(_owner, **_kwargs) -> _LifecycleWorker:
             worker = _LifecycleWorker(
                 name=name,
                 stop_calls=stop_calls,
@@ -386,3 +387,47 @@ def test_lifespan_runs_outbox_publisher_when_backend_hw_api_key_is_configured(
 
     assert application.state.evidence_publication_worker.is_running is False
     assert application.state.outbox_publisher_worker.is_running is False
+
+
+def test_overlay_publisher_is_none_when_live_stream_is_disabled(
+    tmp_path,
+) -> None:
+    """운영 기본값(꺼짐)에서는 MJPEG 인코딩 경로가 전혀 배선되지 않는다."""
+
+    from src.main import create_app
+
+    pipeline = _BlockingPipeline()
+    application = create_app(
+        settings=_settings(tmp_path),
+        monitoring_pipeline_factory=lambda _context: pipeline,
+    )
+
+    with TestClient(application) as client:
+        assert client.get("/health").status_code == 200
+        assert application.state.overlay_publisher is None
+        assert pipeline.entered_run.wait(timeout=1.0)
+        assert pipeline.received_frame_observer is None
+
+
+def test_overlay_publisher_is_wired_as_frame_observer_when_live_stream_is_enabled(
+    tmp_path,
+) -> None:
+    from src.live.overlay_publisher import OverlayPublisher
+    from src.main import create_app
+
+    pipeline = _BlockingPipeline()
+    settings = _settings(tmp_path).model_copy(
+        update={"live_stream_enabled": True}
+    )
+    application = create_app(
+        settings=settings,
+        monitoring_pipeline_factory=lambda _context: pipeline,
+    )
+
+    with TestClient(application) as client:
+        assert client.get("/health").status_code == 200
+        assert isinstance(application.state.overlay_publisher, OverlayPublisher)
+        assert pipeline.entered_run.wait(timeout=1.0)
+        assert pipeline.received_frame_observer is (
+            application.state.overlay_publisher
+        )
