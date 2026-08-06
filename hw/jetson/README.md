@@ -94,6 +94,23 @@ calibration·차량 tracking·`EGRESS_AISLE_PATH` 및 MonitoringPolicy 필수값
 중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
 배포 환경에 맞게 명시한다.
 
+단일 USB 카메라를 사용하는 Jetson 운영 배치는 다음 asset 경로를 사용한다.
+
+```dotenv
+CAMERA_ID=PARKING-CAMERA-01
+CAMERA_INDEX=0
+CALIBRATION_PATH=/home/e202/config/camera_calibration.json
+REMAP_BALANCE=0.5
+VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
+```
+
+`config/camera_calibration.json`은 운영 배포용 calibration 정본이다. 이 파일의
+원시 바이트 SHA-256 앞 16자리는 `a26d3085c3d4fc4f`이며,
+`zone_definition.json`과 `egress_aisle.json`의 `calibrationReference`가 같은
+값이어야 한다. 해당 reference는 보정 수치로 사용하는 값이 아니라, 보정된
+frame과 polygon이 같은 좌표계인지 검증하는 식별자다. 파일을 다시 저장할 때
+줄바꿈이나 공백이 달라져도 지문이 바뀌므로 Git의 LF 바이트를 유지한다.
+
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
 `config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
