@@ -19,7 +19,7 @@
         --zones-file config/zone_definition.pilot.json \\
         --egress-aisles-file config/egress_aisle.pilot.json \\
         --calibration ../../ai/tracking/camera_calibration.json \\
-        --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260729-153946/weights/best.pt
+        --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260804-222535/weights/best.pt
 
     # 노트북 웹캠으로 (재연결 로직까지 보려면 실행 중 웹캠을 물리적으로 뽑았다 꽂아본다)
     python -m scripts.watch_live_stream \\
@@ -27,7 +27,7 @@
         --zones-file config/zone_definition.pilot.json \\
         --egress-aisles-file config/egress_aisle.pilot.json \\
         --calibration ../../ai/tracking/camera_calibration.json \\
-        --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260729-153946/weights/best.pt
+        --model-path ../../ai/training/runs/detect/runs/train/vehicle_detector-yolov8s-20260804-222535/weights/best.pt
 
 주의: 기존 calibration/zones 파일은 젯슨 카메라·주차장 배치 기준으로 만들어져
 있다. 노트북 웹캠은 렌즈·화각이 다르므로 왜곡 보정은 정확하지 않고, 구역
