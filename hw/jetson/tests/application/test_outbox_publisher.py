@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from src.application.outbox_publisher import OutboxPublisher
 from src.communication.backend_client import (
@@ -37,7 +38,10 @@ class _Client:
         self.closed = True
 
 
-def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(tmp_path) -> None:
+def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(
+    tmp_path,
+    caplog,
+) -> None:
     database = tmp_path / "jetson.db"
     prepared = _seed(database)
     payload_hash = hashlib.sha256(prepared.payload).hexdigest()
@@ -50,7 +54,17 @@ def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(tmp_path) ->
     )
     publisher = _publisher(database, client)
 
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.outbox_publisher",
+    ):
+        assert publisher.publish_once() is True
+
+    assert "Backend publication 전송이 완료됐습니다." in caplog.text
+    assert "aggregateType=Incident" in caplog.text
+    assert "transitionType=OPEN" in caplog.text
+    assert "applicationStatus=APPLIED" in caplog.text
+    assert prepared.payload.decode("utf-8") not in caplog.text
 
     connection = connect_database(database)
     try:
@@ -73,7 +87,7 @@ def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(tmp_path) ->
         connection.close()
 
 
-def test_publish_once_schedules_only_retryable_failure(tmp_path) -> None:
+def test_publish_once_schedules_only_retryable_failure(tmp_path, caplog) -> None:
     database = tmp_path / "jetson.db"
     prepared = _seed(database)
     publisher = _publisher(
@@ -81,7 +95,15 @@ def test_publish_once_schedules_only_retryable_failure(tmp_path) -> None:
         _Client(RetryableBackendPublicationError("offline")),
     )
 
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.WARNING,
+        logger="src.application.outbox_publisher",
+    ):
+        assert publisher.publish_once() is True
+
+    assert "Backend publication 재시도가 예약됐습니다." in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "RetryableBackendPublicationError: offline" in caplog.text
 
     connection = connect_database(database)
     try:
@@ -96,7 +118,7 @@ def test_publish_once_schedules_only_retryable_failure(tmp_path) -> None:
         connection.close()
 
 
-def test_publish_once_quarantines_terminal_failure(tmp_path) -> None:
+def test_publish_once_quarantines_terminal_failure(tmp_path, caplog) -> None:
     database = tmp_path / "jetson.db"
     prepared = _seed(database)
     publisher = _publisher(
@@ -104,7 +126,15 @@ def test_publish_once_quarantines_terminal_failure(tmp_path) -> None:
         _Client(TerminalBackendPublicationError("invalid contract")),
     )
 
-    assert publisher.publish_once() is True
+    with caplog.at_level(
+        logging.ERROR,
+        logger="src.application.outbox_publisher",
+    ):
+        assert publisher.publish_once() is True
+
+    assert "Backend publication이 영구 실패로 격리됐습니다." in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "TerminalBackendPublicationError: invalid contract" in caplog.text
 
     connection = connect_database(database)
     try:

@@ -1,5 +1,6 @@
 """main composition root의 migration·구역 로딩·worker 종료 테스트."""
 
+import logging
 from pathlib import Path
 from threading import Event
 
@@ -353,23 +354,28 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
 
 def test_lifespan_keeps_monitoring_disabled_without_exact_wire_factory(
     tmp_path,
+    caplog,
 ) -> None:
     from src.main import create_app
 
     application = create_app(settings=_settings(tmp_path))
 
-    with TestClient(application) as client:
-        assert client.get("/health").status_code == 200
-        assert application.state.monitoring_worker is None
-        assert application.state.move_verification_worker.is_running is True
-        assert application.state.evidence_publication_worker is None
-        assert application.state.outbox_publisher_worker is None
+    with caplog.at_level(logging.WARNING, logger="src.main"):
+        with TestClient(application) as client:
+            assert client.get("/health").status_code == 200
+            assert application.state.monitoring_worker is None
+            assert application.state.move_verification_worker.is_running is True
+            assert application.state.evidence_publication_worker is None
+            assert application.state.outbox_publisher_worker is None
+
+    assert "Backend publication worker를 비활성화합니다." in caplog.text
 
     assert application.state.move_verification_worker.is_running is False
 
 
 def test_lifespan_runs_outbox_publisher_when_backend_hw_api_key_is_configured(
     tmp_path,
+    caplog,
 ) -> None:
     from src.main import create_app
 
@@ -378,10 +384,17 @@ def test_lifespan_runs_outbox_publisher_when_backend_hw_api_key_is_configured(
     )
     application = create_app(settings=settings)
 
-    with TestClient(application) as client:
-        assert client.get("/health").status_code == 200
-        assert application.state.evidence_publication_worker.is_running is True
-        assert application.state.outbox_publisher_worker.is_running is True
+    with caplog.at_level(logging.INFO, logger="src.main"):
+        with TestClient(application) as client:
+            assert client.get("/health").status_code == 200
+            assert (
+                application.state.evidence_publication_worker.is_running
+                is True
+            )
+            assert application.state.outbox_publisher_worker.is_running is True
+
+    assert "Backend publication workers가 시작됐습니다." in caplog.text
+    assert "configured-hardware-key" not in caplog.text
 
     assert application.state.evidence_publication_worker.is_running is False
     assert application.state.outbox_publisher_worker.is_running is False
