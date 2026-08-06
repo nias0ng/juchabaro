@@ -23,6 +23,9 @@ from src.application.tof_zone_authorization import (
     TofZoneAuthorizationService,
     TofZoneVehicleCandidate,
 )
+from src.application.tof_zone_authorization_coordinator import (
+    TofZoneAuthorizationCoordinator,
+)
 from src.domain.models import (
     ObservationReason,
     ObservationState,
@@ -274,6 +277,26 @@ def _entry_match_attempt(
         created_at=NOW - timedelta(seconds=3),
         updated_at=NOW,
     )
+
+
+def _store_candidate_graph(
+    connection: sqlite3.Connection,
+    *,
+    context: SessionContext,
+) -> tuple[ContextBinding, ParkingSessionMirror]:
+    binding = _binding(context=context)
+    mirror = _mirror(context=context)
+
+    with UnitOfWork(connection):
+        PhysicalVehicleRepository(connection).ensure(_vehicle())
+        EntryMatchAttemptRepository(connection).add(
+            _entry_match_attempt(context=context)
+        )
+        ParkingSessionMirrorRepository(connection).add(mirror)
+        ContextBindingRepository(connection).add(binding)
+        ZoneVisitRepository(connection).add(_visit())
+
+    return binding, mirror
 
 
 class FakeQuery:
@@ -993,3 +1016,221 @@ def test_repository_query_does_not_roll_back_failed_caller_transaction(
         if connection.in_transaction:
             connection.rollback()
         connection.close()
+
+
+def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "jetson.db"
+    setup_connection = open_database(database_path)
+    current_snapshot = [_snapshot()]
+    current_time = [NOW]
+    published: list[TofZoneAuthorizationAssessment] = []
+
+    def occupancy_snapshots() -> tuple[ZoneOccupancySnapshot, ...]:
+        return (current_snapshot[0],)
+
+    def clock() -> datetime:
+        return current_time[0]
+
+    service = TofZoneAuthorizationService(
+        zones=ZoneRegistry(
+            (
+                _zone(ZoneType.DISABLED),
+            )
+        ),
+        policy=_policy(),
+        query=RepositoryTofZoneAuthorizationQuery(),
+    )
+    coordinator = TofZoneAuthorizationCoordinator(
+        authorization_service=service,
+        occupancy_snapshots=occupancy_snapshots,
+        sensor_runtime_available=lambda: True,
+        connection_factory=lambda: open_database(database_path),
+        assessment_consumer=published.append,
+        clock=clock,
+    )
+
+    try:
+        coordinator.request_zone(ZONE_ID)
+        first_run = coordinator.drain_pending()
+
+        assert first_run.failures == ()
+        assert len(first_run.published_assessments) == 1
+        first = first_run.published_assessments[0]
+        assert first.decision is TofAuthorizationDecision.UNKNOWN
+        assert first.reason is TofAuthorizationReason.VEHICLE_NOT_IDENTIFIED
+        assert first.assessment_revision == 1
+        assert first.physical_vehicle_id is None
+        assert first.parking_session_id is None
+        assert setup_connection.in_transaction is False
+
+        context = _context(disabled=True, electric=False)
+        binding, _ = _store_candidate_graph(
+            setup_connection,
+            context=context,
+        )
+
+        assert setup_connection.in_transaction is False
+
+        current_time[0] = NOW + timedelta(seconds=1)
+        current_snapshot[0] = replace(
+            current_snapshot[0],
+            revision=current_snapshot[0].revision + 1,
+            observation=_observed(current_time[0]),
+            last_input_at=current_time[0],
+        )
+
+        second_run = coordinator.reevaluate_after_monitoring_commit()
+
+        assert second_run.failures == ()
+        assert len(second_run.published_assessments) == 1
+        second = second_run.published_assessments[0]
+        assert second.decision is TofAuthorizationDecision.AUTHORIZED
+        assert second.reason is None
+        assert second.assessment_revision == 2
+        assert second.physical_vehicle_id == VEHICLE_ID
+        assert second.parking_session_id == SESSION_ID
+        assert second.context_revision == binding.context_revision
+        assert second.occupancy_stable_since == first.occupancy_stable_since
+        assert published == [first, second]
+        assert [
+            assessment.decision for assessment in published
+        ] == [
+            TofAuthorizationDecision.UNKNOWN,
+            TofAuthorizationDecision.AUTHORIZED,
+        ]
+        assert [
+            assessment.assessment_revision
+            for assessment in published
+        ] == [1, 2]
+    finally:
+        setup_connection.close()
+
+
+def test_coordinator_reevaluates_when_session_qualification_is_updated(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "jetson.db"
+    setup_connection = open_database(database_path)
+    current_snapshot = [_snapshot()]
+    current_time = [NOW]
+    published: list[TofZoneAuthorizationAssessment] = []
+
+    def occupancy_snapshots() -> tuple[ZoneOccupancySnapshot, ...]:
+        return (current_snapshot[0],)
+
+    def clock() -> datetime:
+        return current_time[0]
+
+    service = TofZoneAuthorizationService(
+        zones=ZoneRegistry(
+            (
+                _zone(ZoneType.DISABLED),
+            )
+        ),
+        policy=_policy(),
+        query=RepositoryTofZoneAuthorizationQuery(),
+    )
+    coordinator = TofZoneAuthorizationCoordinator(
+        authorization_service=service,
+        occupancy_snapshots=occupancy_snapshots,
+        sensor_runtime_available=lambda: True,
+        connection_factory=lambda: open_database(database_path),
+        assessment_consumer=published.append,
+        clock=clock,
+    )
+
+    try:
+        initial_context = _context(disabled=None, electric=False)
+        binding, mirror = _store_candidate_graph(
+            setup_connection,
+            context=initial_context,
+        )
+
+        assert binding.context == mirror.last_context
+        assert binding.context_revision == mirror.context_revision
+        assert setup_connection.in_transaction is False
+
+        coordinator.request_zone(ZONE_ID)
+        first_run = coordinator.drain_pending()
+
+        assert first_run.failures == ()
+        assert len(first_run.published_assessments) == 1
+        first = first_run.published_assessments[0]
+        assert first.decision is TofAuthorizationDecision.UNKNOWN
+        assert first.reason is (
+            TofAuthorizationReason.QUALIFICATION_UNAVAILABLE
+        )
+        assert first.assessment_revision == 1
+        assert first.physical_vehicle_id == VEHICLE_ID
+        assert first.parking_session_id == SESSION_ID
+        assert first.context_revision == binding.context_revision
+
+        current_time[0] = NOW + timedelta(seconds=1)
+        updated_context = _context(disabled=True, electric=False)
+        updated_binding = replace(
+            binding,
+            context=updated_context,
+            context_revision=binding.context_revision + 1,
+            record_version=binding.record_version + 1,
+            updated_at=current_time[0],
+        )
+        updated_mirror = replace(
+            mirror,
+            last_context=updated_context,
+            context_revision=mirror.context_revision + 1,
+            record_version=mirror.record_version + 1,
+            updated_at=current_time[0],
+        )
+
+        assert updated_binding.context == updated_mirror.last_context
+        assert (
+            updated_binding.context_revision
+            == updated_mirror.context_revision
+        )
+
+        with UnitOfWork(setup_connection):
+            ParkingSessionMirrorRepository(setup_connection).save(
+                updated_mirror,
+                expected_record_version=mirror.record_version,
+            )
+            ContextBindingRepository(setup_connection).save(
+                updated_binding,
+                expected_record_version=binding.record_version,
+            )
+
+        assert setup_connection.in_transaction is False
+
+        current_snapshot[0] = replace(
+            current_snapshot[0],
+            revision=current_snapshot[0].revision + 1,
+            observation=_observed(current_time[0]),
+            last_input_at=current_time[0],
+        )
+
+        second_run = coordinator.reevaluate_after_monitoring_commit()
+
+        assert second_run.failures == ()
+        assert len(second_run.published_assessments) == 1
+        second = second_run.published_assessments[0]
+        assert second.decision is TofAuthorizationDecision.AUTHORIZED
+        assert second.reason is None
+        assert second.assessment_revision == 2
+        assert second.physical_vehicle_id == VEHICLE_ID
+        assert second.parking_session_id == SESSION_ID
+        assert second.context_revision == updated_binding.context_revision
+        assert second.occupancy_stable_since == first.occupancy_stable_since
+        assert published == [first, second]
+        assert [
+            assessment.decision for assessment in published
+        ] == [
+            TofAuthorizationDecision.UNKNOWN,
+            TofAuthorizationDecision.AUTHORIZED,
+        ]
+        assert [
+            assessment.assessment_revision
+            for assessment in published
+        ] == [1, 2]
+    finally:
+        setup_connection.close()
