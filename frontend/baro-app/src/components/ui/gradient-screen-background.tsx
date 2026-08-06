@@ -14,6 +14,8 @@ type GradientScreenBackgroundProps = {
   edges?: Edge[];
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
+  refreshing?: boolean;
+  onRefresh?: () => void;
 };
 
 /** resident 탭 루트 화면(요청/알림/내 정보)이 공유하는 배경 그라데이션. Screen 위에 색상만 고정해서 얹는다. */
@@ -23,6 +25,8 @@ export function GradientScreenBackground({
   edges = ['top', 'right', 'left'],
   style,
   contentContainerStyle,
+  refreshing,
+  onRefresh,
 }: GradientScreenBackgroundProps) {
   return (
     <Screen
@@ -32,6 +36,8 @@ export function GradientScreenBackground({
       backgroundGradientLocations={GRADIENT_LOCATIONS}
       style={style}
       contentContainerStyle={contentContainerStyle}
+      refreshing={refreshing}
+      onRefresh={onRefresh}
     >
       {children}
     </Screen>

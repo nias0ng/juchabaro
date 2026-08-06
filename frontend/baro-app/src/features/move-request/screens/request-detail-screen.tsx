@@ -20,10 +20,14 @@ const REMINDER_GRADIENT = ['#fbe0dc', '#f7f6fb', '#f7f6fb'] as const;
 const REMINDER_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
 
 export default function RequestDetailScreen() {
-  const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
+  const { requestId: requestIdParam, viewMode: viewModeParam } = useLocalSearchParams<{
+    requestId?: string;
+    viewMode?: string;
+  }>();
   const requestId = requestIdParam ? Number(requestIdParam) : null;
   const normalizedRequestId = requestId !== null && !Number.isNaN(requestId) ? requestId : null;
-  const vm = useRequestDetailViewModel(normalizedRequestId);
+  const viewMode = viewModeParam === 'requester' ? 'requester' : 'recipient';
+  const vm = useRequestDetailViewModel(normalizedRequestId, viewMode);
 
   const statusMessage = vm.isLoading
     ? '이동 요청 정보를 불러오는 중입니다'
@@ -37,7 +41,7 @@ export default function RequestDetailScreen() {
     ? { gradient: COMPLETED_GRADIENT, locations: COMPLETED_GRADIENT_LOCATIONS }
     : vm.isOverdueWaiting
       ? { gradient: OVERDUE_GRADIENT, locations: OVERDUE_GRADIENT_LOCATIONS }
-      : vm.isReminderSentOverdue
+      : vm.showEscalationView
         ? { gradient: REMINDER_GRADIENT, locations: REMINDER_GRADIENT_LOCATIONS }
         : vm.isWaiting
           ? { gradient: WAITING_GRADIENT, locations: WAITING_GRADIENT_LOCATIONS }
@@ -50,6 +54,8 @@ export default function RequestDetailScreen() {
       backgroundColor={background ? undefined : Palette.gray50}
       backgroundGradient={background?.gradient}
       backgroundGradientLocations={background?.locations}
+      refreshing={vm.isRefreshing}
+      onRefresh={() => void vm.refetch()}
     >
       <ScreenHeader
         title="이동 요청"
@@ -58,7 +64,7 @@ export default function RequestDetailScreen() {
         right={
           <RequestHeaderRight
             requestSource={
-              vm.display && !vm.isWaiting && !vm.isCompleted && !vm.isReminderSentOverdue
+              vm.display && !vm.isWaiting && !vm.isCompleted && !vm.showEscalationView
                 ? { label: vm.display.requestSourceLabel, variant: vm.display.requestSourceVariant }
                 : null
             }

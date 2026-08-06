@@ -20,8 +20,19 @@ const STATUS_LABEL: Partial<Record<string, string>> = {
 
 export default function MyPageScreen() {
   const { user } = useAuth();
-  const { isLoading: isVehicleLoading, vehicleCount, primaryVehicle } = useVehicleSummary();
-  const { stats: violationStats, isLoading: isViolationLoading } = useViolationStats();
+  const {
+    isLoading: isVehicleLoading,
+    isRefreshing: isVehicleRefreshing,
+    vehicleCount,
+    primaryVehicle,
+    refetch: refetchVehicles,
+  } = useVehicleSummary();
+  const {
+    stats: violationStats,
+    isLoading: isViolationLoading,
+    isRefreshing: isViolationRefreshing,
+    refetch: refetchViolations,
+  } = useViolationStats();
 
   const meta = user?.buildingNumber && user?.unitNumber ? `${user.buildingNumber}동 ${user.unitNumber}호` : '';
 
@@ -32,7 +43,10 @@ export default function MyPageScreen() {
       : '등록된 차량이 없습니다';
 
   return (
-    <GradientScreenBackground>
+    <GradientScreenBackground
+      refreshing={isVehicleRefreshing || isViolationRefreshing}
+      onRefresh={() => void Promise.all([refetchVehicles(), refetchViolations()])}
+    >
       <ResponsiveContainer>
         <ScreenHeader title="내 정보" showBackButton={false} />
 

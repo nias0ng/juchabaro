@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
   ScrollView,
   View,
   type ColorValue,
@@ -34,6 +35,8 @@ type ScreenProps = {
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
   keyboardShouldPersistTaps?: ScrollViewProps['keyboardShouldPersistTaps'];
+  refreshing?: boolean;
+  onRefresh?: () => void;
 };
 
 export function Screen({
@@ -49,6 +52,8 @@ export function Screen({
   style,
   contentContainerStyle,
   keyboardShouldPersistTaps = 'handled',
+  refreshing = false,
+  onRefresh,
 }: ScreenProps) {
   const theme = useTheme();
   const screenStyle = [
@@ -66,6 +71,9 @@ export function Screen({
           contentContainerStyle={[styles.content, contentContainerStyle]}
           keyboardShouldPersistTaps={keyboardShouldPersistTaps}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> : undefined
+          }
         >
           {children}
         </ScrollView>

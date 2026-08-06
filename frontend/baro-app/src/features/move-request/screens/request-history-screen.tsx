@@ -4,12 +4,14 @@ import { AsyncStateView, GradientScreenBackground, ScreenHeader, Stack } from '@
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
+import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
 
 import { styles } from './request-history-screen.styles';
 
 export default function RequestHistoryScreen() {
-  const { moveRequests, isLoading, error } = useMoveRequests('ALL');
+  const { user } = useAuth();
+  const { moveRequests, isLoading, isRefreshing, error, refetch } = useMoveRequests('ALL');
 
   const statusMessage = isLoading
     ? '요청 내역을 불러오는 중입니다'
@@ -20,7 +22,11 @@ export default function RequestHistoryScreen() {
         : undefined;
 
   return (
-    <GradientScreenBackground edges={['top', 'right', 'left']}>
+    <GradientScreenBackground
+      edges={['top', 'right', 'left']}
+      refreshing={isRefreshing}
+      onRefresh={() => void refetch()}
+    >
       <ScreenHeader title="요청 내역" style={styles.header} />
 
       <AsyncStateView message={statusMessage} fill={false} style={styles.statusContainer}>
@@ -33,7 +39,10 @@ export default function RequestHistoryScreen() {
               onPress={() =>
                 router.push({
                   pathname: '/resident/request-detail',
-                  params: { requestId: String(summary.requestId) },
+                  params: {
+                    requestId: String(summary.requestId),
+                    viewMode: summary.requesterUserId === user?.userId ? 'requester' : 'recipient',
+                  },
                 })
               }
             />

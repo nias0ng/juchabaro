@@ -7,6 +7,7 @@ import {
   clearStoredPushTokenRegistration,
   getStoredPushTokenRegistration,
 } from '@/features/notification/services/push-token-storage';
+import { queryClient } from '@/services/query-client';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
 
 /* 
@@ -124,10 +125,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     await Promise.allSettled([clearStoredPushTokenRegistration(), clearSession()]);
+    // 진행 중인 쿼리를 취소한 뒤 로그아웃하고, 캐시는 다음 로그인 시 이전 계정 데이터가 보이지 않도록 완전히 비운다.
+    await queryClient.cancelQueries();
     // keepSignedIn 여부와 상관없이 로그아웃할 땐 항상 기기에 남아있을 수 있는 세션까지 전부 지운다.
     setAccessToken(null);
     setUser(null);
     setStatus('guest');
+    queryClient.clear();
   }, [accessToken]);
 
   return (

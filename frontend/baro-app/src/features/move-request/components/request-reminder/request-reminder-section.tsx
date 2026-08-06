@@ -8,8 +8,10 @@ import { RequestReminderCountdown } from './request-reminder-countdown';
 import { styles } from './request-reminder-section.styles';
 
 type RequestReminderSectionProps = {
-  reminderRoundLabel: string; // 예: "1차 재알림"
+  badgeLabel: string;
+  description: string;
   countdownLabel: string;
+  countdownCaption: string;
   plateNumber: string;
   actionLabel: string;
   timeline: RequestTimelineStep[];
@@ -17,8 +19,10 @@ type RequestReminderSectionProps = {
 };
 
 export function RequestReminderSection({
-  reminderRoundLabel,
+  badgeLabel,
+  description,
   countdownLabel,
+  countdownCaption,
   plateNumber,
   actionLabel,
   timeline,
@@ -27,14 +31,12 @@ export function RequestReminderSection({
   return (
     <View style={styles.container}>
       <View style={styles.pill}>
-        <Text style={styles.pillText}>{`⚠ ${reminderRoundLabel}`}</Text>
+        <Text style={styles.pillText}>{`⚠ ${badgeLabel}`}</Text>
       </View>
 
-      <Text style={styles.description}>
-        {'예정 시간 이내에 차량이 이동되지 않았습니다.\n이후, 관리자에게 연락이 가며, 추가 조치가 있을 수 있습니다.'}
-      </Text>
+      <Text style={styles.description}>{description}</Text>
 
-      <RequestReminderCountdown label={countdownLabel} />
+      <RequestReminderCountdown label={countdownLabel} caption={countdownCaption} />
       <RequestStatCardRow leftLabel="차량 번호" leftValue={plateNumber} rightLabel="조치" rightValue={actionLabel} />
       <RequestTimelineCard title="진행 기록" timeline={timeline} pendingStep={pendingStep} />
     </View>

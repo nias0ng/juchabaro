@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { CheckCircle2 } from '@lucide/vue'
 
 import StatusTag from '@/components/ui/StatusTag.vue'
+import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, statusTone, typeTone } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
@@ -21,6 +22,10 @@ function load() {
 }
 
 watch(() => props.eventId, load, { immediate: true })
+useAutoRefresh(
+  () => parkingEventStore.fetchEventDetail(props.eventId, { background: true }),
+  15_000,
+)
 
 const isResolved = computed(() => detail.value?.eventStatus === 'RESOLVED')
 const isDismissed = computed(() => detail.value?.eventStatus === 'DISMISSED')
