@@ -38,14 +38,19 @@ class _LifecycleWorker:
         self,
         *,
         name: str,
+        startup_calls: list[str],
         stop_calls: list[str],
+        fail_on_prepare: bool,
         fail_on_start: bool,
         fail_on_stop: bool,
     ) -> None:
         self.name = name
+        self.startup_calls = startup_calls
         self.stop_calls = stop_calls
+        self.fail_on_prepare = fail_on_prepare
         self.fail_on_start = fail_on_start
         self.fail_on_stop = fail_on_stop
+        self.prepare_count = 0
         self.start_count = 0
         self.stop_count = 0
 
@@ -53,8 +58,15 @@ class _LifecycleWorker:
     def is_running(self) -> bool:
         return self.start_count == 1 and self.stop_count == 0
 
+    def prepare(self) -> None:
+        self.prepare_count += 1
+        self.startup_calls.append(f"{self.name}.prepare")
+        if self.fail_on_prepare:
+            raise RuntimeError(f"{self.name} prepare failed")
+
     def start(self) -> None:
         self.start_count += 1
+        self.startup_calls.append(f"{self.name}.start")
         if self.fail_on_start:
             raise RuntimeError(f"{self.name} start failed")
 
@@ -69,17 +81,22 @@ def _install_lifecycle_worker_spies(
     main,
     monkeypatch: pytest.MonkeyPatch,
     *,
+    startup_calls: list[str] | None = None,
     stop_calls: list[str],
+    failing_prepare_worker: str | None = None,
     failing_start_worker: str | None = None,
     failing_stop_worker: str | None = None,
 ) -> dict[str, _LifecycleWorker]:
     workers: dict[str, _LifecycleWorker] = {}
+    recorded_startup_calls = startup_calls if startup_calls is not None else []
 
     def worker_constructor(name: str):
         def construct(_owner, **_kwargs) -> _LifecycleWorker:
             worker = _LifecycleWorker(
                 name=name,
+                startup_calls=recorded_startup_calls,
                 stop_calls=stop_calls,
+                fail_on_prepare=name == failing_prepare_worker,
                 fail_on_start=name == failing_start_worker,
                 fail_on_stop=name == failing_stop_worker,
             )
@@ -196,10 +213,12 @@ def test_lifespan_stops_producers_before_publication_consumers(
 ) -> None:
     import src.main as main
 
+    startup_calls: list[str] = []
     stop_calls: list[str] = []
     workers = _install_lifecycle_worker_spies(
         main,
         monkeypatch,
+        startup_calls=startup_calls,
         stop_calls=stop_calls,
     )
     settings = _settings(tmp_path).model_copy(
@@ -217,6 +236,14 @@ def test_lifespan_stops_producers_before_publication_consumers(
             for worker in workers.values()
         )
 
+    assert startup_calls == [
+        "evidence publication.prepare",
+        "monitoring.prepare",
+        "outbox publication.start",
+        "evidence publication.start",
+        "monitoring.start",
+        "move verification.start",
+    ]
     assert stop_calls == [
         "monitoring",
         "move verification",
@@ -297,7 +324,51 @@ def test_lifespan_preserves_startup_error_during_cleanup_failure(
         "outbox publication",
         "evidence publication",
     ]
-    assert all(worker.start_count == 1 for worker in workers.values())
+    assert workers["outbox publication"].start_count == 1
+    assert workers["evidence publication"].start_count == 0
+    assert workers["monitoring"].start_count == 0
+    assert workers["move verification"].start_count == 0
+    assert all(worker.stop_count == 1 for worker in workers.values())
+
+
+def test_lifespan_does_not_start_publishers_when_monitoring_prepare_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main
+
+    startup_calls: list[str] = []
+    stop_calls: list[str] = []
+    workers = _install_lifecycle_worker_spies(
+        main,
+        monkeypatch,
+        startup_calls=startup_calls,
+        stop_calls=stop_calls,
+        failing_prepare_worker="monitoring",
+    )
+    settings = _settings(tmp_path).model_copy(
+        update={"backend_hw_api_key": "configured-hardware-key"}
+    )
+    application = main.create_app(
+        settings=settings,
+        monitoring_pipeline_factory=lambda _context: object(),
+    )
+
+    with pytest.raises(RuntimeError, match="monitoring prepare failed"):
+        with TestClient(application):
+            pass
+
+    assert startup_calls == [
+        "evidence publication.prepare",
+        "monitoring.prepare",
+    ]
+    assert all(worker.start_count == 0 for worker in workers.values())
+    assert stop_calls == [
+        "monitoring",
+        "move verification",
+        "outbox publication",
+        "evidence publication",
+    ]
     assert all(worker.stop_count == 1 for worker in workers.values())
 
 

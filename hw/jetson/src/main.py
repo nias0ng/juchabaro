@@ -390,19 +390,25 @@ def create_app(
         )
         application.state.outbox_publisher_worker = outbox_publisher_worker
         try:
-            # MonitoringPipeline.open()이 durable recovery를 끝낸 뒤 기존·신규
-            # publication을 보내기 시작한다.
+            # Local recovery는 external publication·신규 frame보다 먼저
+            # 완료한다. 그 뒤 parent Incident outbox, child Evidence
+            # publisher, frame producer 순서로 허용한다.
             if evidence_publication_worker is not None:
-                evidence_publication_worker.start()
+                evidence_publication_worker.prepare()
             else:
                 # Backend key가 없어 publisher를 끈 현장도 interrupted local
                 # JPEG를 다음 capture 전 일관된 FAILED/READY 상태로 만든다.
                 evidence_capture_coordinator.recover()
             if monitoring_worker is not None:
+                monitoring_worker.prepare()
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.start()
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.start()
+            if monitoring_worker is not None:
                 monitoring_worker.start()
             move_verification_worker.start()
             if outbox_publisher_worker is not None:
-                outbox_publisher_worker.start()
                 logger.info("Backend publication workers가 시작됐습니다.")
             yield
         finally:

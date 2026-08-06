@@ -66,6 +66,9 @@ class MonitoringWorker:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
+        self._prepared = False
+        self._pipeline_open = False
+        self._closed = False
 
     @property
     def failure(self) -> Exception | None:
@@ -79,14 +82,34 @@ class MonitoringWorker:
 
         return self._thread is not None and self._thread.is_alive()
 
+    def prepare(self) -> None:
+        """Durable 복구·camera·model open을 loop 시작과 분리한다.
+
+        Composition root는 이 동기 장벽이 완료된 뒤 publication
+        worker를 기동하고, 그 다음 ``start()``로 첫 frame을 허용한다.
+        ``start()`` 단독 호출 호환성을 위해 준비되지 않았으면 스스로
+        이 단계를 실행한다.
+        """
+
+        if self._thread is not None:
+            raise RuntimeError("running monitoring worker cannot be prepared")
+        if self._closed:
+            raise RuntimeError("monitoring worker is already closed")
+        if self._prepared:
+            return
+
+        self._pipeline.open()
+        self._prepared = True
+        self._pipeline_open = True
+        logger.info("Jetson monitoring pipeline 자원 초기화가 완료됐습니다.")
+
     def start(self) -> None:
-        """Durable 복구·camera·model을 열고 loop thread를 시작한다."""
+        """준비된 pipeline의 loop thread를 시작한다."""
 
         if self._thread is not None:
             raise RuntimeError("monitoring worker may only be started once")
 
-        self._pipeline.open()
-        logger.info("Jetson monitoring pipeline 자원 초기화가 완료됐습니다.")
+        self.prepare()
         thread = Thread(
             target=self._run,
             name="jetson-monitoring",
@@ -96,7 +119,8 @@ class MonitoringWorker:
         try:
             thread.start()
         except Exception:
-            self._pipeline.close()
+            self._thread = None
+            self._close_pipeline()
             raise
         logger.info(
             "Jetson monitoring worker가 시작됐습니다. "
@@ -110,6 +134,11 @@ class MonitoringWorker:
         self._stop_requested.set()
         if self._thread is not None:
             self._thread.join()
+        else:
+            try:
+                self._close_pipeline()
+            finally:
+                self._closed = True
 
     def _run(self) -> None:
         try:
@@ -127,11 +156,23 @@ class MonitoringWorker:
             logger.exception("Jetson monitoring loop가 종료됐습니다.")
         finally:
             try:
-                self._pipeline.close()
+                self._close_pipeline()
             except Exception as error:
                 if self._failure is None:
                     self._failure = error
                 logger.exception("Jetson monitoring 자원 정리에 실패했습니다.")
+
+    def _close_pipeline(self) -> None:
+        """prepare만 완료된 startup 실패에서도 자원을 한 번만 닫는다."""
+
+        if not self._pipeline_open:
+            return
+        try:
+            self._pipeline.close()
+        finally:
+            self._pipeline_open = False
+            self._prepared = False
+            self._closed = True
 
     def _observe_frame(
         self,

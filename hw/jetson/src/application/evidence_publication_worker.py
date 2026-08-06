@@ -482,6 +482,8 @@ class EvidencePublicationWorker:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
+        self._prepared = False
+        self._publisher_closed = False
 
     @property
     def failure(self) -> Exception | None:
@@ -491,10 +493,26 @@ class EvidencePublicationWorker:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def prepare(self) -> None:
+        """Spool·IN_FLIGHT 복구를 HTTP loop 시작 전에 동기로 완료한다."""
+
+        if self._thread is not None:
+            raise RuntimeError(
+                "running evidence publication worker cannot be prepared"
+            )
+        if self._publisher_closed:
+            raise RuntimeError("evidence publication worker is already closed")
+        if self._prepared:
+            return
+        self._publisher.recover()
+        self._prepared = True
+
     def start(self) -> None:
+        """복구가 완료된 뒤 HTTP publication loop를 시작한다."""
+
         if self._thread is not None:
             raise RuntimeError("evidence publication worker may only be started once")
-        self._publisher.recover()
+        self.prepare()
         thread = Thread(
             target=self._run,
             name="jetson-evidence-publication",
@@ -504,14 +522,23 @@ class EvidencePublicationWorker:
         try:
             thread.start()
         except Exception:
-            self._publisher.close()
+            self._thread = None
+            self._close_publisher()
             raise
 
     def stop(self) -> None:
         self._stop_requested.set()
         if self._thread is not None:
             self._thread.join()
-        self._publisher.close()
+        self._close_publisher()
+
+    def _close_publisher(self) -> None:
+        if self._publisher_closed:
+            return
+        try:
+            self._publisher.close()
+        finally:
+            self._publisher_closed = True
 
     def _run(self) -> None:
         try:

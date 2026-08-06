@@ -7,10 +7,14 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
+
+import pytest
 
 from src.application.evidence_publication_worker import (
     EvidencePublicationPublisher,
+    EvidencePublicationWorker,
 )
 from src.communication.backend_client import (
     PublicationConfirmation,
@@ -66,6 +70,29 @@ class _Client:
         self.closed = True
 
 
+class _WorkerPublisher:
+    def __init__(self, *, fail_recovery: bool = False) -> None:
+        self.fail_recovery = fail_recovery
+        self.recover_count = 0
+        self.publish_count = 0
+        self.closed_count = 0
+        self.entered_publish = Event()
+
+    def recover(self) -> int:
+        self.recover_count += 1
+        if self.fail_recovery:
+            raise RuntimeError("evidence recovery failed")
+        return 0
+
+    def publish_once(self) -> bool:
+        self.publish_count += 1
+        self.entered_publish.set()
+        return False
+
+    def close(self) -> None:
+        self.closed_count += 1
+
+
 def _next_result(results):
     result = results.pop(0) if results else _confirmation()
     if isinstance(result, Exception):
@@ -79,6 +106,66 @@ def _confirmation() -> PublicationConfirmation:
         payload_hash=None,
         backend_correlation={"imageId": 301},
     )
+
+
+def test_worker_prepare_recovers_once_without_starting_http_loop() -> None:
+    publisher = _WorkerPublisher()
+    worker = EvidencePublicationWorker(
+        publisher,
+        poll_interval_seconds=0.01,
+    )
+
+    worker.prepare()
+    worker.prepare()
+
+    assert publisher.recover_count == 1
+    assert publisher.publish_count == 0
+    assert worker.is_running is False
+
+    worker.start()
+    assert publisher.entered_publish.wait(timeout=1.0)
+    worker.stop()
+
+    assert publisher.recover_count == 1
+    assert publisher.closed_count == 1
+
+
+def test_worker_start_without_prepare_keeps_compatibility() -> None:
+    publisher = _WorkerPublisher()
+    worker = EvidencePublicationWorker(
+        publisher,
+        poll_interval_seconds=0.01,
+    )
+
+    worker.start()
+    assert publisher.entered_publish.wait(timeout=1.0)
+    worker.stop()
+
+    assert publisher.recover_count == 1
+    assert publisher.closed_count == 1
+
+
+def test_worker_stop_closes_publisher_when_only_prepare_completed() -> None:
+    publisher = _WorkerPublisher()
+    worker = EvidencePublicationWorker(publisher)
+
+    worker.prepare()
+    worker.stop()
+
+    assert publisher.recover_count == 1
+    assert publisher.publish_count == 0
+    assert publisher.closed_count == 1
+
+
+def test_worker_prepare_failure_does_not_start_http_loop() -> None:
+    publisher = _WorkerPublisher(fail_recovery=True)
+    worker = EvidencePublicationWorker(publisher)
+
+    with pytest.raises(RuntimeError, match="evidence recovery failed"):
+        worker.prepare()
+
+    assert worker.is_running is False
+    assert publisher.publish_count == 0
 
 
 def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(

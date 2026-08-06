@@ -289,8 +289,12 @@ process가 중단돼도 `CHECKING` command를 다음 기동에서 다시 읽으�
 나머지 4xx는 재시도하지 않는다.
 
 camera·model owner는 배포 entrypoint가 `MonitoringPipelineFactory`를
-명시적으로 주입했을 때만 하나 기동한다. Monitoring recovery가 끝난 뒤
-outbox publisher를 시작하므로 복구 중인 aggregate와 동시에 전송하지 않는다.
+명시적으로 주입했을 때만 하나 기동한다. 기동 시 Evidence spool과
+Monitoring durable state를 먼저 복구하고 camera·model open을 검증한다.
+그 다음 parent Incident outbox publisher, child Evidence publisher를 순서대로
+시작한 뒤에만 Monitoring·MoveVerification producer loop를 허용한다.
+따라서 복구 중인 aggregate나 아직 Incident ACK가 없는 Evidence를
+동시에 전송하지 않는다.
 
 `EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,

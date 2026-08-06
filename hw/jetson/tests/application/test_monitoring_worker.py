@@ -15,11 +15,14 @@ from src.session.models import EntryDecisionState, EntryMatchState
 class _BlockingPipeline:
     def __init__(self) -> None:
         self.opened = False
+        self.open_count = 0
         self.entered_run = Event()
         self.closed = Event()
+        self.close_count = 0
 
     def open(self) -> None:
         self.opened = True
+        self.open_count += 1
 
     def run(self, *, stop_requested, frame_observer=None) -> int:
         del frame_observer
@@ -29,6 +32,7 @@ class _BlockingPipeline:
         return 4
 
     def close(self) -> None:
+        self.close_count += 1
         self.closed.set()
 
 
@@ -75,6 +79,39 @@ def test_worker_opens_once_and_closes_after_graceful_stop() -> None:
     assert pipeline.closed.is_set()
     assert worker.is_running is False
     assert worker.failure is None
+
+
+def test_prepare_opens_pipeline_without_starting_frame_loop() -> None:
+    pipeline = _BlockingPipeline()
+    worker = MonitoringWorker(pipeline)
+
+    worker.prepare()
+
+    assert pipeline.open_count == 1
+    assert pipeline.entered_run.is_set() is False
+    assert worker.is_running is False
+
+    worker.start()
+    assert pipeline.entered_run.wait(timeout=1.0)
+    worker.stop()
+
+    assert pipeline.open_count == 1
+    assert pipeline.close_count == 1
+
+
+def test_stop_closes_pipeline_when_only_prepare_completed() -> None:
+    pipeline = _BlockingPipeline()
+    worker = MonitoringWorker(pipeline)
+
+    worker.prepare()
+    worker.stop()
+
+    assert pipeline.open_count == 1
+    assert pipeline.close_count == 1
+    assert worker.is_running is False
+
+    with pytest.raises(RuntimeError, match="already closed"):
+        worker.prepare()
 
 
 def test_worker_propagates_synchronous_startup_failure() -> None:
