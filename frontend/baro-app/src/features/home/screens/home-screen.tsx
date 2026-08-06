@@ -99,7 +99,7 @@ export default function HomeScreen() {
             onPressNotification={() => router.push('/resident/notifications')}
           />
 
-          <Text style={styles.greeting}>{'주차, 오늘도\n편안하게'}</Text>
+          <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
 
           <QuickActionGrid actions={quickActions} />
 
