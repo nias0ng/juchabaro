@@ -11,12 +11,16 @@ from pipeline_viewer.service import (
     SideMaskingDetector,
     ViewerInputError,
     ViewerPolicy,
+    _asset_snapshot_json,
     _policy_snapshot_json,
     build_allow_example,
     default_idempotency_key,
     default_paths,
     parse_entry_event,
 )
+from src.config.monitoring_policy import build_incident_rule_timings
+from src.parking.egress_aisle_registry import EgressAisleRegistry
+from src.parking.zone_registry import ZoneRegistry
 
 
 def test_default_model_path_uses_jetson_model_directory() -> None:
@@ -44,8 +48,9 @@ def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:
 def test_incident_rule_timings_are_explicit_and_forwarded_exactly() -> None:
     policy = ViewerPolicy()
     monitoring = policy.to_monitoring_policy()
+    timings = build_incident_rule_timings(policy)
 
-    assert {timing.rule_code for timing in policy.incident_rule_timings} == {
+    assert {timing.rule_code for timing in timings} == {
         "DISABLED_ZONE_UNAUTHORIZED",
         "EV_ZONE_UNAUTHORIZED",
         "EV_OVERSTAY",
@@ -54,12 +59,19 @@ def test_incident_rule_timings_are_explicit_and_forwarded_exactly() -> None:
         "AISLE_BLOCK",
         "DOUBLE_PARKING",
     }
-    assert all(
-        timing.confirm_duration_seconds == 0.0
-        and timing.clear_duration_seconds == 0.0
-        for timing in policy.incident_rule_timings
-    )
-    assert monitoring.incident_rule_timings == policy.incident_rule_timings
+    by_rule = {timing.rule_code: timing for timing in timings}
+    for rule_code in ("BAD_PARKING", "OUT_OF_ZONE", "AISLE_BLOCK"):
+        assert by_rule[rule_code].confirm_duration_seconds == 0.5
+        assert by_rule[rule_code].clear_duration_seconds == 0.5
+    for rule_code in (
+        "DISABLED_ZONE_UNAUTHORIZED",
+        "EV_ZONE_UNAUTHORIZED",
+        "EV_OVERSTAY",
+        "DOUBLE_PARKING",
+    ):
+        assert by_rule[rule_code].confirm_duration_seconds == 0.0
+        assert by_rule[rule_code].clear_duration_seconds == 0.0
+    assert monitoring.incident_rule_timings == timings
 
 
 def test_reidentification_window_bridges_observed_multisecond_id_switch() -> None:
@@ -114,12 +126,38 @@ def test_policy_snapshot_is_canonical_and_contains_actual_test_overrides() -> No
     assert decoded["parking_confirm_seconds"] == 5.0
     assert decoded["parking_move_confirm_seconds"] == 0.5
     assert decoded["motion_stationary_threshold"] == pytest.approx(0.03)
-    assert decoded["incident_rule_timings"][0] == {
-        "clear_duration_seconds": 0.0,
-        "confirm_duration_seconds": 0.0,
-        "rule_code": "DISABLED_ZONE_UNAUTHORIZED",
-    }
+    assert decoded["incident_bad_parking_confirm_seconds"] == 0.5
+    assert decoded["incident_bad_parking_clear_seconds"] == 0.5
     assert list(decoded) == sorted(decoded)
+
+
+def test_asset_snapshot_records_versions_fingerprints_and_full_hashes() -> None:
+    paths = default_paths()
+    zones = ZoneRegistry.from_file(paths.zones)
+    egress_aisles = EgressAisleRegistry.from_file(
+        paths.egress_aisles,
+        zones=zones,
+    )
+
+    decoded = json.loads(
+        _asset_snapshot_json(
+            paths=paths,
+            zones=zones,
+            egress_aisles=egress_aisles,
+            remap_balance=ViewerPolicy().remap_balance,
+        )
+    )
+
+    assert decoded["schemaVersion"] == 1
+    assert decoded["zones"]["zoneDefinitionVersion"] == int(
+        zones.zone_definition_version
+    )
+    assert decoded["egressAisles"]["egressAisleDefinitionVersion"] == int(
+        egress_aisles.egress_aisle_definition_version
+    )
+    assert decoded["calibration"]["runtimeFingerprint"]["balance"] == 0.5
+    for asset in ("model", "zones", "egressAisles", "calibration"):
+        assert len(decoded[asset]["sha256"]) == 64
 
 
 def test_allow_example_matches_current_entry_event_wire() -> None:

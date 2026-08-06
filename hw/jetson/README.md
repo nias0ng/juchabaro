@@ -490,6 +490,16 @@ python -m scripts.replay_pilot_video \
     --out-of-zone-min-spot-overlap-ratio 0.50 \
     --blocking-relation-confirm-seconds 1.0 \
     --blocking-relation-clear-seconds 1.0 \
+    --incident-disabled-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-disabled-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-zone-unauthorized-confirm-seconds 0.0 \
+    --incident-ev-zone-unauthorized-clear-seconds 0.0 \
+    --incident-ev-overstay-confirm-seconds 0.0 --incident-ev-overstay-clear-seconds 0.0 \
+    --incident-bad-parking-confirm-seconds 0.5 --incident-bad-parking-clear-seconds 0.5 \
+    --incident-out-of-zone-confirm-seconds 0.5 --incident-out-of-zone-clear-seconds 0.5 \
+    --incident-aisle-block-confirm-seconds 0.5 --incident-aisle-block-clear-seconds 0.5 \
+    --incident-double-parking-confirm-seconds 0.0 \
+    --incident-double-parking-clear-seconds 0.0 \
     --out-events out/video1_events.jsonl \
     --out-zone-visits out/video1_zone_visits.jsonl
 ```

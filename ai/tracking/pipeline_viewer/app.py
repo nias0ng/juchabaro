@@ -32,7 +32,7 @@ from pipeline_viewer.service import (  # noqa: E402
     run_viewer_pipeline,
 )
 from pipeline_viewer.ui import render_run  # noqa: E402
-from src.parking.models import IncidentRuleTiming  # noqa: E402
+from src.config.monitoring_policy import INCIDENT_RULE_TIMING_SPECS  # noqa: E402
 
 
 ENTRY_JSON_KEY = "jetson_viewer_entry_json"
@@ -58,268 +58,279 @@ def _replace_example() -> None:
 
 
 def _render_policy_inputs() -> ViewerPolicy:
+    """Owner 경계와 판정 흐름 순서로 Viewer 설정을 입력받는다."""
+
     defaults = ViewerPolicy()
+    values: dict[str, object] = {}
     with st.expander("Monitoring / tracker 설정", expanded=False):
         st.caption(
-            "모든 값은 실제 MonitoringPolicy와 adapter에 그대로 전달됩니다. "
-            "PARKED 5초·movement 0.5초는 Viewer 판정 테스트 override이며, "
-            "motion·blocking 등 실측 전 값은 provisional입니다."
+            "설정은 판정 흐름과 Owner 경계 순서로 나눴습니다. Viewer의 YOLO confidence "
+            "0.01은 낮은 confidence 분포를 export하기 위한 진단용 기본값입니다."
         )
-        columns = st.columns(4)
-        zone_entry = columns[0].number_input(
-            "Zone entry confirm (s)", min_value=0.0, value=defaults.zone_entry_confirm_seconds
-        )
-        zone_exit = columns[1].number_input(
-            "Zone exit confirm (s)", min_value=0.0, value=defaults.zone_exit_confirm_seconds
-        )
-        parking_confirm = columns[2].number_input(
-            "Parking confirm (s)", min_value=0.001, value=defaults.parking_confirm_seconds
-        )
-        parking_move = columns[3].number_input(
-            "Parking move confirm (s)", min_value=0.0, value=defaults.parking_move_confirm_seconds
+        detection_tab, observation_tab, zone_tab, parking_tab, incident_tab = st.tabs(
+            ("탐지·동일성", "관측·Motion", "Zone·Assignment", "Parking·Blocking", "Incident")
         )
 
-        columns = st.columns(4)
-        absence = columns[0].number_input(
-            "Absence confirm (s)", min_value=0.001, value=defaults.absence_confirmation_seconds
-        )
-        trusted_gap = columns[1].number_input(
-            "Trusted max gap (s)", min_value=0.001, value=defaults.trusted_sample_max_gap_seconds
-        )
-        incident_confirm = columns[2].number_input(
-            "Incident confirm (s)", min_value=0.0, value=defaults.incident_confirm_seconds
-        )
-        incident_clear = columns[3].number_input(
-            "Incident clear (s)", min_value=0.0, value=defaults.incident_clear_seconds
-        )
+        with detection_tab:
+            st.caption("Detector → TrackSegment → PhysicalVehicle 동일성")
+            columns = st.columns(4)
+            values["confidence"] = columns[0].number_input(
+                "YOLO confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.confidence,
+                format="%.4f",
+                help="진단용 provisional 값입니다. 배포 기본값과 구분해 export합니다.",
+            )
+            values["tracker_config"] = columns[1].text_input(
+                "Tracker config", value=defaults.tracker_config
+            )
+            values["mask_margin_ratio"] = columns[2].number_input(
+                "Side mask margin ratio",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.mask_margin_ratio,
+                format="%.4f",
+            )
+            values["remap_balance"] = columns[3].number_input(
+                "Remap balance",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.remap_balance,
+            )
 
-        st.caption(
-            "규칙별 Incident confirm/clear (provisional). 위 전역 값은 목록에 "
-            "없는 future rule의 fallback으로만 사용합니다."
-        )
-        incident_rule_timings: list[IncidentRuleTiming] = []
-        for default_timing in defaults.incident_rule_timings:
-            columns = st.columns((2, 1, 1))
-            columns[0].code(default_timing.rule_code)
-            rule_confirm = columns[1].number_input(
-                f"{default_timing.rule_code} confirm (s)",
-                min_value=0.0,
-                value=default_timing.confirm_duration_seconds,
-                label_visibility="collapsed",
+            columns = st.columns(3)
+            values["reidentification_max_gap_seconds"] = columns[0].number_input(
+                "Re-ID max gap (s)",
+                min_value=0.001,
+                value=defaults.reidentification_max_gap_seconds,
             )
-            rule_clear = columns[2].number_input(
-                f"{default_timing.rule_code} clear (s)",
+            values["reidentification_min_score"] = columns[1].number_input(
+                "Re-ID min score",
                 min_value=0.0,
-                value=default_timing.clear_duration_seconds,
-                label_visibility="collapsed",
+                max_value=1.0,
+                value=defaults.reidentification_min_score,
             )
-            incident_rule_timings.append(
-                IncidentRuleTiming(
-                    rule_code=default_timing.rule_code,
-                    confirm_duration_seconds=rule_confirm,
-                    clear_duration_seconds=rule_clear,
+            values["reidentification_ambiguity_margin"] = columns[2].number_input(
+                "Re-ID ambiguity margin",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.reidentification_ambiguity_margin,
+            )
+
+        with observation_tab:
+            st.caption("관측 공백과 MotionEstimator 신뢰성 기준")
+            columns = st.columns(4)
+            values["absence_confirmation_seconds"] = columns[0].number_input(
+                "Absence confirm (s)",
+                min_value=0.001,
+                value=defaults.absence_confirmation_seconds,
+            )
+            values["trusted_sample_max_gap_seconds"] = columns[1].number_input(
+                "Trusted max gap (s)",
+                min_value=0.001,
+                value=defaults.trusted_sample_max_gap_seconds,
+            )
+            values["motion_window_seconds"] = columns[2].number_input(
+                "Motion window (s)",
+                min_value=0.001,
+                value=defaults.motion_window_seconds,
+            )
+            values["motion_min_observation_span_seconds"] = columns[3].number_input(
+                "Motion min span (s)",
+                min_value=0.001,
+                value=defaults.motion_min_observation_span_seconds,
+            )
+
+            columns = st.columns(4)
+            values["motion_max_sample_gap_seconds"] = columns[0].number_input(
+                "Motion max sample gap (s)",
+                min_value=0.001,
+                value=defaults.motion_max_sample_gap_seconds,
+                help="Parking move confirm과 별개의 Motion history 연속성 기준입니다.",
+            )
+            values["motion_min_samples"] = int(
+                columns[1].number_input(
+                    "Motion min samples",
+                    min_value=3,
+                    step=1,
+                    value=defaults.motion_min_samples,
                 )
             )
-
-        columns = st.columns(4)
-        reidentification_gap = columns[0].number_input(
-            "Re-ID max gap (s)",
-            min_value=0.001,
-            value=defaults.reidentification_max_gap_seconds,
-            help="이 시간 안의 끊긴 TrackSegment만 같은 PhysicalVehicle 후보로 봅니다.",
-        )
-        reidentification_score = columns[1].number_input(
-            "Re-ID min score",
-            min_value=0.0,
-            max_value=1.0,
-            value=defaults.reidentification_min_score,
-        )
-        reidentification_margin = columns[2].number_input(
-            "Re-ID ambiguity margin",
-            min_value=0.0,
-            max_value=1.0,
-            value=defaults.reidentification_ambiguity_margin,
-        )
-
-        columns = st.columns(4)
-        entry_overlap = columns[0].number_input(
-            "Entry overlap", min_value=0.0, max_value=1.0, value=defaults.entry_zone_min_overlap_ratio
-        )
-        zone_overlap = columns[1].number_input(
-            "Zone presence overlap", min_value=0.0, max_value=1.0, value=defaults.zone_presence_min_overlap_ratio
-        )
-        assignment_overlap = columns[2].number_input(
-            "Assignment overlap", min_value=0.0, max_value=1.0, value=defaults.assignment_min_overlap_ratio
-        )
-        ambiguous_margin = columns[3].number_input(
-            "Assignment margin", min_value=0.0, max_value=1.0, value=defaults.assignment_ambiguous_margin
-        )
-
-        columns = st.columns(4)
-        bad_parking_overlap = columns[0].number_input(
-            "Bad parking min primary overlap", min_value=0.0, max_value=1.0,
-            value=defaults.bad_parking_min_primary_overlap_ratio,
-            help=(
-                "1위 주차면에 포함된 차량 bbox 비율이 이 값 미만이면 "
-                "ASSIGNED 상태여도 BAD_PARKING으로 판정합니다."
-            ),
-        )
-        bad_parking_secondary_overlap = columns[1].number_input(
-            "Bad parking min secondary overlap",
-            min_value=0.0,
-            max_value=1.0,
-            value=defaults.bad_parking_min_secondary_overlap_ratio,
-            help=(
-                "두 번째 주차면 overlap이 이 값 이상이면 "
-                "두 칸 점유 BAD_PARKING으로 판정합니다."
-            ),
-        )
-        out_of_zone_overlap = columns[2].number_input(
-            "Out-of-zone min spot union overlap",
-            min_value=0.0,
-            max_value=1.0,
-            value=defaults.out_of_zone_min_spot_overlap_ratio,
-            help=(
-                "모든 주차면 union 안의 차량 비율이 이 값 미만이면 "
-                "OUT_OF_ZONE으로 판정합니다."
-            ),
-        )
-        match_window = columns[3].number_input(
-            "Entry match window (s)", min_value=0.001, value=defaults.entry_match_window_seconds
-        )
-
-        columns = st.columns(4)
-        blocking_confirm = columns[0].number_input(
-            "Blocking confirm (s)", min_value=0.0, value=defaults.blocking_relation_confirm_seconds
-        )
-        blocking_clear = columns[1].number_input(
-            "Blocking clear (s)", min_value=0.0, value=defaults.blocking_relation_clear_seconds
-        )
-        blocking_subject_overlap = columns[2].number_input(
-            "Blocking subject overlap",
-            min_value=0.01,
-            max_value=1.0,
-            value=defaults.blocking_min_subject_overlap_ratio,
-            step=0.01,
-        )
-        blocking_egress_coverage = columns[3].number_input(
-            "Blocking egress coverage",
-            min_value=0.01,
-            max_value=1.0,
-            value=defaults.blocking_min_egress_coverage_ratio,
-            step=0.01,
-        )
-
-        columns = st.columns(4)
-        motion_window = columns[0].number_input(
-            "Motion window (s)",
-            min_value=0.001,
-            value=defaults.motion_window_seconds,
-        )
-        motion_min_span = columns[1].number_input(
-            "Motion min span (s)",
-            min_value=0.001,
-            value=defaults.motion_min_observation_span_seconds,
-        )
-        motion_max_gap = columns[2].number_input(
-            "Motion max sample gap (s)",
-            min_value=0.001,
-            value=defaults.motion_max_sample_gap_seconds,
-            help=(
-                "MotionEstimator history의 연속성 기준입니다. "
-                "Parking move confirm 시간과는 다른 값입니다."
-            ),
-        )
-        motion_min_samples = int(
-            columns[3].number_input(
-                "Motion min samples",
-                min_value=3,
-                step=1,
-                value=defaults.motion_min_samples,
+            values["motion_stationary_threshold"] = columns[2].number_input(
+                "Stationary threshold",
+                min_value=0.0001,
+                value=defaults.motion_stationary_threshold,
+                format="%.4f",
             )
-        )
+            values["motion_moving_threshold"] = columns[3].number_input(
+                "Moving threshold",
+                min_value=0.0001,
+                value=defaults.motion_moving_threshold,
+                format="%.4f",
+            )
+            values["motion_min_trend_consistency"] = st.number_input(
+                "Motion trend consistency",
+                min_value=0.0001,
+                max_value=1.0,
+                value=defaults.motion_min_trend_consistency,
+                format="%.4f",
+            )
 
-        columns = st.columns(4)
-        motion_stationary = columns[0].number_input(
-            "Motion stationary threshold",
-            min_value=0.0001,
-            value=defaults.motion_stationary_threshold,
-            format="%.4f",
-            help="차량 bbox median diagonal 대비 정규화 이동량입니다.",
-        )
-        motion_moving = columns[1].number_input(
-            "Motion moving threshold",
-            min_value=0.0001,
-            value=defaults.motion_moving_threshold,
-            format="%.4f",
-            help="stationary threshold보다 커야 하며 중간 영역은 UNKNOWN입니다.",
-        )
-        motion_consistency = columns[2].number_input(
-            "Motion trend consistency",
-            min_value=0.0001,
-            max_value=1.0,
-            value=defaults.motion_min_trend_consistency,
-            format="%.4f",
-        )
+        with zone_tab:
+            st.caption("ZoneVisit → footprint overlap → Assignment/BAD_PARKING")
+            columns = st.columns(4)
+            values["zone_entry_confirm_seconds"] = columns[0].number_input(
+                "Zone entry confirm (s)",
+                min_value=0.0,
+                value=defaults.zone_entry_confirm_seconds,
+            )
+            values["zone_exit_confirm_seconds"] = columns[1].number_input(
+                "Zone exit confirm (s)",
+                min_value=0.0,
+                value=defaults.zone_exit_confirm_seconds,
+            )
+            values["entry_match_window_seconds"] = columns[2].number_input(
+                "Entry match window (s)",
+                min_value=0.001,
+                value=defaults.entry_match_window_seconds,
+            )
+            values["entry_zone_min_overlap_ratio"] = columns[3].number_input(
+                "Entry overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.entry_zone_min_overlap_ratio,
+            )
 
-        confidence = columns[3].number_input(
-            "YOLO confidence",
-            min_value=0.0,
-            max_value=1.0,
-            value=defaults.confidence,
-            format="%.4f",
-            help=(
-                "진단용 provisional 기본값입니다. 낮출수록 export에 더 많은 "
-                "post-threshold 후보가 남지만 오탐과 처리시간도 증가합니다."
-            ),
-        )
-        columns = st.columns(4)
-        remap_balance = columns[0].number_input(
-            "Remap balance", min_value=0.0, max_value=1.0, value=defaults.remap_balance
-        )
-        tracker_config = columns[1].text_input(
-            "Tracker config", value=defaults.tracker_config
-        )
+            columns = st.columns(4)
+            values["zone_presence_min_overlap_ratio"] = columns[0].number_input(
+                "Zone presence overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.zone_presence_min_overlap_ratio,
+            )
+            values["assignment_min_overlap_ratio"] = columns[1].number_input(
+                "Assignment overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.assignment_min_overlap_ratio,
+            )
+            values["assignment_ambiguous_margin"] = columns[2].number_input(
+                "Assignment margin",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.assignment_ambiguous_margin,
+            )
+            values["out_of_zone_min_spot_overlap_ratio"] = columns[3].number_input(
+                "Out-of-zone spot-union overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.out_of_zone_min_spot_overlap_ratio,
+            )
 
-    return ViewerPolicy(
-        zone_entry_confirm_seconds=zone_entry,
-        zone_exit_confirm_seconds=zone_exit,
-        entry_zone_min_overlap_ratio=entry_overlap,
-        parking_confirm_seconds=parking_confirm,
-        parking_move_confirm_seconds=parking_move,
-        absence_confirmation_seconds=absence,
-        trusted_sample_max_gap_seconds=trusted_gap,
-        reidentification_max_gap_seconds=reidentification_gap,
-        reidentification_min_score=reidentification_score,
-        reidentification_ambiguity_margin=reidentification_margin,
-        incident_confirm_seconds=incident_confirm,
-        incident_clear_seconds=incident_clear,
-        incident_rule_timings=tuple(incident_rule_timings),
-        zone_presence_min_overlap_ratio=zone_overlap,
-        assignment_min_overlap_ratio=assignment_overlap,
-        assignment_ambiguous_margin=ambiguous_margin,
-        bad_parking_min_primary_overlap_ratio=bad_parking_overlap,
-        bad_parking_min_secondary_overlap_ratio=(
-            bad_parking_secondary_overlap
-        ),
-        out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap,
-        blocking_relation_confirm_seconds=blocking_confirm,
-        blocking_relation_clear_seconds=blocking_clear,
-        blocking_min_subject_overlap_ratio=blocking_subject_overlap,
-        blocking_min_egress_coverage_ratio=blocking_egress_coverage,
-        entry_match_window_seconds=match_window,
-        motion_window_seconds=motion_window,
-        motion_min_observation_span_seconds=motion_min_span,
-        motion_max_sample_gap_seconds=motion_max_gap,
-        motion_stationary_threshold=motion_stationary,
-        motion_moving_threshold=motion_moving,
-        motion_min_samples=motion_min_samples,
-        motion_min_trend_consistency=motion_consistency,
-        confidence=confidence,
-        tracker_config=tracker_config,
-        remap_balance=remap_balance,
-    )
+            columns = st.columns(2)
+            values["bad_parking_min_primary_overlap_ratio"] = columns[0].number_input(
+                "BAD_PARKING primary overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.bad_parking_min_primary_overlap_ratio,
+                help="주 할당 면적이 이 값 미만이면 BAD_PARKING 근거가 됩니다.",
+            )
+            values["bad_parking_min_secondary_overlap_ratio"] = columns[1].number_input(
+                "BAD_PARKING secondary overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.bad_parking_min_secondary_overlap_ratio,
+                help="두 번째 주차면 overlap이 이 값 이상이면 두 칸 차지 근거가 됩니다.",
+            )
 
+        with parking_tab:
+            st.caption("ParkingEpisode lifecycle과 BlockingRelation 안정화 시간")
+            columns = st.columns(4)
+            values["parking_confirm_seconds"] = columns[0].number_input(
+                "Parking confirm (s)",
+                min_value=0.001,
+                value=defaults.parking_confirm_seconds,
+            )
+            values["parking_move_confirm_seconds"] = columns[1].number_input(
+                "Parking move confirm (s)",
+                min_value=0.0,
+                value=defaults.parking_move_confirm_seconds,
+            )
+            values["blocking_relation_confirm_seconds"] = columns[2].number_input(
+                "Blocking confirm (s)",
+                min_value=0.0,
+                value=defaults.blocking_relation_confirm_seconds,
+            )
+            values["blocking_relation_clear_seconds"] = columns[3].number_input(
+                "Blocking clear (s)",
+                min_value=0.0,
+                value=defaults.blocking_relation_clear_seconds,
+            )
+
+            columns = st.columns(2)
+            values["blocking_min_subject_overlap_ratio"] = columns[0].number_input(
+                "Blocking subject overlap",
+                min_value=0.01,
+                max_value=1.0,
+                value=defaults.blocking_min_subject_overlap_ratio,
+                step=0.01,
+            )
+            values["blocking_min_egress_coverage_ratio"] = columns[1].number_input(
+                "Blocking egress coverage",
+                min_value=0.01,
+                max_value=1.0,
+                value=defaults.blocking_min_egress_coverage_ratio,
+                step=0.01,
+            )
+
+        with incident_tab:
+            st.caption(
+                "전역 값은 목록에 없는 future rule의 fallback입니다. "
+                "현재 규칙은 아래 confirm/clear 정책을 우선 사용합니다."
+            )
+            columns = st.columns(2)
+            values["incident_confirm_seconds"] = columns[0].number_input(
+                "Fallback incident confirm (s)",
+                min_value=0.0,
+                value=defaults.incident_confirm_seconds,
+            )
+            values["incident_clear_seconds"] = columns[1].number_input(
+                "Fallback incident clear (s)",
+                min_value=0.0,
+                value=defaults.incident_clear_seconds,
+            )
+
+            group_labels = {
+                "CONTEXT": "권한·세션 규칙",
+                "GEOMETRY": "기하·배치 규칙",
+                "RELATION": "차단 관계 규칙",
+            }
+            for group in ("CONTEXT", "GEOMETRY", "RELATION"):
+                st.markdown(f"**{group_labels[group]}**")
+                header = st.columns((2, 1, 1))
+                header[0].caption("Rule")
+                header[1].caption("Confirm (s)")
+                header[2].caption("Clear (s)")
+                for spec in INCIDENT_RULE_TIMING_SPECS:
+                    if spec.group != group:
+                        continue
+                    columns = st.columns((2, 1, 1))
+                    columns[0].code(spec.rule_code)
+                    values[spec.confirm_field] = columns[1].number_input(
+                        f"{spec.rule_code} confirm (s)",
+                        min_value=0.0,
+                        value=getattr(defaults, spec.confirm_field),
+                        label_visibility="collapsed",
+                    )
+                    values[spec.clear_field] = columns[2].number_input(
+                        f"{spec.rule_code} clear (s)",
+                        min_value=0.0,
+                        value=getattr(defaults, spec.clear_field),
+                        label_visibility="collapsed",
+                    )
+
+    return ViewerPolicy(**values)
 
 def main() -> None:
     _initialize_example()
