@@ -6,7 +6,7 @@ export const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: Spacing.sm,
-    paddingBottom: Spacing.base,
+    marginBottom: Spacing.sm,
   },
   action: {
     flex: 1,

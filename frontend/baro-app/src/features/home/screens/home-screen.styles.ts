@@ -7,11 +7,11 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingBottom: Spacing.lg,
-    gap: Spacing.base,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.base,
+    gap: Spacing.md,
   },
   greeting: {
-    marginTop: Spacing.sm,
     fontSize: 26,
     lineHeight: 32.5,
     fontWeight: FontWeight.bold,
