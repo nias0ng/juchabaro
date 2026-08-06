@@ -20,7 +20,11 @@ from datetime import datetime, timedelta
 import sqlite3
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from src.application.physical_presence_workflow import SessionExitTransition
+from src.application.physical_presence_workflow import (
+    PHYSICAL_VEHICLE_LEFT,
+    SESSION_EXITED,
+    SessionExitTransition,
+)
 from src.application.session_observation_workflow import SessionObservationResult
 from src.domain.models import ObservationStatus, require_aware
 from src.parking.models import (
@@ -232,6 +236,19 @@ class PendingHandoffWorkflow:
                     is PhysicalPresenceState.EXITED
                 ):
                     continue
+                if vehicle.termination_reason not in {
+                    SESSION_EXITED,
+                    PHYSICAL_VEHICLE_LEFT,
+                }:
+                    # 허용 목록만 출차로 인정한다(565). 잘못된 SessionExit
+                    # 발행은 되돌릴 수 없는 wire 신호이므로, 인식하지 못한
+                    # 사유(예: ABSENCE_WITHOUT_EXIT_EVIDENCE나 앞으로 추가될
+                    # 새 값)의 기본 동작은 반드시 "발행하지 않음"이어야
+                    # 한다 — 알려진 두 값에 대해서만 명시적으로 허용한다.
+                    # 이 시점에는 ZoneVisit이 이미 종료돼 재계산할 수 없으므로
+                    # departure가 영속한 사유를 그대로 신뢰한다. 확인할 수 없는
+                    # 출차 상태를 mirror에 만들어 두지 않는다.
+                    continue
                 updated = self._historical_mirror(
                     attempt=attempt,
                     vehicle=vehicle,
@@ -249,7 +266,7 @@ class PendingHandoffWorkflow:
                         origin=(
                             PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
                         ),
-                        evidence=PhysicalExitEvidence.FULL_AREA_ABSENCE,
+                        evidence=PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL,
                     )
                 )
                 continue
@@ -622,7 +639,7 @@ class PendingHandoffWorkflow:
                     else None
                 ),
                 physical_exit_evidence=(
-                    PhysicalExitEvidence.FULL_AREA_ABSENCE
+                    PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
                     if is_exited
                     else None
                 ),
@@ -649,7 +666,7 @@ class PendingHandoffWorkflow:
                 else None
             ),
             physical_exit_evidence=(
-                PhysicalExitEvidence.FULL_AREA_ABSENCE if is_exited else None
+                PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL if is_exited else None
             ),
             exited_at=vehicle.terminated_at if is_exited else None,
             record_version=mirror.record_version + 1,

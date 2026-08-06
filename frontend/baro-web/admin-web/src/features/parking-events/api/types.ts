@@ -5,8 +5,11 @@ export type EventType = 'BAD_PARKING' | 'DOUBLE_PARKING' | 'DISABLED_ZONE_VIOLAT
 
 export type EventStatus = 'DETECTED' | 'REQUESTED' | 'NEED_ADMIN' | 'RESOLVED' | 'DISMISSED';
 
-// 명세에 전체 값 목록이 없고 예시로 'REMINDER_SENT'만 확인됨. 이동요청이 없으면 null.
-export type RequestStatus = string;
+// ERD(move_requests.request_status) 기준. 연결된 이동요청이 없으면 null.
+export type RequestStatus = 'SENT' | 'RESPONDED' | 'REMINDER_SENT' | 'COMPLETED' | 'NEED_ADMIN' | 'CANCELLED';
+
+// 이동요청이 AI 자동 감지로 발생했는지, 관리자가 수동으로 등록했는지 구분(목록 조회 전용 필드).
+export type RequestType = 'AUTO' | 'MANUAL';
 
 export type ActionType = 'COMPLETE' | 'DISMISS' | 'ACKNOWLEDGE' | 'REMINDER';
 
@@ -23,10 +26,10 @@ export type AdminEventSummary = {
   eventId: number;
   plateNumber: string;
   eventType: EventType;
+  requestType: RequestType;
   requestStatus: RequestStatus | null;
   zoneNumber: string | null;
   detectedAt: string;
-  violationRatio: number | null;
   eventStatus: EventStatus;
 };
 
@@ -67,6 +70,7 @@ export type AdminEventDetail = {
   plateNumber: string;
   eventType: EventType;
   eventStatus: EventStatus;
+  requestType: RequestType;
   requestStatus: RequestStatus | null;
   zoneNumber: string | null;
   floor: string | null;

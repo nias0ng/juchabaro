@@ -1,4 +1,4 @@
-import type { ActionType, EventStatus, EventType } from './api/types';
+import type { ActionType, EventStatus, EventType, RequestStatus, RequestType } from './api/types';
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {
   BAD_PARKING: '불법 주차',
@@ -24,6 +24,21 @@ export const ACTION_TYPE_LABELS: Record<ActionType, string> = {
   REMINDER: '재알림 전송',
 };
 
+export const REQUEST_TYPE_LABELS: Record<RequestType, string> = {
+  AUTO: '자동',
+  MANUAL: '수동',
+};
+
+// ERD(move_requests.request_status) 정의 문구 그대로. 사건 상세의 "관리자 확인 내용" 칸에 쓴다.
+export const REQUEST_STATUS_DESCRIPTIONS: Record<RequestStatus, string> = {
+  SENT: '요청 발송됨',
+  RESPONDED: '차주 응답함',
+  REMINDER_SENT: '1차 확인에서 미이동이 확인되어 재알림을 보냄',
+  COMPLETED: '처리 완료',
+  NEED_ADMIN: '관리자 확인 필요 (미응답, 이동 어려움, 2차 미이동)',
+  CANCELLED: '사건이 오탐 처리되거나 요청이 취소됨',
+};
+
 export const EVENT_TYPE_OPTIONS = Object.keys(EVENT_TYPE_LABELS) as EventType[];
 export const EVENT_STATUS_OPTIONS = Object.keys(EVENT_STATUS_LABELS) as EventStatus[];
 export const ACTION_TYPE_OPTIONS = Object.keys(ACTION_TYPE_LABELS) as ActionType[];
@@ -32,7 +47,13 @@ export function eventTypeLabel(type: EventType): string {
   return EVENT_TYPE_LABELS[type];
 }
 
-export function eventStatusLabel(status: EventStatus): string {
+// REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동"/"수동"으로 세분화해서
+// 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은 기존
+// "이동 요청됨" 문구를 그대로 쓴다.
+export function eventStatusLabel(status: EventStatus, requestType?: RequestType): string {
+  if (status === 'REQUESTED' && requestType) {
+    return requestTypeLabel(requestType);
+  }
   return EVENT_STATUS_LABELS[status];
 }
 
@@ -40,13 +61,24 @@ export function actionTypeLabel(action: ActionType): string {
   return ACTION_TYPE_LABELS[action];
 }
 
+export function requestTypeLabel(type: RequestType): string {
+  return REQUEST_TYPE_LABELS[type];
+}
+
+export function requestStatusDescription(status: RequestStatus | null): string {
+  if (!status) return '연결된 이동 요청 없음';
+  return REQUEST_STATUS_DESCRIPTIONS[status];
+}
+
 export function typeTone(type: EventType) {
-  if (type === 'DISABLED_ZONE_VIOLATION') return 'primary' as const;
-  if (type === 'EV_OVERSTAY') return 'success' as const;
+  if (type === 'DISABLED_ZONE_VIOLATION') return 'success' as const;
+  if (type === 'EV_OVERSTAY') return 'sky' as const;
   if (type === 'ETC') return 'neutral' as const;
   return 'danger' as const;
 }
 
+// REQUESTED 상태(자동/수동)는 배지 없이 일반 텍스트로 보여줘서 이 함수가 호출되지 않는다
+// (ParkingEventListView.vue, EventDetailCard.vue 참고). 그 외 상태만 배지 톤을 정한다.
 export function statusTone(status: EventStatus) {
   if (status === 'RESOLVED') return 'success' as const;
   if (status === 'DISMISSED') return 'neutral' as const;

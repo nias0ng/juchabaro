@@ -13,6 +13,8 @@ crop하지 않은 full-frame 좌표계로 복원한 것이다.
 `remap balance=0.5`를 적용한 frame을 기준으로 잡은 배포 설정이다. 원본
 스크린샷의 위·아래 검은 레터박스는 remap 전에 제외했다. 좌표는
 보정 frame 너비와 높이로 나눈 0~1 정규화 값이다.
+version 1의 꼭짓점은 crop 도입 전 `zone_definition.pilot.json` version 5의
+full-frame 폴리곤을 그대로 복원한다.
 
 | zoneId | 임시 위치 | zoneType | entryExitRole |
 |---:|---|---|---|

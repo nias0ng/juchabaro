@@ -41,10 +41,15 @@ from src.camera.entry_camera import (
     CaptureSequenceError,
 )
 from src.communication.backend_client import BackendClientError
+from src.communication.jetson_client import JetsonClientError
 from src.communication.schemas import (
+    AcceptanceStatus,
     AccessDecision,
     BackendEntryRequest,
     BackendEntryResult,
+    EntryMatchState,
+    JetsonEntryAcceptance,
+    JetsonEntryRequest,
     SessionContext,
 )
 from src.entry.entry_controller import EntrySignal
@@ -61,6 +66,8 @@ from src.ocr import (
 
 BACKEND_BASE_URL = "http://backend:8080"
 BACKEND_HW_API_KEY = "test-backend-api-key"
+JETSON_BASE_URL = "http://jetson:8000"
+INTERNAL_API_KEY = "test-internal-api-key"
 ENTRY_ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000"
 IDEMPOTENCY_KEY = "c176f427-3e47-4fbd-bb17-12ca2bf46ee9"
 SECOND_ENTRY_ATTEMPT_ID = "710fa330-f2f1-4d89-a959-aca0af2216f8"
@@ -78,6 +85,8 @@ ENTRY_TIME = datetime(
 PLATE_NUMBER = "12가3456"
 OCR_CONFIDENCE = 0.97
 FRAMES = tuple(object() for _ in range(main_module.CAPTURE_FRAME_COUNT))
+JETSON_ACCEPTED_AT = ENTRY_TIME + timedelta(seconds=1)
+MATCH_DEADLINE_AT = ENTRY_TIME + timedelta(seconds=10)
 
 
 # [테스트 데이터와 helper]
@@ -109,6 +118,17 @@ def make_backend_result(
     )
 
 
+def make_jetson_acceptance() -> JetsonEntryAcceptance:
+    return JetsonEntryAcceptance(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        decision_revision=1,
+        acceptance_status=AcceptanceStatus.ACCEPTED,
+        match_state=EntryMatchState.PENDING,
+        accepted_at=JETSON_ACCEPTED_AT,
+        match_deadline_at=MATCH_DEADLINE_AT,
+    )
+
+
 @dataclass(slots=True)
 class MainHarness:
     """main orchestration에 주입한 mock 묶음."""
@@ -119,11 +139,14 @@ class MainHarness:
     green_led: MagicMock
     controller: MagicMock
     backend_client: MagicMock
+    jetson_client: MagicMock
     event: EntryEvent
     backend_result: BackendEntryResult
+    jetson_acceptance: JetsonEntryAcceptance
     logger: MagicMock
     factory: MagicMock
     backend_constructor: MagicMock
+    jetson_constructor: MagicMock
     sensor_constructor: MagicMock
     camera_constructor: MagicMock
     green_led_constructor: MagicMock
@@ -144,6 +167,7 @@ def harness(
     green_led = MagicMock(spec=main_module.GreenLed)
     controller = MagicMock(spec=main_module.EntryController)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    jetson_client = MagicMock(spec=main_module.JetsonClient)
     logger = MagicMock(spec=logging.Logger)
 
     event = EntryEvent(
@@ -152,6 +176,7 @@ def harness(
         entry_time=ENTRY_TIME,
     )
     backend_result = make_backend_result()
+    jetson_acceptance = make_jetson_acceptance()
 
     pipeline.read_plate.return_value = PlateReadResult(
         status=ReadStatus.SUCCESS,
@@ -162,9 +187,11 @@ def harness(
     camera.capture_sequence.return_value = FRAMES
     controller.update.return_value = EntrySignal.NONE
     backend_client.request_entry.return_value = backend_result
+    jetson_client.send_entry.return_value = jetson_acceptance
 
     factory = MagicMock(return_value=pipeline)
     backend_constructor = MagicMock(return_value=backend_client)
+    jetson_constructor = MagicMock(return_value=jetson_client)
     sensor_constructor = MagicMock(return_value=sensor)
     camera_constructor = MagicMock(return_value=camera)
     green_led_constructor = MagicMock(return_value=green_led)
@@ -186,6 +213,16 @@ def harness(
     )
     monkeypatch.setattr(
         main_module,
+        "JETSON_BASE_URL",
+        JETSON_BASE_URL,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "INTERNAL_API_KEY",
+        INTERNAL_API_KEY,
+    )
+    monkeypatch.setattr(
+        main_module,
         "configure_logging",
         MagicMock(),
     )
@@ -198,6 +235,11 @@ def harness(
         main_module,
         "BackendClient",
         backend_constructor,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "JetsonClient",
+        jetson_constructor,
     )
     monkeypatch.setattr(
         main_module,
@@ -242,11 +284,14 @@ def harness(
         green_led=green_led,
         controller=controller,
         backend_client=backend_client,
+        jetson_client=jetson_client,
         event=event,
         backend_result=backend_result,
+        jetson_acceptance=jetson_acceptance,
         logger=logger,
         factory=factory,
         backend_constructor=backend_constructor,
+        jetson_constructor=jetson_constructor,
         sensor_constructor=sensor_constructor,
         camera_constructor=camera_constructor,
         green_led_constructor=green_led_constructor,
@@ -366,6 +411,35 @@ def test_validate_backend_settings_rejects_invalid_api_key(
         main_module.validate_backend_settings()
 
 
+def test_validate_jetson_settings_accepts_valid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main_module, "JETSON_BASE_URL", JETSON_BASE_URL)
+    monkeypatch.setattr(main_module, "INTERNAL_API_KEY", INTERNAL_API_KEY)
+
+    main_module.validate_jetson_settings()
+
+
+@pytest.mark.parametrize(
+    ("setting_name", "expected_message"),
+    [
+        pytest.param("JETSON_BASE_URL", "base URL", id="base-url"),
+        pytest.param("INTERNAL_API_KEY", "API key", id="api-key"),
+    ],
+)
+def test_validate_jetson_settings_rejects_empty_values(
+    monkeypatch: pytest.MonkeyPatch,
+    setting_name: str,
+    expected_message: str,
+) -> None:
+    monkeypatch.setattr(main_module, "JETSON_BASE_URL", JETSON_BASE_URL)
+    monkeypatch.setattr(main_module, "INTERNAL_API_KEY", INTERNAL_API_KEY)
+    monkeypatch.setattr(main_module, setting_name, " \t\n")
+
+    with pytest.raises(ValueError, match=expected_message):
+        main_module.validate_jetson_settings()
+
+
 @pytest.mark.parametrize(
     ("setting_name", "invalid_value"),
     [
@@ -403,6 +477,23 @@ def test_main_stops_before_runtime_initialization_for_invalid_backend_setting(
     harness.camera_constructor.assert_not_called()
 
 
+@pytest.mark.parametrize("setting_name", ["JETSON_BASE_URL", "INTERNAL_API_KEY"])
+def test_main_stops_before_runtime_initialization_for_invalid_jetson_setting(
+    harness: MainHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    setting_name: str,
+) -> None:
+    monkeypatch.setattr(main_module, setting_name, "")
+
+    with pytest.raises(ValueError):
+        main_module.main()
+
+    harness.backend_constructor.assert_not_called()
+    harness.jetson_constructor.assert_not_called()
+    harness.factory.assert_not_called()
+    harness.sensor_constructor.assert_not_called()
+
+
 def test_main_validates_measurement_interval_before_backend_settings(
     harness: MainHarness,
     monkeypatch: pytest.MonkeyPatch,
@@ -410,6 +501,7 @@ def test_main_validates_measurement_interval_before_backend_settings(
     validation_calls = MagicMock()
     measurement_validation = MagicMock()
     backend_validation = MagicMock()
+    jetson_validation = MagicMock()
 
     validation_calls.attach_mock(
         measurement_validation,
@@ -419,6 +511,7 @@ def test_main_validates_measurement_interval_before_backend_settings(
         backend_validation,
         "backend",
     )
+    validation_calls.attach_mock(jetson_validation, "jetson")
     monkeypatch.setattr(
         main_module,
         "validate_measurement_interval",
@@ -429,12 +522,18 @@ def test_main_validates_measurement_interval_before_backend_settings(
         "validate_backend_settings",
         backend_validation,
     )
+    monkeypatch.setattr(
+        main_module,
+        "validate_jetson_settings",
+        jetson_validation,
+    )
 
     main_module.main()
 
-    assert validation_calls.mock_calls[:2] == [
+    assert validation_calls.mock_calls[:3] == [
         call.measurement(),
         call.backend(),
+        call.jetson(),
     ]
 
 
@@ -653,6 +752,7 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    jetson_client = MagicMock(spec=main_module.JetsonClient)
     green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
     decision_calls = MagicMock()
@@ -666,6 +766,7 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     camera.capture_sequence.return_value = FRAMES
     pipeline.read_plate.return_value = ocr_result
     backend_client.request_entry.return_value = backend_result
+    jetson_client.send_entry.return_value = make_jetson_acceptance()
 
     with (
         patch.object(
@@ -676,20 +777,35 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
             main_module,
             "log_backend_entry_result",
         ) as log_backend_entry_result,
+        patch.object(
+            main_module.time,
+            "monotonic",
+            side_effect=[100.0, 100.25],
+        ),
+        patch.object(main_module.time, "sleep") as sleep,
     ):
         decision_calls.attach_mock(
             log_backend_entry_result,
             "log_backend_entry_result",
         )
         decision_calls.attach_mock(
-            green_led.indicate_allow,
-            "indicate_allow",
+            green_led.turn_on,
+            "turn_on",
+        )
+        decision_calls.attach_mock(
+            jetson_client.send_entry,
+            "send_entry",
+        )
+        decision_calls.attach_mock(
+            green_led.turn_off,
+            "turn_off",
         )
         returned = main_module.process_entry_event(
             event,
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=jetson_client,
             green_led=green_led,
             logger=logger,
         )
@@ -708,7 +824,7 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
     assert request.entry_attempt_id == event.entry_attempt_id
     assert request.recognized_plate_number == PLATE_NUMBER
     assert request.entry_time is event.entry_time
-    assert request.confidence == OCR_CONFIDENCE
+    assert request.ocr_confidence == OCR_CONFIDENCE
     assert backend_call.kwargs == {
         "idempotency_key": event.idempotency_key,
     }
@@ -716,18 +832,72 @@ def test_process_entry_event_posts_successful_ocr_result() -> None:
         backend_result,
         logger,
     )
-    green_led.indicate_allow.assert_called_once_with(
-        main_module.GREEN_LED_DURATION_SECONDS
-    )
+    jetson_client.send_entry.assert_called_once()
+    jetson_call = jetson_client.send_entry.call_args
+    jetson_request = jetson_call.args[0]
+    assert isinstance(jetson_request, JetsonEntryRequest)
+    assert jetson_request.entry_attempt_id == event.entry_attempt_id
+    assert jetson_request.decision_revision == backend_result.decision_revision
+    assert jetson_request.access_decision is AccessDecision.ALLOW
+    assert jetson_request.session_context == backend_result.session_context
+    assert jetson_call.kwargs == {"idempotency_key": event.idempotency_key}
+    green_led.turn_on.assert_called_once_with()
+    sleep.assert_called_once_with(2.75)
+    green_led.turn_off.assert_called_once_with()
     assert decision_calls.mock_calls == [
         call.log_backend_entry_result(
             backend_result,
             logger,
         ),
-        call.indicate_allow(
-            main_module.GREEN_LED_DURATION_SECONDS
+        call.turn_on(),
+        call.send_entry(
+            jetson_request,
+            idempotency_key=event.idempotency_key,
         ),
+        call.turn_off(),
     ]
+
+
+def test_jetson_client_error_does_not_cancel_allow_indication() -> None:
+    backend_request = BackendEntryRequest(
+        entry_attempt_id=ENTRY_ATTEMPT_ID,
+        recognized_plate_number=PLATE_NUMBER,
+        entry_time=ENTRY_TIME,
+        ocr_confidence=OCR_CONFIDENCE,
+    )
+    backend_result = make_backend_result()
+    jetson_client = MagicMock(spec=main_module.JetsonClient)
+    green_led = MagicMock(spec=main_module.GreenLed)
+    logger = MagicMock(spec=logging.Logger)
+    jetson_error = JetsonClientError("connection refused")
+    jetson_client.send_entry.side_effect = jetson_error
+
+    with (
+        patch.object(
+            main_module.time,
+            "monotonic",
+            side_effect=[10.0, 10.5],
+        ),
+        patch.object(main_module.time, "sleep") as sleep,
+    ):
+        main_module.indicate_allow_and_send_to_jetson(
+            backend_request=backend_request,
+            backend_result=backend_result,
+            idempotency_key=IDEMPOTENCY_KEY,
+            jetson_client=jetson_client,
+            green_led=green_led,
+            logger=logger,
+        )
+
+    green_led.turn_on.assert_called_once_with()
+    jetson_client.send_entry.assert_called_once()
+    sleep.assert_called_once_with(2.5)
+    green_led.turn_off.assert_called_once_with()
+    logger.error.assert_called_once_with(
+        "Jetson entry request failed. entry_attempt_id=%s",
+        ENTRY_ATTEMPT_ID,
+        exc_info=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -754,6 +924,7 @@ def test_process_entry_event_does_not_indicate_non_allow_decision(
     camera = MagicMock(spec=main_module.EntryCamera)
     pipeline = MagicMock(spec=main_module.PlateOcrPipeline)
     backend_client = MagicMock(spec=main_module.BackendClient)
+    jetson_client = MagicMock(spec=main_module.JetsonClient)
     green_led = MagicMock(spec=main_module.GreenLed)
     logger = MagicMock(spec=logging.Logger)
 
@@ -777,6 +948,7 @@ def test_process_entry_event_does_not_indicate_non_allow_decision(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=jetson_client,
             green_led=green_led,
             logger=logger,
         )
@@ -786,7 +958,8 @@ def test_process_entry_event_does_not_indicate_non_allow_decision(
         backend_result,
         logger,
     )
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
+    jetson_client.send_entry.assert_not_called()
 
 
 def test_process_entry_event_stops_after_capture_failure() -> None:
@@ -809,6 +982,7 @@ def test_process_entry_event_stops_after_capture_failure() -> None:
         camera=camera,
         ocr_pipeline=pipeline,
         backend_client=backend_client,
+        jetson_client=MagicMock(spec=main_module.JetsonClient),
         green_led=green_led,
         logger=logger,
     )
@@ -817,7 +991,7 @@ def test_process_entry_event_stops_after_capture_failure() -> None:
     camera.capture_sequence.assert_called_once_with()
     pipeline.read_plate.assert_not_called()
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     logger.warning.assert_called_once()
     assert logger.warning.call_args.kwargs["exc_info"] is True
     logger.error.assert_not_called()
@@ -861,6 +1035,7 @@ def test_process_entry_event_handles_known_ocr_error(
         camera=camera,
         ocr_pipeline=pipeline,
         backend_client=backend_client,
+        jetson_client=MagicMock(spec=main_module.JetsonClient),
         green_led=green_led,
         logger=logger,
     )
@@ -869,7 +1044,7 @@ def test_process_entry_event_handles_known_ocr_error(
     camera.capture_sequence.assert_called_once_with()
     pipeline.read_plate.assert_called_once_with(FRAMES)
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     logger.error.assert_called_once_with(
         expected_message,
         exc_info=True,
@@ -931,6 +1106,7 @@ def test_process_entry_event_does_not_call_backend_for_unsuccessful_ocr(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
@@ -938,7 +1114,7 @@ def test_process_entry_event_does_not_call_backend_for_unsuccessful_ocr(
     assert returned is None
     log_ocr_result.assert_called_once_with(result, logger)
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
 
 
 def test_process_entry_event_rejects_success_without_plate_number() -> None:
@@ -977,13 +1153,14 @@ def test_process_entry_event_rejects_success_without_plate_number() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                jetson_client=MagicMock(spec=main_module.JetsonClient),
                 green_led=green_led,
                 logger=logger,
             )
 
     log_ocr_result.assert_not_called()
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     log_backend_entry_result.assert_not_called()
 
 
@@ -1023,13 +1200,14 @@ def test_process_entry_event_rejects_success_without_rec_score() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                jetson_client=MagicMock(spec=main_module.JetsonClient),
                 green_led=green_led,
                 logger=logger,
             )
 
     log_ocr_result.assert_not_called()
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     log_backend_entry_result.assert_not_called()
 
 
@@ -1064,6 +1242,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
@@ -1075,7 +1254,7 @@ def test_process_entry_event_handles_backend_client_error() -> None:
         exc_info=True,
     )
     log_backend_entry_result.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1119,12 +1298,13 @@ def test_process_entry_event_propagates_unexpected_backend_error(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is unexpected_error
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
 
 
 def test_process_entry_event_rejects_mismatched_response_id() -> None:
@@ -1159,12 +1339,13 @@ def test_process_entry_event_rejects_mismatched_response_id() -> None:
                 camera=camera,
                 ocr_pipeline=pipeline,
                 backend_client=backend_client,
+                jetson_client=MagicMock(spec=main_module.JetsonClient),
                 green_led=green_led,
                 logger=logger,
             )
 
     log_backend_entry_result.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
 
 
 def test_process_entry_event_propagates_unexpected_ocr_exception() -> None:
@@ -1189,13 +1370,14 @@ def test_process_entry_event_propagates_unexpected_ocr_exception() -> None:
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is unexpected_error
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     logger.error.assert_not_called()
 
 
@@ -1235,13 +1417,14 @@ def test_process_entry_event_propagates_termination_exception(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
 
     assert captured.value is termination
     backend_client.request_entry.assert_not_called()
-    green_led.indicate_allow.assert_not_called()
+    green_led.turn_on.assert_not_called()
     logger.warning.assert_not_called()
     logger.error.assert_not_called()
 
@@ -1266,7 +1449,7 @@ def test_process_entry_event_logs_and_propagates_led_error() -> None:
         rec_score=OCR_CONFIDENCE,
     )
     backend_client.request_entry.return_value = make_backend_result()
-    green_led.indicate_allow.side_effect = led_error
+    green_led.turn_on.side_effect = led_error
 
     with pytest.raises(RuntimeError) as captured:
         main_module.process_entry_event(
@@ -1274,6 +1457,7 @@ def test_process_entry_event_logs_and_propagates_led_error() -> None:
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
@@ -1319,7 +1503,7 @@ def test_process_entry_event_propagates_led_termination_without_error_log(
         rec_score=OCR_CONFIDENCE,
     )
     backend_client.request_entry.return_value = make_backend_result()
-    green_led.indicate_allow.side_effect = termination
+    green_led.turn_on.side_effect = termination
 
     with pytest.raises(type(termination)) as captured:
         main_module.process_entry_event(
@@ -1327,6 +1511,7 @@ def test_process_entry_event_propagates_led_termination_without_error_log(
             camera=camera,
             ocr_pipeline=pipeline,
             backend_client=backend_client,
+            jetson_client=MagicMock(spec=main_module.JetsonClient),
             green_led=green_led,
             logger=logger,
         )
@@ -1346,6 +1531,17 @@ def test_main_constructs_backend_client_once_with_existing_settings(
     harness.backend_constructor.assert_called_once_with(
         base_url=BACKEND_BASE_URL,
         api_key=BACKEND_HW_API_KEY,
+    )
+
+
+def test_main_constructs_jetson_client_once_with_existing_settings(
+    harness: MainHarness,
+) -> None:
+    main_module.main()
+
+    harness.jetson_constructor.assert_called_once_with(
+        base_url=JETSON_BASE_URL,
+        api_key=INTERNAL_API_KEY,
     )
 
 
@@ -1380,7 +1576,7 @@ def test_main_passes_runtime_settings_and_capture_policy_to_factory(
     assert config.policy.frame_count == main_module.CAPTURE_FRAME_COUNT
 
 
-def test_main_constructs_backend_before_loading_pipeline(
+def test_main_constructs_communication_clients_before_loading_pipeline(
     harness: MainHarness,
 ) -> None:
     calls = MagicMock()
@@ -1388,15 +1584,20 @@ def test_main_constructs_backend_before_loading_pipeline(
         harness.backend_constructor,
         "backend_constructor",
     )
+    calls.attach_mock(
+        harness.jetson_constructor,
+        "jetson_constructor",
+    )
     calls.attach_mock(harness.factory, "factory")
 
     main_module.main()
 
     assert [
         recorded_call[0]
-        for recorded_call in calls.mock_calls[:2]
+        for recorded_call in calls.mock_calls[:3]
     ] == [
         "backend_constructor",
+        "jetson_constructor",
         "factory",
     ]
 
@@ -1443,6 +1644,7 @@ def test_main_propagates_factory_failure_before_hardware_initialization(
 
     assert captured.value is startup_error
     harness.backend_constructor.assert_called_once()
+    harness.jetson_constructor.assert_called_once()
     harness.factory.assert_called_once()
     harness.sensor_constructor.assert_not_called()
     harness.camera_constructor.assert_not_called()
@@ -1500,6 +1702,7 @@ def test_main_creates_event_before_processing_detected_entry(
         camera=harness.camera,
         ocr_pipeline=harness.pipeline,
         backend_client=harness.backend_client,
+        jetson_client=harness.jetson_client,
         green_led=harness.green_led,
         logger=harness.logger,
     )
@@ -1563,6 +1766,7 @@ def test_main_reuses_runtime_objects_across_multiple_entry_events(
             event_call.kwargs["backend_client"]
             is harness.backend_client
         )
+        assert event_call.kwargs["jetson_client"] is harness.jetson_client
         assert event_call.kwargs["green_led"] is harness.green_led
         assert event_call.kwargs["logger"] is harness.logger
 

@@ -3,8 +3,8 @@ Raspberry Pi 입차 감지 서비스의 객체 생명주기와 실행 흐름을 
 
 초음파 센서 측정값으로 입차 확정 신호를 확인하고 해당 시점에 카메라
 촬영, 번호판 OCR과 Backend 입차 등록을 수행한다. 입차 판단 세부 로직,
-카메라 내부 제어와 HTTP 통신 세부 구현은 담당하지 않는다. Backend HTTP
-통신은 BackendClient에 위임하고 LED GPIO 세부 제어는 GreenLed에 위임한다.
+카메라 내부 제어와 HTTP 통신 세부 구현은 담당하지 않는다. Backend·Jetson
+HTTP 통신은 각 client에 위임하고 LED GPIO 세부 제어는 GreenLed에 위임한다.
 이 모듈은 요청 실행 순서, ALLOW 표시와 오류 경계를 조율한다.
 """
 
@@ -23,16 +23,20 @@ from src.communication.backend_client import (
     BackendClient,
     BackendClientError,
 )
+from src.communication.jetson_client import JetsonClient, JetsonClientError
 from src.communication.schemas import (
     AccessDecision,
     BackendEntryRequest,
     BackendEntryResult,
+    JetsonEntryRequest,
 )
 from src.config.settings import (
     BACKEND_BASE_URL,
     BACKEND_HW_API_KEY,
     CAPTURE_FRAME_COUNT,
     GREEN_LED_DURATION_SECONDS,
+    INTERNAL_API_KEY,
+    JETSON_BASE_URL,
     MEASUREMENT_INTERVAL_SECONDS,
     OCR_DETECTOR_MODEL_PATH,
     OCR_DEVICE,
@@ -83,6 +87,16 @@ def validate_backend_settings() -> None:
 
     if not BACKEND_HW_API_KEY.strip():
         raise ValueError("Backend hardware API key는 비어 있을 수 없습니다.")
+
+
+def validate_jetson_settings() -> None:
+    """Jetson EntryDecision 전달에 필요한 필수 설정을 검증한다."""
+
+    if not JETSON_BASE_URL.strip():
+        raise ValueError("Jetson base URL은 비어 있을 수 없습니다.")
+
+    if not INTERNAL_API_KEY.strip():
+        raise ValueError("Jetson internal API key는 비어 있을 수 없습니다.")
 
 
 def create_entry_event() -> EntryEvent:
@@ -165,12 +179,69 @@ def log_backend_entry_result(
     )
 
 
+def indicate_allow_and_send_to_jetson(
+    *,
+    backend_request: BackendEntryRequest,
+    backend_result: BackendEntryResult,
+    idempotency_key: str,
+    jetson_client: JetsonClient,
+    green_led: GreenLed,
+    logger: logging.Logger,
+) -> None:
+    """ALLOW LED를 즉시 켜고 같은 입차 문맥을 Jetson에 전달한다.
+
+    Jetson POST의 성공 여부는 Backend가 확정한 ALLOW 표시를 바꾸지 않는다.
+    POST 소요 시간을 포함해 최소 설정 시간 동안 점등하고 모든 종료 경로에서
+    LED OFF를 시도한다.
+    """
+
+    jetson_request = JetsonEntryRequest.from_backend(
+        backend_request,
+        backend_result,
+    )
+
+    green_led.turn_on()
+    indicated_at = time.monotonic()
+
+    try:
+        try:
+            acceptance = jetson_client.send_entry(
+                jetson_request,
+                idempotency_key=idempotency_key,
+            )
+        except JetsonClientError:
+            logger.error(
+                "Jetson entry request failed. entry_attempt_id=%s",
+                backend_result.entry_attempt_id,
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "Jetson EntryDecision accepted. "
+                "entry_attempt_id=%s decision_revision=%s "
+                "acceptance_status=%s",
+                acceptance.entry_attempt_id,
+                acceptance.decision_revision,
+                acceptance.acceptance_status.value,
+            )
+
+        remaining_seconds = max(
+            0.0,
+            GREEN_LED_DURATION_SECONDS - (time.monotonic() - indicated_at),
+        )
+        if remaining_seconds > 0:
+            time.sleep(remaining_seconds)
+    finally:
+        green_led.turn_off()
+
+
 def process_entry_event(
     event: EntryEvent,
     *,
     camera: EntryCamera,
     ocr_pipeline: PlateOcrPipeline,
     backend_client: BackendClient,
+    jetson_client: JetsonClient,
     green_led: GreenLed,
     logger: logging.Logger,
 ) -> None:
@@ -228,7 +299,7 @@ def process_entry_event(
     request = BackendEntryRequest(
         entry_attempt_id=event.entry_attempt_id,
         recognized_plate_number=plate_number,
-        confidence=rec_score,
+        ocr_confidence=rec_score,
         entry_time=event.entry_time,
     )
 
@@ -256,7 +327,14 @@ def process_entry_event(
         return
 
     try:
-        green_led.indicate_allow(GREEN_LED_DURATION_SECONDS)
+        indicate_allow_and_send_to_jetson(
+            backend_request=request,
+            backend_result=backend_result,
+            idempotency_key=event.idempotency_key,
+            jetson_client=jetson_client,
+            green_led=green_led,
+            logger=logger,
+        )
     except Exception:
         logger.exception(
             "Green LED allow indication failed. entry_attempt_id=%s",
@@ -269,12 +347,17 @@ def main() -> None:
     configure_logging()
     validate_measurement_interval()
     validate_backend_settings()
+    validate_jetson_settings()
 
     logger = logging.getLogger(__name__)
 
     backend_client = BackendClient(
         base_url=BACKEND_BASE_URL,
         api_key=BACKEND_HW_API_KEY,
+    )
+    jetson_client = JetsonClient(
+        base_url=JETSON_BASE_URL,
+        api_key=INTERNAL_API_KEY,
     )
 
     policy = OcrPipelinePolicy(
@@ -327,6 +410,7 @@ def main() -> None:
                         camera=camera,
                         ocr_pipeline=ocr_pipeline,
                         backend_client=backend_client,
+                        jetson_client=jetson_client,
                         green_led=green_led,
                         logger=logger,
                     )

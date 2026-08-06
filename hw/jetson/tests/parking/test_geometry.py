@@ -10,6 +10,7 @@ from src.parking.geometry import (
     is_convex_polygon,
     overlap_ratio,
     polygon_area,
+    polygon_centroid,
     polygon_overlap_ratio,
 )
 from src.parking.models import NormalizedPolygon
@@ -151,3 +152,56 @@ def test_small_self_intersecting_polygon_is_not_convex() -> None:
 
     assert polygon_area(star) > 0.0
     assert not is_convex_polygon(star)
+
+
+def test_polygon_centroid_of_unit_square_is_its_middle() -> None:
+    square = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    assert polygon_centroid(square) == pytest.approx((0.5, 0.5))
+
+
+def test_polygon_centroid_is_independent_of_winding_and_start_vertex() -> None:
+    """Asymmetric trapezoid ensures winding doesn't matter.
+    Vertex mean is (2.0, 1.0); area-weighted centroid is (5/3, 13/12).
+    Using a square would pass both the correct and wrong (naive mean) formula."""
+    trapezoid_ccw = ((0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 3.0))
+    trapezoid_cw = ((0.0, 0.0), (0.0, 3.0), (4.0, 1.0), (4.0, 0.0))
+    rotated_start = ((4.0, 1.0), (0.0, 3.0), (0.0, 0.0), (4.0, 0.0))
+    expected = (5.0 / 3.0, 13.0 / 12.0)
+    assert polygon_centroid(trapezoid_ccw) == pytest.approx(expected)
+    assert polygon_centroid(trapezoid_cw) == pytest.approx(expected)
+    assert polygon_centroid(rotated_start) == pytest.approx(expected)
+
+
+def test_polygon_centroid_rejects_degenerate_polygon() -> None:
+    with pytest.raises(ValueError, match="area"):
+        polygon_centroid(((0.0, 0.0), (1.0, 1.0), (2.0, 2.0)))
+
+
+def test_polygon_centroid_uses_area_weighting_not_vertex_mean() -> None:
+    """Asymmetric trapezoid pins the area-weighted centroid formula.
+    Vertex mean is (2.0, 1.0). Area-weighted centroid is (5/3, 13/12).
+    If formula degrades to vertex mean, this test will fail."""
+    trapezoid = ((0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 3.0))
+    expected = (5.0 / 3.0, 13.0 / 12.0)
+    assert polygon_centroid(trapezoid) == pytest.approx(expected)
+
+
+def test_polygon_centroid_of_l_shape() -> None:
+    """Non-convex L-shape centroid distinguishes area-weighted from vertex mean.
+    Vertex mean is (4/3, 4/3); area-weighted centroid is (1.1, 1.1)."""
+    l_shape = ((0.0, 0.0), (3.0, 0.0), (3.0, 1.0), (1.0, 1.0), (1.0, 3.0), (0.0, 3.0))
+    expected = (1.1, 1.1)
+    assert polygon_centroid(l_shape) == pytest.approx(expected)
+
+
+def test_polygon_centroid_rejects_sliver_polygon_within_epsilon() -> None:
+    """면적이 정확히 0은 아니어도 epsilon 이하인 sliver polygon은 거부한다.
+
+    모듈의 다른 함수들(``is_convex_polygon`` 등)과 같은
+    ``_GEOMETRY_EPSILON`` 관례를 따른다 — 수치적으로 불안정한 중심을
+    반환하지 않는다.
+    """
+
+    sliver = ((0.0, 0.0), (1.0, 0.0), (1.0, 1e-13), (0.0, 1e-13))
+    with pytest.raises(ValueError, match="area"):
+        polygon_centroid(sliver)

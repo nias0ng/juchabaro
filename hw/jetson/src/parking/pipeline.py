@@ -40,7 +40,7 @@ from src.parking import assignment_resolver
 from src.parking.blocking_relation_tracker import BlockingRelationTracker
 from src.parking import egress_blocking_resolver
 from src.parking.egress_aisle_registry import EgressAisleRegistry
-from src.parking.geometry import overlap_ratio
+from src.parking.geometry import bbox_center, overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
     BlockingRelation,
@@ -189,8 +189,13 @@ class ParkingPipeline:
         self._blocking_min_egress_coverage_ratio = (
             blocking_min_egress_coverage_ratio
         )
+        # 구역 정의는 불변이라 외부측 기준선은 여기서 1회만 계산한다(571).
+        self._exit_outward_baselines = zones.exit_outward_baselines()
+        # 차량별 "가장 최근 신뢰 관측 프레임에서 접촉한 EXIT 구역" 집합이다.
+        # 매 신뢰 프레임마다 덮어쓰므로 오래된 접촉이 남지 않는다.
+        self._exit_outward_contacts: dict[PhysicalVehicleId, frozenset[ZoneId]] = {}
 
-    def checkpoint_state(self) -> tuple[object, object, object, object]:
+    def checkpoint_state(self) -> tuple[object, object, object, object, object]:
         """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
 
         return (
@@ -198,21 +203,29 @@ class ParkingPipeline:
             self._parking_episode_tracker.checkpoint_state(),
             self._incident_reducer.checkpoint_state(),
             self._blocking_relation_tracker.checkpoint_state(),
+            dict(self._exit_outward_contacts),
         )
 
     def restore_state(
         self,
-        checkpoint: tuple[object, object, object, object],
+        checkpoint: tuple[object, object, object, object, object],
     ) -> None:
-        """DB rollback과 함께 네 owner를 같은 frame 전 시점으로 되돌린다."""
+        """DB rollback과 함께 runtime owner를 같은 frame 전 시점으로 되돌린다."""
 
-        if len(checkpoint) != 4:
+        if len(checkpoint) != 5:
             raise ValueError("invalid ParkingPipeline checkpoint")
-        visit_state, episode_state, incident_state, relation_state = checkpoint
+        (
+            visit_state,
+            episode_state,
+            incident_state,
+            relation_state,
+            outward_contacts,
+        ) = checkpoint
         self._zone_visit_tracker.restore_state(visit_state)
         self._parking_episode_tracker.restore_state(episode_state)
         self._incident_reducer.restore_state(incident_state)
         self._blocking_relation_tracker.restore_state(relation_state)
+        self._exit_outward_contacts = dict(outward_contacts)
 
     def restore_active(
         self,
@@ -306,6 +319,12 @@ class ParkingPipeline:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
             observation = _effective_observation(batch, vehicle)
+            if observation.state is ObservationState.OBSERVED:
+                # degraded/unknown 프레임의 bbox는 공간적으로 신뢰할 수
+                # 없으므로 이전 접촉 값을 보존한다(571).
+                self._exit_outward_contacts[vehicle.physical_vehicle_id] = (
+                    self._outward_contacts(vehicle)
+                )
             ephemeral_evidence = assignment_resolver.analyze(
                 vehicle,
                 self._zones,
@@ -640,6 +659,54 @@ class ParkingPipeline:
 
         return tuple(updates), evidence_by_relation
 
+    def exit_zone_traversal_observed(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> bool:
+        """마지막 관측에서 출차 구역의 외부측에 도달해 있었는지 반환한다(571).
+
+        미관측 차량의 ZoneVisit은 종료되지 않고 pause만 되므로, 부재가
+        확정된 시점에도 마지막 관측 프레임의 방문이 non-terminal로 남아
+        있다. 여기에 "그 프레임에서 외부측 조각과 접촉했는가"를 더해,
+        출차 통로 안쪽에 정지한 채 가려진 차량을 배제한다.
+
+        ``physical_exit()``이 방문을 종료시키기 **전에** 호출해야 한다 —
+        종료 뒤에는 항상 False다. 상태를 변경하지 않는 순수 읽기다.
+
+        motion 방향은 보지 않는다. 차단기 앞에 정지한 차량도 이미 외부측에
+        도달해 있으므로 통과로 인정해야 하며, 방향을 요구하면 그 경우가
+        미탐이 되어 세션이 영구 미결로 남는다.
+        """
+
+        contacts = self._exit_outward_contacts.get(physical_vehicle_id)
+        if not contacts:
+            return False
+        # ``contacts``는 EXIT role 구역 id만 담는다(ZoneRegistry가 그렇게
+        # 유도한다). 그래서 role 재확인 없이 교집합만 보면 된다.
+        return any(
+            visit.zone_id in contacts
+            for visit in self._zone_visit_tracker.active_visits(physical_vehicle_id)
+        )
+
+    def _outward_contacts(
+        self,
+        vehicle: PhysicalVehicleSnapshot,
+    ) -> frozenset[ZoneId]:
+        """이번 프레임에 외부측 기준선을 넘은 EXIT 구역 id를 반환한다(571).
+
+        bbox 자체와 sub-polygon의 겹침이 아니라 bbox **중심**이 기준선의
+        외부 방향 쪽(부호 > 0)에 있는지로 판정한다. 차량이 outward
+        sub-polygon보다 커서 항상 겹치던 문제를 피한다 — 중심은 차량
+        전체가 기준선을 넘었을 때만 외부 방향으로 넘어간다.
+        """
+
+        center = bbox_center(vehicle.bbox)
+        return frozenset(
+            zone_id
+            for zone_id, (origin, direction) in self._exit_outward_baselines.items()
+            if _signed_offset(center, origin, direction) > 0.0
+        )
+
     def physical_exit(
         self,
         *,
@@ -655,6 +722,7 @@ class ParkingPipeline:
         보내야 한다.
         """
 
+        self._exit_outward_contacts.pop(physical_vehicle_id, None)
         observation = ObservationStatus(
             state=ObservationState.OBSERVED,
             last_reliable_observed_at=observed_at,
@@ -911,3 +979,13 @@ def _validate_ratio(value: float, name: str) -> None:
 def _validate_positive_ratio(value: float, name: str) -> None:
     if not math.isfinite(value) or not 0.0 < value <= 1.0:
         raise ValueError(f"{name} must be finite, greater than 0, and at most 1")
+
+
+def _signed_offset(
+    point: tuple[float, float],
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+) -> float:
+    """``origin``에서 ``point``까지 벡터를 단위벡터 ``direction``에 투영한다(571)."""
+
+    return (point[0] - origin[0]) * direction[0] + (point[1] - origin[1]) * direction[1]
