@@ -9,13 +9,15 @@ import numpy as np
 import pytest
 
 from src.camera.frame_source import EndOfVideo, FrameSourceError
-from src.live.live_stream_loop import (
+from src.live.frame_publishing import (
     LatestFrameBuffer,
+    PLACEHOLDER_HEIGHT,
+    PLACEHOLDER_WIDTH,
+    placeholder_jpeg,
+)
+from src.live.live_stream_loop import (
     LiveStreamLoop,
-    _placeholder_jpeg,
     _throttle_sleep_seconds,
-    _PLACEHOLDER_HEIGHT,
-    _PLACEHOLDER_WIDTH,
 )
 
 
@@ -46,13 +48,13 @@ def test_throttle_sleep_seconds_returns_zero_when_slower_than_target() -> None:
 
 
 def test_placeholder_jpeg_returns_decodable_bytes() -> None:
-    jpeg_bytes = _placeholder_jpeg("CAMERA DISCONNECTED")
+    jpeg_bytes = placeholder_jpeg("CAMERA DISCONNECTED")
 
     assert isinstance(jpeg_bytes, bytes)
     assert len(jpeg_bytes) > 0
     decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert decoded is not None
-    assert decoded.shape == (_PLACEHOLDER_HEIGHT, _PLACEHOLDER_WIDTH, 3)
+    assert decoded.shape == (PLACEHOLDER_HEIGHT, PLACEHOLDER_WIDTH, 3)
 
 
 class _FramePipeline:
@@ -141,7 +143,7 @@ def test_live_stream_loop_falls_back_to_placeholder_when_render_fails() -> None:
     jpeg_bytes = loop.latest_jpeg()
     assert jpeg_bytes is not None
     decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-    assert decoded.shape == (_PLACEHOLDER_HEIGHT, _PLACEHOLDER_WIDTH, 3)
+    assert decoded.shape == (PLACEHOLDER_HEIGHT, PLACEHOLDER_WIDTH, 3)
 
 
 def test_live_stream_loop_reconnects_after_frame_source_error() -> None:
@@ -195,4 +197,4 @@ def test_live_stream_loop_halts_on_end_of_video() -> None:
     jpeg_bytes = loop.latest_jpeg()
     assert jpeg_bytes is not None
     decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-    assert decoded.shape == (_PLACEHOLDER_HEIGHT, _PLACEHOLDER_WIDTH, 3)
+    assert decoded.shape == (PLACEHOLDER_HEIGHT, PLACEHOLDER_WIDTH, 3)

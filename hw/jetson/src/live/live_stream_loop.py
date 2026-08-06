@@ -13,43 +13,27 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from threading import Event, Lock, Thread
-
-import cv2
-import numpy as np
+from threading import Event, Thread
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.camera.models import CapturedFrame
-from src.live.live_overlay_renderer import encode_jpeg, render_overlay_jpeg
+from src.live.live_overlay_renderer import render_overlay_jpeg
+from src.live.frame_publishing import (
+    DEFAULT_TARGET_FPS,
+    LatestFrameBuffer,
+    placeholder_jpeg,
+)
 from src.parking.zone_registry import ZoneRegistry
 from src.tracking.models import TrackingBatch
 
 LOGGER = logging.getLogger(__name__)
 
-_TARGET_FPS = 15.0
+_TARGET_FPS = DEFAULT_TARGET_FPS
 _RECONNECT_BACKOFF_SECONDS = 2.0
-_PLACEHOLDER_HEIGHT = 480
-_PLACEHOLDER_WIDTH = 640
 
 RenderFn = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], bytes]
-
-
-class LatestFrameBuffer:
-    """가장 최근 JPEG 프레임 한 장만 담는 스레드 세이프 단일 슬롯 버퍼."""
-
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._latest: bytes | None = None
-
-    def publish(self, jpeg_bytes: bytes) -> None:
-        with self._lock:
-            self._latest = jpeg_bytes
-
-    def get_latest(self) -> bytes | None:
-        with self._lock:
-            return self._latest
 
 
 def _throttle_sleep_seconds(elapsed_seconds: float, *, target_fps: float = _TARGET_FPS) -> float:
@@ -62,21 +46,6 @@ def _throttle_sleep_seconds(elapsed_seconds: float, *, target_fps: float = _TARG
     target_interval = 1.0 / target_fps
     remaining = target_interval - elapsed_seconds
     return remaining if remaining > 0.0 else 0.0
-
-
-def _placeholder_jpeg(message: str) -> bytes:
-    """카메라 재연결 대기·리허설 종료 등 판정 프레임이 없을 때 보여줄 안내 프레임.
-
-    `cv2.putText`는 OpenCV Hershey 폰트를 사용해 ASCII만 그릴 수 있다 — 반드시
-    영문 메시지만 넘겨야 한다.
-    """
-
-    canvas = np.zeros((_PLACEHOLDER_HEIGHT, _PLACEHOLDER_WIDTH, 3), dtype=np.uint8)
-    cv2.putText(
-        canvas, message, (24, _PLACEHOLDER_HEIGHT // 2),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
-    )
-    return encode_jpeg(canvas)
 
 
 class LiveStreamLoop:
@@ -115,9 +84,9 @@ class LiveStreamLoop:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
-        self._reconnecting_placeholder_jpeg = _placeholder_jpeg("CAMERA DISCONNECTED - RECONNECTING")
-        self._video_ended_placeholder_jpeg = _placeholder_jpeg("VIDEO ENDED")
-        self._render_error_placeholder_jpeg = _placeholder_jpeg("RENDER ERROR")
+        self._reconnecting_placeholder_jpeg = placeholder_jpeg("CAMERA DISCONNECTED - RECONNECTING")
+        self._video_ended_placeholder_jpeg = placeholder_jpeg("VIDEO ENDED")
+        self._render_error_placeholder_jpeg = placeholder_jpeg("RENDER ERROR")
 
     @property
     def failure(self) -> Exception | None:
