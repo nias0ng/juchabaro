@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown, Download } from '@lucide/vue'
+import { ChevronDown } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import FilterOptionList from '@/components/ui/FilterOptionList.vue'
+import ExportButton from '@/components/ui/ExportButton.vue'
 import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import TableFooter from '@/components/ui/TableFooter.vue'
@@ -61,71 +64,37 @@ const selectedRow = computed(
       <div>
         <div ref="filterBarRef" class="panel filter-bar">
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!statusFilter }"
-              @click="toggleDropdown('status')"
-            >
+            <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
               {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'status'" class="dropdown-menu">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === null }"
-                @click="statusFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_STATUS_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === opt }"
-                @click="statusFilter = opt; openDropdown = null"
-              >
-                {{ eventStatusLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'status'"
+              :options="EVENT_STATUS_OPTIONS"
+              :selected="statusFilter"
+              :label-for="eventStatusLabel"
+              width="144px"
+              @select="statusFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!typeFilter }"
-              @click="toggleDropdown('type')"
-            >
+            <FilterChip :active="!!typeFilter" @click="toggleDropdown('type')">
               {{ typeFilter ? eventTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'type'" class="dropdown-menu wide">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === null }"
-                @click="typeFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_TYPE_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === opt }"
-                @click="typeFilter = opt; openDropdown = null"
-              >
-                {{ eventTypeLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'type'"
+              :options="EVENT_TYPE_OPTIONS"
+              :selected="typeFilter"
+              :label-for="eventTypeLabel"
+              width="180px"
+              @select="typeFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button type="button" class="chip" :class="{ active: !!dateFilter }" @click="toggleDropdown('date')">
+            <FilterChip :active="!!dateFilter" @click="toggleDropdown('date')">
               {{ dateFilter ? formatDate(dateFilter) : '날짜' }} <ChevronDown :size="14" />
-            </button>
+            </FilterChip>
             <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
               <button
                 type="button"
@@ -143,20 +112,11 @@ const selectedRow = computed(
             </div>
           </div>
 
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: needAdminOnly }"
-            @click="toggleNeedAdminOnly"
-          >
-            관리자 확인
-          </button>
+          <FilterChip :active="needAdminOnly" @click="toggleNeedAdminOnly">관리자 확인</FilterChip>
 
           <SearchBox v-model="carQuery" placeholder="차량 번호 검색" input-width="128px" />
 
-          <button type="button" class="export-btn" @click="exportCsv">
-            <Download :size="16" /> 내보내기
-          </button>
+          <ExportButton @click="exportCsv" />
         </div>
 
         <div class="panel table-panel">
@@ -270,28 +230,6 @@ const selectedRow = computed(
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.chip.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 500;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -304,10 +242,6 @@ const selectedRow = computed(
   background: var(--panel-card);
   padding: 6px;
   box-shadow: var(--panel-shadow-card);
-}
-
-.dropdown-menu.wide {
-  width: 180px;
 }
 
 .dropdown-menu.date-menu {
@@ -337,24 +271,6 @@ const selectedRow = computed(
 .dropdown-item.selected {
   color: var(--panel-primary);
   font-weight: 600;
-}
-
-.export-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--panel-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--panel-on-primary);
-  white-space: nowrap;
-  box-shadow: var(--panel-shadow-pop);
-  cursor: pointer;
 }
 
 .table-panel {

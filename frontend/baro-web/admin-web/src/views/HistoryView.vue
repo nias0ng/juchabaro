@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronDown, Download } from '@lucide/vue'
+import { CheckCircle2, ChevronDown } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import ExportButton from '@/components/ui/ExportButton.vue'
 import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import TableFooter from '@/components/ui/TableFooter.vue'
@@ -47,9 +49,9 @@ const {
 
     <div ref="filterBarRef" class="panel filter-bar">
       <div class="dropdown-wrap">
-        <button type="button" class="chip" @click="toggleDropdown('date')">
+        <FilterChip @click="toggleDropdown('date')">
           {{ dateRange.start.replaceAll('-', '.') }} ~ {{ dateRange.end.replaceAll('-', '.') }} <ChevronDown :size="14" />
-        </button>
+        </FilterChip>
         <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
           <input v-model="dateRange.start" type="date">
           <span class="tilde">~</span>
@@ -58,9 +60,7 @@ const {
       </div>
 
       <SearchBox v-model="query" placeholder="차량 번호 또는 사건 ID 검색" input-width="176px" />
-      <button type="button" class="export-btn" @click="exportCsv">
-        <Download :size="16" /> 내보내기
-      </button>
+      <ExportButton @click="exportCsv" />
     </div>
 
     <div class="layout">
@@ -155,21 +155,6 @@ const {
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -204,24 +189,6 @@ const {
 
 .tilde {
   color: var(--panel-muted-foreground);
-}
-
-.export-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--panel-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--panel-on-primary);
-  white-space: nowrap;
-  box-shadow: var(--panel-shadow-pop);
-  cursor: pointer;
 }
 
 .layout {
