@@ -60,45 +60,47 @@ export function BottomNavBar({
         },
       ]}
     >
-      {items.map((item) => {
-        const focused = item.key === activeKey;
-        const color = focused ? theme.primary : INACTIVE_COLOR;
+      <View style={styles.tabsRow}>
+        {items.map((item) => {
+          const focused = item.key === activeKey;
+          const color = focused ? theme.primary : INACTIVE_COLOR;
 
-        return (
-          <Pressable
-            key={item.key}
-            accessibilityRole="button"
-            accessibilityLabel={item.label}
-            accessibilityState={{ selected: focused }}
-            onPress={() => onPressItem(item.key)}
-            style={styles.tab}
-          >
-            <View style={[styles.iconContainer, item.icon === 'parking' && styles.iconContainerLarge]}>
-              {item.icon === 'request' ? (
-                <IconGlyph
-                  d={REQUEST_ICON_PATH}
-                  color={color}
-                  variant="fill"
-                  viewBoxSize={REQUEST_ICON_VIEWBOX_SIZE}
-                  fillOutlineWidth={0.6}
-                />
-              ) : item.icon === 'parking' ? (
-                <IconGlyph
-                  d={PARKING_ICON_PATHS}
-                  color={color}
-                  variant="fill"
-                  size={29}
-                  viewBoxSize={PARKING_ICON_VIEWBOX_SIZE}
-                />
-              ) : (
-                <IconGlyph d={STROKE_ICON_PATHS[item.icon]} color={color} />
-              )}
-              {item.badge ? <View style={styles.badge} /> : null}
-            </View>
-            <Text style={[styles.label, { color }]}>{item.label}</Text>
-          </Pressable>
-        );
-      })}
+          return (
+            <Pressable
+              key={item.key}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
+              accessibilityState={{ selected: focused }}
+              onPress={() => onPressItem(item.key)}
+              style={styles.tab}
+            >
+              <View style={[styles.iconContainer, item.icon === 'parking' && styles.iconContainerLarge]}>
+                {item.icon === 'request' ? (
+                  <IconGlyph
+                    d={REQUEST_ICON_PATH}
+                    color={color}
+                    variant="fill"
+                    viewBoxSize={REQUEST_ICON_VIEWBOX_SIZE}
+                    fillOutlineWidth={0.6}
+                  />
+                ) : item.icon === 'parking' ? (
+                  <IconGlyph
+                    d={PARKING_ICON_PATHS}
+                    color={color}
+                    variant="fill"
+                    size={29}
+                    viewBoxSize={PARKING_ICON_VIEWBOX_SIZE}
+                  />
+                ) : (
+                  <IconGlyph d={STROKE_ICON_PATHS[item.icon]} color={color} />
+                )}
+                {item.badge ? <View style={styles.badge} /> : null}
+              </View>
+              <Text style={[styles.label, { color }]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }

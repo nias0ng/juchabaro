@@ -7,7 +7,6 @@ export const styles = StyleSheet.create({
     flexGrow: 1,
     width: '100%',
     alignItems: 'center',
-    paddingHorizontal: Spacing.lg + 2,
     paddingTop: Spacing.xl + 8,
     paddingBottom: Spacing.lg,
     gap: Spacing.md,

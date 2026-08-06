@@ -4,8 +4,8 @@ import { router } from 'expo-router';
 import { Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AppButton, Stack } from '@/components/ui';
-import { Spacing } from '@/styles';
+import { AppButton, ResponsiveContainer, Stack } from '@/components/ui';
+import { ContentWidth, Spacing } from '@/styles';
 
 import { styles } from './auth-welcome-screen.styles';
 
@@ -20,7 +20,7 @@ export default function AuthWelcomeScreen() {
       style={styles.gradient}
     >
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
+        <ResponsiveContainer maxWidth={ContentWidth.compact} style={styles.content}>
           <Stack gap={Spacing.md}>
             <View style={styles.logoBadge}>
               <Image source={logo} style={styles.logo} contentFit="contain" />
@@ -48,7 +48,7 @@ export default function AuthWelcomeScreen() {
               />
             </Stack>
           </Stack>
-        </View>
+        </ResponsiveContainer>
 
         <Text style={styles.footer}>SSAFY Carsavo Technology 제공</Text>
       </SafeAreaView>

@@ -94,9 +94,9 @@ export default function ViolationHistoryScreen() {
       refreshing={isStatsRefreshing || isHistoryRefreshing}
       onRefresh={() => void Promise.all([refetchStats(), refetchHistory()])}
     >
-      <ScreenHeader title="위반 이력" style={styles.header} onBack={goBack} />
-
       <ResponsiveContainer style={styles.content}>
+        <ScreenHeader title="위반 이력" style={styles.header} onBack={goBack} />
+
         <Stack gap={Spacing.base + 2}>
           <AsyncStateView
             message={

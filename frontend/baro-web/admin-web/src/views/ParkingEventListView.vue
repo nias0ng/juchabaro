@@ -1,127 +1,58 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown, Download, Search } from '@lucide/vue'
+import { ChevronDown } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
-import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import AppPagination from '@/components/ui/AppPagination.vue'
+import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import FilterOptionList from '@/components/ui/FilterOptionList.vue'
+import ExportButton from '@/components/ui/ExportButton.vue'
+import DataTable from '@/components/ui/DataTable.vue'
+import TableStateRow from '@/components/ui/TableStateRow.vue'
+import TableFooter from '@/components/ui/TableFooter.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
-import type { AdminEventSummary, EventStatus, EventType } from '@/features/parking-events/api/types'
 import {
-  EVENT_STATUS_OPTIONS,
   EVENT_TYPE_OPTIONS,
   eventStatusLabel,
   eventTypeLabel,
   formatDate,
   formatTime,
-  localDateString,
   statusTone,
-  todayDateString,
   typeTone,
 } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-
-const PAGE_SIZE = 10
-// 백엔드는 날짜/상태/유형으로만 필터링하고 차량 번호 검색은 지원하지 않는다. 선택한
-// 조건에 맞는 사건을 넉넉히 받아온 뒤 차량 번호 검색과 페이지네이션은 화면에서 처리한다.
-const FETCH_SIZE = 200
-
-function exportRowsToCsv(rows: AdminEventSummary[], dateFilter: string | null) {
-  const headers = ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '날짜']
-  const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
-  // 날짜를 선택하지 않았으면(전체 조회) 행마다 실제 발생 날짜를 넣고, 선택했으면 필터 날짜를 그대로 쓴다.
-  // 날짜 앞에 작은따옴표를 붙이면 엑셀이 이 칸을 날짜로 자동 변환하지 않고 텍스트 그대로 표시한다.
-  const lines = [
-    headers.map(escapeCsv).join(','),
-    ...rows.map((r) =>
-      [
-        `#${r.eventId}`,
-        r.plateNumber,
-        eventStatusLabel(r.eventStatus, r.requestType),
-        eventTypeLabel(r.eventType),
-        r.zoneNumber ?? '-',
-        formatTime(r.detectedAt),
-        `'${dateFilter ?? localDateString(r.detectedAt)}`,
-      ].map(escapeCsv).join(','),
-    ),
-  ]
-  // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const stamp = (dateFilter ?? todayDateString()).replaceAll('-', '')
-
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `사건_목록_${stamp}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
+import { EVENT_KIND_OPTIONS, eventKindLabel, useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
 
 type DropdownName = 'status' | 'type' | 'date'
 
-const statusFilter = ref<EventStatus | null>(null)
-const typeFilter = ref<EventType | null>(null)
-// 날짜를 고르지 않으면(null) 전체 날짜를 최근 발생 순으로 보여준다.
-const dateFilter = ref<string | null>(null)
-const carQuery = ref('')
-const page = ref(1)
-// "관리자 확인 필요"는 사건 상태(eventStatus)가 아니라 이동요청 상태(requestStatus)에 실리는
-// 값이고, 목록 API 쿼리 파라미터에는 requestStatus 필터가 없어 서버에 요청할 수 없다. 그래서
-// 다른 필터와 달리 이미 받아온 목록을 filteredRows에서 화면단에서 걸러내는 방식으로 둔다.
-const needAdminOnly = ref(false)
-
-function toggleNeedAdminOnly() {
-  needAdminOnly.value = !needAdminOnly.value
-}
-
 const parkingEventStore = useParkingEventStore()
-
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
-function loadEvents(background = false) {
-  return parkingEventStore.fetchEvents({
-    date: dateFilter.value ?? undefined,
-    eventStatus: statusFilter.value ?? undefined,
-    eventType: typeFilter.value ?? undefined,
-    size: FETCH_SIZE,
-  }, { background })
-}
-
-watch([dateFilter, statusFilter, typeFilter], () => {
-  page.value = 1
-  void loadEvents()
-}, { immediate: true })
-
-useAutoRefresh(() => loadEvents(true), 15_000)
+const {
+  statusFilter,
+  typeFilter,
+  dateFilter,
+  carQuery,
+  needAdminOnly,
+  toggleNeedAdminOnly,
+  filteredRows,
+  page,
+  totalPages,
+  safePage,
+  pagedRows,
+  rangeStart,
+  rangeEnd,
+  exportCsv,
+} = useEventListFilters()
 
 const selectedRow = computed(
   () => parkingEventStore.events.find((r) => r.eventId === parkingEventStore.selectedEventId) ?? parkingEventStore.events[0] ?? null,
 )
-
-const filteredRows = computed(() => {
-  const query = carQuery.value.trim().replaceAll(' ', '')
-  let rows = parkingEventStore.events
-  if (query) rows = rows.filter((r) => r.plateNumber.replaceAll(' ', '').includes(query))
-  if (needAdminOnly.value) rows = rows.filter((r) => r.requestStatus === 'NEED_ADMIN')
-  return rows
-})
-
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
-// 필터가 바뀌어 결과 수가 줄면 이미 지나간 페이지 번호가 남아있을 수 있어 화면에는
-// totalPages 안쪽으로 자른 값만 쓴다(별도 watcher 없이 계산식으로 처리).
-const safePage = computed(() => Math.min(page.value, totalPages.value))
-const pagedRows = computed(() =>
-  filteredRows.value.slice((safePage.value - 1) * PAGE_SIZE, safePage.value * PAGE_SIZE),
-)
-const rangeStart = computed(() => (filteredRows.value.length === 0 ? 0 : (safePage.value - 1) * PAGE_SIZE + 1))
-const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRows.value.length))
 </script>
 
 <template>
@@ -132,71 +63,37 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
       <div>
         <div ref="filterBarRef" class="panel filter-bar">
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!statusFilter }"
-              @click="toggleDropdown('status')"
-            >
-              {{ statusFilter ? eventStatusLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'status'" class="dropdown-menu">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === null }"
-                @click="statusFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_STATUS_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: statusFilter === opt }"
-                @click="statusFilter = opt; openDropdown = null"
-              >
-                {{ eventStatusLabel(opt) }}
-              </button>
-            </div>
+            <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
+              {{ statusFilter ? eventKindLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'status'"
+              :options="EVENT_KIND_OPTIONS"
+              :selected="statusFilter"
+              :label-for="eventKindLabel"
+              width="144px"
+              @select="statusFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: !!typeFilter }"
-              @click="toggleDropdown('type')"
-            >
+            <FilterChip :active="!!typeFilter" @click="toggleDropdown('type')">
               {{ typeFilter ? eventTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
-            </button>
-            <div v-if="openDropdown === 'type'" class="dropdown-menu wide">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === null }"
-                @click="typeFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <button
-                v-for="opt in EVENT_TYPE_OPTIONS"
-                :key="opt"
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: typeFilter === opt }"
-                @click="typeFilter = opt; openDropdown = null"
-              >
-                {{ eventTypeLabel(opt) }}
-              </button>
-            </div>
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'type'"
+              :options="EVENT_TYPE_OPTIONS"
+              :selected="typeFilter"
+              :label-for="eventTypeLabel"
+              width="180px"
+              @select="typeFilter = $event; openDropdown = null"
+            />
           </div>
 
           <div class="dropdown-wrap">
-            <button type="button" class="chip" :class="{ active: !!dateFilter }" @click="toggleDropdown('date')">
+            <FilterChip :active="!!dateFilter" @click="toggleDropdown('date')">
               {{ dateFilter ? formatDate(dateFilter) : '날짜' }} <ChevronDown :size="14" />
-            </button>
+            </FilterChip>
             <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
               <button
                 type="button"
@@ -214,78 +111,78 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
             </div>
           </div>
 
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: needAdminOnly }"
-            @click="toggleNeedAdminOnly"
-          >
-            관리자 확인
-          </button>
+          <FilterChip :active="needAdminOnly" @click="toggleNeedAdminOnly">관리자 확인</FilterChip>
 
-          <div class="search-box">
-            <Search :size="16" />
-            <input v-model="carQuery" type="text" placeholder="차량 번호 검색">
-          </div>
+          <SearchBox v-model="carQuery" placeholder="차량 번호 검색" input-width="128px" />
 
-          <button type="button" class="export-btn" @click="exportRowsToCsv(filteredRows, dateFilter)">
-            <Download :size="16" /> 내보내기
-          </button>
+          <ExportButton @click="exportCsv" />
         </div>
 
         <div class="panel table-panel">
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
-                    {{ h }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="parkingEventStore.eventsLoading">
-                  <td colspan="7" class="empty">불러오는 중입니다…</td>
-                </tr>
-                <tr v-else-if="parkingEventStore.eventsError">
-                  <td colspan="7" class="empty error">{{ parkingEventStore.eventsError }}</td>
-                </tr>
-                <tr v-else-if="pagedRows.length === 0">
-                  <td colspan="7" class="empty">조건에 맞는 사건이 없습니다.</td>
-                </tr>
-                <tr
-                  v-for="r in pagedRows"
-                  v-else
-                  :key="r.eventId"
-                  class="row"
-                  :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
-                  @click="parkingEventStore.setSelectedEventId(r.eventId)"
-                >
-                  <td class="strong">#{{ r.eventId }}</td>
-                  <td class="nowrap">{{ r.plateNumber }}</td>
-                  <td class="nowrap">
-                    <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
-                    <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
-                  </td>
-                  <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
-                  <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
-                  <td class="muted">{{ formatTime(r.detectedAt) }}</td>
-                  <td>
-                    <div class="row-actions">
-                      <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                      <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="footer">
-            <span>전체 {{ filteredRows.length }}건 중 {{ rangeStart }}-{{ rangeEnd }} 표시</span>
-            <div class="pagination-wrap">
-              <AppPagination :page="safePage" :total-pages="totalPages" @page-change="page = $event" />
-            </div>
-          </div>
+          <DataTable clickable-rows>
+            <thead>
+              <tr>
+                <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
+                  {{ h }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <TableStateRow
+                v-if="parkingEventStore.eventsLoading"
+                :colspan="7"
+                variant="loading"
+                message="불러오는 중입니다…"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="parkingEventStore.eventsError"
+                :colspan="7"
+                variant="error"
+                :message="parkingEventStore.eventsError"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="pagedRows.length === 0"
+                :colspan="7"
+                variant="empty"
+                message="조건에 맞는 사건이 없습니다."
+                horizontal-padding="var(--spacing-base)"
+              />
+              <tr
+                v-for="r in pagedRows"
+                v-else
+                :key="r.eventId"
+                class="row"
+                :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
+                @click="parkingEventStore.setSelectedEventId(r.eventId)"
+              >
+                <td class="strong">#{{ r.eventId }}</td>
+                <td class="nowrap">{{ r.plateNumber }}</td>
+                <td class="nowrap">
+                  <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
+                  <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
+                </td>
+                <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
+                <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
+                <td class="muted">{{ formatTime(r.detectedAt) }}</td>
+                <td>
+                  <div class="row-actions">
+                    <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
+                    <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </DataTable>
+          <TableFooter
+            :total="filteredRows.length"
+            :range-start="rangeStart"
+            :range-end="rangeEnd"
+            :page="safePage"
+            :total-pages="totalPages"
+            @page-change="page = $event"
+          />
         </div>
       </div>
 
@@ -332,28 +229,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.chip.active {
-  border-color: color-mix(in oklch, var(--panel-primary) 40%, transparent);
-  background: var(--panel-primary-soft);
-  color: var(--panel-primary);
-  font-weight: 500;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -366,10 +241,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   background: var(--panel-card);
   padding: 6px;
   box-shadow: var(--panel-shadow-card);
-}
-
-.dropdown-menu.wide {
-  width: 180px;
 }
 
 .dropdown-menu.date-menu {
@@ -401,111 +272,8 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   font-weight: 600;
 }
 
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-base);
-  color: var(--panel-muted-foreground);
-}
-
-.search-box input {
-  width: 128px;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: var(--font-size-sm);
-}
-
-.export-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--panel-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--panel-on-primary);
-  white-space: nowrap;
-  box-shadow: var(--panel-shadow-pop);
-  cursor: pointer;
-}
-
 .table-panel {
   padding: var(--spacing-md);
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.empty {
-  padding: 40px var(--spacing-base);
-  text-align: center;
-  color: var(--panel-muted-foreground);
-}
-
-.empty.error {
-  color: var(--panel-danger);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.row:hover {
-  background: var(--panel-muted);
-}
-
-.row.selected {
-  background: var(--panel-primary-soft);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
 }
 
 .row-actions {
@@ -534,21 +302,6 @@ td {
 
 .link-btn:hover {
   background: var(--panel-muted);
-}
-
-.footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-top: 20px;
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.pagination-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 .detail-panel {

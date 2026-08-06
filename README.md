@@ -3,21 +3,18 @@
 
 [🚖 서비스 번들 다운로드(추가예정)](https://🔺도메인)
 
-[🚘 관리자 웹 바로가기(추가예정)](https://🔺도메인)
+[🚘 관리자 웹 바로가기](https://i15e202.p.ssafy.io/admin/)
 
-[🚖 팀 노션 바로가기](https://app.notion.com/p/SSAFY-2-1-396967bab5a4804faef3f3def764090a?source=copy_link🔺노션링크)
+[🚖 팀 노션 바로가기](https://app.notion.com/p/SSAFY-2-1-396967bab5a4804faef3f3def764090a?source=copy_link)
 
-[🚘 앱 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/zMdVDC8rF1GC2dBgN3tDkT/%EC%8A%A4%EB%A7%88%ED%8A%B8-%EC%A3%BC%EC%B0%A8%EC%9E%A5--%EC%A3%BC%EC%B0%A8%EB%B0%94%EB%A1%9C?node-id=105-2&t=TnJJrklGIz0wNQ6p-1🔺피그마링크)
+[🚘 앱/웹 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/zMdVDC8rF1GC2dBgN3tDkT/%EC%8A%A4%EB%A7%88%ED%8A%B8-%EC%A3%BC%EC%B0%A8%EC%9E%A5--%EC%A3%BC%EC%B0%A8%EB%B0%94%EB%A1%9C?node-id=4009-3157&t=wSUHblFHuHAsAXMN-1)
 
-[🚖 웹 와이어프레임 바로가기 (Figma)](https://www.figma.com/design/JIJBwXRFYbwSbqxCMtgcRP/%EC%B5%9C%EC%A2%85-%EC%A0%95%EB%A6%AC-%EC%9B%B9--%EC%9B%90%EB%B3%B8-?node-id=12-2&t=tDECfuCE9eVyrjyi-1)
+[🚖 ERD 바로가기](https://www.erdcloud.com/d/PfvfjfKdzG5ETYMuB)
 
-[🚘 ERD 바로가기](https://www.erdcloud.com/d/PfvfjfKdzG5ETYMuB)
+[🚘 API 명세서 바로가기 (Swagger)](https://i15e202.p.ssafy.io/api/swagger-ui/index.html#/%EC%B0%A8%EB%9F%89/register)
 
-[🚖 API 명세서 바로가기 (Swagger)](https://i15e202.p.ssafy.io/api/swagger-ui/index.html#/%EC%B0%A8%EB%9F%89/register)
+[🚖 API 명세서 바로가기 (Notion)](https://app.notion.com/p/API-3a4967bab5a480c98ffdf9e7dbb38a2f?source=copy_link)
 
-[🚘 API 명세서 바로가기 (Notion)](https://app.notion.com/p/API-3a4967bab5a480c98ffdf9e7dbb38a2f?source=copy_link)
-
-[🚖 기능명세 · 사이트맵 바로가기(추가예정)](https://🔺스프레드시트링크)
 
 ---
 
@@ -206,7 +203,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 - **시스템 처리 방식**: `NotificationController`(`GET /notifications`, `GET /notifications/{id}`)가 페이지 단위로 알림을 조회합니다. 현재는 REST 조회 방식이며, 실시간 푸시 전달은 구현되어 있지 않습니다.
 - **제공되는 결과**: 사용자는 앱에서 본인에게 온 알림 이력을 확인할 수 있습니다.
 
-### **3.5. AI 기반 불편 주차 자동 감지 (개발 진행 중)**
+### **3.5. AI 기반 불편 주차 자동 감지**
 
 - **사용 목적**: 사람이 직접 확인하지 않아도 이중주차·구역 외 주차·장애인 및 전기차 구역 위반을 자동으로 판단합니다.
 - **주요 이용 흐름(설계)**: 입차 시 확보한 번호판-트래킹 ID를 실내 카메라의 차량 추적과 매칭 → 사전에 등록된 주차 구역·통행로 폴리곤과 차량 위치를 비교해 점유·위반 여부 판단 → 위반 의심 시 이동 요청 자동 생성
@@ -224,8 +221,6 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 - ERD
 
 ![ERD](./docs/diagram/ERD.png)
-
-🔺주요 엔티티 : 사용자, 차량, 주차장, 주차면, 예약, 입출차 이력, 결제, 요금 정책, 관리자
 
 - FlowChart
 

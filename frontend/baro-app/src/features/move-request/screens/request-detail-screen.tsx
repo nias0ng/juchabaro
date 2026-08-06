@@ -1,4 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { View } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/ui';
 import { RequestDetailBody } from '@/features/move-request/components/request-detail-body';
@@ -57,22 +58,24 @@ export default function RequestDetailScreen() {
       refreshing={vm.isRefreshing}
       onRefresh={() => void vm.refetch()}
     >
-      <ScreenHeader
-        title="이동 요청"
-        style={styles.header}
-        onBack={vm.isWaiting && vm.showDetail ? () => vm.setShowDetail(false) : undefined}
-        right={
-          <RequestHeaderRight
-            requestSource={
-              vm.display && !vm.isWaiting && !vm.isCompleted && !vm.showEscalationView
-                ? { label: vm.display.requestSourceLabel, variant: vm.display.requestSourceVariant }
-                : null
-            }
-          />
-        }
-      />
+      <View style={styles.content}>
+        <ScreenHeader
+          title="이동 요청"
+          style={styles.header}
+          onBack={vm.isWaiting && vm.showDetail ? () => vm.setShowDetail(false) : undefined}
+          right={
+            <RequestHeaderRight
+              requestSource={
+                vm.display && !vm.isWaiting && !vm.isCompleted && !vm.showEscalationView
+                  ? { label: vm.display.requestSourceLabel, variant: vm.display.requestSourceVariant }
+                  : null
+              }
+            />
+          }
+        />
 
-      <RequestDetailBody vm={vm} statusMessage={statusMessage} onPressHome={() => router.replace('/resident')} />
+        <RequestDetailBody vm={vm} statusMessage={statusMessage} onPressHome={() => router.replace('/resident')} />
+      </View>
     </Screen>
   );
 }

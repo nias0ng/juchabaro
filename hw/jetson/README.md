@@ -214,10 +214,20 @@ Jetson은 `0.0.0.0:8000`에 수신 서버를 열며 실제 Backend base URL은 E
 POST /internal/entry-review-resolutions
 POST /internal/session-context-updates
 POST /internal/move-verifications
+GET  /live
+GET  /live/stream
 ```
 
-모든 요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
+아래 데모 전용 두 엔드포인트(`GET /live`, `GET /live/stream`)를 제외한 모든
+요청은 `X-Internal-API-Key`와 `Idempotency-Key`를 포함한다. API key는
 local `.env`의 `INTERNAL_API_KEY`에만 저장하고 Git에는 넣지 않는다.
+
+`GET /live`와 `GET /live/stream`은 라이브 시연 중 브라우저나 OBS로 판정
+오버레이를 보기 위한 데모 전용 표면이며 `X-Internal-API-Key`를 요구하지
+않는다. `LIVE_STREAM_ENABLED=true`일 때만 실제 오버레이 프레임을 낸다.
+`GET /live`는 정적 뷰어 페이지라 설정과 무관하게 200을 반환하므로,
+`LIVE_STREAM_ENABLED=false`에서는 그 페이지가 가리키는 `/live/stream`이
+503으로 응답한다.
 `Idempotency-Key`는 command identity·revision·payload와 함께 SQLite에 기간
 제한 없이 보존한다. 같은 key와 같은 payload는 재적용하지 않으며, 같은 key나
 identity·revision을 다른 payload에 사용하면 `409 IDEMPOTENCY_CONFLICT`다.
@@ -305,10 +315,12 @@ stall로 보고 그 wall-clock을 부재 확정에 더하지 않는다.
 Camera·보정 실패는 `FrameSourceError`의 `UNKNOWN` 또는 `DEGRADED`
 관측과 구체적인 reason으로 변환된다. `MonitoringPipeline`은 이 비신뢰
 관측을 active scope에 commit해 timer chain을 끊은 뒤 원래 오류를
-호출자에게 전달한다. LED·speaker는 concrete GPIO 구현 없이
-`ActuatorCommandPlanner`와 `ActuatorPort` 주입 경계만 제공하며, durable
-commit 뒤 전체 active Incident projection을 반복 적용한다. `src/sensors`는
-후속 센서 입력 adapter를 위한 독립 경계이며 현재 실행 pipeline에는 연결하지 않는다.
+호출자에게 전달한다. Jetson 경고 LED GPIO adapter는 구현되어 있지만 speaker
+adapter, `ActuatorCommandPlanner`, `CompositeActuatorPort` 및 `main` lifecycle
+배선은 아직 제공하지 않는다. `MonitoringPipeline`의 `ActuatorPort` 주입 경계와
+durable commit 이후 전체 active Incident projection 적용 계약은 유지된다.
+따라서 현재 `main` 실행만으로 경고 LED가 자동 연동되지는 않는다.
+`src/sensors`는 독립된 센서 입력 경계이며 현재 실행 pipeline에는 연결하지 않는다.
 
 ## PC 개발 환경에서 실행
 
@@ -426,6 +438,74 @@ python -m scripts.check_vl53l0x --count 3 --interval-seconds 0.5
 - 운영 자동화가 필요하면 후속 배포 작업에서 systemd 사전 서비스 또는 정식
   MB1 pinmux 설정으로 분리한다.
 - XSHUT에 5V를 직접 연결하지 않는다.
+
+## Jetson 경고 LED 배선 및 수동 진단
+
+경고 LED adapter는 active-high 출력으로 동작한다.
+
+```text
+GPIO HIGH → LED ON
+GPIO LOW → LED OFF
+```
+
+배선은 물리 BOARD 번호를 기준으로 한다.
+
+```text
+장애인 전용 구역 LED
+BOARD Pin 31 → 1kΩ → LED 애노드 → LED 캐소드 → Pin 34 GND
+
+전기차 충전 구역 LED
+BOARD Pin 33 → 1kΩ → LED 애노드 → LED 캐소드 → Pin 34 GND
+```
+
+다음 사항을 함께 확인한다.
+
+- Pin 31·33은 BCM이나 SoC 번호가 아닌 물리 BOARD 핀 번호다.
+- `GPIO11`·`GPIO13` 문자열을 BCM 번호처럼 해석하지 않는다.
+- Pin 15·29의 ToF XSHUT 배선 및 pinmux 설정과 혼동하지 않는다.
+- 공통 GND는 물리 Pin 34를 사용한다.
+- 우선 1kΩ 저항을 사용한다. 실제 시인성이 부족하면 LED 정격과 Jetson GPIO
+  전기 사양을 다시 검토한 뒤 330Ω 사용을 검토한다.
+- Pin 31·33은 실행 전에 GPIO output pinmux로 준비되어 있어야 한다.
+- 정확한 설정 절차와 PADCTL 주소·값은 실물 검증 전까지 미확정이다. 보드,
+  carrier 및 Jetson Linux 버전에 따라 달라질 수 있다.
+- 진단 스크립트는 pinmux를 자동 변경하지 않으며 `sudo` 또는 `devmem`을
+  자동 실행하지 않는다.
+- 이 진단은 실제 Jetson에서만 실행한다.
+
+현재 저장소에는 Pin 31·33에 대해 실물 검증된 PADCTL 주소와 raw 설정값이 없다.
+위 ToF 절의 Pin 15·29용 `devmem` 명령은 LED 핀에 재사용하지 않는다.
+
+실제 Jetson에서 다음 명령으로 진단한다.
+
+```bash
+cd hw/jetson
+python -m scripts.check_warning_led
+```
+
+단계 유지 시간과 점멸 주기를 지정할 수도 있다.
+
+```bash
+python -m scripts.check_warning_led \
+    --stage-seconds 3.0 \
+    --off-seconds 1.0 \
+    --blink-on-seconds 0.3 \
+    --blink-off-seconds 0.3
+```
+
+진단은 다음 순서로 진행된다.
+
+1. BOARD Pin 31·33을 LOW로 초기화한다.
+2. 장애인 전용 구역 LED만 점멸한다.
+3. 두 LED를 끈다.
+4. 전기차 충전 구역 LED만 점멸한다.
+5. 두 LED를 끈다.
+6. 두 LED를 같은 phase로 동시에 점멸한다.
+7. 두 LED를 끄고 worker와 GPIO 자원을 정리한다.
+
+기본 stage, OFF 및 blink 시간은 수동 하드웨어 진단 편의값이며 운영 경고
+정책이나 runtime settings가 아니다. GPIO write 또는 cleanup 실패가 확인되면
+스크립트는 오류를 stderr에 출력하고 종료 코드 1을 반환한다.
 
 ## Jetson에서 실행
 

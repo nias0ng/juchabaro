@@ -21,7 +21,7 @@ class _BlockingPipeline:
     def open(self) -> None:
         self.opened = True
 
-    def run(self, *, frame_observer=None, stop_requested) -> int:
+    def run(self, *, stop_requested, frame_observer=None) -> int:
         del frame_observer
         self.entered_run.set()
         while not stop_requested():
@@ -38,8 +38,8 @@ class _OpenFailingPipeline(_BlockingPipeline):
 
 
 class _RunFailingPipeline(_BlockingPipeline):
-    def run(self, *, frame_observer=None, stop_requested) -> int:
-        del frame_observer, stop_requested
+    def run(self, *, stop_requested, frame_observer=None) -> int:
+        del stop_requested, frame_observer
         self.entered_run.set()
         raise RuntimeError("inference failed")
 
@@ -141,6 +141,22 @@ def test_worker_logs_committed_transitions_and_throttled_heartbeat(
     assert "차량 출차 처리가 확정됐습니다." in caplog.text
     assert "raw-payload" not in caplog.text
     assert "api-key" not in caplog.text
+
+
+def test_worker_composes_operational_and_external_frame_observers() -> None:
+    pipeline = _ObservingPipeline()
+    observed_frame_ids: list[int] = []
+
+    def observer(_frame, tracking_batch, _result) -> None:
+        observed_frame_ids.append(tracking_batch.frame_id)
+
+    worker = MonitoringWorker(pipeline, frame_observer=observer)
+
+    worker.start()
+    assert pipeline.entered_run.wait(timeout=1.0)
+    worker.stop()
+
+    assert observed_frame_ids == [1, 2]
 
 
 def _batch(*, frame_id: int):

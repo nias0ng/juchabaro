@@ -4,7 +4,6 @@ import { FontWeight, Palette, Shadows, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   header: {
-    paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.lg,
   },
   content: {

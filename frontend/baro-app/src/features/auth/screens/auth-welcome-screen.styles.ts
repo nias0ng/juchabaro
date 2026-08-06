@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { ContentWidth, FontWeight, Palette, Spacing } from '@/styles';
+import { FontWeight, Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   gradient: {
@@ -11,11 +11,7 @@ export const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    width: '100%',
-    maxWidth: ContentWidth.compact,
-    alignSelf: 'center',
     justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
   },
   logoBadge: {
     width: 96,

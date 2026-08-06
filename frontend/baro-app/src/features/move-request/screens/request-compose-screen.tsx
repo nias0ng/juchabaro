@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { FormErrorBanner, FormSectionLabel, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { FormErrorBanner, FormSectionLabel, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
 import { RequestComposePhotoPicker } from '../components/request-compose/request-compose-photo-picker';
@@ -40,11 +40,11 @@ export default function RequestComposeScreen() {
       edges={['top', 'right', 'left']}
       backgroundGradient={BACKGROUND_GRADIENT}
       backgroundGradientLocations={BACKGROUND_GRADIENT_LOCATIONS}
-      contentContainerStyle={styles.content}
     >
-      <ScreenHeader title="이동 요청" onBack={() => router.back()} />
+      <ResponsiveContainer style={styles.content}>
+        <ScreenHeader title="이동 요청" onBack={() => router.back()} />
 
-      <Stack gap={Spacing.lg}>
+        <Stack gap={Spacing.lg}>
         <Stack gap={Spacing.xs + 3}>
           <FormSectionLabel label="차량 번호" />
           <RequestComposePlateCard plateNumber={form.plateNumber} onChangeText={form.setPlateNumber} />
@@ -78,22 +78,23 @@ export default function RequestComposeScreen() {
             placeholder="ex. 출차 통로를 막고 있어 차량 이동을 요청합니다."
           />
         </Stack>
-      </Stack>
+        </Stack>
 
-      <View style={styles.footer}>
-        {form.submitError ? <FormErrorBanner message={form.submitError} /> : null}
+        <View style={styles.footer}>
+          {form.submitError ? <FormErrorBanner message={form.submitError} /> : null}
 
-        <Text style={styles.privacyNotice}>요청자의 개인정보는 차주에게 공개되지 않습니다.</Text>
+          <Text style={styles.privacyNotice}>요청자의 개인정보는 차주에게 공개되지 않습니다.</Text>
 
-        <Pressable
-          accessibilityRole="button"
-          disabled={!form.canSubmit || form.isSubmitting}
-          style={[styles.submitButton, (!form.canSubmit || form.isSubmitting) && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-        >
-          <Text style={styles.submitButtonText}>{form.isSubmitting ? '전송 중...' : '요청 전송'}</Text>
-        </Pressable>
-      </View>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!form.canSubmit || form.isSubmitting}
+            style={[styles.submitButton, (!form.canSubmit || form.isSubmitting) && styles.submitButtonDisabled]}
+            onPress={handleSubmit}
+          >
+            <Text style={styles.submitButtonText}>{form.isSubmitting ? '전송 중...' : '요청 전송'}</Text>
+          </Pressable>
+        </View>
+      </ResponsiveContainer>
 
       <RequestComposeZonePickerModal
         visible={form.isZonePickerOpen}

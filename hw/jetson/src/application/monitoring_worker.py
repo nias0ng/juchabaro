@@ -15,7 +15,8 @@ from numbers import Real
 from threading import Event, Thread
 
 from src.application.frame_observation_workflow import FrameObservationResult
-from src.application.monitoring_pipeline import MonitoringPipeline
+from src.application.monitoring_pipeline import FrameObserver, MonitoringPipeline
+from src.camera.models import CapturedFrame
 from src.parking.models import IncidentTransitionType
 from src.session.models import EntryMatchState
 from src.tracking.models import TrackingBatch
@@ -32,12 +33,17 @@ class MonitoringWorker:
     ``start()``는 model·camera open이 성공한 후에만 복귀하므로 기동
     실패를 API readiness로 숨기지 않는다. ``stop()``은 새 frame 시작을
     막고 진행 중인 frame의 transaction이 끝난 뒤 자원 정리를 기다린다.
+
+    ``frame_observer``는 worker의 운영 로그 observer와 합성되어 매 frame
+    호출된다. 콜백이 예외를 던지면 ``_run()``이 이를 치명 오류로 처리해
+    카메라·모델을 닫으므로, 예외 흡수 책임은 콜백 구현체에 있다.
     """
 
     def __init__(
         self,
         pipeline: MonitoringPipeline,
         *,
+        frame_observer: FrameObserver | None = None,
         heartbeat_interval_seconds: float = 10.0,
         monotonic_clock: MonotonicClock = time.monotonic,
     ) -> None:
@@ -53,6 +59,7 @@ class MonitoringWorker:
         if not callable(monotonic_clock):
             raise ValueError("monotonic_clock must be callable")
         self._pipeline = pipeline
+        self._frame_observer = frame_observer
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._monotonic_clock = monotonic_clock
         self._last_heartbeat_at: float | None = None
@@ -128,7 +135,7 @@ class MonitoringWorker:
 
     def _observe_frame(
         self,
-        _frame: object,
+        frame: CapturedFrame,
         batch: TrackingBatch,
         result: FrameObservationResult,
     ) -> None:
@@ -189,6 +196,9 @@ class MonitoringWorker:
                 "차량 출차 처리가 확정됐습니다. physicalVehicleId=%s",
                 physical_vehicle_id,
             )
+
+        if self._frame_observer is not None:
+            self._frame_observer(frame, batch, result)
 
         now = self._monotonic_clock()
         if (

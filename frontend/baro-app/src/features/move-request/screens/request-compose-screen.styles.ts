@@ -6,7 +6,6 @@ export const styles = StyleSheet.create({
   content: {
     flexGrow: 1,
     gap: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
     paddingBottom: Spacing.xxl,
   },
   footer: {
