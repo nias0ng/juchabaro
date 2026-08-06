@@ -13,12 +13,14 @@ from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     AssignmentState,
     BlockingRelationState,
+    EntryExitRole,
     IncidentSignalValue,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
     ParkingTransitionType,
     PlacementEvidenceSource,
+    PresenceSignal,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -72,6 +74,8 @@ PROTRUDING_FROM_FIRST = BoundingBox(0.18, 0.12, 0.38, 0.28)
 SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
 SECOND_SPOT = ((0.30, 0.10), (0.50, 0.10), (0.50, 0.30), (0.30, 0.30))
+EXIT_SPOT = ((0.60, 0.10), (0.80, 0.10), (0.80, 0.30), (0.60, 0.30))
+IN_EXIT = BoundingBox(0.62, 0.12, 0.78, 0.28)
 
 
 def at(seconds: float) -> datetime:
@@ -85,6 +89,7 @@ def zone(
     *,
     allowed_duration_seconds: float | None = None,
     egress_zone_ids: tuple[ZoneId, ...] = (),
+    entry_exit_role: EntryExitRole | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
@@ -92,6 +97,7 @@ def zone(
         polygon=polygon,
         zone_definition_version=VERSION,
         calibration_reference=CALIBRATION,
+        entry_exit_role=entry_exit_role,
         allowed_duration_seconds=allowed_duration_seconds,
         charger_class="FAST" if zone_type is ZoneType.EV_CHARGING else None,
         egress_zone_ids=egress_zone_ids,
@@ -106,6 +112,18 @@ EV_ZONE = zone(
 )
 GENERAL_A = zone(3, ZoneType.GENERAL, FIRST_SPOT)
 GENERAL_B = zone(4, ZoneType.GENERAL, SECOND_SPOT)
+EXIT_ZONE = zone(
+    9,
+    ZoneType.ENTRY_EXIT,
+    EXIT_SPOT,
+    entry_exit_role=EntryExitRole.EXIT,
+)
+ENTRY_ZONE = zone(
+    8,
+    ZoneType.ENTRY_EXIT,
+    EXIT_SPOT,
+    entry_exit_role=EntryExitRole.ENTRY,
+)
 
 UNAUTHORIZED = SessionContext(
     parking_session_id=SESSION,
@@ -1195,3 +1213,79 @@ def test_zone_presence_and_assignment_thresholds_are_independent() -> None:
 
     assert visit_tracker.active_visits(CAR) == ()
     assert parked.parking_episode_updates[-1].assignment.zone_id == GENERAL_A.zone_id
+
+
+def test_open_exit_zone_visit_counts_as_traversal() -> None:
+    """마지막으로 관측된 위치가 출차 구역이면 통과로 인정한다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_entering_visit_below_confirmation_still_counts_as_traversal() -> None:
+    """ZONE_ENTRY_CONFIRM_SECONDS를 못 채우고 지나간 차도 통과로 인정한다.
+
+    이게 이 정의의 핵심이다(565) — INSIDE 확정을 요구하면 빨리 나간 차가
+    미탐되고, 그 세션은 영구히 닫히지 않는다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=10.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_parking_zone_visit_alone_is_not_traversal() -> None:
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0)))
+    pipeline.process(batch(1, snapshot(1)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_entry_role_zone_visit_is_not_traversal() -> None:
+    """같은 ENTRY_EXIT 구역이라도 role이 ENTRY면 출차 근거가 아니다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, ENTRY_ZONE), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_traversal_is_no_longer_observed_after_physical_exit() -> None:
+    """읽기 순서 회귀: physical_exit()이 방문을 종료시키면 근거가 사라진다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+    pipeline.physical_exit(physical_vehicle_id=CAR, observed_at=at(2))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
+    """설정 교체로 사라진 zone의 방문은 예외 없이 통과 미인정으로 처리한다(565).
+
+    이 경로는 departure commit 중에 실행되므로 예외를 던지면 차량 종료
+    자체가 실패한다.
+    """
+
+    pipeline, visit_tracker, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=1.0)
+    visit_tracker.update(
+        physical_vehicle_id=CAR,
+        zone_id=ZoneId(999),
+        signal=PresenceSignal.PRESENT,
+        observation=observed(0),
+        observed_at=at(0),
+    )
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
