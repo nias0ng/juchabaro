@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Accessibility, Car, ChevronDown, LayoutGrid, Pencil, Plug, Search } from '@lucide/vue'
+import { Accessibility, Car, ChevronDown, LayoutGrid, Pencil, Plug } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
+import SearchBox from '@/components/ui/SearchBox.vue'
+import TableStateRow from '@/components/ui/TableStateRow.vue'
 import ParkingSpotMap from '@/features/parking-zones/components/ParkingSpotMap.vue'
 import {
   ZONE_TYPE_OPTIONS,
@@ -133,10 +135,7 @@ const STATS = computed(() => [
             </div>
           </div>
 
-          <div class="search-box">
-            <Search :size="16" />
-            <input v-model="codeQuery" type="text" placeholder="구역 번호 검색">
-          </div>
+          <SearchBox v-model="codeQuery" placeholder="구역 번호 검색" input-width="112px" />
         </div>
 
         <div class="table-scroll">
@@ -147,12 +146,8 @@ const STATS = computed(() => [
               </tr>
             </thead>
             <tbody>
-              <tr v-if="zonesLoading">
-                <td colspan="5" class="empty">불러오는 중입니다…</td>
-              </tr>
-              <tr v-else-if="filteredRows.length === 0">
-                <td colspan="5" class="empty">조건에 맞는 구역이 없습니다.</td>
-              </tr>
+              <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
+              <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
               <tr
                 v-for="zone in filteredRows"
                 v-else
@@ -480,24 +475,6 @@ const STATS = computed(() => [
   font-weight: 600;
 }
 
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-base);
-}
-
-.search-box input {
-  width: 112px;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: var(--font-size-sm);
-}
-
 .table-scroll {
   overflow-x: auto;
 }
@@ -522,12 +499,6 @@ th {
 
 td {
   padding: 14px var(--spacing-sm);
-}
-
-.empty {
-  padding: 40px var(--spacing-sm);
-  text-align: center;
-  color: var(--panel-muted-foreground);
 }
 
 .row {
