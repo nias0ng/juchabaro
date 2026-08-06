@@ -78,7 +78,12 @@ export function useVehicleManagement() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.parking.sessions() });
     },
     onError: (error) => {
-      setDeleteErrorMessage(error instanceof ApiError ? error.message : '차량 삭제에 실패했습니다.');
+      // 409: 주차 중인 차량은 서버가 삭제를 거부한다 — 일반 실패 메시지 대신 다음 행동을 안내한다.
+      if (error instanceof ApiError && error.status === 409) {
+        setDeleteErrorMessage('주차 중인 차량은 삭제할 수 없습니다. 먼저 출차한 뒤 다시 시도해 주세요.');
+      } else {
+        setDeleteErrorMessage(error instanceof ApiError ? error.message : '차량 삭제에 실패했습니다.');
+      }
     },
   });
 
