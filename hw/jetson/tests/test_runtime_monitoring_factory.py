@@ -16,10 +16,22 @@ from src.camera.frame_source import calibration_fingerprint
 from src.config.settings import Settings
 from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.models import (
+    IncidentRuleTiming,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
     ZoneType,
+)
+from src.parking.rules.bad_parking import (
+    AISLE_BLOCK,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+)
+from src.parking.rules.double_parking import DOUBLE_PARKING
+from src.parking.rules.ev_overstay import EV_OVERSTAY
+from src.parking.rules.restricted_zone import (
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
 )
 from src.parking.zone_registry import ZoneRegistry
 
@@ -73,6 +85,20 @@ def _settings(
         reidentification_ambiguity_margin=0.07,
         incident_confirm_seconds=0.2,
         incident_clear_seconds=0.3,
+        incident_disabled_zone_unauthorized_confirm_seconds=0.01,
+        incident_disabled_zone_unauthorized_clear_seconds=0.02,
+        incident_ev_zone_unauthorized_confirm_seconds=0.03,
+        incident_ev_zone_unauthorized_clear_seconds=0.04,
+        incident_ev_overstay_confirm_seconds=0.05,
+        incident_ev_overstay_clear_seconds=0.06,
+        incident_bad_parking_confirm_seconds=0.07,
+        incident_bad_parking_clear_seconds=0.08,
+        incident_out_of_zone_confirm_seconds=0.09,
+        incident_out_of_zone_clear_seconds=0.10,
+        incident_aisle_block_confirm_seconds=0.11,
+        incident_aisle_block_clear_seconds=0.12,
+        incident_double_parking_confirm_seconds=0.13,
+        incident_double_parking_clear_seconds=0.14,
         zone_presence_min_overlap_ratio=0.32,
         assignment_min_overlap_ratio=0.52,
         assignment_ambiguous_margin=0.06,
@@ -338,6 +364,43 @@ def test_monitoring_policy_maps_all_settings_without_interpretation(
         reidentification_ambiguity_margin=0.07,
         incident_confirm_seconds=0.2,
         incident_clear_seconds=0.3,
+        incident_rule_timings=(
+            IncidentRuleTiming(
+                rule_code=DISABLED_ZONE_UNAUTHORIZED,
+                confirm_duration_seconds=0.01,
+                clear_duration_seconds=0.02,
+            ),
+            IncidentRuleTiming(
+                rule_code=EV_ZONE_UNAUTHORIZED,
+                confirm_duration_seconds=0.03,
+                clear_duration_seconds=0.04,
+            ),
+            IncidentRuleTiming(
+                rule_code=EV_OVERSTAY,
+                confirm_duration_seconds=0.05,
+                clear_duration_seconds=0.06,
+            ),
+            IncidentRuleTiming(
+                rule_code=BAD_PARKING,
+                confirm_duration_seconds=0.07,
+                clear_duration_seconds=0.08,
+            ),
+            IncidentRuleTiming(
+                rule_code=OUT_OF_ZONE,
+                confirm_duration_seconds=0.09,
+                clear_duration_seconds=0.10,
+            ),
+            IncidentRuleTiming(
+                rule_code=AISLE_BLOCK,
+                confirm_duration_seconds=0.11,
+                clear_duration_seconds=0.12,
+            ),
+            IncidentRuleTiming(
+                rule_code=DOUBLE_PARKING,
+                confirm_duration_seconds=0.13,
+                clear_duration_seconds=0.14,
+            ),
+        ),
         zone_presence_min_overlap_ratio=0.32,
         assignment_min_overlap_ratio=0.52,
         assignment_ambiguous_margin=0.06,

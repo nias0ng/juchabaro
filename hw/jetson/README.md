@@ -104,6 +104,39 @@ REMAP_BALANCE=0.5
 VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
 ```
 
+시연 배포에서 판정 정책은 `.env` → `Settings` → `src.main`의 composition root →
+`MonitoringPolicy` 순서로 전달된다. 규칙별 Incident 값은
+`MonitoringPolicy.incident_rule_timings`를 거쳐 `InMemoryIncidentReducer`가 새
+Incident에 snapshot하므로, 실행 중 환경 변수가 바뀌어도 이미 진행 중인 timer의
+정책은 바뀌지 않는다.
+
+알려진 Incident 규칙은 아래 값을 모두 명시해야 한다. 전역
+`INCIDENT_CONFIRM_SECONDS`와 `INCIDENT_CLEAR_SECONDS`는 아직 규칙별 정책이 없는
+미래 규칙을 위한 compatibility fallback일 뿐이다.
+
+```dotenv
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_DISABLED_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CONFIRM_SECONDS=0.0
+INCIDENT_EV_ZONE_UNAUTHORIZED_CLEAR_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CONFIRM_SECONDS=0.0
+INCIDENT_EV_OVERSTAY_CLEAR_SECONDS=0.0
+INCIDENT_BAD_PARKING_CONFIRM_SECONDS=0.5
+INCIDENT_BAD_PARKING_CLEAR_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CONFIRM_SECONDS=0.5
+INCIDENT_OUT_OF_ZONE_CLEAR_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CONFIRM_SECONDS=0.5
+INCIDENT_AISLE_BLOCK_CLEAR_SECONDS=0.5
+INCIDENT_DOUBLE_PARKING_CONFIRM_SECONDS=0.0
+INCIDENT_DOUBLE_PARKING_CLEAR_SECONDS=0.0
+```
+
+현재 시연값은 `VEHICLE_TRACKING_CONFIDENCE=0.25`,
+`PARKING_CONFIRM_SECONDS=5.0`, `PARKING_MOVE_CONFIRM_SECONDS=0.5`다.
+`PARKING_CONFIRM_SECONDS=600.0`은 운영 요구값이며 실영상 검증을 마친 운영
+프로파일에서 별도로 적용한다. 이 값들은 provisional이므로 영상별 confidence 분포와
+Incident 오탐·미탐을 다시 측정한 뒤 조정한다.
+
 `config/camera_calibration.json`은 운영 배포용 calibration 정본이다. 이 파일의
 원시 바이트 SHA-256 앞 16자리는 `a26d3085c3d4fc4f`이며,
 `zone_definition.json`과 `egress_aisle.json`의 `calibrationReference`가 같은

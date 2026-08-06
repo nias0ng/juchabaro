@@ -108,9 +108,67 @@ class Settings(BaseSettings):
     reidentification_min_score: float
     reidentification_ambiguity_margin: float
 
-    # InMemoryIncidentReducer의 기존 즉시 전이 기본값.
+    # 아직 명시 정책이 없는 미래 규칙에만 적용하는 compatibility fallback.
+    # 현재 알려진 규칙은 아래 규칙별 값을 반드시 배포 설정으로 주입한다.
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
+
+    incident_disabled_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_disabled_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
 
     # 서로 의미가 다른 parking 판단값이므로 독립 설정으로 유지한다.
     zone_presence_min_overlap_ratio: float
