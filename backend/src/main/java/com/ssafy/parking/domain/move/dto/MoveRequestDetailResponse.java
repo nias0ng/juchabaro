@@ -15,6 +15,7 @@ public record MoveRequestDetailResponse(
         Long requestId,
         String requestType,
         String requestStatus,
+        String message,
         OffsetDateTime requestedAt,
         OffsetDateTime dueAt,
         RequesterInfo requester,
@@ -32,7 +33,6 @@ public record MoveRequestDetailResponse(
     public record EventInfo(
             Long eventId,
             String eventType,
-            String reason,
             String zoneNumber,
             List<ImageInfo> images
     ) {}
@@ -69,7 +69,6 @@ public record MoveRequestDetailResponse(
         EventInfo eventInfo = new EventInfo(
                 e.getId(),
                 e.getEventType().name(),
-                e.getReason(),
                 zoneNumber,
                 imageInfos
         );
@@ -91,6 +90,7 @@ public record MoveRequestDetailResponse(
                 mr.getId(),
                 mr.getRequestType().name(),
                 mr.getRequestStatus().name(),
+                mr.getMessage(),
                 toKst(mr.getRequestedAt()),
                 (mr.getDueAt() != null) ? toKst(mr.getDueAt()) : null,
                 requester,

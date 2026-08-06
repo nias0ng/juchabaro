@@ -8,7 +8,7 @@ public final class RuleCodeMapper {
     public static ParkingEventType toEventType(String ruleCode) {
         if (ruleCode == null) return ParkingEventType.ETC;
         return switch (ruleCode) {
-            case "DISABLED_ZONE_UNAUTHORIZED" -> ParkingEventType.DISABLED_ZONE_VIOLATION;
+            case "DISABLED_ZONE_UNAUTHORIZED", "DISABLED_ZONE_VIOLATION" -> ParkingEventType.DISABLED_ZONE_VIOLATION;
             case "EV_OVERSTAY" -> ParkingEventType.EV_OVERSTAY;
             case "BAD_PARKING" -> ParkingEventType.BAD_PARKING;
             case "DOUBLE_PARKING" -> ParkingEventType.DOUBLE_PARKING;
