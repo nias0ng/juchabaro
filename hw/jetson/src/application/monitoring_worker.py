@@ -8,12 +8,23 @@ model owner는 딱 하나의 thread만 가진다. 이 모듈은 pipeline을 조�
 from __future__ import annotations
 
 import logging
+import math
+import time
+from collections.abc import Callable
+from numbers import Real
 from threading import Event, Thread
 
+from src.application.frame_observation_workflow import FrameObservationResult
 from src.application.monitoring_pipeline import FrameObserver, MonitoringPipeline
+from src.camera.models import CapturedFrame
+from src.parking.models import IncidentTransitionType
+from src.session.models import EntryMatchState
+from src.tracking.models import TrackingBatch
 
 
 logger = logging.getLogger(__name__)
+
+MonotonicClock = Callable[[], float]
 
 
 class MonitoringWorker:
@@ -23,10 +34,9 @@ class MonitoringWorker:
     실패를 API readiness로 숨기지 않는다. ``stop()``은 새 frame 시작을
     막고 진행 중인 frame의 transaction이 끝난 뒤 자원 정리를 기다린다.
 
-    ``frame_observer``는 그대로 ``pipeline.run()``에 전달만 한다 — 이
-    worker는 관측 내용을 해석하지 않는다. 콜백이 예외를 던지면
-    ``_run()``이 이를 치명 오류로 처리해 카메라·모델을 닫으므로, 예외
-    흡수 책임은 콜백 구현체에 있다.
+    ``frame_observer``는 worker의 운영 로그 observer와 합성되어 매 frame
+    호출된다. 콜백이 예외를 던지면 ``_run()``이 이를 치명 오류로 처리해
+    카메라·모델을 닫으므로, 예외 흡수 책임은 콜백 구현체에 있다.
     """
 
     def __init__(
@@ -34,9 +44,25 @@ class MonitoringWorker:
         pipeline: MonitoringPipeline,
         *,
         frame_observer: FrameObserver | None = None,
+        heartbeat_interval_seconds: float = 10.0,
+        monotonic_clock: MonotonicClock = time.monotonic,
     ) -> None:
+        if (
+            isinstance(heartbeat_interval_seconds, bool)
+            or not isinstance(heartbeat_interval_seconds, Real)
+            or not math.isfinite(heartbeat_interval_seconds)
+            or heartbeat_interval_seconds <= 0
+        ):
+            raise ValueError(
+                "heartbeat_interval_seconds must be a finite positive number"
+            )
+        if not callable(monotonic_clock):
+            raise ValueError("monotonic_clock must be callable")
         self._pipeline = pipeline
         self._frame_observer = frame_observer
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._monotonic_clock = monotonic_clock
+        self._last_heartbeat_at: float | None = None
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
@@ -60,6 +86,7 @@ class MonitoringWorker:
             raise RuntimeError("monitoring worker may only be started once")
 
         self._pipeline.open()
+        logger.info("Jetson monitoring pipeline 자원 초기화가 완료됐습니다.")
         thread = Thread(
             target=self._run,
             name="jetson-monitoring",
@@ -71,6 +98,11 @@ class MonitoringWorker:
         except Exception:
             self._pipeline.close()
             raise
+        logger.info(
+            "Jetson monitoring worker가 시작됐습니다. "
+            "heartbeatIntervalSeconds=%.1f",
+            self._heartbeat_interval_seconds,
+        )
 
     def stop(self) -> None:
         """신규 frame 처리를 멈추고 worker의 자원 정리까지 기다린다."""
@@ -81,9 +113,14 @@ class MonitoringWorker:
 
     def _run(self) -> None:
         try:
-            self._pipeline.run(
+            processed_frames = self._pipeline.run(
+                frame_observer=self._observe_frame,
                 stop_requested=self._stop_requested.is_set,
-                frame_observer=self._frame_observer,
+            )
+            logger.info(
+                "Jetson monitoring loop가 정상 종료됐습니다. "
+                "processedFrames=%d",
+                processed_frames,
             )
         except Exception as error:
             self._failure = error
@@ -95,3 +132,97 @@ class MonitoringWorker:
                 if self._failure is None:
                     self._failure = error
                 logger.exception("Jetson monitoring 자원 정리에 실패했습니다.")
+
+    def _observe_frame(
+        self,
+        frame: CapturedFrame,
+        batch: TrackingBatch,
+        result: FrameObservationResult,
+    ) -> None:
+        """commit된 상태 전이와 제한된 주기의 frame heartbeat를 기록한다."""
+
+        for attempt in result.entry_match_updates:
+            log_level = (
+                logging.INFO
+                if attempt.match_state is EntryMatchState.MATCHED
+                else logging.WARNING
+            )
+            logger.log(
+                log_level,
+                "입차 차량 매치 결과가 확정됐습니다. "
+                "entryAttemptId=%s decisionState=%s matchState=%s "
+                "physicalVehicleId=%s terminalReason=%s",
+                attempt.entry_attempt_id,
+                attempt.decision_state.value,
+                attempt.match_state.value,
+                attempt.matched_physical_vehicle_id,
+                attempt.terminal_reason or "-",
+            )
+
+        for transition in result.parking_result.parking_transitions:
+            logger.info(
+                "주차 상태 전이가 확정됐습니다. "
+                "transitionType=%s parkingEpisodeId=%s "
+                "physicalVehicleId=%s zoneId=%s revision=%d",
+                transition.transition_type.value,
+                transition.parking_episode_id,
+                transition.physical_vehicle_id,
+                transition.assignment.zone_id,
+                transition.publication_revision,
+            )
+
+        for transition in result.parking_result.incident_transitions:
+            incident = transition.incident
+            log_level = (
+                logging.WARNING
+                if transition.transition_type is IncidentTransitionType.OPEN
+                else logging.INFO
+            )
+            logger.log(
+                log_level,
+                "주차 Incident 상태 전이가 확정됐습니다. "
+                "transitionType=%s ruleCode=%s incidentId=%s "
+                "physicalVehicleId=%s zoneId=%s revision=%d",
+                transition.transition_type.value,
+                incident.key.rule_code,
+                incident.incident_id,
+                incident.physical_vehicle_id,
+                incident.zone_id,
+                incident.publication_revision,
+            )
+
+        for physical_vehicle_id in result.retired_physical_vehicle_ids:
+            logger.info(
+                "차량 출차 처리가 확정됐습니다. physicalVehicleId=%s",
+                physical_vehicle_id,
+            )
+
+        if self._frame_observer is not None:
+            self._frame_observer(frame, batch, result)
+
+        now = self._monotonic_clock()
+        if (
+            self._last_heartbeat_at is not None
+            and now - self._last_heartbeat_at
+            < self._heartbeat_interval_seconds
+        ):
+            return
+        self._last_heartbeat_at = now
+        detection_count = (
+            batch.detection_count
+            if batch.detection_count is not None
+            else "unknown"
+        )
+        logger.info(
+            "Jetson monitoring heartbeat. "
+            "cameraId=%s frameId=%d detections=%s trackedVehicles=%d "
+            "observation=%s allDetectionsTracked=%s "
+            "allIdentitiesResolved=%s",
+            batch.camera_id,
+            batch.frame_id,
+            detection_count,
+            len(batch.vehicles),
+            batch.observation.state.value,
+            batch.all_detections_tracked,
+            batch.all_identities_resolved,
+        )

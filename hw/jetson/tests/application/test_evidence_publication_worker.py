@@ -18,6 +18,7 @@ from src.communication.backend_client import (
     TerminalBackendPublicationError,
 )
 from src.domain.models import DeliveryState
+from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
@@ -34,6 +35,14 @@ from src.storage.unit_of_work import UnitOfWork
 
 NOW = datetime(2026, 8, 4, 6, 0, tzinfo=timezone.utc)
 JPEG = b"\xff\xd8" + b"evidence" * 32 + b"\xff\xd9"
+
+
+class RecordingDiagnosticsSink:
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    def emit(self, event: DiagnosticEvent) -> None:
+        self.events.append(event)
 
 
 class _Client:
@@ -79,7 +88,14 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
     root = tmp_path / "evidence"
     ready = _seed_ready(database, root)
     client = _Client()
-    publisher = _publisher(database, root, client, now=lambda: NOW)
+    diagnostics = RecordingDiagnosticsSink()
+    publisher = _publisher(
+        database,
+        root,
+        client,
+        now=lambda: NOW,
+        diagnostics_sink=diagnostics,
+    )
 
     assert publisher.recover() == 0
     with caplog.at_level(
@@ -113,6 +129,15 @@ def test_ready_binary_is_uploaded_by_api_8_and_acknowledged(
     assert json.loads(bytes(ack_payload))["backendCorrelation"] == {
         "imageId": 301
     }
+    assert [event.attributes["result"] for event in diagnostics.events] == [
+        "DELIVERY_ATTEMPTED",
+        "DELIVERY_SUCCEEDED",
+    ]
+    assert all(
+        event.event_type
+        is DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
+        for event in diagnostics.events
+    )
 
 
 def test_retryable_api_8_failure_uses_durable_exponential_backoff(
@@ -296,7 +321,14 @@ def test_terminal_api_9_failure_is_not_automatically_retried(
     assert publisher.publish_once() is False
 
 
-def _publisher(database, root, client, *, now) -> EvidencePublicationPublisher:
+def _publisher(
+    database,
+    root,
+    client,
+    *,
+    now,
+    diagnostics_sink=None,
+) -> EvidencePublicationPublisher:
     return EvidencePublicationPublisher(
         connection_factory=lambda: connect_database(database),
         client=client,
@@ -307,6 +339,7 @@ def _publisher(database, root, client, *, now) -> EvidencePublicationPublisher:
         retry_initial_seconds=1.0,
         retry_max_seconds=8.0,
         clock=now,
+        diagnostics_sink=diagnostics_sink,
     )
 
 

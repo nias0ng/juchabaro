@@ -10,8 +10,17 @@ session 매칭과 ContextBinding은 session coordinator의 책임이며 이 pipe
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 
 from src.camera.models import CapturedFrame
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
 from src.domain.models import (
     ObservationReason,
     ObservationState,
@@ -53,6 +62,7 @@ class TrackingPipeline:
         trusted_sample_max_gap_seconds: float,
         entity_resolver: EntityResolver | None = None,
         motion_estimator: MotionEstimator | None = None,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         if not camera_id:
             raise ValueError("camera_id must not be empty")
@@ -65,6 +75,11 @@ class TrackingPipeline:
         self._motion_estimator = (
             motion_estimator if motion_estimator is not None else MotionEstimator()
         )
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
         self._presence_confirmer = PhysicalVehiclePresenceConfirmer(
             absence_confirmation_seconds=absence_confirmation_seconds,
             trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
@@ -72,6 +87,9 @@ class TrackingPipeline:
         self._last_reliable_observed_at = None
         self._last_frame_id = 0
         self._restart_unresolved_vehicle_ids: set[PhysicalVehicleId] = set()
+        self._last_detection_diagnostic_signature: (
+            tuple[int | None, int, bool, tuple[int, ...]] | None
+        ) = None
 
     def open(self) -> None:
         """탐지·tracker 모델을 초기화한다."""
@@ -99,13 +117,24 @@ class TrackingPipeline:
             )
         self._last_frame_id = frame.frame_id
 
+        inference_started_at = perf_counter()
         try:
             tracker_result = self._detector.track(frame)
-        except TrackingError:
+        except TrackingError as error:
+            self._observe_detection_failure(
+                frame=frame,
+                inference_seconds=perf_counter() - inference_started_at,
+                error=error,
+            )
             # 추론 실패 뒤 첫 정상 frame이 실패 구간을 부재
             # trusted duration에 포함하지 않게 연속성을 끊고 원 예외를 유지한다.
             self.pause_absence_confirmation()
             raise
+        self._observe_detection_frame(
+            frame=frame,
+            tracker_result=tracker_result,
+            inference_seconds=perf_counter() - inference_started_at,
+        )
 
         if self._restart_unresolved_vehicle_ids and (
             tracker_result.observations
@@ -140,6 +169,10 @@ class TrackingPipeline:
                     ),
                 )
                 for item in tracker_result.observations
+            )
+            self._observe_identity_resolutions(
+                frame=frame,
+                resolutions=identity_resolutions,
             )
             return TrackingBatch(
                 camera_id=self._camera_id,
@@ -183,6 +216,10 @@ class TrackingPipeline:
                 "EntityResolver result must cover every observed TrackSegment "
                 "exactly once"
             )
+        self._observe_identity_resolutions(
+            frame=frame,
+            resolutions=identity_batch.resolutions,
+        )
 
         batch_observation = self._batch_observation(
             observed_at=frame.captured_at,
@@ -419,4 +456,142 @@ class TrackingPipeline:
             state=ObservationState.DEGRADED,
             reason=ObservationReason.PARTIAL_FRAME,
             last_reliable_observed_at=self._last_reliable_observed_at,
+        )
+
+    def _observe_identity_resolutions(
+        self,
+        *,
+        frame: CapturedFrame,
+        resolutions: tuple[IdentityResolution, ...],
+    ) -> None:
+        """identity 경계 변화만 기록해 frame 단위 로그 폭증을 피한다."""
+
+        for resolution in resolutions:
+            if resolution.outcome is IdentityResolutionOutcome.CONTINUED:
+                continue
+            emit_best_effort(
+                self._diagnostics_sink,
+                DiagnosticEvent(
+                    event_type=(
+                        DiagnosticEventType.IDENTITY_RESOLUTION_EVALUATED
+                    ),
+                    occurred_at=frame.captured_at,
+                    severity=(
+                        DiagnosticSeverity.WARNING
+                        if resolution.outcome
+                        is IdentityResolutionOutcome.UNRESOLVED
+                        else DiagnosticSeverity.INFO
+                    ),
+                    attributes={
+                        "areaRatio": resolution.area_ratio,
+                        "cameraId": self._camera_id,
+                        "candidateCount": resolution.candidate_count,
+                        "centerDistanceRatio": (
+                            resolution.center_distance_ratio
+                        ),
+                        "frameId": frame.frame_id,
+                        "gapSeconds": resolution.gap_seconds,
+                        "outcome": resolution.outcome.value,
+                        "physicalVehicleId": (
+                            str(resolution.physical_vehicle_id)
+                            if resolution.physical_vehicle_id is not None
+                            else None
+                        ),
+                        "predictedIou": resolution.predicted_iou,
+                        "reason": (
+                            resolution.reason.value
+                            if resolution.reason is not None
+                            else None
+                        ),
+                        "runnerUpScore": resolution.runner_up_score,
+                        "score": resolution.score,
+                        "scoreMargin": resolution.score_margin,
+                        "trackSegmentId": int(resolution.track_segment_id),
+                    },
+                ),
+            )
+
+    def _observe_detection_frame(
+        self,
+        *,
+        frame: CapturedFrame,
+        tracker_result,
+        inference_seconds: float,
+    ) -> None:
+        """탐지·tracking 요약이 달라질 때만 구조화 진단을 남긴다."""
+
+        class_ids = tuple(
+            sorted({int(item.class_id) for item in tracker_result.detections})
+        )
+        signature = (
+            tracker_result.detection_count,
+            len(tracker_result.observations),
+            tracker_result.all_detections_tracked,
+            class_ids,
+        )
+        if signature == self._last_detection_diagnostic_signature:
+            return
+        self._last_detection_diagnostic_signature = signature
+        confidences = tuple(
+            item.confidence for item in tracker_result.detections
+        )
+        detection_count = tracker_result.detection_count
+        tracked_count = len(tracker_result.observations)
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=DiagnosticEventType.DETECTION_FRAME_EVALUATED,
+                occurred_at=frame.captured_at,
+                severity=(
+                    DiagnosticSeverity.INFO
+                    if tracker_result.all_detections_tracked
+                    else DiagnosticSeverity.WARNING
+                ),
+                attributes={
+                    "allDetectionsTracked": (
+                        tracker_result.all_detections_tracked
+                    ),
+                    "cameraId": self._camera_id,
+                    "classIds": ",".join(str(value) for value in class_ids),
+                    "confidenceMax": max(confidences) if confidences else None,
+                    "confidenceMin": min(confidences) if confidences else None,
+                    "detectionCount": detection_count,
+                    "frameId": frame.frame_id,
+                    "inferenceMs": inference_seconds * 1000.0,
+                    "result": (
+                        "COMPLETE"
+                        if tracker_result.all_detections_tracked
+                        else "TRACKING_INCOMPLETE"
+                    ),
+                    "trackedObservationCount": tracked_count,
+                    "untrackedDetectionCount": (
+                        None
+                        if detection_count is None
+                        else max(detection_count - tracked_count, 0)
+                    ),
+                },
+            ),
+        )
+
+    def _observe_detection_failure(
+        self,
+        *,
+        frame: CapturedFrame,
+        inference_seconds: float,
+        error: TrackingError,
+    ) -> None:
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=DiagnosticEventType.DETECTION_FRAME_EVALUATED,
+                occurred_at=frame.captured_at,
+                severity=DiagnosticSeverity.ERROR,
+                attributes={
+                    "cameraId": self._camera_id,
+                    "errorType": type(error).__name__,
+                    "frameId": frame.frame_id,
+                    "inferenceMs": inference_seconds * 1000.0,
+                    "result": "INFERENCE_FAILED",
+                },
+            ),
         )

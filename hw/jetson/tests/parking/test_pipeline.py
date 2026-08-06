@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.egress_aisle_registry import EgressAisleRegistry
@@ -67,6 +68,14 @@ VERSION = ZoneDefinitionVersion(7)
 CALIBRATION = "cam-1-v1"
 SESSION = ParkingSessionId(101)
 ATTEMPT = EntryAttemptId(UUID(int=102))
+
+
+class RecordingDiagnosticsSink:
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    def emit(self, event: DiagnosticEvent) -> None:
+        self.events.append(event)
 
 INSIDE = BoundingBox(0.15, 0.15, 0.25, 0.25)
 OUTSIDE = BoundingBox(0.70, 0.70, 0.80, 0.80)
@@ -266,6 +275,7 @@ def make_pipeline(
     blocking_subject_overlap_ratio: float = 0.5,
     blocking_egress_coverage_ratio: float = 0.5,
     incident_rule_timings: tuple[IncidentRuleTiming, ...] = (),
+    diagnostics_sink=None,
 ):
     registry = ZoneRegistry(zones)
     egress_registry = EgressAisleRegistry(
@@ -314,8 +324,75 @@ def make_pipeline(
         out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap_ratio,
         blocking_min_subject_overlap_ratio=blocking_subject_overlap_ratio,
         blocking_min_egress_coverage_ratio=blocking_egress_coverage_ratio,
+        diagnostics_sink=diagnostics_sink,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
+
+
+def test_parking_exit_and_incident_boundaries_emit_structured_diagnostics() -> None:
+    diagnostics = RecordingDiagnosticsSink()
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE),
+        parking_seconds=1.0,
+        diagnostics_sink=diagnostics,
+    )
+
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(
+        batch(1, snapshot(1, bbox=IN_EXIT_OUTWARD)),
+        entry_attempt_ids={CAR: ATTEMPT},
+    )
+    assert pipeline.exit_zone_traversal_observed(
+        CAR,
+        observed_at=at(2),
+        absence_trusted_seconds=30.0,
+        absence_confirmation_seconds=30.0,
+    )
+
+    parking_events = [
+        event
+        for event in diagnostics.events
+        if event.event_type
+        is DiagnosticEventType.PARKING_ELIGIBILITY_EVALUATED
+    ]
+    assert parking_events[0].attributes["entryExitRole"] == "EXIT"
+    assert parking_events[0].attributes["parkingState"] == "STOP_PENDING"
+    exit_event = next(
+        event
+        for event in diagnostics.events
+        if event.event_type is DiagnosticEventType.EXIT_TRAVERSAL_EVALUATED
+    )
+    assert exit_event.attributes["traversalObserved"] is True
+    assert exit_event.attributes["absenceTrustedSeconds"] == 30.0
+
+
+def test_incident_open_diagnostic_explains_null_zone_provenance() -> None:
+    diagnostics = RecordingDiagnosticsSink()
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+        diagnostics_sink=diagnostics,
+    )
+
+    pipeline.process(
+        batch(0, snapshot(0, bbox=OUTSIDE)),
+        entry_attempt_ids={CAR: ATTEMPT},
+    )
+    pipeline.process(
+        batch(1, snapshot(1, bbox=OUTSIDE)),
+        entry_attempt_ids={CAR: ATTEMPT},
+    )
+
+    event = next(
+        event
+        for event in diagnostics.events
+        if event.event_type
+        is DiagnosticEventType.INCIDENT_PROJECTION_EVALUATED
+        and event.attributes["ruleCode"] == OUT_OF_ZONE
+    )
+    assert event.attributes["transitionType"] == "OPEN"
+    assert event.attributes["zoneId"] is None
+    assert event.attributes["zoneProvenance"] == "NONE_PHYSICAL_VEHICLE_SCOPE"
 
 
 def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None:

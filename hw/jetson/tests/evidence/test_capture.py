@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from src.camera.models import CapturedFrame
+from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.domain.models import ObservationState, ObservationStatus
 from src.evidence.capture import (
     EvidenceCaptureCoordinator,
@@ -52,6 +53,14 @@ OBSERVED = ObservationStatus(
     state=ObservationState.OBSERVED,
     last_reliable_observed_at=NOW,
 )
+
+
+class RecordingDiagnosticsSink:
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    def emit(self, event: DiagnosticEvent) -> None:
+        self.events.append(event)
 
 
 def _zones() -> ZoneRegistry:
@@ -234,6 +243,7 @@ def test_capture_coordinator_completes_reserved_artifact_to_ready(
         connection.close()
 
     frame, batch = _frame_and_batch()
+    diagnostics = RecordingDiagnosticsSink()
     EvidenceCaptureCoordinator(
         connection_factory=lambda: connect_database(database_path),
         zones=_zones(),
@@ -241,6 +251,7 @@ def test_capture_coordinator_completes_reserved_artifact_to_ready(
         spool_cap_bytes=8 * 1024 * 1024,
         filesystem_floor_ratio=0.0,
         capture_stop_free_ratio=0.0,
+        diagnostics_sink=diagnostics,
     ).capture(
         frame,
         batch,
@@ -256,3 +267,12 @@ def test_capture_coordinator_completes_reserved_artifact_to_ready(
     assert ready.state is EvidenceState.READY
     assert ready.local_path is not None and ready.local_path.is_file()
     assert ready.byte_size is not None and ready.byte_size <= 512 * 1024
+    assert [event.attributes["result"] for event in diagnostics.events] == [
+        "CAPTURE_REQUESTED",
+        "CAPTURE_READY",
+    ]
+    assert all(
+        event.event_type
+        is DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
+        for event in diagnostics.events
+    )

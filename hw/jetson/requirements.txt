@@ -4,8 +4,9 @@ pydantic-settings==2.14.2
 httpx
 
 # camera 계층(428): 영상 decode, fisheye 보정
-# 2.3+는 Python 3.11 이상이라 Jetson 목표 Python 3.10.12와 맞지 않는다.
-numpy==2.2.6
+# JetPack 6.2용 PyTorch 2.8 wheel은 NumPy 1.x ABI를 사용한다. NumPy 2.x에서는
+# torch.from_numpy()가 "Numpy is not available"로 실패한다.
+numpy==1.26.4
 opencv-python==4.10.0.84
 
 # sensor 계층: VL53L0X 드라이버, Linux I²C 버스 선택, Jetson XSHUT GPIO 제어
@@ -14,4 +15,10 @@ adafruit-extended-bus==1.0.2; sys_platform == "linux" and platform_machine == "a
 Jetson.GPIO==2.1.13; sys_platform == "linux" and platform_machine == "aarch64"
 
 # tracking 계층(436): YOLO + ByteTrack (hw/raspberry-pi와 버전 통일)
+# JetPack 6.2 / CUDA 12.6 / CPython 3.10 / aarch64에서 실기 검증한 wheel이다.
+# 일반 PyPI wheel은 CUDA 13 빌드를 선택해 Jetson GPU를 비활성화할 수 있으므로
+# Jetson AI Lab의 content-addressed wheel을 직접 지정한다.
+torch @ https://pypi.jetson-ai-lab.io/jp6/cu126/+f/62a/1beee9f2f1470/torch-2.8.0-cp310-cp310-linux_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64" and python_version == "3.10"
+torchvision @ https://pypi.jetson-ai-lab.io/jp6/cu126/+f/1c0/3de08a69e9554/torchvision-0.23.0-cp310-cp310-linux_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64" and python_version == "3.10"
 ultralytics==8.4.108
+lap==0.5.13

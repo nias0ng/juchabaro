@@ -419,7 +419,7 @@ def test_overlay_publisher_is_none_when_live_stream_is_disabled(
         assert client.get("/health").status_code == 200
         assert application.state.overlay_publisher is None
         assert pipeline.entered_run.wait(timeout=1.0)
-        assert pipeline.received_frame_observer is None
+        assert callable(pipeline.received_frame_observer)
 
 
 def test_overlay_publisher_is_wired_as_frame_observer_when_live_stream_is_enabled(
@@ -441,6 +441,4 @@ def test_overlay_publisher_is_wired_as_frame_observer_when_live_stream_is_enable
         assert client.get("/health").status_code == 200
         assert isinstance(application.state.overlay_publisher, OverlayPublisher)
         assert pipeline.entered_run.wait(timeout=1.0)
-        assert pipeline.received_frame_observer is (
-            application.state.overlay_publisher
-        )
+        assert callable(pipeline.received_frame_observer)

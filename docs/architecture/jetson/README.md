@@ -35,8 +35,9 @@
 | 2 | [Scope 수명주기 계약](./02-scope-lifecycle-contract.md) | 각 scope의 상태·식별자·전이 조건 |
 | 3 | [Scope 전파 및 종료 계약](./03-scope-propagation-contract.md) | 한 scope의 변화가 다른 scope에 미치는 영향 |
 | 4 | [상태 보존 및 Retention 계약](./04-durable-state-and-retention-contract.md) | 동일 장치 재시작, outbox, evidence와 저장 상한 |
+| 5 | [운영 진단 질문 및 이벤트 계약](./05-operational-diagnostics-contract.md) | 현장 오판의 원인을 재구성하는 비영속 관측 경계 |
 
-정의의 정본은 한 문서에만 둔다. `01`은 handoff 의미, `02`는 상태 전이, `03`은 전파, `04`는 영속성과 보존을 담당하며 다른 문서의 정의를 반복하지 않는다.
+정의의 정본은 한 문서에만 둔다. `01`은 handoff 의미, `02`는 상태 전이, `03`은 전파, `04`는 영속성과 보존, `05`는 비영속 운영 진단을 담당하며 다른 문서의 정의를 반복하지 않는다.
 
 ## 결정 수준
 

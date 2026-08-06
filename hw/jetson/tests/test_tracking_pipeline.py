@@ -12,6 +12,7 @@ from src.domain.models import (
     ObservationState,
     ObservationStatus,
 )
+from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.tracking.entity_resolver import GeometricEntityResolver
 from src.tracking.models import (
     BoundingBox,
@@ -157,6 +158,16 @@ class MissingResultEntityResolver:
         return None
 
 
+class RecordingDiagnosticsSink:
+    """구조화 진단 이벤트를 문장 formatting 없이 검증하는 test double."""
+
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    def emit(self, event: DiagnosticEvent) -> None:
+        self.events.append(event)
+
+
 class _FullAreaTestTrackingPipeline(TrackingPipeline):
     """테스트가 전체 영역 frame을 명시적으로 인증하는 편의 wrapper."""
 
@@ -210,6 +221,7 @@ def _pipeline(
     absence_seconds: float = 2.0,
     entity_resolver=None,
     motion_estimator=None,
+    diagnostics_sink=None,
 ) -> TrackingPipeline:
     return _FullAreaTestTrackingPipeline(
         camera_id="cam-1",
@@ -218,6 +230,7 @@ def _pipeline(
         trusted_sample_max_gap_seconds=1.0,
         entity_resolver=entity_resolver,
         motion_estimator=motion_estimator,
+        diagnostics_sink=diagnostics_sink,
     )
 
 
@@ -307,6 +320,70 @@ def test_new_vehicle_snapshot_keeps_observed_bbox_while_motion_warms_up():
     assert snapshot.motion_estimate is not None
     assert snapshot.motion_estimate.reason is MotionEstimateReason.FIRST_SAMPLE
     assert batch.motion_estimates == (snapshot.motion_estimate,)
+
+
+def test_identity_boundary_is_observed_once_without_continued_frame_spam():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(_observation(7))
+    detector.results_by_frame_id[2] = _result(_observation(7, seconds=0.1))
+    diagnostics = RecordingDiagnosticsSink()
+    pipeline = _pipeline(detector, diagnostics_sink=diagnostics)
+
+    first = pipeline.process(_make_frame(1))
+    pipeline.process(_make_frame(2, seconds=0.1))
+
+    identity_events = [
+        event
+        for event in diagnostics.events
+        if event.event_type
+        is DiagnosticEventType.IDENTITY_RESOLUTION_EVALUATED
+    ]
+    assert len(identity_events) == 1
+    event = identity_events[0]
+    assert event.event_type is DiagnosticEventType.IDENTITY_RESOLUTION_EVALUATED
+    assert event.occurred_at == BASE_TIME
+    assert event.attributes["cameraId"] == "cam-1"
+    assert event.attributes["frameId"] == 1
+    assert event.attributes["trackSegmentId"] == 7
+    assert event.attributes["outcome"] == "CREATED"
+    assert event.attributes["reason"] == "NO_ELIGIBLE_CANDIDATE"
+    assert event.attributes["physicalVehicleId"] == str(
+        first.vehicles[0].physical_vehicle_id
+    )
+
+
+def test_detection_summary_is_observed_only_when_counts_or_status_change():
+    detector = FakeDetector()
+    detector.results_by_frame_id[1] = _result(
+        _observation(1),
+        detection_count=2,
+        all_detections_tracked=False,
+    )
+    detector.results_by_frame_id[2] = _result(
+        _observation(1, seconds=0.1),
+        detection_count=2,
+        all_detections_tracked=False,
+    )
+    detector.results_by_frame_id[3] = _result(
+        _observation(1, seconds=0.2),
+        detection_count=1,
+    )
+    diagnostics = RecordingDiagnosticsSink()
+    pipeline = _pipeline(detector, diagnostics_sink=diagnostics)
+
+    pipeline.process(_make_frame(1))
+    pipeline.process(_make_frame(2, seconds=0.1))
+    pipeline.process(_make_frame(3, seconds=0.2))
+
+    detection_events = [
+        event
+        for event in diagnostics.events
+        if event.event_type is DiagnosticEventType.DETECTION_FRAME_EVALUATED
+    ]
+    assert len(detection_events) == 2
+    assert detection_events[0].attributes["result"] == "TRACKING_INCOMPLETE"
+    assert detection_events[0].attributes["untrackedDetectionCount"] == 1
+    assert detection_events[1].attributes["result"] == "COMPLETE"
 
 
 def test_same_segment_with_sufficient_same_bbox_history_becomes_stationary():

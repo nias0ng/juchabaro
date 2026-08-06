@@ -272,6 +272,7 @@ def test_authoritative_match_is_committed_with_vehicle_mirror_and_binding(
         assert result.entry_attempt_ids == {
             vehicle_id: attempt.entry_attempt_id
         }
+        assert result.entry_match_updates == (persisted_attempt,)
         assert connection.in_transaction is False
     finally:
         connection.close()

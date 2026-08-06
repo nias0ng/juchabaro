@@ -8,6 +8,7 @@ EntryMatchCoordinator를 사용하는 후속 tracking workflow 책임이다.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -35,6 +36,9 @@ from src.storage.repositories import (
 )
 from src.storage.unit_of_work import UnitOfWork
 from src.tracking.models import ParkingSessionId, VehicleId
+
+
+logger = logging.getLogger(__name__)
 
 
 _ACCEPTED_INPUT_TYPE = "EntryDecision"
@@ -133,6 +137,16 @@ class EntryEventIntake:
                         )
                     )
 
+        logger.info(
+            "입차 결정을 접수했습니다. "
+            "entryAttemptId=%s decisionState=%s revision=%d "
+            "created=%s matchDeadlineAt=%s",
+            entry_attempt_id,
+            decision_state.value,
+            entry_decision.decision_revision,
+            acceptance.created,
+            attempt.match_deadline_at.isoformat(),
+        )
         return EntryDecisionAcceptance(
             entry_attempt_id=entry_attempt_id,
             decision_revision=entry_decision.decision_revision,

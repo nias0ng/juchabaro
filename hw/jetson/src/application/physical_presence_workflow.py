@@ -160,7 +160,12 @@ class PhysicalPresenceWorkflow:
             )
 
         traversal_observed = self._parking_pipeline.exit_zone_traversal_observed(
-            physical_vehicle_id
+            physical_vehicle_id,
+            observed_at=occurred_at,
+            absence_trusted_seconds=vehicle.absence_trusted_seconds,
+            absence_confirmation_seconds=(
+                vehicle.absence_confirmation_seconds
+            ),
         )
         termination_reason = (
             SESSION_EXITED if mirror is not None else PHYSICAL_VEHICLE_LEFT
