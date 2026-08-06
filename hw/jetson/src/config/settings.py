@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -88,6 +89,7 @@ class Settings(BaseSettings):
         le=1.0,
         allow_inf_nan=False,
     )
+    remap_backend: Literal["opencv", "vpi"] = "opencv"
 
     vehicle_model_path: Path
     vehicle_tracker_config: str = "bytetrack.yaml"
@@ -255,6 +257,13 @@ class Settings(BaseSettings):
                 "camera_fourcc must be exactly four printable ASCII characters"
             )
         return normalized
+
+    @field_validator("remap_backend", mode="before")
+    @classmethod
+    def _normalize_remap_backend(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator(
         "calibration_path",

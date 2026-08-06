@@ -59,6 +59,19 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+`REMAP_BACKEND=vpi`는 PyPI 패키지가 아니라 JetPack의
+`python3.10-vpi3` binding을 사용한다. 시스템 Python에서는 VPI가 보이지만
+격리된 venv에서는 보이지 않으므로, Jetson에서 binding 파일 하나만 venv에
+연결한다. `--system-site-packages`는 시스템 OpenCV까지 섞을 수 있어 사용하지
+않는다.
+
+```bash
+VPI_BINDING_PATH=$(/usr/bin/python3 -c 'import vpi; print(vpi.__file__)')
+VENV_SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])')
+ln -sf "$VPI_BINDING_PATH" "$VENV_SITE_PACKAGES/"
+python -c 'import vpi; print(vpi.__file__, vpi.Backend.CUDA)'
+```
+
 ## 테스트 실행
 
 ### 개발 의존성 설치

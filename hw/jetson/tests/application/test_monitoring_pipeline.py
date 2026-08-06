@@ -18,6 +18,7 @@ from src.actuators.models import ActuatorCommand
 from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.domain.models import ObservationReason, ObservationState
 from src.parking.models import ParkingPipelineResult
+from src.performance_timing import FramePerformanceTiming
 from src.tracking.models import PhysicalVehicleId
 from src.tracking.protocols import TrackingError
 
@@ -434,6 +435,26 @@ def test_process_next_frame_completes_evidence_before_telemetry_observer() -> No
     )
 
     assert order == ["capture", "observer"]
+
+
+def test_process_next_frame_records_application_stage_timings() -> None:
+    timing = FramePerformanceTiming()
+    frame = SimpleNamespace(
+        calibration_id="pilot-v1",
+        performance_timing=timing,
+    )
+    pipeline = _pipeline(
+        _FrameSource([frame]),
+        _TrackingPipeline(),
+        _FrameWorkflow(),
+    )
+
+    pipeline.process_next_frame()
+
+    assert timing.duration_ms("captureTotal") is not None
+    assert timing.duration_ms("trackingPostprocess") is not None
+    assert timing.duration_ms("commit") is not None
+    assert timing.duration_ms("evidence") is not None
 
 
 def test_process_next_frame_skips_observer_when_capture_fails() -> None:

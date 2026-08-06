@@ -121,19 +121,33 @@ class TrackingPipeline:
         try:
             tracker_result = self._detector.track(frame)
         except TrackingError as error:
+            inference_seconds = perf_counter() - inference_started_at
+            timing = getattr(frame, "performance_timing", None)
+            if timing is not None:
+                timing.record_seconds(
+                    "detector",
+                    inference_seconds,
+                )
             self._observe_detection_failure(
                 frame=frame,
-                inference_seconds=perf_counter() - inference_started_at,
+                inference_seconds=inference_seconds,
                 error=error,
             )
             # 추론 실패 뒤 첫 정상 frame이 실패 구간을 부재
             # trusted duration에 포함하지 않게 연속성을 끊고 원 예외를 유지한다.
             self.pause_absence_confirmation()
             raise
+        inference_seconds = perf_counter() - inference_started_at
+        timing = getattr(frame, "performance_timing", None)
+        if timing is not None:
+            timing.record_seconds(
+                "detector",
+                inference_seconds,
+            )
         self._observe_detection_frame(
             frame=frame,
             tracker_result=tracker_result,
-            inference_seconds=perf_counter() - inference_started_at,
+            inference_seconds=inference_seconds,
         )
 
         if self._restart_unresolved_vehicle_ids and (

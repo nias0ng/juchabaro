@@ -188,6 +188,7 @@ def build_runtime_monitoring_pipeline(
         inner=webcam,
         calibration_path=str(settings.calibration_path),
         balance=settings.remap_balance,
+        backend=settings.remap_backend,
     )
 
     tracker = UltralyticsVehicleTracker(

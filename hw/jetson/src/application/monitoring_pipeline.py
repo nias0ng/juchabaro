@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 import sqlite3
+from time import perf_counter
 
 from src.actuators.ports import ActuatorCommandPlanner, ActuatorPort
 from src.application.frame_observation_workflow import (
@@ -140,6 +141,7 @@ class MonitoringPipeline:
         frame/tracking_batch가 없으므로 호출하지 않는다.
         """
 
+        capture_started_at = perf_counter()
         try:
             frame = self._frame_source.capture()
         except EndOfVideo:
@@ -150,7 +152,14 @@ class MonitoringPipeline:
                 observation=error.observation,
             )
             raise
+        timing = getattr(frame, "performance_timing", None)
+        if timing is not None:
+            timing.record_seconds(
+                "captureTotal",
+                perf_counter() - capture_started_at,
+            )
 
+        tracking_started_at = perf_counter()
         try:
             tracking_batch = self._tracking_pipeline.process(
                 frame,
@@ -170,13 +179,32 @@ class MonitoringPipeline:
                 ),
             )
             raise
+        if timing is not None:
+            tracking_seconds = perf_counter() - tracking_started_at
+            detector_ms = timing.duration_ms("detector") or 0.0
+            timing.record_seconds(
+                "trackingPostprocess",
+                max(tracking_seconds - detector_ms / 1_000.0, 0.0),
+            )
 
+        commit_started_at = perf_counter()
         result = self._commit_batch(tracking_batch)
+        if timing is not None:
+            timing.record_seconds(
+                "commit",
+                perf_counter() - commit_started_at,
+            )
+        evidence_started_at = perf_counter()
         if self._evidence_capture_sink is not None:
             self._evidence_capture_sink.capture(
                 frame,
                 tracking_batch,
                 result.evidence_capture_intents,
+            )
+        if timing is not None:
+            timing.record_seconds(
+                "evidence",
+                perf_counter() - evidence_started_at,
             )
         if frame_observer is not None:
             frame_observer(frame, tracking_batch, result)

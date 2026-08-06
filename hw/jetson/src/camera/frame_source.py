@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Mapping, Protocol
 
 from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
@@ -24,6 +25,7 @@ from src.domain.models import (
     ObservationStatus,
     require_aware,
 )
+from src.performance_timing import FramePerformanceTiming
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +78,19 @@ def _import_cv2() -> Any:
             reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
         ) from exc
     return cv2
+
+
+def _import_vpi() -> Any:
+    try:
+        import vpi
+    except ImportError as exc:
+        raise FrameSourceError(
+            "VPI import에 실패했습니다. JetPack의 python3.10-vpi3 binding을 "
+            "현재 venv에서 사용할 수 있는지 확인하세요. "
+            f"원인: {exc}",
+            reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+        ) from exc
+    return vpi
 
 
 def calibration_fingerprint(calibration_path: Path | None, balance: float) -> dict[str, Any]:
@@ -374,11 +389,19 @@ class OpenCvWebcamFrameSource:
                 reason=ObservationReason.PIPELINE_STALLED,
             )
         cv2 = _import_cv2()
+        timing = FramePerformanceTiming()
+        read_started_at = perf_counter()
         ok, frame_bgr = self._capture.read()
+        timing.record_seconds("rawRead", perf_counter() - read_started_at)
         if not ok or frame_bgr is None:
             raise FrameSourceError(f"웹캠 프레임 캡처에 실패했습니다: index={self.camera_index}")
         try:
+            conversion_started_at = perf_counter()
             image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            timing.record_seconds(
+                "colorConvert",
+                perf_counter() - conversion_started_at,
+            )
         except cv2.error as error:
             raise FrameSourceError(
                 "웹캠 프레임 형식을 RGB로 변환할 수 없습니다.",
@@ -394,6 +417,7 @@ class OpenCvWebcamFrameSource:
             width=width,
             height=height,
             calibration_id=None,
+            performance_timing=timing,
         )
         self._next_frame_id += 1
         return frame
@@ -426,44 +450,96 @@ class RemapFrameSource:
         inner: FrameSource,
         calibration_path: str,
         balance: float = DEFAULT_REMAP_BALANCE,
+        backend: str = "opencv",
     ) -> None:
+        normalized_backend = backend.strip().lower()
+        if normalized_backend not in {"opencv", "vpi"}:
+            raise ValueError(
+                "remap backend는 'opencv' 또는 'vpi'여야 합니다: "
+                f"{backend!r}"
+            )
         self._inner = inner
         self._calibration_path = calibration_path
         self._balance = balance
+        self._backend = normalized_backend
         self._map1: Any | None = None
         self._map2: Any | None = None
+        self._vpi: Any | None = None
+        self._vpi_warp: Any | None = None
+        self._vpi_output: Any | None = None
         self._map_size: tuple[int, int] | None = None
         self._dst: Any | None = None
         self._calibration_id: str | None = None
 
     def open(self) -> None:
+        if self._backend == "vpi":
+            self._vpi = _import_vpi()
         self._inner.open()
+        LOGGER.info(
+            "Fisheye remap backend가 선택됐습니다. backend=%s",
+            "vpi-cuda" if self._backend == "vpi" else "opencv-cpu",
+        )
 
     def capture(self) -> CapturedFrame:
         frame = self._inner.capture()
         cv2 = _import_cv2()
         frame_size = self._frame_size(frame.image)
-        if self._map1 is None or frame_size != self._map_size:
+        if self._map_size is None or frame_size != self._map_size:
             if self._map_size is not None:
                 LOGGER.warning(
                     "프레임 해상도가 %s에서 %s로 바뀌어 보정 맵을 다시 만듭니다.", self._map_size, frame_size
                 )
-            self._map1, self._map2 = self._build_maps(frame_size, cv2)
+            if self._backend == "vpi":
+                map_x, map_y = self._build_maps(
+                    frame_size,
+                    cv2,
+                    map_type=cv2.CV_32FC1,
+                )
+                self._vpi_warp = self._build_vpi_warp(
+                    frame_size,
+                    map_x,
+                    map_y,
+                )
+                self._map1 = None
+                self._map2 = None
+            else:
+                self._map1, self._map2 = self._build_maps(
+                    frame_size,
+                    cv2,
+                    map_type=cv2.CV_16SC2,
+                )
+                self._vpi_warp = None
             self._map_size = frame_size
             self._dst = None
+            self._vpi_output = None
             self._calibration_id = calibration_fingerprint(
                 Path(self._calibration_path), self._balance
             ).get("calibrationSha256")
         # dst 버퍼를 재사용해 프레임당 수 MB 할당을 없앤다(측정상 30% 이상 빠름).
+        timing = getattr(frame, "performance_timing", None)
         try:
-            undistorted = cv2.remap(
-                frame.image,
-                self._map1,
-                self._map2,
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                dst=self._dst,
-            )
+            remap_started_at = perf_counter()
+            if self._backend == "vpi":
+                undistorted = self._remap_vpi(
+                    frame.image,
+                    observed_at=frame.captured_at,
+                )
+            else:
+                undistorted = cv2.remap(
+                    frame.image,
+                    self._map1,
+                    self._map2,
+                    interpolation=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    dst=self._dst,
+                )
+            if timing is not None:
+                timing.record_seconds(
+                    "remap",
+                    perf_counter() - remap_started_at,
+                )
+        except FrameSourceError:
+            raise
         except cv2.error as error:
             raise FrameSourceError(
                 "프레임 왜곡 보정에 실패했습니다.",
@@ -480,6 +556,7 @@ class RemapFrameSource:
             width=frame_size[0],
             height=frame_size[1],
             calibration_id=self._calibration_id,
+            performance_timing=timing,
         )
 
     @staticmethod
@@ -507,7 +584,13 @@ class RemapFrameSource:
             )
         return width, height
 
-    def _build_maps(self, frame_size: tuple[int, int], cv2: Any) -> tuple[Any, Any]:
+    def _build_maps(
+        self,
+        frame_size: tuple[int, int],
+        cv2: Any,
+        *,
+        map_type: int,
+    ) -> tuple[Any, Any]:
         from src.camera import calibration_utils
         import numpy as np
 
@@ -535,7 +618,7 @@ class RemapFrameSource:
                 np.eye(3),
                 new_K,
                 frame_size,
-                cv2.CV_16SC2,
+                map_type,
             )
         except cv2.error as error:
             raise FrameSourceError(
@@ -543,10 +626,78 @@ class RemapFrameSource:
                 reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
             ) from error
 
+    def _build_vpi_warp(
+        self,
+        frame_size: tuple[int, int],
+        map_x: Any,
+        map_y: Any,
+    ) -> Any:
+        import numpy as np
+
+        if self._vpi is None:
+            raise FrameSourceError(
+                "VPI backend가 초기화되지 않았습니다.",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            )
+        width, height = frame_size
+        try:
+            warp = self._vpi.WarpMap(frame_size)
+            warp_values = np.asarray(warp)
+            expected_shape = (height, width, 2)
+            if warp_values.shape != expected_shape:
+                raise ValueError(
+                    "VPI WarpMap shape가 예상과 다릅니다: "
+                    f"actual={warp_values.shape}, expected={expected_shape}"
+                )
+            warp_values[:, :, 0] = map_x
+            warp_values[:, :, 1] = map_y
+            return warp
+        except Exception as error:
+            raise FrameSourceError(
+                "VPI CUDA용 왜곡 보정 맵을 만들 수 없습니다.",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+            ) from error
+
+    def _remap_vpi(self, image: Any, *, observed_at: datetime) -> Any:
+        import numpy as np
+
+        if self._vpi is None or self._vpi_warp is None:
+            raise FrameSourceError(
+                "VPI CUDA remap 자원이 초기화되지 않았습니다.",
+                reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+                observed_at=observed_at,
+            )
+        try:
+            vpi_input = self._vpi.asimage(image)
+            self._vpi_output = vpi_input.remap(
+                self._vpi_warp,
+                out=self._vpi_output,
+                backend=self._vpi.Backend.CUDA,
+                interp=self._vpi.Interp.LINEAR,
+                border=self._vpi.Border.ZERO,
+            )
+            with self._vpi_output.rlock_cpu() as output_data:
+                if self._dst is None or self._dst.shape != output_data.shape:
+                    self._dst = np.empty_like(output_data)
+                np.copyto(self._dst, output_data)
+            return self._dst
+        except FrameSourceError:
+            raise
+        except Exception as error:
+            raise FrameSourceError(
+                "VPI CUDA 프레임 왜곡 보정에 실패했습니다.",
+                state=ObservationState.DEGRADED,
+                reason=ObservationReason.PARTIAL_FRAME,
+                observed_at=observed_at,
+            ) from error
+
     def close(self) -> None:
         # 맵/버퍼는 1080p에서 12~22MB라, 재연결 루프가 추가될 경우를 대비해 여기서 놓아준다.
         self._map1 = None
         self._map2 = None
+        self._vpi_warp = None
+        self._vpi_output = None
+        self._vpi = None
         self._map_size = None
         self._dst = None
         self._inner.close()
@@ -603,6 +754,7 @@ class CropFrameSource:
             width=right_bound - self._crop_left_px,
             height=frame.height,
             calibration_id=frame.calibration_id,
+            performance_timing=getattr(frame, "performance_timing", None),
         )
 
     def close(self) -> None:

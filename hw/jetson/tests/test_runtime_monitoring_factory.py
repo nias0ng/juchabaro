@@ -303,6 +303,7 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         "inner": webcam,
         "calibration_path": str(calibration_path),
         "balance": 0.5,
+        "backend": "opencv",
     }
 
     tracker_args, tracker = calls["tracker"]

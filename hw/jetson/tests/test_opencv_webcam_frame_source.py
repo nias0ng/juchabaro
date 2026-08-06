@@ -189,6 +189,9 @@ def test_capture_returns_rgb_frame_with_actual_shape(monkeypatch):
     assert frame.height == 48
     assert frame.image.shape == (48, 64, 3)
     assert frame.image.dtype == np.uint8
+    assert frame.performance_timing is not None
+    assert frame.performance_timing.duration_ms("rawRead") is not None
+    assert frame.performance_timing.duration_ms("colorConvert") is not None
 
 
 def test_capture_uses_wall_clock_time(monkeypatch):
