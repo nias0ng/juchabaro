@@ -35,7 +35,7 @@ public class Vehicle extends BaseEntity {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @Column(name = "plate_number", nullable = false, unique = true, length = 20)
+    @Column(name = "plate_number", nullable = false, length = 20)
     private String plateNumber;
 
     @Column(name = "vehicle_model", length = 50)

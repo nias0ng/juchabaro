@@ -2,7 +2,6 @@ package com.ssafy.parking.domain.hw.outbox;
 
 import com.ssafy.parking.domain.parking.entity.ParkingSession;
 import com.ssafy.parking.domain.vehicle.entity.Vehicle;
-import com.ssafy.parking.domain.hw.outbox.OutboxService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +36,6 @@ public class SessionContextNotifier {
                 String.valueOf(session.getId()),
                 revision,
                 payload,
-                null);   // API 5는 deadline 없음
+                null);
     }
 }

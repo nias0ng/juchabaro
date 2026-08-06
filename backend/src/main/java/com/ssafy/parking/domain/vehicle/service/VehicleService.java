@@ -28,7 +28,7 @@ public class VehicleService {
 
     @Transactional
     public VehicleCreateResponse register(Long userId, VehicleCreateRequest request) {
-        if (vehicleRepository.existsByPlateNumber(request.plateNumber())) {
+        if (vehicleRepository.existsByPlateNumberAndStatusNot(request.plateNumber(), VehicleStatus.DELETED)) {
             throw new BusinessException(ErrorCode.DUPLICATE_PLATE_NUMBER);
         }
 
@@ -82,7 +82,7 @@ public class VehicleService {
 
         if (request.plateNumber() != null
                 && !request.plateNumber().equals(vehicle.getPlateNumber())) {
-            if (vehicleRepository.existsByPlateNumber(request.plateNumber())) {
+            if (vehicleRepository.existsByPlateNumberAndStatusNot(request.plateNumber(), VehicleStatus.DELETED)) {
                 throw new BusinessException(ErrorCode.DUPLICATE_PLATE_NUMBER);
             }
             vehicle.changePlateNumber(request.plateNumber());

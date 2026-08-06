@@ -23,4 +23,9 @@ public interface VehicleRepository extends JpaRepository<Vehicle, Long> {
             VehicleOwnerType ownerType,
             VehicleStatus status
     );
+
+    boolean existsByPlateNumberAndStatusNot(String plateNumber, VehicleStatus status);
+
+    List<Vehicle> findByOwnerTypeAndStatusAndVisitDateBefore(
+            VehicleOwnerType ownerType, VehicleStatus status, java.time.LocalDate date);
 }
