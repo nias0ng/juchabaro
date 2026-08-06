@@ -181,11 +181,6 @@ FAILED_TERMINAL → RETRY_WAIT  [explicit intervention only]
 
 `[제안값]` retry 가능한 네트워크·5xx 오류는 1초부터 시작하는 exponential backoff와 jitter를 사용하고 최대 간격을 5분으로 제한한다. 횟수만으로 FAILED_TERMINAL로 바꾸지 않는다. 24시간 연속 실패하면 health 경고를 올리고, 7일 offline SLO를 넘으면 CRITICAL 운영 상태로 보고하되 quota가 남아 있는 동안 동일 payload retry를 계속한다. 인증·schema·payload처럼 반복해도 회복되지 않는 오류만 FAILED_TERMINAL로 격리한다.
 
-같은 `Idempotency-Key`의 동시 처리 경쟁은 Backend가
-`HW_IDEMPOTENCY_IN_PROGRESS`/HTTP 503으로 응답하여 동일 key·payload를
-재시도하게 한다. 이미 확정된 같은 key의 다른 payload는
-`HW_IDEMPOTENCY_CONFLICT`/HTTP 409로 응답하고 terminal로 격리한다.
-
 ACK를 받은 뒤 DELIVERED commit 전에 process가 죽을 수 있으므로 Backend는 같은 Idempotency-Key와 payload의 retry를 멱등 처리해야 한다. 정확한 보장 기간은 `[후속 계약]`이다.
 
 Backend application confirmation은 최소한 다음을 반환하거나 같은 publication identity로 조회할 수 있어야 한다.

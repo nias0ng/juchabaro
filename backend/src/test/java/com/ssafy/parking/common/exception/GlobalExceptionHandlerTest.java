@@ -30,38 +30,6 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void idempotencyInProgressIsRetryableButPayloadConflictRemainsTerminal() {
-        ResponseEntity<ApiResponse<Void>> inProgress =
-                handler.handleBusinessException(
-                        new BusinessException(
-                                ErrorCode.HW_IDEMPOTENCY_IN_PROGRESS
-                        )
-                );
-
-        assertThat(inProgress.getStatusCode())
-                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
-        assertThat(inProgress.getBody()).isNotNull();
-        assertThat(inProgress.getBody().isSuccess()).isFalse();
-        assertThat(inProgress.getBody().httpStatus())
-                .isEqualTo("SERVICE_UNAVAILABLE");
-        assertThat(inProgress.getBody().code()).isEqualTo(503);
-
-        ResponseEntity<ApiResponse<Void>> conflict =
-                handler.handleBusinessException(
-                        new BusinessException(
-                                ErrorCode.HW_IDEMPOTENCY_CONFLICT
-                        )
-                );
-
-        assertThat(conflict.getStatusCode())
-                .isEqualTo(HttpStatus.CONFLICT);
-        assertThat(conflict.getBody()).isNotNull();
-        assertThat(conflict.getBody().httpStatus())
-                .isEqualTo("CONFLICT");
-        assertThat(conflict.getBody().code()).isEqualTo(409);
-    }
-
-    @Test
     void handleUnreadableMessage() {
         ResponseEntity<ApiResponse<Void>> response =
                 handler.handleUnreadableMessage();

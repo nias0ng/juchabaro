@@ -208,7 +208,7 @@ public enum ErrorCode {
     ),
 
     HW_IDEMPOTENCY_IN_PROGRESS(
-            HttpStatus.SERVICE_UNAVAILABLE,
+            HttpStatus.CONFLICT,
             "동시에 처리 중인 요청입니다. 잠시 후 다시 시도해 주세요."
     ),
 
