@@ -104,6 +104,12 @@ class BackendPublicationPreparer:
             raise ValueError(
                 "DOUBLE_PARKING requires victimPhysicalVehicleId"
             )
+        if (
+            transition.transition_type is IncidentTransitionType.OPEN
+            and incident.key.rule_code == "DOUBLE_PARKING"
+            and incident.zone_id is None
+        ):
+            raise ValueError("DOUBLE_PARKING OPEN requires zoneId")
 
         if transition.transition_type is IncidentTransitionType.OPEN:
             occurred_at = incident.confirmed_at

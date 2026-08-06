@@ -1,6 +1,6 @@
 {
   "egressAisleDefinitionVersion": 1,
-  "zoneDefinitionVersion": 1,
+  "zoneDefinitionVersion": 2,
   "calibrationReference": "a26d3085c3d4fc4f",
   "areas": [
     {

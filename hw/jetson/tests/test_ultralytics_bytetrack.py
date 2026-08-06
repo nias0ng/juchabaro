@@ -1,11 +1,14 @@
-"""UltralyticsVehicleTracker 가드절 회귀 테스트 (436).
+"""UltralyticsVehicleTracker 기동·frame 계약 회귀 테스트.
 
 ai/training/tests/test_tracking_baseline.py의 test_tracker_rejects_zero_sized_frame과
-같은 전략 — 실제 YOLO 모델·ultralytics 패키지 없이도 검증 가능한 가드절만
-확인한다. `_model`을 open() 없이 더미로 채워 실제 추론 이전 단계까지만 태운다.
+같은 전략으로 실제 YOLO binary·ultralytics 설치 없이 검증한다.
+Fake module과 model로 `open()`의 task·class map을, `_model` stub으로
+frame 크기·ByteTrack projection 계약을 확인한다.
 """
 
+import sys
 from datetime import datetime, timezone
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -203,6 +206,8 @@ class _Predictor:
 
 class _SuccessfulModel:
     def __init__(self, *, track_ids=(), detection_count: int | None = None) -> None:
+        self.task = "detect"
+        self.names = {0: "vehicle"}
         self.track_ids = track_ids
         self.detection_count = (
             len(track_ids) if detection_count is None else detection_count
@@ -210,12 +215,14 @@ class _SuccessfulModel:
         self.byte_tracker = _ByteTrackerState()
         self.predictor = _Predictor(self.byte_tracker)
         self._postprocess_callbacks = []
+        self.track_calls = []
 
     def add_callback(self, event: str, callback) -> None:
         if event == "on_predict_postprocess_end":
             self._postprocess_callbacks.append(callback)
 
     def track(self, **kwargs):
+        self.track_calls.append(kwargs)
         raw_result = _Result(track_ids=(), detection_count=self.detection_count)
         callback_predictor = type(
             "CallbackPredictor",
@@ -244,6 +251,65 @@ def _attach_model(
     )
 
 
+def _install_fake_ultralytics(
+    monkeypatch: pytest.MonkeyPatch,
+    model: _SuccessfulModel,
+) -> None:
+    module = ModuleType("ultralytics")
+    module.__version__ = "test-ultralytics"
+    module.YOLO = lambda _model_path: model
+    monkeypatch.setitem(sys.modules, "ultralytics", module)
+
+
+def test_open_accepts_detect_vehicle_single_class_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _SuccessfulModel(track_ids=())
+    _install_fake_ultralytics(monkeypatch, model)
+    tracker = UltralyticsVehicleTracker(
+        model_path="vehicle.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+
+    tracker.open()
+
+    assert tracker._model is model
+    assert tracker.model_info.library_version == "test-ultralytics"
+    assert len(model._postprocess_callbacks) == 1
+
+
+@pytest.mark.parametrize(
+    ("task", "names", "message"),
+    (
+        ("segment", {0: "vehicle"}, "task"),
+        ("detect", {0: "person"}, "class map"),
+        ("detect", {0: "vehicle", 1: "car"}, "class map"),
+    ),
+)
+def test_open_rejects_model_runtime_contract_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    task: str,
+    names: dict[int, str],
+    message: str,
+) -> None:
+    model = _SuccessfulModel(track_ids=())
+    model.task = task
+    model.names = names
+    _install_fake_ultralytics(monkeypatch, model)
+    tracker = UltralyticsVehicleTracker(
+        model_path="vehicle.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+
+    with pytest.raises(TrackingError, match=message):
+        tracker.open()
+
+    assert tracker._model is None
+    assert model._postprocess_callbacks == []
+
+
 def test_visible_result_is_normalized_without_inventing_segment_end():
     tracker = UltralyticsVehicleTracker(
         model_path="unused.pt",
@@ -251,7 +317,8 @@ def test_visible_result_is_normalized_without_inventing_segment_end():
         confidence=0.5,
         capture_detections=True,
     )
-    _attach_model(tracker, _SuccessfulModel(track_ids=(7,)))
+    model = _SuccessfulModel(track_ids=(7,))
+    _attach_model(tracker, model)
 
     result = tracker.track(_make_frame(np.zeros((100, 100, 3), dtype=np.uint8)))
 
@@ -267,6 +334,7 @@ def test_visible_result_is_normalized_without_inventing_segment_end():
     assert result.detections[0].bbox.y1 == pytest.approx(0.2)
     assert result.detections[0].bbox.x2 == pytest.approx(0.3)
     assert result.detections[0].bbox.y2 == pytest.approx(0.4)
+    assert model.track_calls[-1]["classes"] == [0]
 
 
 def test_pretrack_detection_payload_capture_is_opt_in():

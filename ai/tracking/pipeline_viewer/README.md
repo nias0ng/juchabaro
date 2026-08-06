@@ -21,8 +21,14 @@ Viewer 전용 대체 adapter는 임시 SQLite와 `JsonlPublicationPreparer`뿐�
 YOLO 가중치는 Git에 포함하지 않습니다. 기본 경로에 직접 배치합니다.
 
 ```text
-hw/jetson/model/yolo26n.pt
+hw/jetson/model/yolov8s.pt
 ```
+
+Viewer는 운영 release를 고정하는 `VEHICLE_MODEL_MANIFEST_PATH`를 입력받지
+않습니다. 화면에서 차량 단일 클래스 학습 모델을 바꿔 비교할 수 있어야 하기
+때문입니다. 대신 tracker가 runtime의 `task='detect'`와
+`names={0: 'vehicle'}`를 검증하고, Viewer는 실행에 사용한 모델 SHA-256을
+`assetSnapshotJson`에 기록합니다.
 
 ## PC Conda 환경과 실행
 

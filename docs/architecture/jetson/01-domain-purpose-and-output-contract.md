@@ -186,19 +186,22 @@ calibration reference
 optional allowedDurationSeconds
 optional chargerClass
 optional legacy egressZoneIds
+EXIT-only exitTraversal
 ```
 
 - ParkingAssignment 대상 타입은 `GENERAL / DISABLED / EV_CHARGING`이다.
 - `AISLE / ENTRY_EXIT`은 관측·판정용이며 주차면 assignment 대상이 아니다.
 - `allowedDurationSeconds`와 `chargerClass`는 `EV_CHARGING`에서만 유효하다.
 - `egressZoneIds`는 기존 snapshot 파서와 자료를 위한 호환 metadata다. 현재 DOUBLE_PARKING 후보 생성은 이 필드를 읽지 않고 별도 `EgressAisleDefinition` snapshot을 사용한다.
+- `EXIT` role `ENTRY_EXIT`은 `exitTraversal.line`, `outwardPoint`,
+  `hysteresis`를 필수로 갖는다. `ENTRY`와 다른 ZoneType에는 금지한다.
 - 다섯 타입 모두 하나의 deployment `zoneId` namespace를 사용한다. Backend·Frontend는 그중 주차면 타입만 업무 화면에 projection할 수 있다.
 
-`[결정]` 활성 ZoneVisit은 시작 당시의 `zoneId + zoneDefinitionVersion`을 보존한다. 현재 한 대의 Jetson에는 version이 명시된 정적 JSON 설정을 배포한다. 실행 중 hot replacement와 동적 동기화 서비스는 지원하지 않으며, ZoneDefinition 변경은 active scope가 없는 통제된 기동 시점에 적용한다.
+`[결정]` 활성 ZoneVisit은 시작 당시의 `zoneId + zoneDefinitionVersion`을 보존한다. 현재 한 대의 Jetson에는 version이 명시된 정적 JSON 설정을 배포한다. 실행 중 hot replacement와 동적 동기화 서비스는 지원하지 않으며, ZoneDefinition 변경은 active scope가 없는 통제된 기동 시점에 적용한다. 출차 기준선·외향 정의도 공간 계약이므로 변경 시 version을 올린다.
 
 ### 5.3 정적 JSON 배포 형식
 
-Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기동 시 읽는다. JSON은 SQLite로 옮기지 않으며, 일부 구역만 적용하거나 오류 항목을 건너뛰지 않는다. 현재 메인 배포 정본은 crop하지 않은 full-frame 좌표계의 `config/zone_definition.json` version 1이다. 좌측 crop 실험용 `config/zone_definition.pilot.json` version 6은 메인 배포 정본이 아니다.
+Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기동 시 읽는다. JSON은 SQLite로 옮기지 않으며, 일부 구역만 적용하거나 오류 항목을 건너뛰지 않는다. 현재 메인 배포 정본은 crop하지 않은 full-frame 좌표계의 `config/zone_definition.json` version 2다. 좌측 crop 실험용 `config/zone_definition.pilot.json` version 7은 메인 배포 정본이 아니다.
 
 ```json
 {
@@ -220,7 +223,8 @@ Jetson은 `ZONE_DEFINITION_PATH`가 가리키는 UTF-8 JSON 파일 전체를 기
 ```
 
 - 최상위 필드는 `zoneDefinitionVersion`, `calibrationReference`, `zones`다.
-- zone 필수 필드는 `zoneId`, `zoneType`, `polygon`이며 선택 필드는 `allowedDurationSeconds`, `chargerClass`, `egressZoneIds`다.
+- zone 필수 필드는 `zoneId`, `zoneType`, `polygon`이며 선택 필드는 `entryExitRole`, `exitTraversal`, `allowedDurationSeconds`, `chargerClass`, `egressZoneIds`다. role에 따라 `entryExitRole`과 `exitTraversal`의 필수·금지 조건이 적용된다.
+- `exitTraversal`의 하위 필드는 정확히 `line`, `outwardPoint`, `hysteresis`다. 외향은 `outwardPoint`가 있는 측의 signed offset 양수로 정의하며 인접 AISLE에서 추론하지 않는다.
 - 좌표는 `[x, y]` 순서의 0~1 정규화 값이고, 모든 zone은 같은 calibration 좌표계를 사용한다.
 - `zoneId`는 snapshot 안에서 유일해야 한다.
 - assignment 대상인 `GENERAL / DISABLED / EV_CHARGING` polygon은 단순하고

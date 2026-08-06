@@ -322,10 +322,10 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
     with TestClient(application) as client:
         assert pipeline.entered_run.wait(timeout=1.0)
         assert client.get("/health").status_code == 200
-        assert application.state.zone_registry.zone_definition_version == 1
+        assert application.state.zone_registry.zone_definition_version == 2
         assert (
             application.state.egress_aisle_registry.zone_definition_version
-            == 1
+            == 2
         )
         assert application.state.monitoring_worker.is_running is True
         assert application.state.move_verification_worker.is_running is True
@@ -336,9 +336,9 @@ def test_lifespan_prepares_runtime_and_stops_monitoring_worker(tmp_path) -> None
 
         connection = connect_database(settings.database_path)
         try:
-            assert connection.execute(
-                "SELECT COUNT(*) FROM schema_migrations"
-            ).fetchone()[0] == 5
+                assert connection.execute(
+                    "SELECT COUNT(*) FROM schema_migrations"
+                ).fetchone()[0] == 6
         finally:
             connection.close()
 
