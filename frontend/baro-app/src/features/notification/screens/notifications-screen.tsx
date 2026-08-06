@@ -18,7 +18,8 @@ const TAB_OPTIONS: { key: NotificationTab; label: string }[] = [
 ];
 
 export default function NotificationsScreen() {
-  const { notifications, isLoading, isRefreshing, error, refetch, tab, setTab } = useNotifications();
+  const { notifications, isLoading, isRefreshing, error, refetch, tab, setTab, dismissNotification } =
+    useNotifications();
 
   const handlePressNotification = (notification: NotificationSummary) => {
     navigateFromNotification(
@@ -53,6 +54,7 @@ export default function NotificationsScreen() {
                   key={notification.notificationId}
                   notification={notification}
                   onPress={() => handlePressNotification(notification)}
+                  onDismiss={() => dismissNotification(notification.notificationId)}
                 />
               ))}
             </Stack>

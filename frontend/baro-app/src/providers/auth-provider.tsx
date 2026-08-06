@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Alert } from 'react-native';
 
 import { getMyProfile, login as loginRequest } from '@/features/auth/api/auth-api';
 import type { UserProfile, UserRole, UserStatus } from '@/features/auth/api/types';
@@ -9,6 +10,7 @@ import {
 } from '@/features/notification/services/push-token-storage';
 import { queryClient } from '@/services/query-client';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
+import { setUnauthorizedHandler } from '@/services/unauthorized-handler';
 
 /* 
   AuthProvider :  앱 전반에서 로그인 상태를 관리하는 컴포넌트
@@ -62,6 +64,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const sessionEndedRef = useRef(false);
+
+  const expireSession = useCallback(async () => {
+    if (sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+
+    await Promise.allSettled([clearStoredPushTokenRegistration(), clearSession()]);
+    setAccessToken(null);
+    setUser(null);
+    setStatus('guest');
+    Alert.alert('인증 만료', '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
+  }, []);
+
+  // 보호된 API의 401을 앱의 인증 상태와 연결한다. guest가 되면 ResidentLayout이 로그인 화면으로 보낸다.
+  useEffect(() => setUnauthorizedHandler(expireSession), [expireSession]);
 
   // 앱이 처음 켜질 때 기기에 저장된 세션이 있는지 확인해서 로그인 상태를 복원
   // "로그인 유지"를 체크 안 하고 로그인했으면 애초에 기기에 저장이 안 됐을 것이므로,
@@ -69,6 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     getSession().then(async (session) => {
       if (!session) { // 세션 가져왔는데, 없으면 guest 상태
+        sessionEndedRef.current = true;
         setStatus('guest');
         return;
       }
@@ -78,10 +96,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const profile = await getMyProfile(session.accessToken);
         setAccessToken(session.accessToken);
         setUser(toAuthUser(profile));
+        sessionEndedRef.current = false;
         setStatus('authenticated');
       } catch {
         // 토큰이 만료/무효(401)거나 사용자를 못 찾으면(404), 반쪽짜리 세션으로 두지 않고 guest로 되돌린다.
         await clearSession();
+        sessionEndedRef.current = true;
         setStatus('guest');
       }
     });
@@ -89,6 +109,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   //화면에서 사용할 longin() 함수 -> 여기서 API 호출/토큰 저장/상태 변경을 처리
   const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
+    // 로그인 과정의 인증 실패는 "세션 만료" 안내 대상이 아니다.
+    sessionEndedRef.current = true;
     const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
 
     // 로그인 API는 accessToken만 발급하므로 로그인 유지가 필요할 때 accessToken만 저장한다.
@@ -104,6 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setAccessToken(result.accessToken);
     setUser(toAuthUser(profile));
+    sessionEndedRef.current = false;
     setStatus('authenticated');
   }, []);
 
@@ -112,6 +135,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    // 로그아웃 중 뒤늦게 도착한 401이 인증 만료 알림을 띄우지 않게 한다.
+    sessionEndedRef.current = true;
     try {
       const pushTokenRegistration = await getStoredPushTokenRegistration();
 
