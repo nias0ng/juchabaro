@@ -32,6 +32,7 @@ from src.session.models import (
     EntryAttemptId,
     EntryDecisionState,
     EntryMatchAttempt,
+    EntryMatchState,
     ParkingSessionMirror,
     PhysicalPresenceState,
     SessionAdministrativeState,
@@ -69,6 +70,7 @@ class SessionObservationResult:
     session_contexts: dict[PhysicalVehicleId, SessionContext]
     entry_attempt_ids: dict[PhysicalVehicleId, EntryAttemptId]
     historical_attempts: tuple[EntryMatchAttempt, ...] = ()
+    entry_match_updates: tuple[EntryMatchAttempt, ...] = ()
 
 
 class SessionObservationWorkflow:
@@ -275,8 +277,12 @@ class SessionObservationWorkflow:
         """
 
         require_write_transaction(connection)
-        contexts = self.process(batch, connection=connection)
         attempt_repository = EntryMatchAttemptRepository(connection)
+        pending_attempt_ids = tuple(
+            attempt.entry_attempt_id
+            for attempt in attempt_repository.list_pending()
+        )
+        contexts = self.process(batch, connection=connection)
         binding_repository = ContextBindingRepository(connection)
         entry_attempt_ids: dict[PhysicalVehicleId, EntryAttemptId] = {}
         for snapshot in _unique_observed_snapshots(batch):
@@ -316,10 +322,19 @@ class SessionObservationWorkflow:
                 entry_attempt_ids[physical_vehicle_id] = (
                     attempt.entry_attempt_id
                 )
+        entry_match_updates = tuple(
+            current
+            for entry_attempt_id in pending_attempt_ids
+            if (
+                current := attempt_repository.get(entry_attempt_id)
+            ) is not None
+            and current.match_state is not EntryMatchState.PENDING
+        )
         return SessionObservationResult(
             session_contexts=contexts,
             entry_attempt_ids=entry_attempt_ids,
             historical_attempts=historical_attempts,
+            entry_match_updates=entry_match_updates,
         )
 
     def checkpoint_state(

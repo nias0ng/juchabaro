@@ -417,6 +417,23 @@ def _empty_result() -> ParkingPipelineResult:
     )
 
 
+def _matched_attempt() -> EntryMatchAttempt:
+    return EntryMatchAttempt(
+        entry_attempt_id=ATTEMPT_ID,
+        match_state=EntryMatchState.MATCHED,
+        decision_state=EntryDecisionState.ALLOW,
+        decision_revision=1,
+        matched_physical_vehicle_id=VEHICLE_ID,
+        authoritative_session_id=SESSION_ID,
+        authoritative_context=_context(),
+        match_terminated_at=T1,
+        match_deadline_at=T1,
+        record_version=2,
+        created_at=T0,
+        updated_at=T1,
+    )
+
+
 def _blocking_relation_result() -> ParkingPipelineResult:
     relation = BlockingRelation(
         blocking_relation_id=BLOCKING_RELATION_ID,
@@ -507,6 +524,32 @@ def test_frame_rolls_back_session_parking_outbox_and_runtime_then_retries(
         assert _outbox_count(connection) == 1
         assert session.runtime_revision == 1
         assert parking.runtime_revision == 1
+    finally:
+        connection.close()
+
+
+def test_frame_result_exposes_only_committed_entry_match_updates(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "entry-match-result.db")
+    matched = _matched_attempt()
+    session = _SessionWorkflow(
+        ensure_vehicle=True,
+        result=SessionObservationResult(
+            session_contexts={},
+            entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+            entry_match_updates=(matched,),
+        ),
+    )
+    workflow = _workflow(
+        session,
+        _ParkingPipeline(process_result=_empty_result()),
+        _PublicationPreparer(),
+    )
+    try:
+        result = workflow.process(_batch(), connection=connection)
+
+        assert result.entry_match_updates == (matched,)
     finally:
         connection.close()
 

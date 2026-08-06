@@ -21,7 +21,8 @@ class _BlockingPipeline:
     def open(self) -> None:
         self.opened = True
 
-    def run(self, *, stop_requested) -> int:
+    def run(self, *, frame_observer=None, stop_requested) -> int:
+        del frame_observer
         self.entered_run.set()
         while not stop_requested():
             self.closed.wait(0.01)

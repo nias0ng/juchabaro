@@ -45,6 +45,7 @@ from src.parking.models import (
 )
 from src.parking.pipeline import ParkingPipeline
 from src.session.context_binding_coordinator import ContextBindingCoordinator
+from src.session.models import EntryMatchAttempt
 from src.storage.aggregate_repositories import (
     BlockingRelationRepository,
     IncidentRepository,
@@ -94,6 +95,7 @@ class FrameObservationResult:
     retired_physical_vehicle_ids: tuple[PhysicalVehicleId, ...]
     active_incidents: tuple[Incident, ...] = ()
     evidence_capture_intents: tuple[EvidenceCaptureIntent, ...] = ()
+    entry_match_updates: tuple[EntryMatchAttempt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -451,6 +453,7 @@ class FrameObservationWorkflow:
             ),
             active_incidents=active_incidents,
             evidence_capture_intents=evidence_capture_intents,
+            entry_match_updates=session_result.entry_match_updates,
         )
 
     @staticmethod
