@@ -137,6 +137,17 @@ class OutboxPublisher:
                 )
         finally:
             connection.close()
+        logger.warning(
+            "Backend publication 재시도가 예약됐습니다. "
+            "aggregateType=%s transitionType=%s deliveryId=%s "
+            "attempt=%d nextAttemptAtUs=%d error=%s",
+            publication.aggregate_type,
+            publication.transition_type,
+            publication.delivery_id,
+            publication.attempt_count,
+            next_attempt_at_us,
+            _error_text(error),
+        )
 
     def _mark_failed_terminal(
         self,
@@ -155,6 +166,16 @@ class OutboxPublisher:
                 )
         finally:
             connection.close()
+        logger.error(
+            "Backend publication이 영구 실패로 격리됐습니다. "
+            "aggregateType=%s transitionType=%s deliveryId=%s "
+            "attempt=%d error=%s",
+            publication.aggregate_type,
+            publication.transition_type,
+            publication.delivery_id,
+            publication.attempt_count,
+            _error_text(error),
+        )
 
     def _mark_delivered(
         self,
@@ -184,6 +205,16 @@ class OutboxPublisher:
                 )
         finally:
             connection.close()
+        logger.info(
+            "Backend publication 전송이 완료됐습니다. "
+            "aggregateType=%s transitionType=%s deliveryId=%s "
+            "attempt=%d applicationStatus=%s",
+            publication.aggregate_type,
+            publication.transition_type,
+            publication.delivery_id,
+            publication.attempt_count,
+            confirmation.application_status.value,
+        )
 
 
 class OutboxPublisherWorker:

@@ -515,6 +515,11 @@ def create_app(
                     ),
                 )
             )
+        else:
+            logger.warning(
+                "BACKEND_HW_API_KEY가 비어 Backend publication worker를 "
+                "비활성화합니다."
+            )
         application.state.evidence_publication_worker = (
             evidence_publication_worker
         )
@@ -533,6 +538,7 @@ def create_app(
             move_verification_worker.start()
             if outbox_publisher_worker is not None:
                 outbox_publisher_worker.start()
+                logger.info("Backend publication workers가 시작됐습니다.")
             yield
         finally:
             _stop_workers_best_effort(

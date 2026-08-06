@@ -273,6 +273,17 @@ class EvidencePublicationPublisher:
                 )
         finally:
             connection.close()
+        logger.warning(
+            "Backend evidence publication 재시도가 예약됐습니다. "
+            "publicationType=%s evidenceId=%s incidentId=%s "
+            "attempt=%d nextAttemptAt=%s error=%s",
+            _publication_type(artifact),
+            artifact.evidence_id,
+            artifact.incident_id,
+            artifact.delivery_attempt_count,
+            next_attempt_at.isoformat(),
+            _error_text(error),
+        )
 
     def _mark_delivered(
         self,
@@ -300,6 +311,16 @@ class EvidencePublicationPublisher:
                 )
         finally:
             connection.close()
+        logger.info(
+            "Backend evidence publication 전송이 완료됐습니다. "
+            "publicationType=%s evidenceId=%s incidentId=%s "
+            "attempt=%d applicationStatus=%s",
+            _publication_type(artifact),
+            artifact.evidence_id,
+            artifact.incident_id,
+            artifact.delivery_attempt_count,
+            confirmation.application_status.value,
+        )
 
     def _mark_failed_terminal(
         self,
@@ -316,6 +337,16 @@ class EvidencePublicationPublisher:
                 )
         finally:
             connection.close()
+        logger.error(
+            "Backend evidence publication이 영구 실패로 격리됐습니다. "
+            "publicationType=%s evidenceId=%s incidentId=%s "
+            "attempt=%d error=%s",
+            _publication_type(artifact),
+            artifact.evidence_id,
+            artifact.incident_id,
+            artifact.delivery_attempt_count,
+            _error_text(error),
+        )
 
     def _mark_upload_unavailable(
         self,
@@ -413,3 +444,11 @@ class EvidencePublicationWorker:
 
 def _error_text(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"[:1_000]
+
+
+def _publication_type(artifact: EvidenceArtifact) -> str:
+    """민감한 HTTP payload 없이 evidence publication 종류만 식별한다."""
+
+    if artifact.state is EvidenceState.UPLOADING:
+        return "UPLOAD"
+    return "UNAVAILABLE"
