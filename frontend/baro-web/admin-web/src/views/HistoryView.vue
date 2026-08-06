@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { CheckCircle2, ChevronDown, Download, Search } from '@lucide/vue'
+import { CheckCircle2, ChevronDown } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
-import { useAutoRefresh } from '@/composables/use-auto-refresh'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import AppPagination from '@/components/ui/AppPagination.vue'
-import type { AdminHistoryItem } from '@/features/parking-events/api/types'
-import { actionTone, actionTypeLabel, formatDateTime, localDateString, todayDateString } from '@/features/parking-events/data'
+import SearchBox from '@/components/ui/SearchBox.vue'
+import FilterChip from '@/components/ui/FilterChip.vue'
+import ExportButton from '@/components/ui/ExportButton.vue'
+import DataTable from '@/components/ui/DataTable.vue'
+import TableStateRow from '@/components/ui/TableStateRow.vue'
+import TableFooter from '@/components/ui/TableFooter.vue'
+import { actionTone, actionTypeLabel, formatDateTime } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-
-const PAGE_SIZE = 10
-const FETCH_SIZE = 200
+import { useHistoryFilters } from '@/features/parking-events/composables/use-history-filters'
 
 // 로그 ID, 사건 ID, 차량 번호, 처리 유형, 처리자, 처리 시간 순(메모 제외).
 // 메모는 줄바꿈을 허용하는 유일한 열이라 폭을 고정하지 않고, 이 여섯 열이 줄바꿈 없이
@@ -23,91 +23,24 @@ const COLUMN_WIDTHS = [71, 66, 85, 100, 71, 150]
 // 넘치면서 가로 스크롤로 전환된다.
 const MEMO_MIN_WIDTH = 200
 
-function exportRowsToCsv(rows: AdminHistoryItem[], dateRange: { start: string; end: string }) {
-  const headers = ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']
-  const escapeCsv = (value: string) => `"${value.replaceAll('"', '""')}"`
-  const lines = [
-    headers.map(escapeCsv).join(','),
-    ...rows.map((r) =>
-      [
-        `#L-${r.logId}`,
-        `#${r.eventId}`,
-        r.plateNumber,
-        actionTypeLabel(r.actionType),
-        r.adminName,
-        // 처리 시간 앞에 작은따옴표를 붙이면 엑셀이 이 칸(날짜가 포함된 문자열)을 날짜로
-        // 자동 변환하지 않고 텍스트 그대로 표시한다.
-        `'${formatDateTime(r.actedAt)}`,
-        r.memo ?? '',
-      ].map(escapeCsv).join(','),
-    ),
-  ]
-  // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 앞에 붙인다.
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const startStamp = dateRange.start.replaceAll('-', '')
-  const endStamp = dateRange.end.replaceAll('-', '')
-  const stamp = startStamp === endStamp ? startStamp : `${startStamp}-${endStamp}`
-
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `이력_${stamp}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
-
 type DropdownName = 'date'
 
-const dateRange = ref({ start: todayDateString(), end: todayDateString() })
-const query = ref('')
-const page = ref(1)
-
 const parkingEventStore = useParkingEventStore()
-
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
 
-function loadHistory(background = false) {
-  return parkingEventStore.fetchHistory({
-    startDate: dateRange.value.start,
-    endDate: dateRange.value.end,
-    size: FETCH_SIZE,
-  }, { background })
-}
-
-watch(dateRange, () => {
-  page.value = 1
-  void loadHistory()
-}, { immediate: true, deep: true })
-
-useAutoRefresh(() => loadHistory(true), 30_000)
-
-// 활동 타임라인은 '더 보기'로 일부만 보여주는 대신, 오늘 하루치 전체를 최신순으로
-// 보여주고 넘치는 만큼은 스크롤로 본다. 조회 기간과 무관하게 항상 실제 오늘 기준이다.
-const todayTimeline = computed(() =>
-  parkingEventStore.history.filter((entry) => localDateString(entry.actedAt) === todayDateString()),
-)
-
-const filteredRows = computed(() => {
-  const q = query.value.trim().replaceAll(' ', '').toUpperCase()
-  if (!q) return parkingEventStore.history
-  return parkingEventStore.history.filter((r) => {
-    const car = r.plateNumber.replaceAll(' ', '').toUpperCase()
-    const eventId = `#${r.eventId}`.toUpperCase()
-    return car.includes(q) || eventId.includes(q)
-  })
-})
-
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
-// 필터가 바뀌어 결과 수가 줄면 이미 지나간 페이지 번호가 남아있을 수 있어 화면에는
-// totalPages 안쪽으로 자른 값만 쓴다(별도 watcher 없이 계산식으로 처리).
-const safePage = computed(() => Math.min(page.value, totalPages.value))
-const pagedRows = computed(() =>
-  filteredRows.value.slice((safePage.value - 1) * PAGE_SIZE, safePage.value * PAGE_SIZE),
-)
-const rangeStart = computed(() => (filteredRows.value.length === 0 ? 0 : (safePage.value - 1) * PAGE_SIZE + 1))
-const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRows.value.length))
+const {
+  dateRange,
+  query,
+  filteredRows,
+  page,
+  totalPages,
+  safePage,
+  pagedRows,
+  rangeStart,
+  rangeEnd,
+  todayTimeline,
+  exportCsv,
+} = useHistoryFilters()
 </script>
 
 <template>
@@ -116,9 +49,9 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
 
     <div ref="filterBarRef" class="panel filter-bar">
       <div class="dropdown-wrap">
-        <button type="button" class="chip" @click="toggleDropdown('date')">
+        <FilterChip @click="toggleDropdown('date')">
           {{ dateRange.start.replaceAll('-', '.') }} ~ {{ dateRange.end.replaceAll('-', '.') }} <ChevronDown :size="14" />
-        </button>
+        </FilterChip>
         <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
           <input v-model="dateRange.start" type="date">
           <span class="tilde">~</span>
@@ -126,63 +59,57 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
         </div>
       </div>
 
-      <div class="search-box">
-        <Search :size="16" />
-        <input v-model="query" type="text" placeholder="차량 번호 또는 사건 ID 검색">
-      </div>
-      <button type="button" class="export-btn" @click="exportRowsToCsv(filteredRows, dateRange)">
-        <Download :size="16" /> 내보내기
-      </button>
+      <SearchBox v-model="query" placeholder="차량 번호 또는 사건 ID 검색" input-width="176px" />
+      <ExportButton @click="exportCsv" />
     </div>
 
     <div class="layout">
       <section class="panel history-panel">
         <h3>처리 이력</h3>
-        <div class="table-scroll">
-          <table>
-            <colgroup>
-              <col v-for="(w, i) in COLUMN_WIDTHS" :key="i" :style="{ width: `${w}px` }">
-              <col>
-            </colgroup>
-            <thead>
-              <tr>
-                <th
-                  v-for="h in ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']"
-                  :key="h"
-                  :style="h === '메모' ? { minWidth: `${MEMO_MIN_WIDTH}px` } : undefined"
-                >
-                  {{ h }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="parkingEventStore.historyLoading">
-                <td colspan="7" class="empty">불러오는 중입니다…</td>
-              </tr>
-              <tr v-else-if="parkingEventStore.historyError">
-                <td colspan="7" class="empty error">{{ parkingEventStore.historyError }}</td>
-              </tr>
-              <tr v-else-if="pagedRows.length === 0">
-                <td colspan="7" class="empty">조건에 맞는 이력이 없습니다.</td>
-              </tr>
-              <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
-                <td class="strong nowrap">#L-{{ r.logId }}</td>
-                <td class="muted nowrap">#{{ r.eventId }}</td>
-                <td class="nowrap">{{ r.plateNumber }}</td>
-                <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ actionTypeLabel(r.actionType) }}</StatusTag></td>
-                <td class="muted nowrap">{{ r.adminName }}</td>
-                <td class="muted nowrap">{{ formatDateTime(r.actedAt) }}</td>
-                <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo || '-' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="footer">
-          <span>전체 {{ filteredRows.length }}건 중 {{ rangeStart }}-{{ rangeEnd }} 표시</span>
-          <div class="pagination-wrap">
-            <AppPagination :page="safePage" :total-pages="totalPages" @page-change="page = $event" />
-          </div>
-        </div>
+        <DataTable>
+          <colgroup>
+            <col v-for="(w, i) in COLUMN_WIDTHS" :key="i" :style="{ width: `${w}px` }">
+            <col>
+          </colgroup>
+          <thead>
+            <tr>
+              <th
+                v-for="h in ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']"
+                :key="h"
+                :style="h === '메모' ? { minWidth: `${MEMO_MIN_WIDTH}px` } : undefined"
+              >
+                {{ h }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <TableStateRow v-if="parkingEventStore.historyLoading" :colspan="7" variant="loading" message="불러오는 중입니다…" />
+            <TableStateRow
+              v-else-if="parkingEventStore.historyError"
+              :colspan="7"
+              variant="error"
+              :message="parkingEventStore.historyError"
+            />
+            <TableStateRow v-else-if="pagedRows.length === 0" :colspan="7" variant="empty" message="조건에 맞는 이력이 없습니다." />
+            <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
+              <td class="strong nowrap">#L-{{ r.logId }}</td>
+              <td class="muted nowrap">#{{ r.eventId }}</td>
+              <td class="nowrap">{{ r.plateNumber }}</td>
+              <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ actionTypeLabel(r.actionType) }}</StatusTag></td>
+              <td class="muted nowrap">{{ r.adminName }}</td>
+              <td class="muted nowrap">{{ formatDateTime(r.actedAt) }}</td>
+              <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo || '-' }}</td>
+            </tr>
+          </tbody>
+        </DataTable>
+        <TableFooter
+          :total="filteredRows.length"
+          :range-start="rangeStart"
+          :range-end="rangeEnd"
+          :page="safePage"
+          :total-pages="totalPages"
+          @page-change="page = $event"
+        />
       </section>
 
       <div class="side-col">
@@ -228,21 +155,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   position: relative;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: none;
-  padding: var(--spacing-sm) var(--spacing-base);
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
 .dropdown-menu {
   position: absolute;
   left: 0;
@@ -279,43 +191,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   color: var(--panel-muted-foreground);
 }
 
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-base);
-  color: var(--panel-muted-foreground);
-}
-
-.search-box input {
-  width: 176px;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: var(--font-size-sm);
-}
-
-.export-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--panel-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--panel-on-primary);
-  white-space: nowrap;
-  box-shadow: var(--panel-shadow-pop);
-  cursor: pointer;
-}
-
 .layout {
   display: grid;
   gap: var(--spacing-lg);
@@ -336,78 +211,6 @@ const rangeEnd = computed(() => Math.min(safePage.value * PAGE_SIZE, filteredRow
   margin-bottom: var(--spacing-md);
   font-size: var(--font-size-lg);
   font-weight: 700;
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  table-layout: auto;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.empty {
-  padding: 40px var(--spacing-sm);
-  text-align: center;
-  color: var(--panel-muted-foreground);
-}
-
-.empty.error {
-  color: var(--panel-danger);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
-.footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-top: 20px;
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.pagination-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 .side-col {

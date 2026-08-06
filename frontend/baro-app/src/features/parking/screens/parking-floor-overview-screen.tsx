@@ -75,24 +75,24 @@ export default function ParkingFloorOverviewScreen() {
       refreshing={isSessionsRefreshing || isSummaryRefreshing}
       onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
     >
-      <ScreenHeader
-        title="주차 현황"
-        style={styles.header}
-        onBack={goBack}
-        right={
-          <Pressable
-            accessibilityRole="button"
-            disabled={!myVehicleLocation}
-            onPress={handlePressMyCarLocation}
-          >
-            <Text style={[styles.headerAction, !myVehicleLocation && styles.headerActionDisabled]}>
-              내 차 위치
-            </Text>
-          </Pressable>
-        }
-      />
-
       <ResponsiveContainer style={styles.content}>
+        <ScreenHeader
+          title="주차 현황"
+          style={styles.header}
+          onBack={goBack}
+          right={
+            <Pressable
+              accessibilityRole="button"
+              disabled={!myVehicleLocation}
+              onPress={handlePressMyCarLocation}
+            >
+              <Text style={[styles.headerAction, !myVehicleLocation && styles.headerActionDisabled]}>
+                내 차 위치
+              </Text>
+            </Pressable>
+          }
+        />
+
         <Stack gap={Spacing.base + 2}>
           <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={setActiveFloor} />
 

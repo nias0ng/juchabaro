@@ -65,20 +65,32 @@ const CELL_BG: Record<CellVariant, string> = {
 
 const CELL_LABEL: Partial<Record<CellVariant, { text: string; color: string }>> = {
   violation: { text: '위반', color: '#d4553a' },
-  disabled: { text: '장애인', color: '#3f7bd6' },
+  disabled: { text: 'DIS', color: '#3f7bd6' },
   ev: { text: 'EV', color: '#1e8d80' },
+}
+
+// 장애인/전기차 구역도 실제 차량이 있으면(사용 중) 일반 구역과 똑같이 보라색으로 채워서,
+// 지도만 보고도 어느 특수 구역에 차량이 들어와 있는지 바로 알 수 있게 한다. 구역 종류는
+// 라벨 글자(DIS/EV)로 계속 구분하되, 배경이 보라색으로 바뀐 만큼 글자는 앱의 기존 보라색
+// 토큰으로 더 짙게 바꿔 대비를 준다.
+function isOccupiedSpecialZone(spot: ParkingSpotSummary): boolean {
+  const variant = toCellVariant(spot)
+  return (variant === 'disabled' || variant === 'ev') && spot.occupancyStatus === 'OCCUPIED'
 }
 
 function cellBg(spot: ParkingSpotSummary | null): string {
   // spot이 null이면 "실제 데이터가 아직 없는 자리"라는 뜻이라, 자리(크기)는 유지하되
   // 컨테이너 배경과 같은 색으로만 채워 눈에 띄지 않게 한다.
   if (!spot) return '#eeecf8'
+  if (isOccupiedSpecialZone(spot)) return CELL_BG.occupied
   return CELL_BG[toCellVariant(spot)]
 }
 
 function cellLabel(spot: ParkingSpotSummary | null) {
   if (!spot) return null
-  return CELL_LABEL[toCellVariant(spot)] ?? null
+  const label = CELL_LABEL[toCellVariant(spot)] ?? null
+  if (label && isOccupiedSpecialZone(spot)) return { ...label, color: 'var(--panel-primary)' }
+  return label
 }
 
 function isSelected(spot: ParkingSpotSummary | null): boolean {
