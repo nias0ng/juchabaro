@@ -55,22 +55,19 @@ export function RequestDetailSection({
   onPressDecline,
 }: RequestDetailSectionProps) {
   return (
-    <>
+    <View style={styles.root}>
       <RequestPhoto photos={photos} />
 
       <View style={styles.mainCard}>
         <View style={styles.summary}>
+          <Text style={styles.summaryMeta}>
+            #{requestId} · {requestedAtLabel}
+          </Text>
           <Text style={styles.summaryTitle}>{summaryTitle}</Text>
           <Text style={styles.summaryReason}>{reasonQuote}</Text>
         </View>
 
-        <RequestInfoCard
-          requestId={requestId}
-          violationType={violationType}
-          plateNumber={plateNumber}
-          location={location}
-          requestedAtLabel={requestedAtLabel}
-        />
+        <RequestInfoCard violationType={violationType} plateNumber={plateNumber} location={location} />
 
         {showActions && isAutoEscalation ? (
           <View style={styles.autoEscalation}>
@@ -98,6 +95,6 @@ export function RequestDetailSection({
           <RequestReminderNotice message={noticeMessage} />
         ) : null}
       </View>
-    </>
+    </View>
   );
 }
