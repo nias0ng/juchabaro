@@ -1,5 +1,5 @@
 {
-  "zoneDefinitionVersion": 6,
+  "zoneDefinitionVersion": 7,
   "calibrationReference": "a26d3085c3d4fc4f",
   "zones": [
     {
@@ -252,7 +252,24 @@
           0.565017,
           0.25
         ]
-      ]
+      ],
+      "exitTraversal": {
+        "line": [
+          [
+            0.571556,
+            0.128965
+          ],
+          [
+            0.701548,
+            0.203811
+          ]
+        ],
+        "outwardPoint": [
+          0.67647,
+          0.097059
+        ],
+        "hysteresis": 0.01
+      }
     }
   ]
 }

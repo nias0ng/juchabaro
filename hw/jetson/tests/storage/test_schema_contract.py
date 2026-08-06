@@ -18,6 +18,7 @@ EXPECTED_DURABLE_TABLES = {
     "deployment_metadata",
     "entry_match_attempts",
     "evidence_artifacts",
+    "exit_traversal_checkpoints",
     "incidents",
     "move_verification_attempts",
     "outbox",
@@ -180,6 +181,18 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
             "first_observed_at_us",
             "confirmed_at_us",
             "resolved_at_us",
+        },
+        "exit_traversal_checkpoints": {
+            "exit_zone_id",
+            "exit_zone_visit_id",
+            "zone_definition_version",
+            "outward_observed_at_us",
+            "reentry_candidate_at_us",
+            "reentry_trusted_duration_us",
+            "reentry_confirmation_duration_us",
+            "last_trusted_sample_at_us",
+            "record_version",
+            "updated_at_us",
         },
     }
     try:

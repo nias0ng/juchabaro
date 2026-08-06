@@ -7,6 +7,7 @@ ParkingEpisode를 끝내고 규칙 재평가를 요청할 뿐 Incident를 직접
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -57,6 +58,14 @@ class EntryExitRole(str, Enum):
 
     ENTRY = "ENTRY"
     EXIT = "EXIT"
+
+
+class ExitTraversalSide(str, Enum):
+    """명시적 EXIT 기준선에 대한 차량 중심의 현재 위치."""
+
+    OUTWARD = "OUTWARD"
+    INWARD = "INWARD"
+    NEUTRAL = "NEUTRAL"
 
 
 class PresenceSignal(str, Enum):
@@ -150,6 +159,113 @@ class PlacementEvidenceSource(str, Enum):
 
     EPHEMERAL_FRAME = "EPHEMERAL_FRAME"
     PARKED_SNAPSHOT = "PARKED_SNAPSHOT"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExitTraversalDefinition:
+    """EXIT 기준선과 외향 방향을 명시하는 versioned 공간 계약.
+
+    ``line`` 방향 자체에는 안쪽·바깥쪽 의미가 없다.
+    ``outward_point``가 있는 쪽의 signed offset을 양수로 정의해
+    JSON 꼭지점 순서가 바뀌어도 판정 방향이 유지되게 한다.
+    ``hysteresis``는 정규화 좌표의 부호 있는 거리 단위다.
+    """
+
+    line: tuple[NormalizedPoint, NormalizedPoint]
+    outward_point: NormalizedPoint
+    hysteresis: float
+
+    def __post_init__(self) -> None:
+        if len(self.line) != 2:
+            raise ValueError("exit traversal line requires exactly two points")
+        for name, point in (
+            ("exit traversal line[0]", self.line[0]),
+            ("exit traversal line[1]", self.line[1]),
+            ("exit traversal outward point", self.outward_point),
+        ):
+            _require_normalized_point(point, name)
+
+        start, end = self.line
+        if start == end:
+            raise ValueError("exit traversal line points must be distinct")
+
+        if (
+            isinstance(self.hysteresis, bool)
+            or not isinstance(self.hysteresis, (int, float))
+            or not math.isfinite(self.hysteresis)
+            or self.hysteresis < 0.0
+        ):
+            raise ValueError(
+                "exit traversal hysteresis must be a finite non-negative number"
+            )
+
+        if self._raw_outward_projection() == 0.0:
+            raise ValueError(
+                "exit traversal outward point must not lie on the traversal line"
+            )
+
+    @property
+    def outward_unit_normal(self) -> tuple[float, float]:
+        """``line``에 수직이고 ``outward_point``를 향하는 단위벡터."""
+
+        start, end = self.line
+        line_dx = end[0] - start[0]
+        line_dy = end[1] - start[1]
+        magnitude = math.hypot(line_dx, line_dy)
+        normal = (line_dy / magnitude, -line_dx / magnitude)
+        if self._raw_outward_projection() < 0.0:
+            return (-normal[0], -normal[1])
+        return normal
+
+    def signed_offset(self, point: NormalizedPoint) -> float:
+        """기준선에서 ``point``까지의 부호 있는 정규화 거리.
+
+        외향은 양수, 내향은 음수, 기준선 위는 0이다.
+        호출자는 ``hysteresis``를 경계 판정에 적용한다.
+        """
+
+        _require_normalized_point(point, "exit traversal sample point")
+        start = self.line[0]
+        normal = self.outward_unit_normal
+        return (point[0] - start[0]) * normal[0] + (
+            point[1] - start[1]
+        ) * normal[1]
+
+    def _raw_outward_projection(self) -> float:
+        start, end = self.line
+        line_dx = end[0] - start[0]
+        line_dy = end[1] - start[1]
+        return (
+            (self.outward_point[0] - start[0]) * line_dy
+            - (self.outward_point[1] - start[1]) * line_dx
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExitTraversalObservation:
+    """한 신뢰 frame에서 active EXIT 방문과 기준선 판정을 결합한 신호.
+
+    이 값은 영속 aggregate가 아니다. application workflow가 같은 frame의
+    local transaction 안에서 durable traversal checkpoint에 적용한다.
+    """
+
+    physical_vehicle_id: PhysicalVehicleId
+    exit_zone_id: ZoneId
+    exit_zone_visit_id: ZoneVisitId
+    zone_definition_version: ZoneDefinitionVersion
+    observed_at: datetime
+    side: ExitTraversalSide
+    signed_offset: float
+
+    def __post_init__(self) -> None:
+        require_positive(self.exit_zone_id, "exit_zone_id")
+        require_positive(
+            self.zone_definition_version,
+            "zone_definition_version",
+        )
+        require_aware(self.observed_at, "observed_at")
+        if not math.isfinite(self.signed_offset):
+            raise ValueError("exit traversal signed_offset must be finite")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -338,6 +454,7 @@ class ZoneDefinition:
     zone_definition_version: ZoneDefinitionVersion
     calibration_reference: str
     entry_exit_role: EntryExitRole | None = None
+    exit_traversal: ExitTraversalDefinition | None = None
     allowed_duration_seconds: float | None = None
     charger_class: str | None = None
     egress_zone_ids: tuple[ZoneId, ...] = ()
@@ -358,11 +475,31 @@ class ZoneDefinition:
                 "ENTRY_EXIT requires entry_exit_role; other zone types must not carry it"
             )
 
+        is_exit = is_entry_exit and self.entry_exit_role is EntryExitRole.EXIT
+        if is_exit != (self.exit_traversal is not None):
+            raise ValueError(
+                "EXIT role ENTRY_EXIT requires exit_traversal; "
+                "ENTRY and other zone types must not carry it"
+            )
+
         ev_only_values_present = self.allowed_duration_seconds is not None or self.charger_class is not None
         if ev_only_values_present and self.zone_type is not ZoneType.EV_CHARGING:
             raise ValueError("allowed duration and charger class are valid only for EV_CHARGING")
         if self.allowed_duration_seconds is not None:
             require_positive(self.allowed_duration_seconds, "allowed_duration_seconds")
+
+
+def _require_normalized_point(point: NormalizedPoint, name: str) -> None:
+    if len(point) != 2:
+        raise ValueError(f"{name} must contain exactly two coordinates")
+    for coordinate in point:
+        if (
+            isinstance(coordinate, bool)
+            or not isinstance(coordinate, (int, float))
+            or not math.isfinite(coordinate)
+            or not 0.0 <= coordinate <= 1.0
+        ):
+            raise ValueError(f"{name} coordinates must be finite and normalized to [0, 1]")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -832,3 +969,4 @@ class ParkingPipelineResult:
     incident_updates: tuple[Incident, ...] = ()
     placement_diagnostics: tuple[PlacementDiagnostic, ...] = ()
     incident_signal_diagnostics: tuple[IncidentSignalDiagnostic, ...] = ()
+    exit_traversal_observations: tuple[ExitTraversalObservation, ...] = ()

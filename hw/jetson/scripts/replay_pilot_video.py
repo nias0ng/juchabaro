@@ -161,6 +161,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="구역 이탈 확인시간(초). 기본값을 두지 않는다 — config/settings.py와 같은 이유(§4.7).",
     )
     parser.add_argument(
+        "--exit-reentry-confirmation-seconds", type=float, required=True,
+        help="Previously latched EXIT traversal inward re-entry confirmation time (seconds).",
+    )
+    parser.add_argument(
         "--parking-move-confirm-seconds", type=float, required=True,
         help="주차 후 이동 확인시간(초). .env.example이 '개발 편의용 임시값'이라 명시한 값이라 "
         "여기에 숨겨 두지 않는다(§4.7).",

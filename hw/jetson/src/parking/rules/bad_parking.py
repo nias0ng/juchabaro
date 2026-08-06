@@ -16,6 +16,7 @@ from src.parking.models import (
     ZoneType,
     ZoneVisitState,
 )
+from src.parking.parking_eligibility import ParkingEligibilityValue
 from src.parking.rules.models import RuleContext
 
 BAD_PARKING = "BAD_PARKING"
@@ -27,6 +28,16 @@ _RULES = (BAD_PARKING, OUT_OF_ZONE, AISLE_BLOCK)
 
 def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
     """모든 placement rule의 독립적인 삼상태 signal을 반환한다."""
+
+    if context.parking_eligibility.value is not ParkingEligibilityValue.ELIGIBLE:
+        return tuple(
+            _unknown(
+                context,
+                code,
+                f"PARKING_{context.parking_eligibility.reason}",
+            )
+            for code in _RULES
+        )
 
     if not _frame_is_observed(context):
         return tuple(

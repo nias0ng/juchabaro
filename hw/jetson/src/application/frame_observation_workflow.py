@@ -122,12 +122,16 @@ class FrameObservationWorkflow:
         parking_pipeline: ParkingPipeline,
         context_binding_coordinator: ContextBindingCoordinator,
         publication_preparer: PublicationPreparer,
+        exit_reentry_confirmation_seconds: float,
     ) -> None:
         self._session_workflow = session_workflow
         self._parking_pipeline = parking_pipeline
         self._physical_presence_workflow = PhysicalPresenceWorkflow(
             context_binding_coordinator=context_binding_coordinator,
             parking_pipeline=parking_pipeline,
+            exit_reentry_confirmation_seconds=(
+                exit_reentry_confirmation_seconds
+            ),
         )
         self._pending_handoff_workflow = PendingHandoffWorkflow()
         self._publication_preparer = publication_preparer
@@ -373,6 +377,10 @@ class FrameObservationWorkflow:
                     skip_unobserved_vehicle_ids=(
                         batch.not_present_confirmed_vehicle_ids
                     ),
+                )
+                self._physical_presence_workflow.apply_exit_traversal_observations(
+                    parking_result.exit_traversal_observations,
+                    connection=connection,
                 )
 
                 departure_plans = tuple(
@@ -802,6 +810,11 @@ def _combine_parking_results(
             item
             for result in results
             for item in result.incident_signal_diagnostics
+        ),
+        exit_traversal_observations=tuple(
+            item
+            for result in results
+            for item in result.exit_traversal_observations
         ),
     )
 

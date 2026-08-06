@@ -15,9 +15,14 @@ from src.parking.models import (
 )
 from src.parking.parking_episode_tracker import (
     MOVEMENT_CONFIRMED,
+    PARKING_INELIGIBLE,
     PHYSICAL_EXIT,
     STOP_NOT_CONFIRMED,
     InMemoryParkingEpisodeTracker,
+)
+from src.parking.parking_eligibility import (
+    ParkingEligibilityDecision,
+    ParkingEligibilityValue,
 )
 from src.tracking.models import MotionSignal, ParkingSessionId, PhysicalVehicleId
 
@@ -107,6 +112,7 @@ def feed(
     session: ParkingSessionId | None = SESSION,
     observation: ObservationStatus | None = None,
     assignment: ParkingAssignment | None | object = _DEFAULT_ASSIGNMENT,
+    eligibility: ParkingEligibilityDecision | None = None,
 ):
     if observation is None:
         observation = observed(seconds)
@@ -115,13 +121,32 @@ def feed(
         if assignment is _DEFAULT_ASSIGNMENT
         else assignment
     )
-    return tracker.update(
+    parameters = dict(
         physical_vehicle_id=vehicle,
         parking_session_id=session,
         signal=signal,
         observation=observation,
         observed_at=at(seconds),
         assignment=resolved_assignment,
+    )
+    if eligibility is not None:
+        parameters["eligibility"] = eligibility
+    return tracker.update(**parameters)
+
+
+def ineligible() -> ParkingEligibilityDecision:
+    return ParkingEligibilityDecision(
+        value=ParkingEligibilityValue.INELIGIBLE,
+        reason="ENTRY_EXIT_OVERLAP",
+        blocking_zone_id=ZONE,
+        overlap_ratio=1.0,
+    )
+
+
+def eligibility_unknown() -> ParkingEligibilityDecision:
+    return ParkingEligibilityDecision(
+        value=ParkingEligibilityValue.UNKNOWN,
+        reason="OBSERVATION_UNAVAILABLE",
     )
 
 
@@ -164,6 +189,54 @@ def test_moving_unknown_or_degraded_without_episode_returns_none() -> None:
         2,
         observation=degraded(),
     ) is None
+
+
+def test_ineligible_stationary_sample_does_not_open_stop_candidate() -> None:
+    tracker = make_tracker()
+
+    assert feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        0,
+        eligibility=ineligible(),
+    ) is None
+    assert tracker.active_episode(CAR) is None
+
+
+def test_becoming_ineligible_cancels_only_stop_pending() -> None:
+    tracker = make_tracker(parking=3)
+    candidate = feed(tracker, MotionSignal.STATIONARY, 0)
+
+    canceled = feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        1,
+        eligibility=ineligible(),
+    )
+
+    assert canceled.episode_id == candidate.episode_id
+    assert canceled.state is ParkingState.CANCELED
+    assert canceled.termination_reason == PARKING_INELIGIBLE
+    assert tracker.active_episode(CAR) is None
+
+
+def test_unknown_eligibility_pauses_existing_stop_timer() -> None:
+    tracker = make_tracker(parking=3)
+    feed(tracker, MotionSignal.STATIONARY, 0)
+
+    paused = feed(
+        tracker,
+        MotionSignal.STATIONARY,
+        2,
+        eligibility=eligibility_unknown(),
+    )
+    resumed = feed(tracker, MotionSignal.STATIONARY, 10)
+    parked = feed(tracker, MotionSignal.STATIONARY, 13)
+
+    assert paused.stationary_trusted_seconds == 0.0
+    assert paused.observation.reason is ObservationReason.DEPENDENCY_UNAVAILABLE
+    assert resumed.state is ParkingState.STOP_PENDING
+    assert parked.state is ParkingState.PARKED
 
 
 def test_restored_episode_does_not_count_process_downtime() -> None:

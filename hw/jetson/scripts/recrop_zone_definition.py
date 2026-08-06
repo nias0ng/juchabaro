@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""좌우 crop 이후에 맞게 zone_definition JSON의 polygon x좌표를 재계산한다.
+"""좌우 crop 이후에 맞게 zone_definition JSON의 공간 x좌표를 재계산한다.
 
 `CropFrameSource`(RemapFrameSource 뒤에서 프레임 좌우 여백을 잘라냄)를 쓰면
-zone polygon은 원래 폭(old_width) 기준 정규화 좌표라서 crop 이후 폭
+zone polygon과 EXIT ``exitTraversal``은 원래 폭(old_width) 기준
+정규화 좌표라서 crop 이후 폭
 (new_width) 기준으로 다시 정규화해야 한다. y좌표는 crop 대상이 아니므로
 바꾸지 않는다.
 
@@ -38,7 +39,7 @@ def recrop_x(x: float, *, old_width: int, crop_left_px: int, new_width: int) -> 
 def recrop_payload(
     payload: dict, *, old_width: int, crop_left_px: int, crop_right_px: int
 ) -> dict:
-    """zone_definition JSON payload(dict)의 polygon x좌표를 재정규화한 새 dict를 반환한다."""
+    """zone polygon과 EXIT 기준선의 x좌표를 재정규화한다."""
 
     new_width = old_width - crop_left_px - crop_right_px
     if new_width <= 0:
@@ -49,16 +50,38 @@ def recrop_payload(
 
     new_zones = []
     for zone in payload["zones"]:
-        new_polygon = []
-        for x, y in zone["polygon"]:
+        def recrop_point(point: list[float], *, field_name: str) -> list[float]:
+            x, y = point
             new_x = recrop_x(x, old_width=old_width, crop_left_px=crop_left_px, new_width=new_width)
             if not (0.0 <= new_x <= 1.0):
                 raise RecropError(
-                    f"zoneId {zone['zoneId']}의 좌표가 crop 후 [0, 1] 범위를 벗어났습니다: "
+                    f"zoneId {zone['zoneId']}의 {field_name} 좌표가 crop 후 "
+                    "[0, 1] 범위를 벗어났습니다: "
                     f"x={x} -> {new_x}"
                 )
-            new_polygon.append([round(new_x, 6), y])
-        new_zones.append({**zone, "polygon": new_polygon})
+            return [round(new_x, 6), y]
+
+        new_zone = {
+            **zone,
+            "polygon": [
+                recrop_point(point, field_name="polygon")
+                for point in zone["polygon"]
+            ],
+        }
+        if "exitTraversal" in zone:
+            traversal = zone["exitTraversal"]
+            new_zone["exitTraversal"] = {
+                **traversal,
+                "line": [
+                    recrop_point(point, field_name="exitTraversal.line")
+                    for point in traversal["line"]
+                ],
+                "outwardPoint": recrop_point(
+                    traversal["outwardPoint"],
+                    field_name="exitTraversal.outwardPoint",
+                ),
+            }
+        new_zones.append(new_zone)
 
     return {
         "zoneDefinitionVersion": payload["zoneDefinitionVersion"] + 1,

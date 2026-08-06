@@ -82,6 +82,7 @@ from src.tracking.adapters.side_masking_detector import (
 from src.tracking.adapters.ultralytics_bytetrack import (
     UltralyticsVehicleTracker,
 )
+from src.tracking.model_manifest import validate_vehicle_model_assets
 
 
 logger = logging.getLogger(__name__)
@@ -161,11 +162,12 @@ def _validate_monitoring_assets(
             f"calibrationReference={zones.calibration_reference}"
         )
 
-    if not settings.vehicle_model_path.is_file():
-        raise ValueError(
-            "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
-            f"{settings.vehicle_model_path}"
-        )
+    # 파일명이 같은 stock COCO model을 오배치해도 장치 객체를
+    # 만들기 전에 fail-closed로 중단한다.
+    validate_vehicle_model_assets(
+        model_path=settings.vehicle_model_path,
+        manifest_path=settings.vehicle_model_manifest_path,
+    )
 
 
 def build_runtime_monitoring_pipeline(
