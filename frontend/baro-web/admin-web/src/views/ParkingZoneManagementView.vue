@@ -7,6 +7,7 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import ParkingSpotMap from '@/features/parking-zones/components/ParkingSpotMap.vue'
 import {
@@ -138,38 +139,36 @@ const STATS = computed(() => [
           <SearchBox v-model="codeQuery" placeholder="구역 번호 검색" input-width="112px" />
         </div>
 
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th v-for="h in ['구역 번호', '층', '유형', '상태', '허용 시간']" :key="h">{{ h }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
-              <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
-              <tr
-                v-for="zone in filteredRows"
-                v-else
-                :key="zone.zoneId"
-                class="row"
-                :class="{ selected: selectedZone?.zoneId === zone.zoneId }"
-                @click="selectZoneId(zone.zoneId)"
-              >
-                <td class="strong" :class="{ 'text-primary': selectedZone?.zoneId === zone.zoneId }">{{ zone.zoneNumber }}</td>
-                <td class="muted">{{ zoneFloorOf(zone.zoneNumber) ?? '-' }}</td>
-                <td><StatusTag :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
-                <td>
-                  <StatusTag v-if="occupancyOf(zone.zoneId)" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
-                    {{ occupancyLabel(occupancyOf(zone.zoneId)!) }}
-                  </StatusTag>
-                  <span v-else class="muted">정보 없음</span>
-                </td>
-                <td class="muted nowrap">{{ allowedTimeLabel(zone.allowedMinutes) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <DataTable clickable-rows>
+          <thead>
+            <tr>
+              <th v-for="h in ['구역 번호', '층', '유형', '상태', '허용 시간']" :key="h">{{ h }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
+            <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
+            <tr
+              v-for="zone in filteredRows"
+              v-else
+              :key="zone.zoneId"
+              class="row"
+              :class="{ selected: selectedZone?.zoneId === zone.zoneId }"
+              @click="selectZoneId(zone.zoneId)"
+            >
+              <td class="strong" :class="{ 'text-primary': selectedZone?.zoneId === zone.zoneId }">{{ zone.zoneNumber }}</td>
+              <td class="muted">{{ zoneFloorOf(zone.zoneNumber) ?? '-' }}</td>
+              <td><StatusTag :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
+              <td>
+                <StatusTag v-if="occupancyOf(zone.zoneId)" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
+                  {{ occupancyLabel(occupancyOf(zone.zoneId)!) }}
+                </StatusTag>
+                <span v-else class="muted">정보 없음</span>
+              </td>
+              <td class="muted nowrap">{{ allowedTimeLabel(zone.allowedMinutes) }}</td>
+            </tr>
+          </tbody>
+        </DataTable>
       </section>
 
       <div class="side-col">
@@ -475,64 +474,8 @@ const STATS = computed(() => [
   font-weight: 600;
 }
 
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.row:hover {
-  background: var(--panel-muted);
-}
-
-.row.selected {
-  background: var(--panel-primary-soft);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
 .strong.text-primary {
   color: var(--panel-primary);
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
-}
-
-.nowrap {
-  white-space: nowrap;
 }
 
 .map-header {

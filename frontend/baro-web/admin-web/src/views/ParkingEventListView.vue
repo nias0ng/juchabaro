@@ -8,6 +8,7 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import TableFooter from '@/components/ui/TableFooter.vue'
 import EventDetailCard from '@/features/parking-events/components/EventDetailCard.vue'
@@ -159,64 +160,62 @@ const selectedRow = computed(
         </div>
 
         <div class="panel table-panel">
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
-                    {{ h }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <TableStateRow
-                  v-if="parkingEventStore.eventsLoading"
-                  :colspan="7"
-                  variant="loading"
-                  message="불러오는 중입니다…"
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <TableStateRow
-                  v-else-if="parkingEventStore.eventsError"
-                  :colspan="7"
-                  variant="error"
-                  :message="parkingEventStore.eventsError"
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <TableStateRow
-                  v-else-if="pagedRows.length === 0"
-                  :colspan="7"
-                  variant="empty"
-                  message="조건에 맞는 사건이 없습니다."
-                  horizontal-padding="var(--spacing-base)"
-                />
-                <tr
-                  v-for="r in pagedRows"
-                  v-else
-                  :key="r.eventId"
-                  class="row"
-                  :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
-                  @click="parkingEventStore.setSelectedEventId(r.eventId)"
-                >
-                  <td class="strong">#{{ r.eventId }}</td>
-                  <td class="nowrap">{{ r.plateNumber }}</td>
-                  <td class="nowrap">
-                    <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
-                    <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
-                  </td>
-                  <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
-                  <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
-                  <td class="muted">{{ formatTime(r.detectedAt) }}</td>
-                  <td>
-                    <div class="row-actions">
-                      <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                      <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <DataTable clickable-rows>
+            <thead>
+              <tr>
+                <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
+                  {{ h }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <TableStateRow
+                v-if="parkingEventStore.eventsLoading"
+                :colspan="7"
+                variant="loading"
+                message="불러오는 중입니다…"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="parkingEventStore.eventsError"
+                :colspan="7"
+                variant="error"
+                :message="parkingEventStore.eventsError"
+                horizontal-padding="var(--spacing-base)"
+              />
+              <TableStateRow
+                v-else-if="pagedRows.length === 0"
+                :colspan="7"
+                variant="empty"
+                message="조건에 맞는 사건이 없습니다."
+                horizontal-padding="var(--spacing-base)"
+              />
+              <tr
+                v-for="r in pagedRows"
+                v-else
+                :key="r.eventId"
+                class="row"
+                :class="{ selected: r.eventId === parkingEventStore.selectedEventId }"
+                @click="parkingEventStore.setSelectedEventId(r.eventId)"
+              >
+                <td class="strong">#{{ r.eventId }}</td>
+                <td class="nowrap">{{ r.plateNumber }}</td>
+                <td class="nowrap">
+                  <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
+                  <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
+                </td>
+                <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
+                <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
+                <td class="muted">{{ formatTime(r.detectedAt) }}</td>
+                <td>
+                  <div class="row-actions">
+                    <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
+                    <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </DataTable>
           <TableFooter
             :total="filteredRows.length"
             :range-start="rangeStart"
@@ -360,62 +359,6 @@ const selectedRow = computed(
 
 .table-panel {
   padding: var(--spacing-md);
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.row:hover {
-  background: var(--panel-muted);
-}
-
-.row.selected {
-  background: var(--panel-primary-soft);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
-.nowrap {
-  white-space: nowrap;
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
 }
 
 .row-actions {

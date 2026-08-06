@@ -6,6 +6,7 @@ import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import TableFooter from '@/components/ui/TableFooter.vue'
 import { actionTone, actionTypeLabel, formatDateTime } from '@/features/parking-events/data'
@@ -65,44 +66,42 @@ const {
     <div class="layout">
       <section class="panel history-panel">
         <h3>처리 이력</h3>
-        <div class="table-scroll">
-          <table>
-            <colgroup>
-              <col v-for="(w, i) in COLUMN_WIDTHS" :key="i" :style="{ width: `${w}px` }">
-              <col>
-            </colgroup>
-            <thead>
-              <tr>
-                <th
-                  v-for="h in ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']"
-                  :key="h"
-                  :style="h === '메모' ? { minWidth: `${MEMO_MIN_WIDTH}px` } : undefined"
-                >
-                  {{ h }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <TableStateRow v-if="parkingEventStore.historyLoading" :colspan="7" variant="loading" message="불러오는 중입니다…" />
-              <TableStateRow
-                v-else-if="parkingEventStore.historyError"
-                :colspan="7"
-                variant="error"
-                :message="parkingEventStore.historyError"
-              />
-              <TableStateRow v-else-if="pagedRows.length === 0" :colspan="7" variant="empty" message="조건에 맞는 이력이 없습니다." />
-              <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
-                <td class="strong nowrap">#L-{{ r.logId }}</td>
-                <td class="muted nowrap">#{{ r.eventId }}</td>
-                <td class="nowrap">{{ r.plateNumber }}</td>
-                <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ actionTypeLabel(r.actionType) }}</StatusTag></td>
-                <td class="muted nowrap">{{ r.adminName }}</td>
-                <td class="muted nowrap">{{ formatDateTime(r.actedAt) }}</td>
-                <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo || '-' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <DataTable>
+          <colgroup>
+            <col v-for="(w, i) in COLUMN_WIDTHS" :key="i" :style="{ width: `${w}px` }">
+            <col>
+          </colgroup>
+          <thead>
+            <tr>
+              <th
+                v-for="h in ['로그 ID', '사건 ID', '차량 번호', '처리 유형', '처리자', '처리 시간', '메모']"
+                :key="h"
+                :style="h === '메모' ? { minWidth: `${MEMO_MIN_WIDTH}px` } : undefined"
+              >
+                {{ h }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <TableStateRow v-if="parkingEventStore.historyLoading" :colspan="7" variant="loading" message="불러오는 중입니다…" />
+            <TableStateRow
+              v-else-if="parkingEventStore.historyError"
+              :colspan="7"
+              variant="error"
+              :message="parkingEventStore.historyError"
+            />
+            <TableStateRow v-else-if="pagedRows.length === 0" :colspan="7" variant="empty" message="조건에 맞는 이력이 없습니다." />
+            <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
+              <td class="strong nowrap">#L-{{ r.logId }}</td>
+              <td class="muted nowrap">#{{ r.eventId }}</td>
+              <td class="nowrap">{{ r.plateNumber }}</td>
+              <td class="nowrap"><StatusTag :tone="actionTone(r.actionType)">{{ actionTypeLabel(r.actionType) }}</StatusTag></td>
+              <td class="muted nowrap">{{ r.adminName }}</td>
+              <td class="muted nowrap">{{ formatDateTime(r.actedAt) }}</td>
+              <td class="muted" :style="{ minWidth: `${MEMO_MIN_WIDTH}px` }">{{ r.memo || '-' }}</td>
+            </tr>
+          </tbody>
+        </DataTable>
         <TableFooter
           :total="filteredRows.length"
           :range-start="rangeStart"
@@ -245,53 +244,6 @@ const {
   margin-bottom: var(--spacing-md);
   font-size: var(--font-size-lg);
   font-weight: 700;
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  table-layout: auto;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
-}
-
-thead tr {
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--panel-muted-foreground);
-}
-
-th {
-  padding: var(--spacing-sm);
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-td {
-  padding: 14px var(--spacing-sm);
-}
-
-.row {
-  border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
-}
-
-.row:last-child {
-  border-bottom: none;
-}
-
-.strong {
-  font-weight: 600;
-}
-
-.muted {
-  color: var(--panel-muted-foreground);
-}
-
-.nowrap {
-  white-space: nowrap;
 }
 
 .side-col {
