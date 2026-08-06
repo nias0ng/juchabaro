@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronDown, Download, Search } from '@lucide/vue'
+import { CheckCircle2, ChevronDown, Download } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import AppPagination from '@/components/ui/AppPagination.vue'
+import SearchBox from '@/components/ui/SearchBox.vue'
+import TableStateRow from '@/components/ui/TableStateRow.vue'
+import TableFooter from '@/components/ui/TableFooter.vue'
 import { actionTone, actionTypeLabel, formatDateTime } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 import { useHistoryFilters } from '@/features/parking-events/composables/use-history-filters'
@@ -54,10 +56,7 @@ const {
         </div>
       </div>
 
-      <div class="search-box">
-        <Search :size="16" />
-        <input v-model="query" type="text" placeholder="차량 번호 또는 사건 ID 검색">
-      </div>
+      <SearchBox v-model="query" placeholder="차량 번호 또는 사건 ID 검색" input-width="176px" />
       <button type="button" class="export-btn" @click="exportCsv">
         <Download :size="16" /> 내보내기
       </button>
@@ -84,15 +83,14 @@ const {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="parkingEventStore.historyLoading">
-                <td colspan="7" class="empty">불러오는 중입니다…</td>
-              </tr>
-              <tr v-else-if="parkingEventStore.historyError">
-                <td colspan="7" class="empty error">{{ parkingEventStore.historyError }}</td>
-              </tr>
-              <tr v-else-if="pagedRows.length === 0">
-                <td colspan="7" class="empty">조건에 맞는 이력이 없습니다.</td>
-              </tr>
+              <TableStateRow v-if="parkingEventStore.historyLoading" :colspan="7" variant="loading" message="불러오는 중입니다…" />
+              <TableStateRow
+                v-else-if="parkingEventStore.historyError"
+                :colspan="7"
+                variant="error"
+                :message="parkingEventStore.historyError"
+              />
+              <TableStateRow v-else-if="pagedRows.length === 0" :colspan="7" variant="empty" message="조건에 맞는 이력이 없습니다." />
               <tr v-for="r in pagedRows" v-else :key="r.logId" class="row">
                 <td class="strong nowrap">#L-{{ r.logId }}</td>
                 <td class="muted nowrap">#{{ r.eventId }}</td>
@@ -105,12 +103,14 @@ const {
             </tbody>
           </table>
         </div>
-        <div class="footer">
-          <span>전체 {{ filteredRows.length }}건 중 {{ rangeStart }}-{{ rangeEnd }} 표시</span>
-          <div class="pagination-wrap">
-            <AppPagination :page="safePage" :total-pages="totalPages" @page-change="page = $event" />
-          </div>
-        </div>
+        <TableFooter
+          :total="filteredRows.length"
+          :range-start="rangeStart"
+          :range-end="rangeEnd"
+          :page="safePage"
+          :total-pages="totalPages"
+          @page-change="page = $event"
+        />
       </section>
 
       <div class="side-col">
@@ -207,25 +207,6 @@ const {
   color: var(--panel-muted-foreground);
 }
 
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-base);
-  color: var(--panel-muted-foreground);
-}
-
-.search-box input {
-  width: 176px;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: var(--font-size-sm);
-}
-
 .export-btn {
   display: inline-flex;
   align-items: center;
@@ -293,16 +274,6 @@ td {
   padding: 14px var(--spacing-sm);
 }
 
-.empty {
-  padding: 40px var(--spacing-sm);
-  text-align: center;
-  color: var(--panel-muted-foreground);
-}
-
-.empty.error {
-  color: var(--panel-danger);
-}
-
 .row {
   border-bottom: 1px solid color-mix(in oklch, var(--panel-border) 70%, transparent);
 }
@@ -321,21 +292,6 @@ td {
 
 .nowrap {
   white-space: nowrap;
-}
-
-.footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-top: 20px;
-  font-size: var(--font-size-sm);
-  color: var(--panel-muted-foreground);
-}
-
-.pagination-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 .side-col {
