@@ -542,6 +542,27 @@ class ZoneVisitRepository:
     ) -> tuple[ZoneVisit, ...]:
         return self.list_active(physical_vehicle_id)
 
+    def list_active_by_zone(
+        self,
+        zone_id: ZoneId,
+    ) -> tuple[ZoneVisit, ...]:
+        """zone의 nonterminal visit을 생성 순서로 반환한다.
+
+        ENTERING, INSIDE, EXITING을 모두 반환하며 후보 선택과 신뢰도 판단은
+        application 계층의 책임이다.
+        """
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM zone_visits
+            WHERE zone_id = ?
+              AND domain_state IN ('ENTERING', 'INSIDE', 'EXITING')
+            ORDER BY created_at_us, zone_visit_id
+            """,
+            (int(zone_id),),
+        ).fetchall()
+        return tuple(_zone_visit_from_row(row) for row in rows)
+
     def add(self, visit: ZoneVisit) -> None:
         require_write_transaction(self._connection)
         observation_state, observation_reason, last_reliable_at_us = (
