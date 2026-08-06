@@ -9,10 +9,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.parking.geometry import (
+    convex_polygon_intersection_area,
+    is_convex_polygon,
+    polygon_area,
+    polygon_centroid,
+)
 from src.parking.models import (
     EntryExitRole,
     NormalizedPolygon,
@@ -27,6 +35,12 @@ EV_ZONE_TYPES = frozenset({ZoneType.EV_CHARGING})
 RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
 SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
+
+logger = logging.getLogger(__name__)
+
+# 정규화 좌표의 absolute 면적은 작은 유효 zone을 놓치므로, 더 작은 주차면
+# 면적 대비 비율로 내부 겹침을 판정한다. exact shared edge의 면적 0은 허용한다.
+_MATERIAL_SPOT_OVERLAP_RATIO = 1e-9
 
 _SNAPSHOT_FIELDS = frozenset({"zoneDefinitionVersion", "calibrationReference", "zones"})
 _ZONE_REQUIRED_FIELDS = frozenset({"zoneId", "zoneType", "polygon"})
@@ -57,6 +71,7 @@ class ZoneRegistry:
         self._zones = {definition.zone_id: definition for definition in ordered}
         self._zone_definition_version = ordered[0].zone_definition_version
         self._calibration_reference = ordered[0].calibration_reference
+        self._exit_outward_baselines = self._build_exit_outward_baselines()
 
     @property
     def zone_definition_version(self) -> ZoneDefinitionVersion:
@@ -226,6 +241,145 @@ class ZoneRegistry:
                         f"zoneId {definition.zone_id}의 egress zoneId {egress_zone_id}는 AISLE이어야 합니다"
                     )
 
+        spot_zones = tuple(
+            sorted(
+                (
+                    definition
+                    for definition in definitions
+                    if definition.zone_type in SPOT_ZONE_TYPES
+                ),
+                key=lambda definition: int(definition.zone_id),
+            )
+        )
+        for definition in spot_zones:
+            if not is_convex_polygon(definition.polygon):
+                raise ZoneRegistryError(
+                    f"zoneId {definition.zone_id}: assignment 대상 주차면 polygon은 "
+                    "non-degenerate convex polygon이어야 합니다"
+                )
+        for first, second in combinations(spot_zones, 2):
+            overlap_area = convex_polygon_intersection_area(
+                first.polygon,
+                second.polygon,
+            )
+            smaller_area = min(
+                polygon_area(first.polygon),
+                polygon_area(second.polygon),
+            )
+            overlap_ratio = overlap_area / smaller_area
+            if overlap_ratio > _MATERIAL_SPOT_OVERLAP_RATIO:
+                raise ZoneRegistryError(
+                    "assignment 대상 주차면 polygon 내부가 겹칩니다: "
+                    f"zoneId {first.zone_id}, zoneId {second.zone_id}, "
+                    f"overlapArea={overlap_area:.12f}, "
+                    f"overlapRatio={overlap_ratio:.12f}"
+                )
+
+    def exit_outward_baselines(
+        self,
+    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
+        """EXIT role 구역별 외부측 기준선을 반환한다(571).
+
+        값은 ``(origin, unit_direction)``이다. ``origin``은 EXIT 구역 중심,
+        ``unit_direction``은 외부 방향 단위벡터다. 호출자는 차량 bbox 중심의
+        ``origin`` 기준 부호 있는 오프셋이 ``unit_direction``으로 양수면
+        외부측으로 판정한다.
+
+        외부 방향을 유도할 수 없는 구역은 키에서 빠진다. 호출자는 키가
+        없으면 그 구역으로 통과를 확정하지 않는다.
+        """
+
+        return dict(self._exit_outward_baselines)
+
+    def _build_exit_outward_baselines(
+        self,
+    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
+        """구역 정의는 불변이므로 구성 시 1회만 계산한다.
+
+        외부 방향은 가장 가까운 AISLE 구역 중심에서 EXIT 구역 중심으로
+        향하는 단위벡터다. 기준선은 EXIT 중심을 지나고 그 방향에 수직인
+        직선이다. 새 설정 필드를 도입하지 않으려고 기존 폴리곤에서
+        유도한다.
+        """
+
+        exits = tuple(
+            definition
+            for definition in self._definitions
+            if definition.zone_type is ZoneType.ENTRY_EXIT
+            and definition.entry_exit_role is EntryExitRole.EXIT
+        )
+        if not exits:
+            return {}
+
+        aisles = tuple(
+            definition
+            for definition in self._definitions
+            if definition.zone_type is ZoneType.AISLE
+        )
+        if not aisles:
+            logger.warning(
+                "AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 없습니다. "
+                "출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
+                [int(definition.zone_id) for definition in exits],
+            )
+            return {}
+
+        aisle_centers: dict[ZoneId, tuple[float, float]] = {}
+        for definition in aisles:
+            try:
+                aisle_centers[definition.zone_id] = polygon_centroid(definition.polygon)
+            except ValueError:
+                logger.warning(
+                    "AISLE 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
+                    "없습니다. 이 구역은 외부 방향 유도에서 제외됩니다: "
+                    "zone_id=%s",
+                    int(definition.zone_id),
+                )
+        if not aisle_centers:
+            logger.warning(
+                "유효한 AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 "
+                "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
+                [int(definition.zone_id) for definition in exits],
+            )
+            return {}
+
+        baselines: dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]] = {}
+        for exit_definition in exits:
+            try:
+                exit_center = polygon_centroid(exit_definition.polygon)
+            except ValueError:
+                logger.warning(
+                    "EXIT 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
+                    "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_id=%s",
+                    int(exit_definition.zone_id),
+                )
+                continue
+            nearest_zone_id = min(
+                aisle_centers,
+                key=lambda zone_id: (
+                    _squared_distance(aisle_centers[zone_id], exit_center),
+                    int(zone_id),
+                ),
+            )
+            aisle_center = aisle_centers[nearest_zone_id]
+            direction = (
+                exit_center[0] - aisle_center[0],
+                exit_center[1] - aisle_center[1],
+            )
+            if direction[0] == 0.0 and direction[1] == 0.0:
+                logger.warning(
+                    "AISLE과 EXIT 구역의 중심이 같아 외부 방향을 유도할 수 "
+                    "없습니다: zone_id=%s",
+                    int(exit_definition.zone_id),
+                )
+                continue
+            # direction이 정확히 (0, 0)이 아님을 위에서 확인했으므로
+            # magnitude는 항상 양수다 — 0 나눗셈이 발생하지 않는다.
+            magnitude = math.hypot(direction[0], direction[1])
+            unit_direction = (direction[0] / magnitude, direction[1] / magnitude)
+            baselines[exit_definition.zone_id] = (exit_center, unit_direction)
+        return baselines
+
     def all(self) -> tuple[ZoneDefinition, ...]:
         """파일에 기록된 순서대로 모든 구역 정의를 반환한다."""
 
@@ -345,3 +499,10 @@ def _parse_zone_id_array(value: Any, *, field_name: str) -> tuple[ZoneId, ...]:
         ZoneId(_parse_integer(item, field_name=f"{field_name}[{index}]"))
         for index, item in enumerate(value)
     )
+
+
+def _squared_distance(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> float:
+    return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2

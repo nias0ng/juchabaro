@@ -38,12 +38,15 @@ from src.parking.models import (
     ParkingEpisodeId,
     ParkingPipelineResult,
     ParkingTransition,
+    BlockingRelation,
+    BlockingRelationId,
     ZoneVisit,
     ZoneVisitId,
 )
 from src.parking.pipeline import ParkingPipeline
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.storage.aggregate_repositories import (
+    BlockingRelationRepository,
     IncidentRepository,
     ParkingEpisodeRepository,
     ZoneVisitRepository,
@@ -99,6 +102,7 @@ class RuntimeRecoveryResult:
 
     zone_visit_count: int
     parking_episode_count: int
+    blocking_relation_count: int
     incident_count: int
     recovered_outbox_count: int
     active_physical_vehicles: tuple[PhysicalVehicle, ...]
@@ -151,6 +155,9 @@ class FrameObservationWorkflow:
                     connection
                 ).list_active()
                 incidents = IncidentRepository(connection).list_active()
+                blocking_relations = BlockingRelationRepository(
+                    connection
+                ).list_active()
                 physical_vehicles = PhysicalVehicleRepository(
                     connection
                 ).list_active()
@@ -158,6 +165,7 @@ class FrameObservationWorkflow:
                     zone_visits=zone_visits,
                     parking_episodes=parking_episodes,
                     incidents=incidents,
+                    blocking_relations=blocking_relations,
                 )
 
                 # crash 전 이미 durable 확정된 부재는 새 timer로
@@ -204,10 +212,14 @@ class FrameObservationWorkflow:
                 recovered_incidents = IncidentRepository(
                     connection
                 ).list_active()
+                recovered_blocking_relations = BlockingRelationRepository(
+                    connection
+                ).list_active()
                 self._parking_pipeline.restore_active(
                     zone_visits=recovered_zone_visits,
                     parking_episodes=recovered_parking_episodes,
                     incidents=recovered_incidents,
+                    blocking_relations=recovered_blocking_relations,
                 )
                 recovered_outbox_count = OutboxRepository(
                     connection
@@ -222,6 +234,7 @@ class FrameObservationWorkflow:
         return RuntimeRecoveryResult(
             zone_visit_count=len(zone_visits),
             parking_episode_count=len(parking_episodes),
+            blocking_relation_count=len(blocking_relations),
             incident_count=len(incidents),
             recovered_outbox_count=recovered_outbox_count,
             active_physical_vehicles=active_physical_vehicles,
@@ -610,13 +623,10 @@ class _ParkingAggregateWriter:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._zone_visits = ZoneVisitRepository(connection)
         self._parking_episodes = ParkingEpisodeRepository(connection)
+        self._blocking_relations = BlockingRelationRepository(connection)
         self._incidents = IncidentRepository(connection)
 
     def save(self, result: ParkingPipelineResult) -> None:
-        if result.blocking_relation_updates:
-            raise NotImplementedError(
-                "BlockingRelation repository wiring is not implemented"
-            )
         forced_episode_ids = {
             transition.parking_episode_id
             for transition in result.parking_transitions
@@ -631,6 +641,12 @@ class _ParkingAggregateWriter:
         self._save_parking_episodes(
             _latest_by_id(result.parking_episode_updates, "episode_id"),
             forced_ids=forced_episode_ids,
+        )
+        self._save_blocking_relations(
+            _latest_by_id(
+                result.blocking_relation_updates,
+                "blocking_relation_id",
+            )
         )
         self._save_incidents(
             _latest_by_id(result.incident_updates, "incident_id"),
@@ -704,6 +720,25 @@ class _ParkingAggregateWriter:
                     expected_record_version=existing.record_version,
                 )
 
+    def _save_blocking_relations(
+        self,
+        relations: Mapping[BlockingRelationId, BlockingRelation],
+    ) -> None:
+        for relation in relations.values():
+            existing = self._blocking_relations.get(
+                relation.blocking_relation_id
+            )
+            if existing is None:
+                self._blocking_relations.add(relation)
+            elif relation != existing and (
+                _scope_change_requires_immediate_save(existing, relation)
+                or _dirty_checkpoint_due(existing, relation)
+            ):
+                self._blocking_relations.save(
+                    relation,
+                    expected_record_version=existing.record_version,
+                )
+
 
 def _newly_opened_incidents(
     result: ParkingPipelineResult,
@@ -756,6 +791,14 @@ def _combine_parking_results(
         ),
         incident_transitions=tuple(
             item for result in results for item in result.incident_transitions
+        ),
+        placement_diagnostics=tuple(
+            item for result in results for item in result.placement_diagnostics
+        ),
+        incident_signal_diagnostics=tuple(
+            item
+            for result in results
+            for item in result.incident_signal_diagnostics
         ),
     )
 

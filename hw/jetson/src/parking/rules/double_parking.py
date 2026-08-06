@@ -40,6 +40,7 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
 def _evaluate_relation(
     context: RuleContext, relation: BlockingRelation
 ) -> IncidentSignal:
+    geometry = context.blocking_evidence.get(relation.blocking_relation_id)
     if (
         context.observation.state is not ObservationState.OBSERVED
         or context.vehicle.observation.state is not ObservationState.OBSERVED
@@ -68,6 +69,18 @@ def _evaluate_relation(
             "subjectPhysicalVehicleId": str(relation.subject_physical_vehicle_id),
             "victimPhysicalVehicleId": str(relation.victim_physical_vehicle_id),
             "egressZoneId": relation.egress_zone_id,
+            "parkingZoneId": (
+                None if geometry is None else geometry.parking_zone_id
+            ),
+            "subjectOverlapRatio": (
+                None if geometry is None else geometry.subject_overlap_ratio
+            ),
+            "egressCoverageRatio": (
+                None if geometry is None else geometry.egress_coverage_ratio
+            ),
+            "intersectionArea": (
+                None if geometry is None else geometry.intersection_area
+            ),
             "blockingRelationState": relation.state.value,
         },
     )

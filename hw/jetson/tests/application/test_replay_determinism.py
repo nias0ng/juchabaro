@@ -53,6 +53,7 @@ from src.parking.models import (
     ZoneType,
 )
 from src.parking.zone_registry import ZoneRegistry
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
@@ -116,8 +117,12 @@ def _policy() -> MonitoringPolicy:
         assignment_min_overlap_ratio=0.5,
         assignment_ambiguous_margin=0.05,
         bad_parking_min_primary_overlap_ratio=0.75,
+        bad_parking_min_secondary_overlap_ratio=0.25,
+        out_of_zone_min_spot_overlap_ratio=0.50,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
+        blocking_min_subject_overlap_ratio=0.40,
+        blocking_min_egress_coverage_ratio=0.40,
         motion_window_seconds=0.75,
         motion_min_observation_span_seconds=0.20,
         motion_max_sample_gap_seconds=0.50,
@@ -238,8 +243,10 @@ def _run_replay(tmp_path: Path, *, run_label: str, t0: datetime) -> bytes:
 
     events_path = tmp_path / f"{run_label}_events.jsonl"
     with events_path.open("w", encoding="utf-8", newline="\n") as events_handle:
+        zones = ZoneRegistry((DISABLED_ZONE, ENTRY_ZONE))
         pipeline = build_monitoring_pipeline(
-            zones=ZoneRegistry((DISABLED_ZONE, ENTRY_ZONE)),
+            zones=zones,
+            egress_aisles=EgressAisleRegistry.empty(zones),
             policy=_policy(),
             dependencies=MonitoringDependencies(
                 camera_id="cam-1",

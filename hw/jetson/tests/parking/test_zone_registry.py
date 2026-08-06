@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from src.parking.geometry import bbox_center
 from src.parking.models import (
     EntryExitRole,
     ZoneDefinition,
@@ -23,6 +25,22 @@ from src.parking.zone_registry import (
     ZoneRegistry,
     ZoneRegistryError,
 )
+from src.tracking.models import BoundingBox
+
+
+def _signed_offset(
+    point: tuple[float, float],
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+) -> float:
+    """``origin``에서 ``point``까지 벡터를 단위벡터 ``direction``에 투영한다.
+
+    ``ParkingPipeline._outward_contacts``가 실제로 쓰는 것과 같은 계산을
+    독립적으로 재구현해, 프로덕션 코드의 private 헬퍼에 기대지 않고
+    ``exit_outward_baselines()``의 계약만으로 부호를 검증한다.
+    """
+
+    return (point[0] - origin[0]) * direction[0] + (point[1] - origin[1]) * direction[1]
 
 
 SQUARE = [[0.10, 0.20], [0.28, 0.20], [0.28, 0.55], [0.10, 0.55]]
@@ -66,11 +84,16 @@ def definition(
     calibration_reference: str = "camera-1:v2",
     egress_zone_ids: tuple[ZoneId, ...] = (),
     entry_exit_role: EntryExitRole | None = None,
+    polygon: tuple[tuple[float, float], ...] | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
         zone_type=zone_type,
-        polygon=tuple(tuple(point) for point in SQUARE),
+        polygon=(
+            tuple(tuple(point) for point in SQUARE)
+            if polygon is None
+            else polygon
+        ),
         zone_definition_version=ZoneDefinitionVersion(version),
         calibration_reference=calibration_reference,
         egress_zone_ids=egress_zone_ids,
@@ -87,6 +110,12 @@ def test_parses_versioned_snapshot_into_canonical_zone_definitions(tmp_path: Pat
             zone(
                 3,
                 "EV_CHARGING",
+                polygon=[
+                    [0.28, 0.20],
+                    [0.46, 0.20],
+                    [0.46, 0.55],
+                    [0.28, 0.55],
+                ],
                 allowedDurationSeconds=7200,
                 chargerClass="FAST",
                 egressZoneIds=[2],
@@ -105,12 +134,12 @@ def test_parses_versioned_snapshot_into_canonical_zone_definitions(tmp_path: Pat
     assert not hasattr(registry.get(3), "allowed_minutes")
 
 
-def test_loads_tracked_deployment_snapshot() -> None:
+def test_loads_tracked_main_deployment_snapshot() -> None:
     path = Path(__file__).parents[2] / "config" / "zone_definition.json"
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(6)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(1)
     assert len(registry.all()) == 9
     assert registry.get(1).zone_type is ZoneType.GENERAL
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)
@@ -124,7 +153,16 @@ def test_loads_tracked_deployment_snapshot() -> None:
 
 
 def test_accepts_all_canonical_zone_types(tmp_path: Path) -> None:
-    zones = [zone(index, zone_type.value) for index, zone_type in enumerate(ZoneType, start=1)]
+    zones = []
+    for index, zone_type in enumerate(ZoneType, start=1):
+        left = 0.05 * index
+        polygon = [
+            [left, 0.20],
+            [left + 0.04, 0.20],
+            [left + 0.04, 0.55],
+            [left, 0.55],
+        ]
+        zones.append(zone(index, zone_type.value, polygon=polygon))
 
     registry = ZoneRegistry.from_file(write_snapshot(tmp_path, zones))
 
@@ -321,3 +359,255 @@ def test_zone_type_classifications_use_canonical_types() -> None:
         ZoneType.EV_CHARGING,
     }
     assert not hasattr(ZoneType, "EV_FAST")
+
+
+def test_spot_polygons_may_share_boundary_without_overlapping_area() -> None:
+    left = ((0.1, 0.1), (0.2, 0.1), (0.2, 0.3), (0.1, 0.3))
+    right = ((0.2, 0.1), (0.3, 0.1), (0.3, 0.3), (0.2, 0.3))
+
+    registry = ZoneRegistry(
+        (definition(1, polygon=left), definition(2, polygon=right))
+    )
+
+    assert tuple(item.zone_id for item in registry.all()) == (ZoneId(1), ZoneId(2))
+
+
+def test_spot_polygons_reject_material_interior_overlap() -> None:
+    first = ((0.1, 0.1), (0.25, 0.1), (0.25, 0.3), (0.1, 0.3))
+    second = ((0.2, 0.1), (0.3, 0.1), (0.3, 0.3), (0.2, 0.3))
+
+    with pytest.raises(ZoneRegistryError, match="overlapArea"):
+        ZoneRegistry(
+            (definition(2, polygon=second), definition(1, polygon=first))
+        )
+
+
+def test_small_identical_spot_polygons_are_still_rejected() -> None:
+    tiny = (
+        (0.50000, 0.50000),
+        (0.50002, 0.50000),
+        (0.50002, 0.50002),
+        (0.50000, 0.50002),
+    )
+
+    with pytest.raises(ZoneRegistryError, match="overlapRatio"):
+        ZoneRegistry((definition(1, polygon=tiny), definition(2, polygon=tiny)))
+
+
+def test_spot_polygon_must_be_non_degenerate_and_convex() -> None:
+    concave = (
+        (0.1, 0.1),
+        (0.3, 0.1),
+        (0.2, 0.2),
+        (0.3, 0.3),
+        (0.1, 0.3),
+    )
+
+    with pytest.raises(ZoneRegistryError, match="convex"):
+        ZoneRegistry((definition(1, polygon=concave),))
+
+
+def test_spot_and_aisle_may_overlap() -> None:
+    registry = ZoneRegistry(
+        (definition(1), definition(2, zone_type=ZoneType.AISLE))
+    )
+
+    assert len(registry.all()) == 2
+
+
+def _aisle_and_exit_registry() -> ZoneRegistry:
+    """aisle이 아래쪽, exit이 위쪽인 최소 구성. 외부 방향은 -y다."""
+
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+    return ZoneRegistry((aisle, exit_zone))
+
+
+def test_exit_outward_baseline_points_away_from_the_aisle() -> None:
+    registry = _aisle_and_exit_registry()
+    baselines = registry.exit_outward_baselines()
+
+    assert set(baselines) == {ZoneId(9)}
+    origin, direction = baselines[ZoneId(9)]
+    # exit 구역은 y 0.0~0.4, 중심 (0.5, 0.2). aisle 중심은 (0.5, 0.75)로
+    # x는 같고 y만 아래이므로 외부 방향은 정확히 -y다.
+    assert origin == pytest.approx((0.5, 0.2))
+    assert direction == pytest.approx((0.0, -1.0))
+    assert math.hypot(*direction) == pytest.approx(1.0)
+
+
+def test_entry_role_zone_gets_no_outward_baseline() -> None:
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    entry_zone = ZoneDefinition(
+        zone_id=ZoneId(8),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.ENTRY,
+    )
+    assert ZoneRegistry((aisle, entry_zone)).exit_outward_baselines() == {}
+
+
+def test_registry_without_aisle_yields_no_outward_baseline() -> None:
+    """외부 방향을 유도할 수 없으면 통과를 확정하지 않는다(fail-safe)."""
+
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+    assert ZoneRegistry((exit_zone,)).exit_outward_baselines() == {}
+
+
+def test_exit_outward_baselines_are_cached_and_identical_across_calls() -> None:
+    registry = _aisle_and_exit_registry()
+    assert registry.exit_outward_baselines() == registry.exit_outward_baselines()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["zone_definition.json", "zone_definition.pilot.json"],
+)
+def test_deployed_configs_derive_outward_direction_into_upper_right(
+    filename: str,
+) -> None:
+    """배포 설정의 외부 방향이 화면 오른쪽 위(+x, -y)임을 고정한다(571).
+
+    현장 확인으로 차량이 화면 오른쪽 위로 빠져나간다는 것을 검증했다.
+    폴리곤이 재작성되어 이 사분면을 벗어나면 판정이 조용히 반대가 되므로
+    여기서 잡는다.
+    """
+
+    # 이 파일의 기존 테스트와 같은 CWD 독립 경로 관례를 쓴다
+    # (`test_loads_tracked_deployment_snapshot` 참고).
+    path = Path(__file__).parents[2] / "config" / filename
+    registry = ZoneRegistry.from_file(path)
+    baselines = registry.exit_outward_baselines()
+    assert set(baselines) == {ZoneId(9)}
+
+    _, direction = baselines[ZoneId(9)]
+    assert direction[0] > 0.0
+    assert direction[1] < 0.0
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["zone_definition.json", "zone_definition.pilot.json"],
+)
+def test_real_scale_car_bbox_center_determines_outward_side(filename: str) -> None:
+    """Finding 1 회귀: bbox와 outward sub-polygon의 겹침 대신 중심의 부호를
+
+    검사해야 하는 이유를 실측 스케일로 고정한다. 실제 차량 bbox(약
+    0.11 x 0.16)는 outward half-zone보다 커서, "겹침 면적 > 0"으로
+    판정하면 출차 통로 안쪽에 정지한 차도 거의 항상 outward로 오판된다
+    (독립적으로 검산: zone_definition.json에서 안쪽 절반 깊이가 outward
+    축 기준 약 0.105인데 실측 차량 투영은 약 0.193으로 1.84배 크다).
+    중심 판정은 이 문제가 없다.
+
+    아래 두 bbox 중심은 ``zone_definition.json``의 EXIT(9) 기준선에서
+    유도했다:
+      exit_center = (0.664947, 0.166388)
+      unit_direction = (0.468839, -0.883283)
+      outer_center = exit_center + 0.03 * unit_direction = (0.679012, 0.139889)
+      inner_center = exit_center - 0.03 * unit_direction = (0.650881, 0.192886)
+    ``zone_definition.pilot.json``은 EXIT 기준선이 달라
+    (exit_center=(0.636552, 0.166388), unit_direction=(0.498975, -0.866617))
+    이 절대 좌표를 그 기준선에 다시 투영해 부호를 따로 검산했다:
+    outer offset=+0.0442, inner offset=-0.0158 — 여전히 같은 쪽이므로 두
+    설정에 같은 bbox를 재사용한다(파라미터화).
+    """
+
+    outer_bbox = BoundingBox(0.624012, 0.059889, 0.734012, 0.219889)
+    inner_bbox = BoundingBox(0.595881, 0.112886, 0.705881, 0.272886)
+
+    path = Path(__file__).parents[2] / "config" / filename
+    registry = ZoneRegistry.from_file(path)
+    origin, direction = registry.exit_outward_baselines()[ZoneId(9)]
+
+    outer_offset = _signed_offset(bbox_center(outer_bbox), origin, direction)
+    inner_offset = _signed_offset(bbox_center(inner_bbox), origin, direction)
+
+    assert outer_offset > 0.0
+    assert inner_offset < 0.0
+
+
+_DEGENERATE_POLYGON = ((0.1, 0.1), (0.2, 0.2), (0.3, 0.3))
+
+
+def test_degenerate_aisle_polygon_is_skipped_without_raising() -> None:
+    """면적이 0인 AISLE polygon(CVAT 라벨링 실수 등)이 있어도 registry 구성이
+
+    죽지 않아야 한다(fail-safe, 571). 중심을 계산할 수 없는 AISLE은
+    외부 방향 유도에서 제외되고, 유효한 AISLE이 남지 않으면 그 EXIT 구역은
+    결과에서 빠진다.
+    """
+
+    degenerate_aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=_DEGENERATE_POLYGON,
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    exit_zone = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+
+    registry = ZoneRegistry((degenerate_aisle, exit_zone))
+
+    assert registry.exit_outward_baselines() == {}
+
+
+def test_degenerate_exit_polygon_is_skipped_without_raising() -> None:
+    """면적이 0인 EXIT polygon이 있어도 registry 구성이 죽지 않아야 한다
+
+    (fail-safe, 571). 중심을 계산할 수 없는 EXIT 구역은 결과에서 빠진다.
+    """
+
+    aisle = ZoneDefinition(
+        zone_id=ZoneId(7),
+        zone_type=ZoneType.AISLE,
+        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+    )
+    degenerate_exit = ZoneDefinition(
+        zone_id=ZoneId(9),
+        zone_type=ZoneType.ENTRY_EXIT,
+        polygon=_DEGENERATE_POLYGON,
+        zone_definition_version=ZoneDefinitionVersion(1),
+        calibration_reference="cam-1-v1",
+        entry_exit_role=EntryExitRole.EXIT,
+    )
+
+    registry = ZoneRegistry((aisle, degenerate_exit))
+
+    assert registry.exit_outward_baselines() == {}

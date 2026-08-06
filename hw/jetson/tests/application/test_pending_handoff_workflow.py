@@ -13,6 +13,10 @@ from src.application.pending_handoff_workflow import (
     HistoricalCorrelationResult,
     PendingHandoffWorkflow,
 )
+from src.application.physical_presence_workflow import (
+    ABSENCE_WITHOUT_EXIT_EVIDENCE,
+    PHYSICAL_VEHICLE_LEFT,
+)
 from src.application.session_observation_workflow import SessionObservationResult
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.models import (
@@ -130,7 +134,9 @@ def _active_vehicle() -> PhysicalVehicle:
     )
 
 
-def _retired_vehicle() -> PhysicalVehicle:
+def _retired_vehicle(
+    termination_reason: str = PHYSICAL_VEHICLE_LEFT,
+) -> PhysicalVehicle:
     return PhysicalVehicle(
         physical_vehicle_id=VEHICLE_ID,
         state=PhysicalVehicleState.RETIRED,
@@ -140,7 +146,7 @@ def _retired_vehicle() -> PhysicalVehicle:
         trusted_sample_max_gap_seconds=1.0,
         absence_confirmed_at=T1,
         terminated_at=T1,
-        termination_reason="PHYSICAL_VEHICLE_LEFT",
+        termination_reason=termination_reason,
         record_version=2,
         created_at=T0,
         updated_at=T1,
@@ -466,12 +472,14 @@ def test_late_allow_after_retirement_creates_historical_exit_without_binding(
             session_exit.origin
             is PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
         )
-        assert session_exit.evidence is PhysicalExitEvidence.FULL_AREA_ABSENCE
+        assert session_exit.evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         mirror = ParkingSessionMirrorRepository(connection).get(SESSION_ID)
         assert mirror is not None
         assert mirror.physical_vehicle_id == VEHICLE_ID
         assert mirror.physical_presence_state is PhysicalPresenceState.EXITED
         assert mirror.exited_at == T1
+        assert mirror.physical_termination_origin is PhysicalTerminationOrigin.JETSON_EXIT_CONFIRMED
+        assert mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         assert ContextBindingRepository(connection).list_active() == ()
 
         with UnitOfWork(connection):
@@ -481,6 +489,74 @@ def test_late_allow_after_retirement_creates_historical_exit_without_binding(
                 connection=connection,
             )
         assert repeated.session_exit_transitions == ()
+    finally:
+        connection.close()
+
+
+def test_late_allow_after_absence_without_exit_evidence_creates_no_exit(
+    tmp_path: Path,
+) -> None:
+    """출차 근거 없이 종료된 차량은 늦은 correlation에서도 출차로 만들지 않는다(565).
+
+    이 경로에서는 통과 여부를 재계산할 수 없다 — 차량이 이미 RETIRED이고
+    ZoneVisit도 함께 종료됐다. 그래서 departure 시점에 termination_reason으로
+    영속한 값을 읽는다.
+    """
+
+    connection = open_database(tmp_path / "historical-no-evidence.db")
+    workflow = PendingHandoffWorkflow()
+    attempt = _matched_allow_attempt()
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(
+                _retired_vehicle(
+                    termination_reason=ABSENCE_WITHOUT_EXIT_EVIDENCE,
+                )
+            )
+            EntryMatchAttemptRepository(connection).add(attempt)
+            result = workflow.correlate_historical_sessions(
+                (attempt,),
+                observed_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert result.session_exit_transitions == ()
+        # 확인할 수 없는 출차 상태를 만들어 두지 않는다.
+        assert ParkingSessionMirrorRepository(connection).get(SESSION_ID) is None
+    finally:
+        connection.close()
+
+
+def test_late_allow_after_retirement_with_unrecognized_reason_creates_no_exit(
+    tmp_path: Path,
+) -> None:
+    """허용 목록에 없는 termination_reason은 기본적으로 발행하지 않는다(565).
+
+    SESSION_EXITED/PHYSICAL_VEHICLE_LEFT가 아닌 값(예: 앞으로 추가될 새
+    종료 사유)은 잘못된 SessionExit을 발행하는 대신 안전하게 건너뛰어야
+    한다 — 되돌릴 수 없는 wire 신호의 기본 동작은 "발행하지 않음"이다.
+    """
+
+    connection = open_database(tmp_path / "historical-unrecognized-reason.db")
+    workflow = PendingHandoffWorkflow()
+    attempt = _matched_allow_attempt()
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(
+                _retired_vehicle(
+                    termination_reason="SOME_FUTURE_TERMINATION_REASON",
+                )
+            )
+            EntryMatchAttemptRepository(connection).add(attempt)
+            result = workflow.correlate_historical_sessions(
+                (attempt,),
+                observed_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert result.session_exit_transitions == ()
+        # 확인할 수 없는 출차 상태를 만들어 두지 않는다.
+        assert ParkingSessionMirrorRepository(connection).get(SESSION_ID) is None
     finally:
         connection.close()
 

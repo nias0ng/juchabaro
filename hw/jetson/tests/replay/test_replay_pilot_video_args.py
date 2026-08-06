@@ -42,8 +42,12 @@ REQUIRED_THRESHOLD_ARGS = [
     "--assignment-min-overlap-ratio", "0.5",
     "--assignment-ambiguous-margin", "0.05",
     "--bad-parking-min-primary-overlap-ratio", "0.75",
+    "--bad-parking-min-secondary-overlap-ratio", "0.25",
+    "--out-of-zone-min-spot-overlap-ratio", "0.50",
     "--blocking-relation-confirm-seconds", "3.0",
     "--blocking-relation-clear-seconds", "3.0",
+    "--blocking-min-subject-overlap-ratio", "0.4",
+    "--blocking-min-egress-coverage-ratio", "0.4",
 ]
 
 
@@ -51,10 +55,12 @@ def _parse(
     *extra_args: str,
     calibration: str | None = "ai/tracking/camera_calibration.json",
     zones_file: str = "ai/tracking/zones_pilot.json",
+    egress_aisles_file: str = "config/egress_aisle.pilot.json",
 ):
     args_list = [
         "--video", "docs/video/video1.mp4",
         "--zones-file", zones_file,
+        "--egress-aisles-file", egress_aisles_file,
         "--model-path", "ai/training/yolo26n.pt",
         "--out-events", "out/events.jsonl",
         "--out-zone-visits", "out/zone_visits.jsonl",
@@ -88,6 +94,24 @@ def _write_zones_file(path: Path, *, calibration_reference: str) -> None:
 
 def _expected_reference(calibration: Path) -> str:
     return calibration_fingerprint(calibration, DEFAULT_REMAP_BALANCE)["calibrationSha256"]
+
+
+def _write_egress_file(
+    path: Path,
+    *,
+    calibration_reference: str,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "egressAisleDefinitionVersion": 1,
+                "zoneDefinitionVersion": 1,
+                "calibrationReference": calibration_reference,
+                "areas": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_defaults_match_documented_baseline_values():
@@ -139,6 +163,8 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.assignment_min_overlap_ratio == 0.5
     assert policy.assignment_ambiguous_margin == 0.05
     assert policy.bad_parking_min_primary_overlap_ratio == 0.75
+    assert policy.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert policy.out_of_zone_min_spot_overlap_ratio == 0.50
     assert policy.zone_presence_min_overlap_ratio == 0.6
     assert policy.entry_zone_min_overlap_ratio == 0.40
     assert policy.parking_confirm_seconds == 600.0
@@ -146,6 +172,8 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
     assert policy.incident_clear_seconds == 0.0
     assert policy.blocking_relation_confirm_seconds == 3.0
     assert policy.blocking_relation_clear_seconds == 3.0
+    assert policy.blocking_min_subject_overlap_ratio == 0.4
+    assert policy.blocking_min_egress_coverage_ratio == 0.4
 
 
 def test_missing_calibration_is_rejected(tmp_path):
@@ -174,8 +202,15 @@ def test_valid_args_pass_validation(tmp_path):
     calibration = tmp_path / "calibration.json"
     calibration.write_bytes(b"fake-calibration-bytes")
     zones_file = tmp_path / "zones.json"
-    _write_zones_file(zones_file, calibration_reference=_expected_reference(calibration))
-    args = _parse(calibration=str(calibration), zones_file=str(zones_file))
+    reference = _expected_reference(calibration)
+    _write_zones_file(zones_file, calibration_reference=reference)
+    egress_file = tmp_path / "egress.json"
+    _write_egress_file(egress_file, calibration_reference=reference)
+    args = _parse(
+        calibration=str(calibration),
+        zones_file=str(zones_file),
+        egress_aisles_file=str(egress_file),
+    )
 
     validate_args(args)  # 예외가 나지 않아야 한다
 
@@ -195,6 +230,8 @@ def test_valid_args_pass_validation(tmp_path):
         "--assignment-ambiguous-margin",
         "--blocking-relation-confirm-seconds",
         "--blocking-relation-clear-seconds",
+        "--blocking-min-subject-overlap-ratio",
+        "--blocking-min-egress-coverage-ratio",
     ],
 )
 def test_each_threshold_flag_is_required(flag):
@@ -205,6 +242,7 @@ def test_each_threshold_flag_is_required(flag):
     argv = [
         "--video", "docs/video/video1.mp4",
         "--zones-file", "zones.json",
+        "--egress-aisles-file", "egress.json",
         "--model-path", "model.pt",
         "--out-events", "out/events.jsonl",
         "--out-zone-visits", "out/zone_visits.jsonl",
@@ -219,8 +257,15 @@ def test_zone_calibration_matching_reference_is_accepted(tmp_path):
     calibration = tmp_path / "calibration.json"
     calibration.write_bytes(b"fake-calibration-bytes")
     zones_file = tmp_path / "zones.json"
-    _write_zones_file(zones_file, calibration_reference=_expected_reference(calibration))
-    args = _parse(calibration=str(calibration), zones_file=str(zones_file))
+    reference = _expected_reference(calibration)
+    _write_zones_file(zones_file, calibration_reference=reference)
+    egress_file = tmp_path / "egress.json"
+    _write_egress_file(egress_file, calibration_reference=reference)
+    args = _parse(
+        calibration=str(calibration),
+        zones_file=str(zones_file),
+        egress_aisles_file=str(egress_file),
+    )
 
     verify_zone_calibration(args)  # 예외가 나지 않아야 한다
 
@@ -230,7 +275,13 @@ def test_zone_calibration_mismatched_reference_is_rejected(tmp_path):
     calibration.write_bytes(b"fake-calibration-bytes")
     zones_file = tmp_path / "zones.json"
     _write_zones_file(zones_file, calibration_reference="0" * 16)
-    args = _parse(calibration=str(calibration), zones_file=str(zones_file))
+    egress_file = tmp_path / "egress.json"
+    _write_egress_file(egress_file, calibration_reference="0" * 16)
+    args = _parse(
+        calibration=str(calibration),
+        zones_file=str(zones_file),
+        egress_aisles_file=str(egress_file),
+    )
 
     with pytest.raises(ReplayArgumentError, match="좌표계"):
         verify_zone_calibration(args)

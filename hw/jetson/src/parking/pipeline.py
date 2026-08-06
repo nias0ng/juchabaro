@@ -20,12 +20,12 @@ commit 실패 시 DB rollback과 함께 runtime owner도 복구해야 한다.
 메모리에 보존하지 않는다. 04 계약의 pending handoff workflow가 durable terminal
 snapshot을 조회해 PARKED·UNPARKED를 materialize해야 한다.
 
-BlockingRelation 후보는 PARKED 차량의 assignment가 참조하는 egress AISLE
-zone과 다른 차량 bbox의 overlap으로 계산한다(§11). 이미 non-terminal인
+BlockingRelation 후보는 PARKED 차량의 assignment에 연결된 별도
+EgressAisleRegistry와 다른 차량 footprint의 overlap으로 계산한다(§11).
+이미 non-terminal인
 관계는 새 후보 계산과 무관하게 매 frame 계속 재평가해 이동만으로 조용히
-멈추지 않게 한다. durable 복원(``restore_active``)은 아직 BlockingRelation
-repository가 없어 빈 tuple만 받는다 — restart 뒤 진행 중이던 관계는
-geometry가 다시 confirm될 때까지 새 CANDIDATE로 재시작한다.
+멈추지 않게 한다. durable BlockingRelation은 다른 active scope와 같이
+trusted timer chain을 끊은 상태로 복원한다.
 """
 
 from __future__ import annotations
@@ -38,14 +38,21 @@ import math
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking import assignment_resolver
 from src.parking.blocking_relation_tracker import BlockingRelationTracker
-from src.parking.geometry import overlap_ratio
+from src.parking import egress_blocking_resolver
+from src.parking.egress_aisle_registry import EgressAisleRegistry
+from src.parking.geometry import bbox_center, overlap_ratio
 from src.parking.incident_reducer import IncidentReducer
 from src.parking.models import (
     BlockingRelation,
+    BlockingRelationId,
     BlockingRelationState,
+    EgressAisleId,
+    EgressBlockingEvidence,
     Incident,
     IncidentKeyScope,
     IncidentReduction,
+    IncidentSignalDiagnostic,
+    IncidentSignal,
     IncidentTransition,
     ParkingAssignment,
     ParkingEpisode,
@@ -53,6 +60,9 @@ from src.parking.models import (
     ParkingState,
     ParkingTransition,
     ParkingTransitionType,
+    PlacementDiagnostic,
+    PlacementEvidence,
+    PlacementEvidenceSource,
     PresenceSignal,
     ZoneDefinition,
     ZoneId,
@@ -78,7 +88,7 @@ from src.tracking.models import (
 )
 
 
-_BlockingCandidateKey = tuple[PhysicalVehicleId, PhysicalVehicleId, ZoneId]
+_BlockingCandidateKey = tuple[PhysicalVehicleId, PhysicalVehicleId, EgressAisleId]
 
 
 @dataclass
@@ -89,7 +99,10 @@ class _VehicleFrame:
     context: SessionContext | None
     entry_attempt_id: EntryAttemptId | None
     observation: ObservationStatus
-    assignment: ParkingAssignment | None
+    parking_motion_observation: ObservationStatus
+    assignment: ParkingAssignment
+    placement_evidence: PlacementEvidence
+    placement_evidence_source: PlacementEvidenceSource
     active_visits: tuple[ZoneVisit, ...]
     episode: ParkingEpisode | None
 
@@ -109,6 +122,7 @@ class ParkingPipeline:
         self,
         *,
         zones: ZoneRegistry,
+        egress_aisles: EgressAisleRegistry,
         zone_visit_tracker: ZoneVisitTracker,
         parking_episode_tracker: ParkingEpisodeTracker,
         incident_reducer: IncidentReducer,
@@ -117,6 +131,10 @@ class ParkingPipeline:
         assignment_min_overlap_ratio: float,
         assignment_ambiguous_margin: float,
         bad_parking_min_primary_overlap_ratio: float,
+        bad_parking_min_secondary_overlap_ratio: float,
+        out_of_zone_min_spot_overlap_ratio: float,
+        blocking_min_subject_overlap_ratio: float,
+        blocking_min_egress_coverage_ratio: float,
     ) -> None:
         _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
         _validate_ratio(
@@ -131,12 +149,24 @@ class ParkingPipeline:
             bad_parking_min_primary_overlap_ratio,
             "bad_parking_min_primary_overlap_ratio",
         )
-        if bad_parking_min_primary_overlap_ratio < assignment_min_overlap_ratio:
-            raise ValueError(
-                "bad_parking_min_primary_overlap_ratio must be greater than "
-                "or equal to assignment_min_overlap_ratio"
-            )
+        _validate_ratio(
+            bad_parking_min_secondary_overlap_ratio,
+            "bad_parking_min_secondary_overlap_ratio",
+        )
+        _validate_ratio(
+            out_of_zone_min_spot_overlap_ratio,
+            "out_of_zone_min_spot_overlap_ratio",
+        )
+        _validate_positive_ratio(
+            blocking_min_subject_overlap_ratio,
+            "blocking_min_subject_overlap_ratio",
+        )
+        _validate_positive_ratio(
+            blocking_min_egress_coverage_ratio,
+            "blocking_min_egress_coverage_ratio",
+        )
         self._zones = zones
+        self._egress_aisles = egress_aisles
         self._zone_visit_tracker = zone_visit_tracker
         self._parking_episode_tracker = parking_episode_tracker
         self._incident_reducer = incident_reducer
@@ -147,8 +177,25 @@ class ParkingPipeline:
         self._bad_parking_min_primary_overlap_ratio = (
             bad_parking_min_primary_overlap_ratio
         )
+        self._bad_parking_min_secondary_overlap_ratio = (
+            bad_parking_min_secondary_overlap_ratio
+        )
+        self._out_of_zone_min_spot_overlap_ratio = (
+            out_of_zone_min_spot_overlap_ratio
+        )
+        self._blocking_min_subject_overlap_ratio = (
+            blocking_min_subject_overlap_ratio
+        )
+        self._blocking_min_egress_coverage_ratio = (
+            blocking_min_egress_coverage_ratio
+        )
+        # 구역 정의는 불변이라 외부측 기준선은 여기서 1회만 계산한다(571).
+        self._exit_outward_baselines = zones.exit_outward_baselines()
+        # 차량별 "가장 최근 신뢰 관측 프레임에서 접촉한 EXIT 구역" 집합이다.
+        # 매 신뢰 프레임마다 덮어쓰므로 오래된 접촉이 남지 않는다.
+        self._exit_outward_contacts: dict[PhysicalVehicleId, frozenset[ZoneId]] = {}
 
-    def checkpoint_state(self) -> tuple[object, object, object, object]:
+    def checkpoint_state(self) -> tuple[object, object, object, object, object]:
         """frame UnitOfWork 실패 시 복구할 runtime owner state를 반환한다."""
 
         return (
@@ -156,21 +203,29 @@ class ParkingPipeline:
             self._parking_episode_tracker.checkpoint_state(),
             self._incident_reducer.checkpoint_state(),
             self._blocking_relation_tracker.checkpoint_state(),
+            dict(self._exit_outward_contacts),
         )
 
     def restore_state(
         self,
-        checkpoint: tuple[object, object, object, object],
+        checkpoint: tuple[object, object, object, object, object],
     ) -> None:
-        """DB rollback과 함께 네 owner를 같은 frame 전 시점으로 되돌린다."""
+        """DB rollback과 함께 runtime owner를 같은 frame 전 시점으로 되돌린다."""
 
-        if len(checkpoint) != 4:
+        if len(checkpoint) != 5:
             raise ValueError("invalid ParkingPipeline checkpoint")
-        visit_state, episode_state, incident_state, relation_state = checkpoint
+        (
+            visit_state,
+            episode_state,
+            incident_state,
+            relation_state,
+            outward_contacts,
+        ) = checkpoint
         self._zone_visit_tracker.restore_state(visit_state)
         self._parking_episode_tracker.restore_state(episode_state)
         self._incident_reducer.restore_state(incident_state)
         self._blocking_relation_tracker.restore_state(relation_state)
+        self._exit_outward_contacts = dict(outward_contacts)
 
     def restore_active(
         self,
@@ -182,15 +237,52 @@ class ParkingPipeline:
     ) -> None:
         """durable active aggregate를 끊은 timer chain으로 기동 복원한다.
 
-        ``blocking_relations``는 durable BlockingRelation repository가 아직
-        없어 기본값이 빈 tuple이다. restart 뒤 진행 중이던 관계는 새
-        CANDIDATE로 재시작한다.
+        재시작 wall-clock은 trusted duration에 더하지 않는다.
         """
 
+        self._validate_restore_parking_assignment_zones(parking_episodes)
+        self._validate_restore_blocking_relation_egress(blocking_relations)
         self._zone_visit_tracker.restore_active(zone_visits)
         self._parking_episode_tracker.restore_active(parking_episodes)
         self._incident_reducer.restore_active(incidents)
         self._blocking_relation_tracker.restore_active(blocking_relations)
+
+    def _validate_restore_blocking_relation_egress(
+        self,
+        relations: tuple[BlockingRelation, ...],
+    ) -> None:
+        for relation in relations:
+            if self._egress_aisles.get_or_none(relation.egress_zone_id) is None:
+                raise ValueError(
+                    "active BlockingRelation references an egress aisle absent "
+                    "from the current registry: "
+                    f"{relation.egress_zone_id}"
+                )
+
+    def _validate_restore_parking_assignment_zones(
+        self,
+        parking_episodes: tuple[ParkingEpisode, ...],
+    ) -> None:
+        """복원 assignment의 zone 참조가 현재 registry에 속하는지 검증한다.
+
+        ZoneVisit은 자신의 versioned scalar를 tracker가 검증하지만,
+        ParkingAssignment에는 아직 zone definition version이 없다. 따라서
+        조합 owner가 최소한 현재 registry의 zone 존재 여부를 먼저 확인해
+        복원 뒤 blocking 계산에서 늦게 실패하는 일을 막는다.
+        """
+
+        for episode in parking_episodes:
+            assignment = episode.assignment
+            if (
+                assignment is not None
+                and assignment.zone_id is not None
+                and self._zones.get_or_none(assignment.zone_id) is None
+            ):
+                raise ValueError(
+                    "active ParkingEpisode assignment references a zone absent "
+                    "from the current registry: "
+                    f"zoneId={int(assignment.zone_id)}"
+                )
 
     def process(
         self,
@@ -217,6 +309,8 @@ class ParkingPipeline:
         parking_transitions: list[ParkingTransition] = []
         incident_updates: list[Incident] = []
         incident_transitions: list[IncidentTransition] = []
+        placement_diagnostics: list[PlacementDiagnostic] = []
+        incident_signal_diagnostics: list[IncidentSignalDiagnostic] = []
         frames: dict[PhysicalVehicleId, _VehicleFrame] = {}
 
         # pass 1: 차량별 geometry·scope 갱신. BlockingRelation 후보는 모든
@@ -225,9 +319,18 @@ class ParkingPipeline:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
             observation = _effective_observation(batch, vehicle)
-            assignment = assignment_resolver.resolve(
+            if observation.state is ObservationState.OBSERVED:
+                # degraded/unknown 프레임의 bbox는 공간적으로 신뢰할 수
+                # 없으므로 이전 접촉 값을 보존한다(571).
+                self._exit_outward_contacts[vehicle.physical_vehicle_id] = (
+                    self._outward_contacts(vehicle)
+                )
+            ephemeral_evidence = assignment_resolver.analyze(
                 vehicle,
                 self._zones,
+            )
+            assignment = assignment_resolver.assignment_from_evidence(
+                ephemeral_evidence,
                 min_overlap_ratio=self._assignment_min_overlap_ratio,
                 ambiguous_margin=self._assignment_ambiguous_margin,
             )
@@ -292,19 +395,41 @@ class ParkingPipeline:
                     vehicle.physical_vehicle_id
                 )
             )
+            effective_assignment = assignment
+            effective_evidence = ephemeral_evidence
+            evidence_source = PlacementEvidenceSource.EPHEMERAL_FRAME
+            if (
+                current_episode is not None
+                and current_episode.state
+                in {ParkingState.PARKED, ParkingState.MOVE_PENDING}
+                and current_episode.assignment is not None
+            ):
+                effective_assignment = current_episode.assignment
+                effective_evidence = assignment_resolver.analyze_footprint(
+                    current_episode.assignment.representative_footprint,
+                    observed_at=current_episode.assignment.last_stable_at,
+                    zones=self._zones,
+                )
+                evidence_source = PlacementEvidenceSource.PARKED_SNAPSHOT
             frames[vehicle.physical_vehicle_id] = _VehicleFrame(
                 vehicle=vehicle,
                 context=context,
                 entry_attempt_id=entry_attempt_id,
                 observation=observation,
-                assignment=assignment,
+                parking_motion_observation=motion_observation,
+                assignment=effective_assignment,
+                placement_evidence=effective_evidence,
+                placement_evidence_source=evidence_source,
                 active_visits=active_visits,
                 episode=current_episode,
             )
 
         # pass 2: 이번 frame의 BlockingRelation 후보와 이미 non-terminal인
         # 관계를 함께 재평가한다.
-        blocking_relation_updates = self._process_blocking_relations(
+        (
+            blocking_relation_updates,
+            blocking_evidence,
+        ) = self._process_blocking_relations(
             batch,
             frames,
             incident_updates=incident_updates,
@@ -317,25 +442,51 @@ class ParkingPipeline:
             rule_context = RuleContext(
                 vehicle=frame.vehicle,
                 observation=batch.observation,
+                parking_motion_observation=frame.parking_motion_observation,
                 session_context=frame.context,
                 active_zone_visits=frame.active_visits,
                 parking_episode=frame.episode,
                 parking_assignment=frame.assignment,
+                placement_evidence=frame.placement_evidence,
+                placement_evidence_source=frame.placement_evidence_source,
                 blocking_relations=self._blocking_relation_tracker.active_relations(
                     vehicle_id
                 ),
+                blocking_evidence=blocking_evidence,
                 zones=self._zones,
                 bad_parking_min_primary_overlap_ratio=(
                     self._bad_parking_min_primary_overlap_ratio
                 ),
+                bad_parking_min_secondary_overlap_ratio=(
+                    self._bad_parking_min_secondary_overlap_ratio
+                ),
+                out_of_zone_min_spot_overlap_ratio=(
+                    self._out_of_zone_min_spot_overlap_ratio
+                ),
                 observed_at=frame.vehicle.observed_at,
             )
-            self._evaluate_rules(
+            signals = self._evaluate_rules(
                 rule_context,
                 observation=frame.observation,
                 entry_attempt_id=frame.entry_attempt_id,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
+                incident_signal_diagnostics=incident_signal_diagnostics,
+            )
+            signals_by_code = {signal.key.rule_code: signal for signal in signals}
+            placement_diagnostics.append(
+                PlacementDiagnostic(
+                    physical_vehicle_id=vehicle_id,
+                    track_segment_id=frame.vehicle.track_segment_id,
+                    source=frame.placement_evidence_source,
+                    evidence=frame.placement_evidence,
+                    assignment=frame.assignment,
+                    parking_state=(
+                        None if frame.episode is None else frame.episode.state
+                    ),
+                    bad_parking_signal=signals_by_code[bad_parking.BAD_PARKING],
+                    out_of_zone_signal=signals_by_code[bad_parking.OUT_OF_ZONE],
+                )
             )
 
         # TrackSegment 종료는 의도적으로 사용하지 않는다. PhysicalVehicle의
@@ -378,6 +529,8 @@ class ParkingPipeline:
             incident_updates=tuple(incident_updates),
             incident_transitions=tuple(incident_transitions),
             blocking_relation_updates=blocking_relation_updates,
+            placement_diagnostics=tuple(placement_diagnostics),
+            incident_signal_diagnostics=tuple(incident_signal_diagnostics),
         )
 
     def _process_blocking_relations(
@@ -387,7 +540,10 @@ class ParkingPipeline:
         *,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
-    ) -> tuple[BlockingRelation, ...]:
+    ) -> tuple[
+        tuple[BlockingRelation, ...],
+        Mapping[BlockingRelationId, EgressBlockingEvidence],
+    ]:
         """PARKED 차량의 egress 후보와 기존 non-terminal 관계를 함께 갱신한다.
 
         이미 열린 관계는 victim이 더 이상 이번 frame의 새 후보 조건(PARKED +
@@ -414,14 +570,20 @@ class ParkingPipeline:
                 or victim_frame.assignment.zone_id is None
             ):
                 continue
-            zone_definition = self._zones.get(victim_frame.assignment.zone_id)
-            for egress_zone_id in zone_definition.egress_zone_ids:
+            for egress_aisle in self._egress_aisles.for_parking_zone(
+                victim_frame.assignment.zone_id
+            ):
                 for subject_id in frames:
                     if subject_id == victim_id:
                         continue
-                    candidate_keys.add((subject_id, victim_id, egress_zone_id))
+                    candidate_keys.add(
+                        (subject_id, victim_id, egress_aisle.egress_zone_id)
+                    )
 
         updates: list[BlockingRelation] = []
+        evidence_by_relation: dict[
+            BlockingRelationId, EgressBlockingEvidence
+        ] = {}
         # replay 재현성을 위해 집합 순서가 아니라 key로 정렬해 처리한다.
         ordered_keys = sorted(
             existing_keys | candidate_keys,
@@ -430,6 +592,7 @@ class ParkingPipeline:
         for subject_id, victim_id, egress_zone_id in ordered_keys:
             subject_frame = frames.get(subject_id)
             victim_frame = frames.get(victim_id)
+            evidence: EgressBlockingEvidence | None = None
             # 관계는 subject·victim 둘 중 하나라도 이번 frame에 없거나 관측이
             # 불확실하면 유지만 하고 timer를 멈춘다(§7 "한쪽 관측 UNKNOWN이면
             # lifecycle 유지"). subject_frame이 있어야만 geometry를 잰다.
@@ -443,20 +606,30 @@ class ParkingPipeline:
                 if observation.state is not ObservationState.OBSERVED:
                     signal = PresenceSignal.UNKNOWN
                 else:
-                    egress_zone = self._zones.get(egress_zone_id)
-                    ratio = overlap_ratio(
-                        egress_zone.polygon, subject_frame.vehicle.bbox
+                    egress_aisle = self._egress_aisles.get(egress_zone_id)
+                    evidence = egress_blocking_resolver.analyze(
+                        subject_frame.vehicle.bbox,
+                        egress_aisle,
                     )
                     signal = (
                         PresenceSignal.PRESENT
-                        if ratio >= self._min_overlap_ratio
+                        if (
+                            evidence.subject_overlap_ratio
+                            >= self._blocking_min_subject_overlap_ratio
+                            or evidence.egress_coverage_ratio
+                            >= self._blocking_min_egress_coverage_ratio
+                        )
                         else PresenceSignal.ABSENT
                     )
 
+            source_episode_id = None
+            if victim_frame is not None and victim_frame.episode is not None:
+                source_episode_id = victim_frame.episode.episode_id
             relation = self._blocking_relation_tracker.update(
                 subject_physical_vehicle_id=subject_id,
                 victim_physical_vehicle_id=victim_id,
                 egress_zone_id=egress_zone_id,
+                source_parking_episode_id=source_episode_id,
                 signal=signal,
                 observation=observation,
                 observed_at=batch.observed_at,
@@ -464,6 +637,8 @@ class ParkingPipeline:
             if relation is None:
                 continue
             updates.append(relation)
+            if evidence is not None:
+                evidence_by_relation[relation.blocking_relation_id] = evidence
             if relation.state in {
                 BlockingRelationState.RESOLVED,
                 BlockingRelationState.CANCELED,
@@ -482,7 +657,55 @@ class ParkingPipeline:
                     incident_transitions,
                 )
 
-        return tuple(updates)
+        return tuple(updates), evidence_by_relation
+
+    def exit_zone_traversal_observed(
+        self,
+        physical_vehicle_id: PhysicalVehicleId,
+    ) -> bool:
+        """마지막 관측에서 출차 구역의 외부측에 도달해 있었는지 반환한다(571).
+
+        미관측 차량의 ZoneVisit은 종료되지 않고 pause만 되므로, 부재가
+        확정된 시점에도 마지막 관측 프레임의 방문이 non-terminal로 남아
+        있다. 여기에 "그 프레임에서 외부측 조각과 접촉했는가"를 더해,
+        출차 통로 안쪽에 정지한 채 가려진 차량을 배제한다.
+
+        ``physical_exit()``이 방문을 종료시키기 **전에** 호출해야 한다 —
+        종료 뒤에는 항상 False다. 상태를 변경하지 않는 순수 읽기다.
+
+        motion 방향은 보지 않는다. 차단기 앞에 정지한 차량도 이미 외부측에
+        도달해 있으므로 통과로 인정해야 하며, 방향을 요구하면 그 경우가
+        미탐이 되어 세션이 영구 미결로 남는다.
+        """
+
+        contacts = self._exit_outward_contacts.get(physical_vehicle_id)
+        if not contacts:
+            return False
+        # ``contacts``는 EXIT role 구역 id만 담는다(ZoneRegistry가 그렇게
+        # 유도한다). 그래서 role 재확인 없이 교집합만 보면 된다.
+        return any(
+            visit.zone_id in contacts
+            for visit in self._zone_visit_tracker.active_visits(physical_vehicle_id)
+        )
+
+    def _outward_contacts(
+        self,
+        vehicle: PhysicalVehicleSnapshot,
+    ) -> frozenset[ZoneId]:
+        """이번 프레임에 외부측 기준선을 넘은 EXIT 구역 id를 반환한다(571).
+
+        bbox 자체와 sub-polygon의 겹침이 아니라 bbox **중심**이 기준선의
+        외부 방향 쪽(부호 > 0)에 있는지로 판정한다. 차량이 outward
+        sub-polygon보다 커서 항상 겹치던 문제를 피한다 — 중심은 차량
+        전체가 기준선을 넘었을 때만 외부 방향으로 넘어간다.
+        """
+
+        center = bbox_center(vehicle.bbox)
+        return frozenset(
+            zone_id
+            for zone_id, (origin, direction) in self._exit_outward_baselines.items()
+            if _signed_offset(center, origin, direction) > 0.0
+        )
 
     def physical_exit(
         self,
@@ -499,6 +722,7 @@ class ParkingPipeline:
         보내야 한다.
         """
 
+        self._exit_outward_contacts.pop(physical_vehicle_id, None)
         observation = ObservationStatus(
             state=ObservationState.OBSERVED,
             last_reliable_observed_at=observed_at,
@@ -567,7 +791,8 @@ class ParkingPipeline:
         entry_attempt_id: EntryAttemptId | None,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
-    ) -> None:
+        incident_signal_diagnostics: list[IncidentSignalDiagnostic],
+    ) -> tuple[IncidentSignal, ...]:
         zone_id_by_visit_id = {
             visit.visit_id: visit.zone_id for visit in context.active_zone_visits
         }
@@ -580,8 +805,22 @@ class ParkingPipeline:
             if context.session_context is None
             else context.session_context.parking_session_id
         )
+        evaluated_signals: list[IncidentSignal] = []
         for evaluate in _RULE_EVALUATORS:
             for signal in evaluate(context):
+                evaluated_signals.append(signal)
+                incident_signal_diagnostics.append(
+                    IncidentSignalDiagnostic(
+                        physical_vehicle_id=(
+                            context.vehicle.physical_vehicle_id
+                        ),
+                        track_segment_id=context.vehicle.track_segment_id,
+                        signal=signal,
+                        timing=self._incident_reducer.timing_for_rule(
+                            signal.key.rule_code
+                        ),
+                    )
+                )
                 zone_id: ZoneId | None = None
                 victim_physical_vehicle_id: PhysicalVehicleId | None = None
                 if signal.key.scope_type is IncidentKeyScope.ZONE_VISIT:
@@ -605,6 +844,7 @@ class ParkingPipeline:
                         incident_updates,
                         incident_transitions,
                     )
+        return tuple(evaluated_signals)
 
     @staticmethod
     def _collect_reductions(
@@ -734,3 +974,18 @@ def _parking_transitions(
 def _validate_ratio(value: float, name: str) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise ValueError(f"{name} must be finite and between 0 and 1")
+
+
+def _validate_positive_ratio(value: float, name: str) -> None:
+    if not math.isfinite(value) or not 0.0 < value <= 1.0:
+        raise ValueError(f"{name} must be finite, greater than 0, and at most 1")
+
+
+def _signed_offset(
+    point: tuple[float, float],
+    origin: tuple[float, float],
+    direction: tuple[float, float],
+) -> float:
+    """``origin``에서 ``point``까지 벡터를 단위벡터 ``direction``에 투영한다(571)."""
+
+    return (point[0] - origin[0]) * direction[0] + (point[1] - origin[1]) * direction[1]

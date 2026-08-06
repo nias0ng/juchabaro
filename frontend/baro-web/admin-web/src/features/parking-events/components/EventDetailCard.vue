@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Ban, CheckCircle2, Eye, Send } from '@lucide/vue'
+import { CheckCircle2 } from '@lucide/vue'
 
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, statusTone, typeTone } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
 // 사건 목록(아래쪽 "사건 상세" 패널)과 사건 상세 페이지가 완전히 동일한 내용(상태 배지,
-// 필드 목록, 이미지, 오탐 처리·재알림, 처리 메모 입력/이력)을 보여줘야 해서 공통 컴포넌트로 뺐다.
+// 필드 목록, 이미지, 관리자 확인 내용, 처리 메모 입력/이력)을 보여줘야 해서 공통 컴포넌트로 뺐다.
 const props = defineProps<{ eventId: number }>()
 
 const parkingEventStore = useParkingEventStore()
@@ -26,7 +26,6 @@ const isResolved = computed(() => detail.value?.eventStatus === 'RESOLVED')
 const isDismissed = computed(() => detail.value?.eventStatus === 'DISMISSED')
 // 완료·오탐은 둘 다 종결 상태라 그 이후로는 추가 처리를 할 수 없다.
 const isTerminal = computed(() => isResolved.value || isDismissed.value)
-const hasLinkedRequest = computed(() => Boolean(detail.value?.requestedAt))
 
 const latestResponse = computed(() => {
   const responses = detail.value?.responses ?? []
@@ -43,15 +42,14 @@ const detailFields = computed(() => {
     ['유형', eventTypeLabel(d.eventType)],
     ['위치', location || '-'],
     ['발생 시간', formatDateTime(d.detectedAt)],
-    ['AI 신뢰도', d.violationRatio !== null ? `${d.violationRatio}%` : '-'],
-    ['이동 요청', d.requestedAt ? `${formatDateTime(d.requestedAt)} (재알림 ${d.reminderCount ?? 0}회)` : '이동 요청 없음'],
+    ['이동 요청', d.requestedAt ? `${formatDateTime(d.requestedAt)} (알림 ${d.reminderCount ?? 0}회)` : '이동 요청 없음'],
     ['차주 응답', latestResponse.value ? latestResponse.value.responseType : '응답 없음'],
   ] as [string, string][]
 })
 
 const memoText = ref('')
 const actionError = ref<string | null>(null)
-const submitting = ref<'complete' | 'dismiss' | 'acknowledge' | 'reminder' | null>(null)
+const submitting = ref<'complete' | null>(null)
 
 // 다른 사건으로 바뀌면(선택 행 변경, 라우트 파라미터 변경 등) 이전에 쓰던 메모나 에러가 새
 // 사건에 잘못 남지 않도록 비운다.
@@ -68,12 +66,12 @@ const sortedActionLogs = computed(() =>
   [...(detail.value?.actionLogs ?? [])].sort((a, b) => (a.actedAt < b.actedAt ? 1 : -1)),
 )
 
-async function runAction(kind: 'complete' | 'dismiss' | 'acknowledge' | 'reminder', run: () => Promise<void>) {
+async function runAction(kind: 'complete', run: () => Promise<void>) {
   submitting.value = kind
   actionError.value = null
   try {
     await run()
-    if (kind !== 'reminder') memoText.value = ''
+    memoText.value = ''
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : '처리에 실패했습니다.'
   } finally {
@@ -86,28 +84,15 @@ function handleCompleteClick() {
   if (!memo) return
   void runAction('complete', () => parkingEventStore.completeEvent(props.eventId, memo))
 }
-
-function handleDismissClick() {
-  const memo = memoText.value.trim()
-  if (!memo) return
-  void runAction('dismiss', () => parkingEventStore.dismissEvent(props.eventId, memo))
-}
-
-function handleAcknowledgeClick() {
-  const memo = memoText.value.trim()
-  if (!memo) return
-  void runAction('acknowledge', () => parkingEventStore.acknowledgeEvent(props.eventId, memo))
-}
-
-function handleReminderClick() {
-  void runAction('reminder', () => parkingEventStore.sendReminder(props.eventId))
-}
 </script>
 
 <template>
   <div class="detail-header">
     <h3>사건 상세</h3>
-    <StatusTag :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
+    <span v-if="detail && (detail.eventStatus === 'REQUESTED' || detail.eventStatus === 'RESOLVED')">
+      {{ eventStatusLabel(detail.eventStatus, detail.requestType) }}
+    </span>
+    <StatusTag v-else :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
       {{ detail ? eventStatusLabel(detail.eventStatus, detail.requestType) : '-' }}
     </StatusTag>
   </div>
@@ -140,25 +125,6 @@ function handleReminderClick() {
       </div>
     </div>
 
-    <div class="actions">
-      <button
-        type="button"
-        class="outline-btn"
-        :disabled="isTerminal || !memoText.trim() || submitting !== null"
-        @click="handleDismissClick"
-      >
-        <Ban :size="16" /> {{ isDismissed ? '오탐 종결됨' : '오탐 처리' }}
-      </button>
-      <button
-        type="button"
-        class="primary-btn"
-        :disabled="isTerminal || !hasLinkedRequest || submitting !== null"
-        @click="handleReminderClick"
-      >
-        <Send :size="16" /> 이동 요청 재전송
-      </button>
-    </div>
-
     <div class="memo-section">
       <label class="memo-label" :for="`event-memo-${eventId}`">처리 메모</label>
       <textarea
@@ -166,18 +132,10 @@ function handleReminderClick() {
         v-model="memoText"
         class="memo-input"
         rows="2"
-        placeholder="완료 처리, 오탐 처리 또는 관리자 확인 사유를 입력하세요."
+        placeholder="완료 처리 사유를 입력하세요."
       />
       <p v-if="actionError" class="action-error">{{ actionError }}</p>
       <div class="memo-actions">
-        <button
-          type="button"
-          class="outline-btn"
-          :disabled="isTerminal || !memoText.trim() || submitting !== null"
-          @click="handleAcknowledgeClick"
-        >
-          <Eye :size="16" /> 관리자 확인
-        </button>
         <button
           type="button"
           class="primary-btn"
@@ -301,47 +259,23 @@ function handleReminderClick() {
   object-fit: cover;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-  margin-top: 20px;
-}
-
-.outline-btn,
 .primary-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-sm);
   flex-shrink: 0;
+  border: none;
   border-radius: var(--radius-md);
   padding: var(--spacing-sm) var(--spacing-base);
   font-size: var(--font-size-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.outline-btn {
-  border: 1px solid var(--panel-border);
-  background: none;
-  color: inherit;
-  transition: background-color 0.15s ease;
-}
-
-.outline-btn:hover:not(:disabled) {
-  background: var(--panel-muted);
-}
-
-.primary-btn {
-  border: none;
   font-weight: 600;
+  white-space: nowrap;
   background: var(--panel-primary);
   color: var(--panel-on-primary);
   box-shadow: var(--panel-shadow-pop);
+  cursor: pointer;
 }
 
-.outline-btn:disabled,
 .primary-btn:disabled {
   opacity: 0.4;
   cursor: default;

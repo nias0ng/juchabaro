@@ -34,7 +34,7 @@ durable domain·workflow state, dedup, outbox와 evidence metadata는 SQLite에
 |---|---|---|
 | Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal, MotionEstimator window·motion anchor | 복구하지 않고 새 관측으로 생성 |
 | Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer | 마지막 안전한 하한부터 재개 |
-| Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
+| Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, BlockingRelation Candidate·BLOCKING·RESOLVED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
 
 `[제안값]` dirty checkpoint는 최대 10초마다 하나의 batch transaction으로 기록한다. crash로 잃은 최대 10초의 trusted time은 추정 보충하지 않는다. 확정이 조금 늦어질 수는 있지만 거짓 확정을 만들지 않는다.
 

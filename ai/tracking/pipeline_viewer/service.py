@@ -44,6 +44,19 @@ from src.camera.frame_source import (  # noqa: E402
     calibration_fingerprint,
 )
 from src.parking.zone_registry import ZoneRegistry  # noqa: E402
+from src.parking.egress_aisle_registry import EgressAisleRegistry  # noqa: E402
+from src.parking.models import IncidentRuleTiming  # noqa: E402
+from src.parking.rules.bad_parking import (  # noqa: E402
+    AISLE_BLOCK,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+)
+from src.parking.rules.double_parking import DOUBLE_PARKING  # noqa: E402
+from src.parking.rules.ev_overstay import EV_OVERSTAY  # noqa: E402
+from src.parking.rules.restricted_zone import (  # noqa: E402
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
+)
 from src.replay.publication_preparer import JsonlPublicationPreparer  # noqa: E402
 from src.session.entry_match_coordinator import EntryMatchCoordinator  # noqa: E402
 from src.storage.database import connect_database, open_database  # noqa: E402
@@ -64,8 +77,31 @@ from .tracing import FrameTrace, TraceCollector, parse_entry_attempt_id  # noqa:
 DEFAULT_CAMERA_ID = "PIPELINE-VIEWER"
 DEFAULT_MODEL_PATH = JETSON_ROOT / "model" / "yolov8s.pt"
 DEFAULT_ZONES_PATH = JETSON_ROOT / "config" / "zone_definition.json"
+DEFAULT_EGRESS_AISLES_PATH = JETSON_ROOT / "config" / "egress_aisle.json"
 DEFAULT_CALIBRATION_PATH = REPOSITORY_ROOT / "ai" / "tracking" / "camera_calibration.json"
 ALLOWED_VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv"})
+VIEWER_INCIDENT_RULE_CODES = (
+    DISABLED_ZONE_UNAUTHORIZED,
+    EV_ZONE_UNAUTHORIZED,
+    EV_OVERSTAY,
+    BAD_PARKING,
+    OUT_OF_ZONE,
+    AISLE_BLOCK,
+    DOUBLE_PARKING,
+)
+
+
+def _default_incident_rule_timings() -> tuple[IncidentRuleTiming, ...]:
+    """현재 동작(0초)을 보존한 Viewer용 명시적 rule timing 집합."""
+
+    return tuple(
+        IncidentRuleTiming(
+            rule_code=rule_code,
+            confirm_duration_seconds=0.0,
+            clear_duration_seconds=0.0,
+        )
+        for rule_code in VIEWER_INCIDENT_RULE_CODES
+    )
 
 
 class ViewerInputError(ValueError):
@@ -76,6 +112,7 @@ class ViewerInputError(ValueError):
 class ViewerPaths:
     model: Path = DEFAULT_MODEL_PATH
     zones: Path = DEFAULT_ZONES_PATH
+    egress_aisles: Path = DEFAULT_EGRESS_AISLES_PATH
     calibration: Path = DEFAULT_CALIBRATION_PATH
 
 
@@ -99,12 +136,21 @@ class ViewerPolicy:
     reidentification_ambiguity_margin: float = 0.08
     incident_confirm_seconds: float = 0.0
     incident_clear_seconds: float = 0.0
+    # 위 두 값은 알려지지 않은 future rule의 compatibility fallback이다.
+    # 현재 rule들은 아래 tuple로 독립 조정하며, 아직 권장 운영값은 아니다.
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = field(
+        default_factory=_default_incident_rule_timings
+    )
     zone_presence_min_overlap_ratio: float = 0.40
     assignment_min_overlap_ratio: float = 0.50
     assignment_ambiguous_margin: float = 0.05
     bad_parking_min_primary_overlap_ratio: float = 0.75
+    bad_parking_min_secondary_overlap_ratio: float = 0.25
+    out_of_zone_min_spot_overlap_ratio: float = 0.50
     blocking_relation_confirm_seconds: float = 1.0
     blocking_relation_clear_seconds: float = 1.0
+    blocking_min_subject_overlap_ratio: float = 0.40
+    blocking_min_egress_coverage_ratio: float = 0.40
     entry_match_window_seconds: float = 10.0
     # bbox diagonal로 정규화한 time-window motion evidence의 provisional 값.
     # 운영값으로 승격하기 전에 영상별 replay로 재조정한다.
@@ -149,16 +195,29 @@ class ViewerPolicy:
             ),
             incident_confirm_seconds=self.incident_confirm_seconds,
             incident_clear_seconds=self.incident_clear_seconds,
+            incident_rule_timings=self.incident_rule_timings,
             zone_presence_min_overlap_ratio=self.zone_presence_min_overlap_ratio,
             assignment_min_overlap_ratio=self.assignment_min_overlap_ratio,
             assignment_ambiguous_margin=self.assignment_ambiguous_margin,
             bad_parking_min_primary_overlap_ratio=(
                 self.bad_parking_min_primary_overlap_ratio
             ),
+            bad_parking_min_secondary_overlap_ratio=(
+                self.bad_parking_min_secondary_overlap_ratio
+            ),
+            out_of_zone_min_spot_overlap_ratio=(
+                self.out_of_zone_min_spot_overlap_ratio
+            ),
             blocking_relation_confirm_seconds=(
                 self.blocking_relation_confirm_seconds
             ),
             blocking_relation_clear_seconds=self.blocking_relation_clear_seconds,
+            blocking_min_subject_overlap_ratio=(
+                self.blocking_min_subject_overlap_ratio
+            ),
+            blocking_min_egress_coverage_ratio=(
+                self.blocking_min_egress_coverage_ratio
+            ),
         )
 
 
@@ -261,7 +320,7 @@ def run_viewer_pipeline(
 ) -> ViewerRun:
     """입차 접수 후 실제 Jetson monitoring workflow로 영상을 처리한다."""
 
-    payload, zones = _validate_request(request)
+    payload, zones, egress_aisles = _validate_request(request)
     workspace = Path(
         tempfile.mkdtemp(
             prefix="jetson-pipeline-viewer-",
@@ -327,6 +386,7 @@ def run_viewer_pipeline(
         with events_path.open("w", encoding="utf-8", newline="\n") as events_handle:
             pipeline = build_monitoring_pipeline(
                 zones=zones,
+                egress_aisles=egress_aisles,
                 policy=request.policy.to_monitoring_policy(),
                 dependencies=MonitoringDependencies(
                     camera_id=DEFAULT_CAMERA_ID,
@@ -411,7 +471,7 @@ def cleanup_run(run: ViewerRun) -> None:
 
 def _validate_request(
     request: ViewerRunRequest,
-) -> tuple[EntryEventPayload, ZoneRegistry]:
+) -> tuple[EntryEventPayload, ZoneRegistry, EgressAisleRegistry]:
     payload = parse_entry_event(request.entry_event_json)
     if not request.idempotency_key.strip():
         raise ViewerInputError("Idempotency-Key는 비어 있을 수 없습니다.")
@@ -426,6 +486,7 @@ def _validate_request(
     for label, path in (
         ("YOLO 모델", request.paths.model),
         ("구역 정의", request.paths.zones),
+        ("egress aisle 정의", request.paths.egress_aisles),
         ("카메라 calibration", request.paths.calibration),
     ):
         if not path.is_file():
@@ -436,6 +497,10 @@ def _validate_request(
         raise ViewerInputError("remap balance는 0~1 범위여야 합니다.")
 
     zones = ZoneRegistry.from_file(request.paths.zones)
+    egress_aisles = EgressAisleRegistry.from_file(
+        request.paths.egress_aisles,
+        zones=zones,
+    )
     fingerprint = calibration_fingerprint(
         request.paths.calibration,
         request.policy.remap_balance,
@@ -465,7 +530,7 @@ def _validate_request(
         tracker_config=request.policy.tracker_config,
         confidence=request.policy.confidence,
     )
-    return payload, zones
+    return payload, zones, egress_aisles
 
 
 def _receive_entry_event(

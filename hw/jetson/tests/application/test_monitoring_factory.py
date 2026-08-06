@@ -19,11 +19,13 @@ from src.camera.frame_source import EndOfVideo
 from src.communication.outbox import PreparedPublication
 from src.parking.models import (
     EntryExitRole,
+    IncidentRuleTiming,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
     ZoneType,
 )
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.zone_registry import ZoneRegistry
 from src.storage.database import connect_database, open_database
 from src.tracking.entity_resolver import GeometricEntityResolver
@@ -95,7 +97,11 @@ def _zones() -> ZoneRegistry:
     )
 
 
-def _policy(**overrides: float) -> MonitoringPolicy:
+def _egress_aisles(zones: ZoneRegistry) -> EgressAisleRegistry:
+    return EgressAisleRegistry.empty(zones)
+
+
+def _policy(**overrides: object) -> MonitoringPolicy:
     values = {
         "zone_entry_confirm_seconds": 1.0,
         "zone_exit_confirm_seconds": 1.0,
@@ -113,8 +119,12 @@ def _policy(**overrides: float) -> MonitoringPolicy:
         "assignment_min_overlap_ratio": 0.5,
         "assignment_ambiguous_margin": 0.05,
         "bad_parking_min_primary_overlap_ratio": 0.75,
+        "bad_parking_min_secondary_overlap_ratio": 0.25,
+        "out_of_zone_min_spot_overlap_ratio": 0.50,
         "blocking_relation_confirm_seconds": 1.0,
         "blocking_relation_clear_seconds": 1.0,
+        "blocking_min_subject_overlap_ratio": 0.40,
+        "blocking_min_egress_coverage_ratio": 0.40,
         "motion_window_seconds": 0.75,
         "motion_min_observation_span_seconds": 0.20,
         "motion_max_sample_gap_seconds": 0.50,
@@ -133,9 +143,20 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
     connection.close()
     frame_source = _FrameSource()
     detector = _Detector()
+    zones = _zones()
     pipeline = build_monitoring_pipeline(
-        zones=_zones(),
-        policy=_policy(parking_move_confirm_seconds=0.5),
+        zones=zones,
+        egress_aisles=_egress_aisles(zones),
+        policy=_policy(
+            parking_move_confirm_seconds=0.5,
+            incident_rule_timings=(
+                IncidentRuleTiming(
+                    rule_code="BAD_PARKING",
+                    confirm_duration_seconds=2.0,
+                    clear_duration_seconds=3.0,
+                ),
+            ),
+        ),
         dependencies=MonitoringDependencies(
             camera_id="camera-1",
             frame_source=frame_source,
@@ -166,6 +187,12 @@ def test_factory_builds_one_recoverable_monitoring_owner(tmp_path: Path) -> None
         pipeline._frame_workflow._parking_pipeline._parking_episode_tracker
     )
     assert episode_tracker._movement_confirmation_seconds == 0.5
+    incident_reducer = (
+        pipeline._frame_workflow._parking_pipeline._incident_reducer
+    )
+    timing = incident_reducer.timing_for_rule("BAD_PARKING")
+    assert timing.confirm_duration_seconds == 2.0
+    assert timing.clear_duration_seconds == 3.0
 
 
 def test_factory_rejects_reidentification_window_reaching_absence_commit(
@@ -175,8 +202,10 @@ def test_factory_rejects_reidentification_window_reaching_absence_commit(
     open_database(database_path).close()
 
     with pytest.raises(ValueError, match="must be smaller"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(
                 absence_confirmation_seconds=5.0,
                 reidentification_max_gap_seconds=5.0,
@@ -197,8 +226,10 @@ def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> Non
     connection.close()
 
     with pytest.raises(ValueError, match="entry_zone_min_overlap_ratio"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(entry_zone_min_overlap_ratio=0.0),
             dependencies=MonitoringDependencies(
                 camera_id="camera-1",
@@ -210,28 +241,33 @@ def test_factory_delegates_invalid_policy_to_domain_owner(tmp_path: Path) -> Non
         )
 
 
-def test_factory_rejects_bad_parking_overlap_below_assignment_overlap(
+def test_factory_keeps_assignment_and_violation_thresholds_independent(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "invalid-overlap.db"
     connection = open_database(database_path)
     connection.close()
 
-    with pytest.raises(ValueError, match="bad_parking_min_primary_overlap_ratio"):
-        build_monitoring_pipeline(
-            zones=_zones(),
-            policy=_policy(
-                assignment_min_overlap_ratio=0.5,
-                bad_parking_min_primary_overlap_ratio=0.49,
-            ),
-            dependencies=MonitoringDependencies(
-                camera_id="camera-1",
-                frame_source=_FrameSource(),
-                detector=_Detector(),
-                publication_preparer=_PublicationPreparer(),
-                connection_factory=lambda: connect_database(database_path),
-            ),
-        )
+    zones = _zones()
+    pipeline = build_monitoring_pipeline(
+        zones=zones,
+        egress_aisles=_egress_aisles(zones),
+        policy=_policy(
+            assignment_min_overlap_ratio=0.5,
+            bad_parking_min_primary_overlap_ratio=0.49,
+            bad_parking_min_secondary_overlap_ratio=0.33,
+            out_of_zone_min_spot_overlap_ratio=0.61,
+        ),
+        dependencies=MonitoringDependencies(
+            camera_id="camera-1",
+            frame_source=_FrameSource(),
+            detector=_Detector(),
+            publication_preparer=_PublicationPreparer(),
+            connection_factory=lambda: connect_database(database_path),
+        ),
+    )
+
+    assert pipeline is not None
 
 
 def test_factory_delegates_invalid_motion_policy_to_motion_owner(
@@ -241,8 +277,10 @@ def test_factory_delegates_invalid_motion_policy_to_motion_owner(
     open_database(database_path).close()
 
     with pytest.raises(ValueError, match="stationary_threshold"):
+        zones = _zones()
         build_monitoring_pipeline(
-            zones=_zones(),
+            zones=zones,
+            egress_aisles=_egress_aisles(zones),
             policy=_policy(
                 motion_stationary_threshold=0.10,
                 motion_moving_threshold=0.10,

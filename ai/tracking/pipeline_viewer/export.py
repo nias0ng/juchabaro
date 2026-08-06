@@ -9,6 +9,7 @@ pre-track detection, identity·motion projection과 PhysicalVehicle observation�
 from __future__ import annotations
 
 import csv
+import json
 from collections.abc import Mapping, Sequence
 from io import StringIO
 from typing import TYPE_CHECKING, Any
@@ -82,9 +83,44 @@ DIAGNOSTIC_FIELDS = (
     "absenceTrustedSeconds",
     "absenceConfirmedAt",
     "notPresentConfirmed",
+    "evidenceSource",
+    "placementObservedAt",
+    "zoneDefinitionVersion",
+    "representativeFootprintJson",
+    "candidateOverlapsJson",
+    "primaryZoneId",
+    "primaryOverlapRatio",
+    "secondaryZoneId",
+    "secondaryOverlapRatio",
+    "dominanceGap",
+    "spotUnionOverlapRatio",
+    "outsideSpotOverlapRatio",
+    "assignmentState",
+    "assignmentZoneId",
+    "assignmentReason",
+    "assignmentConfidence",
+    "parkingState",
+    "badParkingValue",
+    "badParkingReason",
+    "badParkingReasonsJson",
+    "badParkingConfirmable",
+    "outOfZoneValue",
+    "outOfZoneReason",
+    "outOfZoneReasonsJson",
+    "outOfZoneConfirmable",
+    "incidentScopeType",
+    "incidentScopeId",
+    "incidentRuleCode",
+    "incidentSignalValue",
+    "incidentSignalConfirmable",
+    "incidentSignalEvidenceJson",
+    "incidentConfirmSeconds",
+    "incidentClearSeconds",
     "endedTrackSegmentIds",
     "elapsedMs",
 )
+
+DIAGNOSTIC_SCHEMA_VERSION = 4
 
 
 def state_change_rows(frames: Sequence[FrameTrace]) -> list[dict[str, Any]]:
@@ -120,6 +156,10 @@ def diagnostic_rows(
     ``IDENTITY_RESOLUTION``은 EntityResolver의 결정과 근거이며,
     ``MOTION_ESTIMATE``는 MotionEstimator의 시간 창 판정과 근거이고,
     ``TRACKED_VEHICLE``은 ID가 부여돼 도메인에 전달된 관측이다.
+    ``INCIDENT_SIGNAL``은 reducer에 실제 전달한 삼상태 rule 입력과 선택된
+    confirm/clear 정책을 보존한다.
+    ``PLACEMENT_EVIDENCE``는 pipeline이 규칙 평가에 실제 사용한
+    geometry·assignment·BAD_PARKING/OUT_OF_ZONE 근거를 재계산 없이 보존한다.
     """
 
     rows: list[dict[str, Any]] = []
@@ -158,7 +198,7 @@ def diagnostic_rows(
             {
                 **common,
                 "rowType": "FRAME",
-                "diagnosticSchemaVersion": 2,
+                "diagnosticSchemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
                 "policySnapshotJson": policy_snapshot_json,
             }
         )
@@ -300,6 +340,131 @@ def diagnostic_rows(
                     "notPresentConfirmed": physical_vehicle_id in confirmed_ids,
                 }
             )
+
+        for diagnostic in (
+            frame.result.parking_result.incident_signal_diagnostics
+        ):
+            signal = diagnostic.signal
+            timing = diagnostic.timing
+            rows.append(
+                {
+                    **common,
+                    "rowType": "INCIDENT_SIGNAL",
+                    "vehicleAlias": aliases.get(
+                        diagnostic.physical_vehicle_id,
+                        str(diagnostic.physical_vehicle_id)[:8],
+                    ),
+                    "physicalVehicleId": str(
+                        diagnostic.physical_vehicle_id
+                    ),
+                    "trackSegmentId": int(diagnostic.track_segment_id),
+                    "incidentScopeType": signal.key.scope_type.value,
+                    "incidentScopeId": str(signal.key.scope_id),
+                    "incidentRuleCode": signal.key.rule_code,
+                    "incidentSignalValue": signal.value.value,
+                    "incidentSignalConfirmable": signal.confirmable,
+                    "incidentSignalEvidenceJson": _canonical_json(
+                        signal.evidence
+                    ),
+                    "incidentConfirmSeconds": (
+                        timing.confirm_duration_seconds
+                    ),
+                    "incidentClearSeconds": timing.clear_duration_seconds,
+                }
+            )
+
+        for diagnostic in frame.result.parking_result.placement_diagnostics:
+            evidence = diagnostic.evidence
+            assignment = diagnostic.assignment
+            rows.append(
+                {
+                    **common,
+                    "rowType": "PLACEMENT_EVIDENCE",
+                    "vehicleAlias": aliases.get(
+                        diagnostic.physical_vehicle_id,
+                        str(diagnostic.physical_vehicle_id)[:8],
+                    ),
+                    "physicalVehicleId": str(
+                        diagnostic.physical_vehicle_id
+                    ),
+                    "trackSegmentId": int(diagnostic.track_segment_id),
+                    "evidenceSource": diagnostic.source.value,
+                    "placementObservedAt": evidence.observed_at.isoformat(),
+                    "zoneDefinitionVersion": int(
+                        evidence.zone_definition_version
+                    ),
+                    "representativeFootprintJson": _canonical_json(
+                        evidence.representative_footprint
+                    ),
+                    "candidateOverlapsJson": _canonical_json(
+                        [
+                            {
+                                "overlapRatio": candidate.overlap_ratio,
+                                "zoneId": int(candidate.zone_id),
+                            }
+                            for candidate in evidence.candidate_overlaps
+                        ]
+                    ),
+                    "primaryZoneId": (
+                        None
+                        if evidence.primary_zone_id is None
+                        else int(evidence.primary_zone_id)
+                    ),
+                    "primaryOverlapRatio": evidence.primary_overlap_ratio,
+                    "secondaryZoneId": (
+                        None
+                        if evidence.secondary_zone_id is None
+                        else int(evidence.secondary_zone_id)
+                    ),
+                    "secondaryOverlapRatio": (
+                        evidence.secondary_overlap_ratio
+                    ),
+                    "dominanceGap": evidence.dominance_gap,
+                    "spotUnionOverlapRatio": (
+                        evidence.spot_union_overlap_ratio
+                    ),
+                    "outsideSpotOverlapRatio": (
+                        evidence.outside_spot_overlap_ratio
+                    ),
+                    "assignmentState": assignment.state.value,
+                    "assignmentZoneId": (
+                        None
+                        if assignment.zone_id is None
+                        else int(assignment.zone_id)
+                    ),
+                    "assignmentReason": assignment.unassigned_reason,
+                    "assignmentConfidence": assignment.confidence,
+                    "parkingState": (
+                        None
+                        if diagnostic.parking_state is None
+                        else diagnostic.parking_state.value
+                    ),
+                    "badParkingValue": (
+                        diagnostic.bad_parking_signal.value.value
+                    ),
+                    "badParkingReason": _signal_reason(
+                        diagnostic.bad_parking_signal
+                    ),
+                    "badParkingReasonsJson": _signal_reasons_json(
+                        diagnostic.bad_parking_signal
+                    ),
+                    "badParkingConfirmable": (
+                        diagnostic.bad_parking_signal.confirmable
+                    ),
+                    "outOfZoneValue": (
+                        diagnostic.out_of_zone_signal.value.value
+                    ),
+                    "outOfZoneReason": _signal_reason(
+                        diagnostic.out_of_zone_signal
+                    ),
+                    "outOfZoneReasonsJson": _signal_reasons_json(
+                        diagnostic.out_of_zone_signal
+                    ),
+                    "outOfZoneConfirmable": (
+                        diagnostic.out_of_zone_signal.confirmable
+                    ),
+                }
+            )
     return rows
 
 
@@ -329,6 +494,25 @@ def _bbox_values(bbox: Any) -> dict[str, float]:
         "bboxX2": bbox.x2,
         "bboxY2": bbox.y2,
     }
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _signal_reason(signal: Any) -> str | None:
+    reason = signal.evidence.get("reason")
+    return None if reason is None else str(reason)
+
+
+def _signal_reasons_json(signal: Any) -> str:
+    reasons = signal.evidence.get("reasons")
+    return _canonical_json(() if reasons is None else reasons)
 
 
 def _format_seconds(value: float) -> str:

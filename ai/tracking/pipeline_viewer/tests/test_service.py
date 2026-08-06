@@ -25,18 +25,41 @@ def test_default_model_path_uses_jetson_model_directory() -> None:
     )
 
 
-def test_bad_parking_overlap_default_is_forwarded_to_monitoring_policy() -> None:
+def test_placement_defaults_are_forwarded_to_monitoring_policy() -> None:
     viewer_policy = ViewerPolicy()
+    monitoring = viewer_policy.to_monitoring_policy()
 
     assert viewer_policy.bad_parking_min_primary_overlap_ratio == 0.75
-    assert (
-        viewer_policy.to_monitoring_policy().bad_parking_min_primary_overlap_ratio
-        == 0.75
-    )
+    assert viewer_policy.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert viewer_policy.out_of_zone_min_spot_overlap_ratio == 0.50
+    assert monitoring.bad_parking_min_primary_overlap_ratio == 0.75
+    assert monitoring.bad_parking_min_secondary_overlap_ratio == 0.25
+    assert monitoring.out_of_zone_min_spot_overlap_ratio == 0.50
 
 
 def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:
     assert ViewerPolicy().confidence == 0.01
+
+
+def test_incident_rule_timings_are_explicit_and_forwarded_exactly() -> None:
+    policy = ViewerPolicy()
+    monitoring = policy.to_monitoring_policy()
+
+    assert {timing.rule_code for timing in policy.incident_rule_timings} == {
+        "DISABLED_ZONE_UNAUTHORIZED",
+        "EV_ZONE_UNAUTHORIZED",
+        "EV_OVERSTAY",
+        "BAD_PARKING",
+        "OUT_OF_ZONE",
+        "AISLE_BLOCK",
+        "DOUBLE_PARKING",
+    }
+    assert all(
+        timing.confirm_duration_seconds == 0.0
+        and timing.clear_duration_seconds == 0.0
+        for timing in policy.incident_rule_timings
+    )
+    assert monitoring.incident_rule_timings == policy.incident_rule_timings
 
 
 def test_reidentification_window_bridges_observed_multisecond_id_switch() -> None:
@@ -91,6 +114,11 @@ def test_policy_snapshot_is_canonical_and_contains_actual_test_overrides() -> No
     assert decoded["parking_confirm_seconds"] == 5.0
     assert decoded["parking_move_confirm_seconds"] == 0.5
     assert decoded["motion_stationary_threshold"] == pytest.approx(0.03)
+    assert decoded["incident_rule_timings"][0] == {
+        "clear_duration_seconds": 0.0,
+        "confirm_duration_seconds": 0.0,
+        "rule_code": "DISABLED_ZONE_UNAUTHORIZED",
+    }
     assert list(decoded) == sorted(decoded)
 
 

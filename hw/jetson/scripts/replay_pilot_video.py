@@ -46,6 +46,7 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
     python -m scripts.replay_pilot_video \\
         --video ../../docs/video/video1.mp4 \\
         --zones-file config/zone_definition.pilot.json \\
+        --egress-aisles-file config/egress_aisle.pilot.json \\
         --calibration ../../ai/tracking/camera_calibration.json \\
         --model-path ../../ai/training/runs/.../weights/best.pt \\
         --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \\
@@ -64,6 +65,8 @@ uvicorn src.main:app`과 같은 이유 — `src`/`scripts`를 패키지로 해�
         --reidentification-ambiguity-margin 0.08 \\
         --assignment-min-overlap-ratio 0.5 --assignment-ambiguous-margin 0.05 \\
         --bad-parking-min-primary-overlap-ratio 0.75 \\
+        --bad-parking-min-secondary-overlap-ratio 0.25 \\
+        --out-of-zone-min-spot-overlap-ratio 0.50 \\
         --blocking-relation-confirm-seconds 3.0 --blocking-relation-clear-seconds 3.0 \\
         --out-events out/video1_events.jsonl \\
         --out-zone-visits out/video1_zone_visits.jsonl
@@ -104,6 +107,7 @@ from src.camera.frame_source import (
     calibration_fingerprint,
 )
 from src.parking.zone_registry import ZoneRegistry, ZoneRegistryError
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.replay.zone_visit_publisher import DedupingZoneVisitPublisher, ZoneVisitJsonlPublisher
 from src.storage.database import connect_database, open_database
@@ -120,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--zones-file", type=Path, required=True)
+    parser.add_argument("--egress-aisles-file", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, default=None)
     parser.add_argument("--camera-id", default="PILOT-VIDEO")
     parser.add_argument(
@@ -210,12 +215,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="정상 주차로 인정할 1위 주차면 최소 포함률. 파일럿 실측값을 필수로 받는다.",
     )
     parser.add_argument(
+        "--bad-parking-min-secondary-overlap-ratio",
+        type=float,
+        required=True,
+        help="BAD_PARKING으로 보는 두 번째 주차면의 최소 차량 포함 비율.",
+    )
+    parser.add_argument(
+        "--out-of-zone-min-spot-overlap-ratio",
+        type=float,
+        required=True,
+        help="OUT_OF_ZONE이 아니기 위한 전체 주차면 union의 최소 차량 포함 비율.",
+    )
+    parser.add_argument(
         "--blocking-relation-confirm-seconds", type=float, required=True,
         help="이중주차 차단 관계 확정 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
     )
     parser.add_argument(
         "--blocking-relation-clear-seconds", type=float, required=True,
         help="이중주차 차단 관계 해소 시간(초). docs §14에 TBD로 남은 값이라 필수다.",
+    )
+    parser.add_argument(
+        "--blocking-min-subject-overlap-ratio", type=float, required=True,
+        help="방해 차량 footprint 면적 대비 egress 최소 교차 비율.",
+    )
+    parser.add_argument(
+        "--blocking-min-egress-coverage-ratio", type=float, required=True,
+        help="egress aisle 면적 대비 차량 최소 점유 비율.",
     )
     parser.add_argument(
         "--parking-confirm-seconds", type=float, default=600.0,
@@ -310,6 +335,7 @@ def verify_zone_calibration(args: argparse.Namespace) -> None:
             "같은 설정으로 zones 파일을 다시 만들거나 --calibration/--remap-balance를 "
             "zones 파일에 맞추세요."
         )
+    EgressAisleRegistry.from_file(args.egress_aisles_file, zones=zones)
 
 
 def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
@@ -338,8 +364,20 @@ def build_policy(args: argparse.Namespace) -> MonitoringPolicy:
         bad_parking_min_primary_overlap_ratio=(
             args.bad_parking_min_primary_overlap_ratio
         ),
+        bad_parking_min_secondary_overlap_ratio=(
+            args.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=(
+            args.out_of_zone_min_spot_overlap_ratio
+        ),
         blocking_relation_confirm_seconds=args.blocking_relation_confirm_seconds,
         blocking_relation_clear_seconds=args.blocking_relation_clear_seconds,
+        blocking_min_subject_overlap_ratio=(
+            args.blocking_min_subject_overlap_ratio
+        ),
+        blocking_min_egress_coverage_ratio=(
+            args.blocking_min_egress_coverage_ratio
+        ),
         motion_window_seconds=args.motion_window_seconds,
         motion_min_observation_span_seconds=(
             args.motion_min_observation_span_seconds
@@ -377,8 +415,13 @@ def build_pipeline(
         model_path=args.model_path, tracker_config=args.tracker_config, confidence=args.confidence
     )
 
+    zones = ZoneRegistry.from_file(args.zones_file)
     pipeline = build_monitoring_pipeline(
-        zones=ZoneRegistry.from_file(args.zones_file),
+        zones=zones,
+        egress_aisles=EgressAisleRegistry.from_file(
+            args.egress_aisles_file,
+            zones=zones,
+        ),
         policy=build_policy(args),
         dependencies=MonitoringDependencies(
             camera_id=args.camera_id,

@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from collections.abc import Collection
 from typing import Callable, Protocol
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from src.parking.models import (
     IncidentKey,
     IncidentKeyScope,
     IncidentReduction,
+    IncidentRuleTiming,
     IncidentSignal,
     IncidentSignalValue,
     IncidentState,
@@ -63,6 +65,11 @@ class IncidentReducer(Protocol):
         victim_physical_vehicle_id: PhysicalVehicleId | None = None,
     ) -> IncidentReduction | None:
         """규칙 신호 하나를 적용한다. 완전 무동작일 때만 ``None``이다."""
+
+        ...
+
+    def timing_for_rule(self, rule_code: str) -> IncidentRuleTiming:
+        """새 Incident에 적용할 rule별 immutable timing을 반환한다."""
 
         ...
 
@@ -145,6 +152,7 @@ class InMemoryIncidentReducer:
         trusted_sample_max_gap_seconds: float,
         confirm_duration_seconds: float = 0.0,
         clear_duration_seconds: float = 0.0,
+        rule_timings: Collection[IncidentRuleTiming] = (),
     ) -> None:
         require_positive(
             trusted_sample_max_gap_seconds,
@@ -157,12 +165,39 @@ class InMemoryIncidentReducer:
         require_non_negative(confirm_duration_seconds, "confirm_duration_seconds")
         require_non_negative(clear_duration_seconds, "clear_duration_seconds")
         self._trusted_sample_max_gap_seconds = trusted_sample_max_gap_seconds
-        self._confirm_duration_seconds = confirm_duration_seconds
-        self._clear_duration_seconds = clear_duration_seconds
+        self._default_timing = IncidentRuleTiming(
+            rule_code="*",
+            confirm_duration_seconds=confirm_duration_seconds,
+            clear_duration_seconds=clear_duration_seconds,
+        )
+        timings_by_rule: dict[str, IncidentRuleTiming] = {}
+        for timing in rule_timings:
+            if timing.rule_code in timings_by_rule:
+                raise ValueError(
+                    f"duplicate Incident timing rule_code: {timing.rule_code}"
+                )
+            timings_by_rule[timing.rule_code] = timing
+        self._timings_by_rule = timings_by_rule
         self._records: dict[IncidentId, Incident] = {}
         self._latest_id_by_key: dict[IncidentKey, IncidentId] = {}
         self._active_id_by_key: dict[IncidentKey, IncidentId] = {}
         self._last_sample_by_id: dict[IncidentId, _LastSample] = {}
+
+    def timing_for_rule(self, rule_code: str) -> IncidentRuleTiming:
+        """명시적 override 또는 compatibility 기본값을 정규화해 반환한다."""
+
+        if not rule_code:
+            raise ValueError("rule_code must not be empty")
+        timing = self._timings_by_rule.get(rule_code)
+        if timing is not None:
+            return timing
+        return IncidentRuleTiming(
+            rule_code=rule_code,
+            confirm_duration_seconds=(
+                self._default_timing.confirm_duration_seconds
+            ),
+            clear_duration_seconds=self._default_timing.clear_duration_seconds,
+        )
 
     def checkpoint_state(self) -> object:
         """Incident index와 trusted sample chain을 함께 복사한다."""
@@ -692,6 +727,7 @@ class InMemoryIncidentReducer:
         zone_id: ZoneId | None,
         victim_physical_vehicle_id: PhysicalVehicleId | None,
     ) -> Incident:
+        timing = self.timing_for_rule(signal.key.rule_code)
         return Incident(
             incident_id=IncidentId(uuid4()),
             key=signal.key,
@@ -700,8 +736,8 @@ class InMemoryIncidentReducer:
             observation=observation,
             confirm_trusted_seconds=0.0,
             clear_trusted_seconds=0.0,
-            confirm_duration_seconds=self._confirm_duration_seconds,
-            clear_duration_seconds=self._clear_duration_seconds,
+            confirm_duration_seconds=timing.confirm_duration_seconds,
+            clear_duration_seconds=timing.clear_duration_seconds,
             record_version=1,
             publication_revision=0,
             first_observed_at=signal.observed_at,

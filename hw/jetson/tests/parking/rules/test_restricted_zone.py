@@ -126,13 +126,18 @@ def make_context(
     return RuleContext(
         vehicle=vehicle,
         observation=context_observation or observed(),
+        parking_motion_observation=observed(),
         session_context=session_context,
         active_zone_visits=(make_visit(1, observation=visit_observation),),
         parking_episode=None,
         parking_assignment=None,
+        placement_evidence=None,
+        placement_evidence_source=None,
         blocking_relations=(),
         zones=ZoneRegistry((make_zone(1, zone_type),)),
         bad_parking_min_primary_overlap_ratio=0.75,
+        bad_parking_min_secondary_overlap_ratio=0.25,
+        out_of_zone_min_spot_overlap_ratio=0.50,
         observed_at=T0,
     )
 

@@ -24,7 +24,9 @@ from src.application.session_observation_workflow import (
 from src.camera.frame_source import FrameSource
 from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.incident_reducer import InMemoryIncidentReducer
+from src.parking.models import IncidentRuleTiming
 from src.parking.parking_episode_tracker import InMemoryParkingEpisodeTracker
 from src.parking.pipeline import ParkingPipeline
 from src.parking.zone_registry import ZoneRegistry
@@ -61,8 +63,14 @@ class MonitoringPolicy:
     assignment_min_overlap_ratio: float
     assignment_ambiguous_margin: float
     bad_parking_min_primary_overlap_ratio: float
+    bad_parking_min_secondary_overlap_ratio: float
+    out_of_zone_min_spot_overlap_ratio: float
     blocking_relation_confirm_seconds: float
     blocking_relation_clear_seconds: float
+    # 이중주차 기하 evidence 전용 정책이다. ZoneVisit 임계값을
+    # 재사용하지 않고 파일럿 영상으로 독립 재조정한다.
+    blocking_min_subject_overlap_ratio: float
+    blocking_min_egress_coverage_ratio: float
     # MotionEstimator가 소유하는 ephemeral bbox evidence 정책이다. 아래 값은
     # ParkingEpisode의 주차/이동 확정 시간과 의미가 다르며 서로 대체하지 않는다.
     motion_window_seconds: float
@@ -72,6 +80,9 @@ class MonitoringPolicy:
     motion_moving_threshold: float
     motion_min_samples: int
     motion_min_trend_consistency: float
+    # 빈 tuple이면 incident_confirm/clear_seconds가 모든 규칙의 compatibility
+    # 기본값이다. 명시된 규칙만 새 Incident 생성 시 override한다.
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,6 +106,7 @@ class MonitoringDependencies:
 def build_monitoring_pipeline(
     *,
     zones: ZoneRegistry,
+    egress_aisles: EgressAisleRegistry,
     policy: MonitoringPolicy,
     dependencies: MonitoringDependencies,
 ) -> MonitoringPipeline:
@@ -115,6 +127,7 @@ def build_monitoring_pipeline(
     )
     parking_pipeline = ParkingPipeline(
         zones=zones,
+        egress_aisles=egress_aisles,
         zone_visit_tracker=InMemoryZoneVisitTracker(
             zone_definition_version=zones.zone_definition_version,
             entry_confirm_seconds=policy.zone_entry_confirm_seconds,
@@ -138,6 +151,7 @@ def build_monitoring_pipeline(
             ),
             confirm_duration_seconds=policy.incident_confirm_seconds,
             clear_duration_seconds=policy.incident_clear_seconds,
+            rule_timings=policy.incident_rule_timings,
         ),
         blocking_relation_tracker=InMemoryBlockingRelationTracker(
             confirm_duration_seconds=policy.blocking_relation_confirm_seconds,
@@ -155,6 +169,18 @@ def build_monitoring_pipeline(
         ),
         bad_parking_min_primary_overlap_ratio=(
             policy.bad_parking_min_primary_overlap_ratio
+        ),
+        bad_parking_min_secondary_overlap_ratio=(
+            policy.bad_parking_min_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=(
+            policy.out_of_zone_min_spot_overlap_ratio
+        ),
+        blocking_min_subject_overlap_ratio=(
+            policy.blocking_min_subject_overlap_ratio
+        ),
+        blocking_min_egress_coverage_ratio=(
+            policy.blocking_min_egress_coverage_ratio
         ),
     )
     frame_workflow = FrameObservationWorkflow(

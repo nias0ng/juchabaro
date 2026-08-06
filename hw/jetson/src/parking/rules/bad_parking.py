@@ -1,17 +1,14 @@
-"""차량 범위의 불량주차·구역 외·통행로 침범 술어를 독립 평가한다.
+"""lifecycle 상태를 만들지 않고 geometry evidence의 공간 위반을 평가한다.
 
-최신 geometry 결과인 ``RuleContext.parking_assignment``가 술어 입력이다.
-``ParkingEpisode``의 저장된 assignment는 감사 snapshot일 뿐 재평가에 쓰지 않고,
-episode의 ``PARKED`` 상태만 새 Incident의 OPEN eligibility를 결정한다.
-한 주차면에 배정됐더라도 차량 footprint의 1위 주차면 포함률이 정책값보다
-낮으면 주차면 밖으로 튀어나온 불량 주차로 평가한다.
+Assignment와 위반은 하나의 immutable ``PlacementEvidence``를 서로 독립적으로
+해석한다. 이 evaluator는 삼상태 signal만 만들며 confirm/clear lifecycle은
+``IncidentReducer``만 소유한다.
 """
 
 from __future__ import annotations
 
 from src.domain.models import ObservationState
 from src.parking.models import (
-    AssignmentState,
     IncidentKey,
     IncidentSignal,
     IncidentSignalValue,
@@ -25,23 +22,29 @@ BAD_PARKING = "BAD_PARKING"
 OUT_OF_ZONE = "OUT_OF_ZONE"
 AISLE_BLOCK = "AISLE_BLOCK"
 
+_RULES = (BAD_PARKING, OUT_OF_ZONE, AISLE_BLOCK)
+
 
 def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
-    """서로 우선순위를 두지 않고 세 규칙의 현재 값을 모두 반환한다."""
+    """모든 placement rule의 독립적인 삼상태 signal을 반환한다."""
 
     if not _frame_is_observed(context):
-        return tuple(_unknown(context, code, "OBSERVATION_UNAVAILABLE") for code in _RULES)
-
+        return tuple(
+            _unknown(context, code, "OBSERVATION_UNAVAILABLE")
+            for code in _RULES
+        )
     if (
-        context.parking_episode is not None
-        and context.parking_episode.observation.state
-        is not ObservationState.OBSERVED
+        context.parking_motion_observation.state is not ObservationState.OBSERVED
+        or (
+            context.parking_episode is not None
+            and context.parking_episode.observation.state
+            is not ObservationState.OBSERVED
+        )
     ):
         return tuple(
             _unknown(context, code, "PARKING_MOTION_DEPENDENCY_UNAVAILABLE")
             for code in _RULES
         )
-
     if (
         context.parking_episode is not None
         and context.parking_episode.state is ParkingState.MOVE_PENDING
@@ -55,17 +58,27 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
         context.parking_episode is not None
         and context.parking_episode.state is ParkingState.PARKED
     )
-
-    bad_value, out_value = _assignment_predicates(context)
+    bad_value, out_value, bad_reasons, out_reasons = _placement_predicates(
+        context
+    )
     aisle_value = _aisle_predicate(context)
     return (
-        _signal(context, BAD_PARKING, bad_value, parked),
-        _signal(context, OUT_OF_ZONE, out_value, parked),
+        _signal(
+            context,
+            BAD_PARKING,
+            bad_value,
+            parked,
+            reasons=bad_reasons,
+        ),
+        _signal(
+            context,
+            OUT_OF_ZONE,
+            out_value,
+            parked,
+            reasons=out_reasons,
+        ),
         _signal(context, AISLE_BLOCK, aisle_value, parked),
     )
-
-
-_RULES = (BAD_PARKING, OUT_OF_ZONE, AISLE_BLOCK)
 
 
 def _frame_is_observed(context: RuleContext) -> bool:
@@ -75,19 +88,54 @@ def _frame_is_observed(context: RuleContext) -> bool:
     )
 
 
-def _assignment_predicates(
+def _placement_predicates(
     context: RuleContext,
-) -> tuple[IncidentSignalValue, IncidentSignalValue]:
-    assignment = context.parking_assignment
-    if assignment is None:
-        return IncidentSignalValue.UNKNOWN, IncidentSignalValue.UNKNOWN
-    if assignment.state is AssignmentState.AMBIGUOUS:
-        return IncidentSignalValue.MATCHED, IncidentSignalValue.NOT_MATCHED
-    if assignment.state is AssignmentState.UNASSIGNED:
-        return IncidentSignalValue.NOT_MATCHED, IncidentSignalValue.MATCHED
-    if assignment.confidence < context.bad_parking_min_primary_overlap_ratio:
-        return IncidentSignalValue.MATCHED, IncidentSignalValue.NOT_MATCHED
-    return IncidentSignalValue.NOT_MATCHED, IncidentSignalValue.NOT_MATCHED
+) -> tuple[
+    IncidentSignalValue,
+    IncidentSignalValue,
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    evidence = context.placement_evidence
+    if evidence is None:
+        return (
+            IncidentSignalValue.UNKNOWN,
+            IncidentSignalValue.UNKNOWN,
+            (),
+            (),
+        )
+    if (
+        evidence.spot_union_overlap_ratio
+        < context.out_of_zone_min_spot_overlap_ratio
+    ):
+        return (
+            IncidentSignalValue.NOT_MATCHED,
+            IncidentSignalValue.MATCHED,
+            (),
+            ("INSUFFICIENT_SPOT_UNION_OVERLAP",),
+        )
+
+    bad_reasons: list[str] = []
+    if (
+        evidence.primary_overlap_ratio
+        < context.bad_parking_min_primary_overlap_ratio
+    ):
+        bad_reasons.append("LOW_PRIMARY_OVERLAP")
+    if (
+        evidence.secondary_overlap_ratio
+        >= context.bad_parking_min_secondary_overlap_ratio
+    ):
+        bad_reasons.append("MULTI_SPOT_OVERLAP")
+    return (
+        (
+            IncidentSignalValue.MATCHED
+            if bad_reasons
+            else IncidentSignalValue.NOT_MATCHED
+        ),
+        IncidentSignalValue.NOT_MATCHED,
+        tuple(bad_reasons),
+        (),
+    )
 
 
 def _aisle_predicate(context: RuleContext) -> IncidentSignalValue:
@@ -109,7 +157,11 @@ def _aisle_predicate(context: RuleContext) -> IncidentSignalValue:
             uncertain = True
             continue
         return IncidentSignalValue.MATCHED
-    return IncidentSignalValue.UNKNOWN if uncertain else IncidentSignalValue.NOT_MATCHED
+    return (
+        IncidentSignalValue.UNKNOWN
+        if uncertain
+        else IncidentSignalValue.NOT_MATCHED
+    )
 
 
 def _signal(
@@ -117,40 +169,100 @@ def _signal(
     rule_code: str,
     value: IncidentSignalValue,
     parked: bool,
+    *,
+    reasons: tuple[str, ...] = (),
 ) -> IncidentSignal:
-    assignment = context.parking_assignment
     return IncidentSignal(
         key=IncidentKey.for_physical_vehicle(
-            context.vehicle.physical_vehicle_id, rule_code
+            context.vehicle.physical_vehicle_id,
+            rule_code,
         ),
         value=value,
         confirmable=value is IncidentSignalValue.MATCHED and parked,
         observed_at=context.observed_at,
-        evidence={
-            "assignmentState": None if assignment is None else assignment.state.value,
-            "assignmentZoneId": None if assignment is None else assignment.zone_id,
-            "assignmentConfidence": (
-                None if assignment is None else assignment.confidence
-            ),
-            "badParkingMinPrimaryOverlapRatio": (
-                context.bad_parking_min_primary_overlap_ratio
-            ),
-            "parkingState": (
-                None
-                if context.parking_episode is None
-                else context.parking_episode.state.value
-            ),
-        },
+        evidence=_signal_evidence(context, reasons=reasons),
     )
 
 
 def _unknown(context: RuleContext, rule_code: str, reason: str) -> IncidentSignal:
     return IncidentSignal(
         key=IncidentKey.for_physical_vehicle(
-            context.vehicle.physical_vehicle_id, rule_code
+            context.vehicle.physical_vehicle_id,
+            rule_code,
         ),
         value=IncidentSignalValue.UNKNOWN,
         confirmable=False,
         observed_at=context.observed_at,
-        evidence={"reason": reason},
+        evidence=_signal_evidence(context, reason=reason),
     )
+
+
+def _signal_evidence(
+    context: RuleContext,
+    *,
+    reasons: tuple[str, ...] = (),
+    reason: str | None = None,
+) -> dict[str, object]:
+    assignment = context.parking_assignment
+    placement = context.placement_evidence
+    result: dict[str, object] = {
+        "assignmentState": None if assignment is None else assignment.state.value,
+        "assignmentZoneId": None if assignment is None else assignment.zone_id,
+        "assignmentConfidence": (
+            None if assignment is None else assignment.confidence
+        ),
+        "placementEvidenceSource": (
+            None
+            if context.placement_evidence_source is None
+            else context.placement_evidence_source.value
+        ),
+        "zoneDefinitionVersion": (
+            None if placement is None else placement.zone_definition_version
+        ),
+        "primaryZoneId": None if placement is None else placement.primary_zone_id,
+        "primaryOverlapRatio": (
+            None if placement is None else placement.primary_overlap_ratio
+        ),
+        "secondaryZoneId": (
+            None if placement is None else placement.secondary_zone_id
+        ),
+        "secondaryOverlapRatio": (
+            None if placement is None else placement.secondary_overlap_ratio
+        ),
+        "dominanceGap": None if placement is None else placement.dominance_gap,
+        "spotUnionOverlapRatio": (
+            None if placement is None else placement.spot_union_overlap_ratio
+        ),
+        "outsideSpotOverlapRatio": (
+            None if placement is None else placement.outside_spot_overlap_ratio
+        ),
+        "candidateOverlaps": (
+            ()
+            if placement is None
+            else tuple(
+                {
+                    "zoneId": candidate.zone_id,
+                    "overlapRatio": candidate.overlap_ratio,
+                }
+                for candidate in placement.candidate_overlaps
+            )
+        ),
+        "badParkingMinPrimaryOverlapRatio": (
+            context.bad_parking_min_primary_overlap_ratio
+        ),
+        "badParkingMinSecondaryOverlapRatio": (
+            context.bad_parking_min_secondary_overlap_ratio
+        ),
+        "outOfZoneMinSpotOverlapRatio": (
+            context.out_of_zone_min_spot_overlap_ratio
+        ),
+        "parkingState": (
+            None
+            if context.parking_episode is None
+            else context.parking_episode.state.value
+        ),
+        "reasons": reasons,
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result

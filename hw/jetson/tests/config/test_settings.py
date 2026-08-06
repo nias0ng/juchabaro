@@ -1,0 +1,77 @@
+"""Monitoring runtime Settings의 필수값과 장치 설정 제약을 검증한다."""
+
+import pytest
+from pydantic import ValidationError
+
+from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
+from src.config.settings import Settings
+
+
+def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
+    fields = Settings.model_fields
+
+    for name in (
+        "camera_id",
+        "camera_index",
+        "calibration_path",
+        "vehicle_model_path",
+        "vehicle_tracking_confidence",
+        "reidentification_max_gap_seconds",
+        "reidentification_min_score",
+        "reidentification_ambiguity_margin",
+        "zone_presence_min_overlap_ratio",
+        "assignment_min_overlap_ratio",
+        "assignment_ambiguous_margin",
+        "bad_parking_min_primary_overlap_ratio",
+        "bad_parking_min_secondary_overlap_ratio",
+        "out_of_zone_min_spot_overlap_ratio",
+        "blocking_relation_confirm_seconds",
+        "blocking_relation_clear_seconds",
+        "blocking_min_subject_overlap_ratio",
+        "blocking_min_egress_coverage_ratio",
+    ):
+        assert fields[name].is_required()
+
+    assert fields["camera_width"].default == 0
+    assert fields["camera_height"].default == 0
+    assert fields["remap_balance"].default == DEFAULT_REMAP_BALANCE
+    assert fields["vehicle_tracker_config"].default == "bytetrack.yaml"
+    assert fields["entry_zone_min_overlap_ratio"].default == 0.40
+    assert fields["incident_confirm_seconds"].default == 0.0
+    assert fields["incident_clear_seconds"].default == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("camera_id", "   "),
+        ("camera_index", -1),
+        ("camera_width", -1),
+        ("camera_height", -1),
+        ("calibration_path", ""),
+        ("calibration_path", "   "),
+        ("remap_balance", -0.1),
+        ("remap_balance", 1.1),
+        ("remap_balance", float("nan")),
+        ("remap_balance", float("inf")),
+        ("vehicle_model_path", ""),
+        ("vehicle_model_path", "   "),
+        ("vehicle_tracker_config", " "),
+        ("vehicle_tracking_confidence", -0.1),
+        ("vehicle_tracking_confidence", 1.1),
+        ("vehicle_tracking_confidence", float("nan")),
+        ("vehicle_tracking_confidence", float("inf")),
+    ),
+)
+def test_settings_reject_invalid_device_configuration(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, **{field_name: invalid_value})
+
+    error_fields = {
+        error["loc"][0]
+        for error in exc_info.value.errors()
+    }
+    assert error_fields == {field_name}

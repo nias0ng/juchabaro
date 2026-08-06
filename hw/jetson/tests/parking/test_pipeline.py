@@ -9,14 +9,23 @@ import pytest
 
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.incident_reducer import InMemoryIncidentReducer
 from src.parking.models import (
     AssignmentState,
     BlockingRelationState,
+    EgressAisleDefinition,
+    EgressAisleDefinitionVersion,
+    EgressAisleId,
+    EntryExitRole,
+    IncidentSignalValue,
+    IncidentRuleTiming,
     IncidentState,
     IncidentTransitionType,
     ParkingState,
     ParkingTransitionType,
+    PlacementEvidenceSource,
+    PresenceSignal,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -28,7 +37,7 @@ from src.parking.parking_episode_tracker import (
     InMemoryParkingEpisodeTracker,
 )
 from src.parking.pipeline import ParkingPipeline
-from src.parking.rules.bad_parking import BAD_PARKING
+from src.parking.rules.bad_parking import BAD_PARKING, OUT_OF_ZONE
 from src.parking.rules.double_parking import DOUBLE_PARKING
 from src.parking.rules.ev_overstay import EV_OVERSTAY
 from src.parking.rules.restricted_zone import (
@@ -61,13 +70,27 @@ ATTEMPT = EntryAttemptId(UUID(int=102))
 
 INSIDE = BoundingBox(0.15, 0.15, 0.25, 0.25)
 OUTSIDE = BoundingBox(0.70, 0.70, 0.80, 0.80)
-AMBIGUOUS = BoundingBox(0.20, 0.12, 0.30, 0.28)
+AMBIGUOUS = BoundingBox(0.20, 0.12, 0.40, 0.28)
+TWO_SPOT_51_49 = BoundingBox(0.198, 0.12, 0.398, 0.28)
+TWO_SPOT_70_30 = BoundingBox(0.16, 0.12, 0.36, 0.28)
 ASSIGNED_FIRST = BoundingBox(0.11, 0.12, 0.19, 0.28)
 PROTRUDING_FROM_FIRST = BoundingBox(0.18, 0.12, 0.38, 0.28)
 
 SQUARE = ((0.10, 0.10), (0.40, 0.10), (0.40, 0.40), (0.10, 0.40))
 FIRST_SPOT = ((0.10, 0.10), (0.30, 0.10), (0.30, 0.30), (0.10, 0.30))
-SECOND_SPOT = ((0.20, 0.10), (0.40, 0.10), (0.40, 0.30), (0.20, 0.30))
+SECOND_SPOT = ((0.30, 0.10), (0.50, 0.10), (0.50, 0.30), (0.30, 0.30))
+EXIT_SPOT = ((0.60, 0.10), (0.80, 0.10), (0.80, 0.30), (0.60, 0.30))
+AISLE_STRIP = ((0.10, 0.50), (0.90, 0.50), (0.90, 0.95), (0.10, 0.95))
+# 판정은 bbox 폴리곤 겹침이 아니라 bbox 중심의 기준선 기준 부호로 한다
+# (571 finding 1). 기준선은 AISLE_STRIP 중심(0.5, 0.725)에서
+# EXIT_SPOT 중심(0.7, 0.2)으로 향하는 단위벡터 (0.356, -0.934)가 정의한다.
+# IN_EXIT_OUTWARD의 중심 (0.76, 0.13)은 이 축에 투영하면 EXIT_SPOT
+# 중심보다 +0.0868만큼 외부 방향이고, IN_EXIT_INWARD의 중심 (0.64, 0.27)은
+# -0.0868만큼 내부 방향이다 — 부호가 반대이므로 두 이름이 실제로 가리키는
+# 쪽을 가른다. 두 bbox 모두 EXIT_SPOT 안에 완전히 포함되어 있어
+# 존재 판정(overlap_ratio)에는 영향이 없다.
+IN_EXIT_OUTWARD = BoundingBox(0.72, 0.10, 0.80, 0.16)
+IN_EXIT_INWARD = BoundingBox(0.60, 0.24, 0.68, 0.30)
 
 
 def at(seconds: float) -> datetime:
@@ -81,6 +104,7 @@ def zone(
     *,
     allowed_duration_seconds: float | None = None,
     egress_zone_ids: tuple[ZoneId, ...] = (),
+    entry_exit_role: EntryExitRole | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
         zone_id=ZoneId(zone_id),
@@ -88,9 +112,25 @@ def zone(
         polygon=polygon,
         zone_definition_version=VERSION,
         calibration_reference=CALIBRATION,
+        entry_exit_role=entry_exit_role,
         allowed_duration_seconds=allowed_duration_seconds,
         charger_class="FAST" if zone_type is ZoneType.EV_CHARGING else None,
         egress_zone_ids=egress_zone_ids,
+    )
+
+
+def egress(
+    egress_zone_id: int,
+    parking_zone_id: int,
+    polygon,
+) -> EgressAisleDefinition:
+    return EgressAisleDefinition(
+        egress_zone_id=EgressAisleId(egress_zone_id),
+        parking_zone_id=ZoneId(parking_zone_id),
+        polygon=polygon,
+        egress_aisle_definition_version=EgressAisleDefinitionVersion(1),
+        zone_definition_version=VERSION,
+        calibration_reference=CALIBRATION,
     )
 
 
@@ -102,6 +142,19 @@ EV_ZONE = zone(
 )
 GENERAL_A = zone(3, ZoneType.GENERAL, FIRST_SPOT)
 GENERAL_B = zone(4, ZoneType.GENERAL, SECOND_SPOT)
+EXIT_ZONE = zone(
+    9,
+    ZoneType.ENTRY_EXIT,
+    EXIT_SPOT,
+    entry_exit_role=EntryExitRole.EXIT,
+)
+AISLE_ZONE = zone(7, ZoneType.AISLE, AISLE_STRIP)
+ENTRY_ZONE = zone(
+    8,
+    ZoneType.ENTRY_EXIT,
+    EXIT_SPOT,
+    entry_exit_role=EntryExitRole.ENTRY,
+)
 
 UNAUTHORIZED = SessionContext(
     parking_session_id=SESSION,
@@ -194,6 +247,7 @@ def batch(
 def make_pipeline(
     zones: tuple[ZoneDefinition, ...],
     *,
+    egress_areas: tuple[EgressAisleDefinition, ...] = (),
     entry_seconds: float = 1.0,
     exit_seconds: float = 1.0,
     parking_seconds: float = 600.0,
@@ -205,10 +259,22 @@ def make_pipeline(
     assignment_overlap_ratio: float = 0.5,
     ambiguous_margin: float = 0.05,
     bad_parking_overlap_ratio: float = 0.75,
+    bad_parking_secondary_overlap_ratio: float = 0.25,
+    out_of_zone_overlap_ratio: float = 0.50,
     blocking_confirm_seconds: float = 0.0,
     blocking_clear_seconds: float = 0.0,
+    blocking_subject_overlap_ratio: float = 0.5,
+    blocking_egress_coverage_ratio: float = 0.5,
+    incident_rule_timings: tuple[IncidentRuleTiming, ...] = (),
 ):
     registry = ZoneRegistry(zones)
+    egress_registry = EgressAisleRegistry(
+        egress_areas,
+        egress_aisle_definition_version=EgressAisleDefinitionVersion(1),
+        zone_definition_version=registry.zone_definition_version,
+        calibration_reference=registry.calibration_reference,
+        zones=registry,
+    )
     visit_tracker = InMemoryZoneVisitTracker(
         zone_definition_version=registry.zone_definition_version,
         entry_confirm_seconds=entry_seconds,
@@ -224,6 +290,7 @@ def make_pipeline(
         trusted_sample_max_gap_seconds=trusted_sample_max_gap_seconds,
         confirm_duration_seconds=incident_confirm_seconds,
         clear_duration_seconds=incident_clear_seconds,
+        rule_timings=incident_rule_timings,
     )
     relation_tracker = InMemoryBlockingRelationTracker(
         confirm_duration_seconds=blocking_confirm_seconds,
@@ -232,6 +299,7 @@ def make_pipeline(
     )
     pipeline = ParkingPipeline(
         zones=registry,
+        egress_aisles=egress_registry,
         zone_visit_tracker=visit_tracker,
         parking_episode_tracker=episode_tracker,
         incident_reducer=reducer,
@@ -240,8 +308,48 @@ def make_pipeline(
         assignment_min_overlap_ratio=assignment_overlap_ratio,
         assignment_ambiguous_margin=ambiguous_margin,
         bad_parking_min_primary_overlap_ratio=bad_parking_overlap_ratio,
+        bad_parking_min_secondary_overlap_ratio=(
+            bad_parking_secondary_overlap_ratio
+        ),
+        out_of_zone_min_spot_overlap_ratio=out_of_zone_overlap_ratio,
+        blocking_min_subject_overlap_ratio=blocking_subject_overlap_ratio,
+        blocking_min_egress_coverage_ratio=blocking_egress_coverage_ratio,
     )
     return pipeline, visit_tracker, episode_tracker, reducer, relation_tracker
+
+
+def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None:
+    bad_timing = IncidentRuleTiming(
+        rule_code=BAD_PARKING,
+        confirm_duration_seconds=2.0,
+        clear_duration_seconds=3.0,
+    )
+    out_timing = IncidentRuleTiming(
+        rule_code=OUT_OF_ZONE,
+        confirm_duration_seconds=4.0,
+        clear_duration_seconds=5.0,
+    )
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, GENERAL_B),
+        parking_seconds=1.0,
+        incident_rule_timings=(bad_timing, out_timing),
+    )
+
+    result = pipeline.process(batch(0, snapshot(0, bbox=AMBIGUOUS)))
+    diagnostics = {
+        item.signal.key.rule_code: item
+        for item in result.incident_signal_diagnostics
+    }
+
+    assert diagnostics[BAD_PARKING].signal.value is IncidentSignalValue.MATCHED
+    assert diagnostics[BAD_PARKING].timing == bad_timing
+    assert diagnostics[OUT_OF_ZONE].signal.value is (
+        IncidentSignalValue.NOT_MATCHED
+    )
+    assert diagnostics[OUT_OF_ZONE].timing == out_timing
+    candidate = updates_for(result, BAD_PARKING)[-1]
+    assert candidate.confirm_duration_seconds == 2.0
+    assert candidate.clear_duration_seconds == 3.0
 
 
 def transitions_for(result, rule_code: str):
@@ -280,6 +388,63 @@ def test_runtime_checkpoint_restores_all_parking_owners() -> None:
     assert visit_tracker.active_visits(CAR) == ()
     assert episode_tracker.active_episode(CAR) is None
     assert reducer.active_snapshot() == ()
+
+
+@pytest.mark.parametrize(
+    ("parking_seconds", "sample_times", "expected_state"),
+    (
+        (10.0, (0.0,), ParkingState.STOP_PENDING),
+        (1.0, (0.0, 1.0), ParkingState.PARKED),
+    ),
+)
+def test_restore_active_rejects_assigned_episode_when_zone_is_missing(
+    parking_seconds: float,
+    sample_times: tuple[float, ...],
+    expected_state: ParkingState,
+) -> None:
+    old_pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=parking_seconds,
+    )
+    result = None
+    for seconds in sample_times:
+        result = old_pipeline.process(
+            batch(seconds, snapshot(seconds, bbox=ASSIGNED_FIRST))
+        )
+    assert result is not None
+    episode = result.parking_episode_updates[-1]
+    assert episode.state is expected_state
+    assert episode.assignment is not None
+    assert episode.assignment.zone_id == GENERAL_A.zone_id
+
+    replacement_zone = ZoneDefinition(
+        zone_id=ZoneId(30),
+        zone_type=ZoneType.GENERAL,
+        polygon=SQUARE,
+        zone_definition_version=ZoneDefinitionVersion(8),
+        calibration_reference="cam-1-v2",
+    )
+    (
+        new_pipeline,
+        new_visit_tracker,
+        new_episode_tracker,
+        _,
+        _,
+    ) = make_pipeline((replacement_zone,))
+
+    with pytest.raises(
+        ValueError,
+        match=r"ParkingEpisode assignment.*zoneId=3",
+    ):
+        new_pipeline.restore_active(
+            zone_visits=(),
+            parking_episodes=(episode,),
+            incidents=(),
+        )
+
+    # Cross-owner reference validation happens before any owner is mutated.
+    assert new_visit_tracker.active_visits(CAR) == ()
+    assert new_episode_tracker.active_episode(CAR) is None
 
 
 def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident() -> None:
@@ -398,6 +563,47 @@ def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
     assert result.parking_transitions == ()
 
 
+@pytest.mark.parametrize(
+    ("bbox", "expected_assignment", "primary", "secondary"),
+    (
+        (TWO_SPOT_51_49, AssignmentState.AMBIGUOUS, 0.51, 0.49),
+        (TWO_SPOT_70_30, AssignmentState.ASSIGNED, 0.70, 0.30),
+    ),
+)
+def test_two_spot_placement_opens_bad_parking_independent_of_assignment(
+    bbox: BoundingBox,
+    expected_assignment: AssignmentState,
+    primary: float,
+    secondary: float,
+) -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, GENERAL_B),
+        parking_seconds=1.0,
+    )
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    assignment = result.parking_episode_updates[-1].assignment
+    assert assignment is not None
+    assert assignment.state is expected_assignment
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(primary)
+    assert diagnostic.evidence.secondary_overlap_ratio == pytest.approx(secondary)
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(1.0)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
+    assert [
+        item.transition_type for item in transitions_for(result, BAD_PARKING)
+    ] == [IncidentTransitionType.OPEN]
+
+
 def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     pipeline, _, _, _, _ = make_pipeline(
         (GENERAL_A,),
@@ -422,6 +628,71 @@ def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     assert [item.transition_type for item in opened] == [
         IncidentTransitionType.OPEN
     ]
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(0.60)
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(0.60)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
+    assert diagnostic.bad_parking_signal.confirmable is True
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.NOT_MATCHED
+
+
+def test_spot_union_below_threshold_opens_out_of_zone_not_bad_parking() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+
+    attempts = {CAR: ATTEMPT}
+    pipeline.process(
+        batch(0, snapshot(0, bbox=OUTSIDE)),
+        entry_attempt_ids=attempts,
+    )
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=OUTSIDE)),
+        entry_attempt_ids=attempts,
+    )
+
+    assert transitions_for(result, BAD_PARKING) == ()
+    opened = transitions_for(result, OUT_OF_ZONE)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(0.0)
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.MATCHED
+    assert diagnostic.out_of_zone_signal.confirmable is True
+
+
+def test_parked_snapshot_ignores_final_frame_geometry_jitter() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=2.0,
+    )
+
+    pipeline.process(batch(0, snapshot(0, bbox=ASSIGNED_FIRST)))
+    pipeline.process(batch(1, snapshot(1, bbox=ASSIGNED_FIRST)))
+    result = pipeline.process(batch(2, snapshot(2, bbox=OUTSIDE)))
+
+    episode = result.parking_episode_updates[-1]
+    assert episode.state is ParkingState.PARKED
+    assert episode.assignment is not None
+    assert episode.assignment.zone_id == GENERAL_A.zone_id
+    assert episode.assignment.last_stable_at == at(0)
+    diagnostic = result.placement_diagnostics[0]
+    assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
+    assert diagnostic.evidence.representative_footprint == (
+        (ASSIGNED_FIRST.x1, ASSIGNED_FIRST.y1),
+        (ASSIGNED_FIRST.x2, ASSIGNED_FIRST.y1),
+        (ASSIGNED_FIRST.x2, ASSIGNED_FIRST.y2),
+        (ASSIGNED_FIRST.x1, ASSIGNED_FIRST.y2),
+    )
+    assert diagnostic.bad_parking_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert diagnostic.out_of_zone_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert transitions_for(result, BAD_PARKING) == ()
+    assert transitions_for(result, OUT_OF_ZONE) == ()
 
 
 def test_unknown_motion_freezes_bad_parking_clear_but_keeps_geometry_observed() -> None:
@@ -747,6 +1018,22 @@ def test_movement_ended_episode_rechecks_latest_geometry_before_resolving() -> N
     assert transitions_for(movement_ended, BAD_PARKING) == ()
     assert updates_for(movement_ended, BAD_PARKING)[-1].state is IncidentState.OPEN
 
+    # terminal episode가 slot에서 제거된 다음에도 motion dependency가 UNKNOWN이면
+    # 새 geometry로 기존 Incident의 clear timer를 진행하지 않는다.
+    motion_unknown = pipeline.process(
+        batch(
+            2.75,
+            snapshot(2.75, bbox=ASSIGNED_FIRST, motion=MotionSignal.UNKNOWN),
+        ),
+        session_contexts=contexts,
+    )
+    assert transitions_for(motion_unknown, BAD_PARKING) == ()
+    assert updates_for(motion_unknown, BAD_PARKING)[-1].state is IncidentState.OPEN
+    assert (
+        motion_unknown.placement_diagnostics[0].bad_parking_signal.value
+        is IncidentSignalValue.UNKNOWN
+    )
+
     geometry_cleared = pipeline.process(
         batch(3, snapshot(3, bbox=ASSIGNED_FIRST, motion=MotionSignal.MOVING)),
         session_contexts=contexts,
@@ -828,16 +1115,53 @@ AISLE_POLYGON = ((0.30, 0.0), (0.70, 0.0), (0.70, 1.0), (0.30, 1.0))
 AISLE_BLOCKING_BBOX = BoundingBox(0.35, 0.40, 0.55, 0.60)
 
 
+def test_small_egress_uses_coverage_ratio_for_blocking() -> None:
+    """egress가 작아 차량 대비 overlap이 낮아도 완전 점유는 차단이다."""
+
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    small_egress = egress(
+        9,
+        5,
+        ((0.40, 0.45), (0.45, 0.45), (0.45, 0.50), (0.40, 0.50)),
+    )
+    pipeline, _, _, _, _ = make_pipeline(
+        (spot_with_egress,),
+        egress_areas=(small_egress,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+        blocking_subject_overlap_ratio=0.5,
+        blocking_egress_coverage_ratio=0.8,
+    )
+
+    def two_car_batch(seconds: float) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(seconds, vehicle=CAR, bbox=ASSIGNED_FIRST),
+            snapshot(
+                seconds,
+                vehicle=OTHER_CAR,
+                bbox=AISLE_BLOCKING_BBOX,
+            ),
+        )
+
+    pipeline.process(two_car_batch(0))
+    parked = pipeline.process(two_car_batch(1))
+
+    assert [
+        relation.state for relation in parked.blocking_relation_updates
+    ] == [BlockingRelationState.BLOCKING]
+
+
 def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
-    """victim이 PARKED되고 subject가 egress AISLE을 막으면 BlockingRelation이
+    """victim이 PARKED되고 subject가 egress aisle을 막으면 BlockingRelation이
     실제로 만들어지고, double_parking 규칙이 그 신호로 Incident를 열고 닫는다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    egress_area = egress(9, 5, AISLE_POLYGON)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress_area,),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
@@ -871,7 +1195,8 @@ def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
     relation = parked.blocking_relation_updates[0]
     assert relation.subject_physical_vehicle_id == OTHER_CAR
     assert relation.victim_physical_vehicle_id == CAR
-    assert relation.egress_zone_id == aisle.zone_id
+    assert relation.egress_zone_id == egress_area.egress_zone_id
+    assert relation.source_parking_episode_id == parked.parking_episode_updates[0].episode_id
     assert relation_tracker.active_relations(OTHER_CAR) == (relation,)
 
     opened = transitions_for(parked, DOUBLE_PARKING)
@@ -902,12 +1227,10 @@ def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
 def test_blocking_relation_ends_when_victim_physically_exits() -> None:
     """victim의 확정 출차는 관계와 double_parking Incident를 함께 끝낸다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
@@ -948,12 +1271,10 @@ def test_blocking_relation_holds_when_victim_observation_is_unreliable() -> None
     계속 aisle에 있어도 victim 관측이 흔들리면 관계는 clear로 넘어가지
     않고 BLOCKING을 유지한다."""
 
-    aisle = zone(9, ZoneType.AISLE, AISLE_POLYGON)
-    spot_with_egress = zone(
-        5, ZoneType.GENERAL, FIRST_SPOT, egress_zone_ids=(aisle.zone_id,)
-    )
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
     pipeline, _, _, _, relation_tracker = make_pipeline(
-        (spot_with_egress, aisle),
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
         entry_seconds=0.0,
         parking_seconds=1.0,
         blocking_confirm_seconds=0.0,
@@ -1006,3 +1327,210 @@ def test_zone_presence_and_assignment_thresholds_are_independent() -> None:
 
     assert visit_tracker.active_visits(CAR) == ()
     assert parked.parking_episode_updates[-1].assignment.zone_id == GENERAL_A.zone_id
+
+
+def test_open_exit_zone_visit_counts_as_traversal() -> None:
+    """마지막으로 관측된 위치가 출차 구역이면 통과로 인정한다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_entering_visit_below_confirmation_still_counts_as_traversal() -> None:
+    """ZONE_ENTRY_CONFIRM_SECONDS를 못 채우고 지나간 차도 통과로 인정한다.
+
+    이게 이 정의의 핵심이다(565) — INSIDE 확정을 요구하면 빨리 나간 차가
+    미탐되고, 그 세션은 영구히 닫히지 않는다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=10.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_parking_zone_visit_alone_is_not_traversal() -> None:
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A,), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0)))
+    pipeline.process(batch(1, snapshot(1)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_entry_role_zone_visit_is_not_traversal() -> None:
+    """같은 ENTRY_EXIT 구역이라도 role이 ENTRY면 출차 근거가 아니다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, ENTRY_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_traversal_is_no_longer_observed_after_physical_exit() -> None:
+    """읽기 순서 회귀: physical_exit()이 방문을 종료시키면 근거가 사라진다(565)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+    pipeline.physical_exit(physical_vehicle_id=CAR, observed_at=at(2))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_visit_of_unknown_zone_is_ignored_without_raising() -> None:
+    """설정 교체로 사라진 zone의 방문은 예외 없이 통과 미인정으로 처리한다(565).
+
+    이 경로는 departure commit 중에 실행되므로 예외를 던지면 차량 종료
+    자체가 실패한다. registry에 실제 EXIT 구역을 두어(571), 차량이 이미
+    outward 접촉을 만든 상태에서 알 수 없는 zoneId의 방문이 섞여도 결과가
+    그대로 유지되고 예외도 나지 않는지를 확인한다 — EXIT 구역이 없어
+    접촉 집합이 항상 비어 있던 이전 registry로는 이 방문이 아무것도
+    가르지 못했다.
+    """
+
+    pipeline, visit_tracker, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    visit_tracker.update(
+        physical_vehicle_id=CAR,
+        zone_id=ZoneId(999),
+        signal=PresenceSignal.PRESENT,
+        observation=observed(0),
+        observed_at=at(0),
+    )
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_inward_side_contact_alone_is_not_traversal() -> None:
+    """출차 통로 안쪽에만 있던 차량은 통과로 인정하지 않는다(571).
+
+    565에서는 이 경우도 통과였다 — 이 태스크가 좁히는 지점이다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_outward_side_contact_while_stationary_is_traversal() -> None:
+    """외부측에 정지해 있어도 통과로 인정한다(571).
+
+    방향 조건을 쓰지 않는다는 결정을 고정한다 — 차단기 앞 정지 중
+    추적이 끊겨도 세션이 미결되지 않아야 한다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(
+        batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD, motion=MotionSignal.STATIONARY))
+    )
+    pipeline.process(
+        batch(1, snapshot(1, bbox=IN_EXIT_OUTWARD, motion=MotionSignal.STATIONARY))
+    )
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_returning_to_inward_side_overwrites_outward_contact() -> None:
+    """매 프레임 덮어쓰기 검증(571) — 외부측 접촉이 오래 남지 않는다."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    pipeline.process(batch(2, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_unobserved_frames_preserve_the_last_outward_contact() -> None:
+    """미관측 프레임은 접촉 상태를 지우지 않는다(571).
+
+    부재 확정까지 5초가 걸리므로, 그동안 값이 유지돼야 판정이 성립한다.
+    """
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    for seconds in (1, 2, 3, 4, 5):
+        pipeline.process(batch(seconds, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_degraded_frame_does_not_overwrite_outward_contact() -> None:
+    """신뢰할 수 없는 관측은 접촉 상태를 갱신하지 않는다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(
+        batch(
+            1,
+            snapshot(
+                1,
+                bbox=IN_EXIT_INWARD,
+                observation=degraded(last_reliable=0),
+            ),
+            batch_observation=degraded(last_reliable=0),
+        )
+    )
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is True
+
+
+def test_registry_without_aisle_never_confirms_traversal() -> None:
+    """외부 방향을 유도할 수 없으면 통과를 확정하지 않는다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline((GENERAL_A, EXIT_ZONE), entry_seconds=1.0)
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    pipeline.process(batch(1, unobserved=(CAR,)))
+
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+
+def test_checkpoint_round_trip_preserves_outward_contact() -> None:
+    """frame UnitOfWork 롤백이 접촉 상태도 함께 되돌린다(571)."""
+
+    pipeline, _, _, _, _ = make_pipeline(
+        (GENERAL_A, AISLE_ZONE, EXIT_ZONE), entry_seconds=1.0
+    )
+    pipeline.process(batch(0, snapshot(0, bbox=IN_EXIT_OUTWARD)))
+    checkpoint = pipeline.checkpoint_state()
+
+    pipeline.process(batch(1, snapshot(1, bbox=IN_EXIT_INWARD)))
+    assert pipeline.exit_zone_traversal_observed(CAR) is False
+
+    pipeline.restore_state(checkpoint)
+    assert pipeline.exit_zone_traversal_observed(CAR) is True

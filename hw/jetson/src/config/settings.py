@@ -1,8 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
 from src.tracking.adapters.side_masking_detector import DEFAULT_MASK_MARGIN_RATIO
 
 
@@ -14,6 +16,25 @@ class Settings(BaseSettings):
     backend_hw_api_key: str = ""
 
     internal_api_key: str = ""
+
+    # 듀얼 VL53L0X 어댑터의 Linux I²C bus와 생명주기 시간값.
+    # 물리 헤더 핀 번호로 bus를 추정하지 않고 배포 환경이 명시한다.
+    tof_i2c_bus: int
+    tof_shutdown_settle_seconds: float
+    tof_boot_settle_seconds: float
+    tof_io_timeout_seconds: float
+
+    # ToF 점유 runtime의 zone 결속, polling 및 상태 확정 정책.
+    # 환경변수 parsing만 담당하며 의미 검증은 factory와 각 domain owner가 한다.
+    tof_disabled_zone_id: int
+    tof_ev_charging_zone_id: int
+    tof_poll_interval_seconds: float
+    tof_enter_distance_mm: float
+    tof_exit_distance_mm: float
+    tof_enter_confirm_seconds: float
+    tof_exit_confirm_seconds: float
+    tof_trusted_sample_max_gap_seconds: float
+    tof_stale_after_seconds: float
 
     # Jetson local durable state. 요청 thread와 tracking worker는 각자
     # connection을 열고 SQLite file만 공유한다.
@@ -36,6 +57,37 @@ class Settings(BaseSettings):
     # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
     zone_definition_path: Path
 
+    # ZoneVisit·Assignment에 속하지 않는 이중주차 판정용
+    # egress aisle snapshot. ZoneDefinition과 version·calibration을 기동 시 대조한다.
+    egress_aisle_path: Path
+
+    # USB camera 장치와 요청 해상도. width/height의 0은 장치 기본 해상도를
+    # 사용한다는 OpenCvWebcamFrameSource 계약이다.
+    camera_id: str
+    camera_index: int = Field(ge=0)
+    camera_width: int = Field(default=0, ge=0)
+    camera_height: int = Field(default=0, ge=0)
+
+    # 파일 존재·형식과 calibration 파일 SHA fingerprint 일치는 concrete
+    # factory의 기동 preflight에서 검증한다. remap balance와 zone 좌표계의
+    # 호환성은 현재 calibrationReference만으로 검증할 수 없으므로 배포
+    # 설정에서 zone 생성 시 사용한 값과 동일하게 유지해야 한다.
+    calibration_path: Path
+    remap_balance: float = Field(
+        default=DEFAULT_REMAP_BALANCE,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+    )
+
+    vehicle_model_path: Path
+    vehicle_tracker_config: str = "bytetrack.yaml"
+    vehicle_tracking_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+    )
+
     # SideMaskingDetector 마스크 경계가 실제 zone polygon x-범위에 더하는 여백
     # 비율(537 코드리뷰 반영). 최종 경계는 항상 zone_definition_path에서 자동
     # 계산하고, 이 값만 배포/검증 환경에서 조정한다.
@@ -46,6 +98,37 @@ class Settings(BaseSettings):
     # 방어선이고, 실측값은 T-18이 파일럿 영상 리플레이로 산출한다.
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
+
+    # EntryMatchCoordinator의 기존 domain 기본값.
+    entry_zone_min_overlap_ratio: float = 0.40
+
+    # 아키텍처 문서에서 아직 TBD인 재식별 정책. live viewer/replay 값은
+    # 운영 확정값이 아니므로 배포가 명시한다.
+    reidentification_max_gap_seconds: float
+    reidentification_min_score: float
+    reidentification_ambiguity_margin: float
+
+    # InMemoryIncidentReducer의 기존 즉시 전이 기본값.
+    incident_confirm_seconds: float = 0.0
+    incident_clear_seconds: float = 0.0
+
+    # 서로 의미가 다른 parking 판단값이므로 독립 설정으로 유지한다.
+    zone_presence_min_overlap_ratio: float
+    assignment_min_overlap_ratio: float
+    assignment_ambiguous_margin: float
+    bad_parking_min_primary_overlap_ratio: float
+    bad_parking_min_secondary_overlap_ratio: float
+    out_of_zone_min_spot_overlap_ratio: float
+
+    # 저장소 예시가 1초와 3초로 충돌하고 domain 문서에도 TBD로 남아
+    # 있으므로 배포가 명시한다.
+    blocking_relation_confirm_seconds: float
+    blocking_relation_clear_seconds: float
+
+    # 별도 EgressAisle snapshot과 subject footprint 사이의 이중주차 geometry
+    # 기준. viewer/replay의 provisional 값을 배포가 명시한다.
+    blocking_min_subject_overlap_ratio: float
+    blocking_min_egress_coverage_ratio: float
 
     # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
     # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
@@ -75,6 +158,35 @@ class Settings(BaseSettings):
     # MotionEstimator의 evidence 임계값과 별개인 ParkingEpisode lifecycle timer다.
     parking_confirm_seconds: float
     parking_move_confirm_seconds: float
+
+    @field_validator(
+        "camera_id",
+        "vehicle_tracker_config",
+    )
+    @classmethod
+    def _require_non_blank_string(
+        cls,
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator(
+        "calibration_path",
+        "vehicle_model_path",
+        mode="before",
+    )
+    @classmethod
+    def _require_non_blank_path(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

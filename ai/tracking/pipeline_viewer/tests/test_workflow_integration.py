@@ -23,6 +23,7 @@ from src.parking.models import (
     ZoneType,
 )
 from src.parking.zone_registry import ZoneRegistry
+from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.replay.publication_preparer import JsonlPublicationPreparer
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.session.models import EntryMatchState
@@ -127,8 +128,12 @@ def _policy() -> MonitoringPolicy:
         assignment_min_overlap_ratio=0.5,
         assignment_ambiguous_margin=0.05,
         bad_parking_min_primary_overlap_ratio=0.75,
+        bad_parking_min_secondary_overlap_ratio=0.25,
+        out_of_zone_min_spot_overlap_ratio=0.50,
         blocking_relation_confirm_seconds=1.0,
         blocking_relation_clear_seconds=1.0,
+        blocking_min_subject_overlap_ratio=0.40,
+        blocking_min_egress_coverage_ratio=0.40,
     )
 
 
@@ -159,6 +164,7 @@ def test_trace_observes_real_entry_match_and_frame_workflow(tmp_path: Path) -> N
     )
     pipeline = build_monitoring_pipeline(
         zones=zones,
+        egress_aisles=EgressAisleRegistry.empty(zones),
         policy=_policy(),
         dependencies=MonitoringDependencies(
             camera_id="cam-1",

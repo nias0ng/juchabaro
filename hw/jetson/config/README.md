@@ -36,3 +36,26 @@ ZoneType에는 이 필드를 두지 않는다. 입차 attempt는 `ENTRY` 구역�
 입구 왼쪽 변은 왼쪽 위 바닥 꼭짓점과 가림막 하단에서 보이는 바닥 모서리를
 잇는다. fisheye 보정 후에도 카메라 원근은 남으므로 frame에서는 사다리꼴로
 보인다.
+
+## 이중주차 egress aisle
+
+`egress_aisle.json`은 메인 `zone_definition.json` version 1과 같은
+full-frame 좌표계를 사용한다. `egress_aisle.pilot.json`은
+`zone_definition.pilot.json` version 6과 같은 좌측 150px crop 좌표계다.
+메인·Viewer에는 전자를, crop을 켠 replay·live 스크립트에는 후자를
+사용해야 한다. 두 파일은 주차면 1~6의 같은 물리 출차 공간을
+각 좌표계로 표현한 별도 snapshot이다.
+
+`areas`는 Viewer overlay, side mask, ZoneVisit, `AISLE_BLOCK`에 포함되지
+않고 `BlockingRelation` geometry에만 사용한다.
+
+현재 polygon은 각 주차면의 복도 방향 면을 기준으로 연장한 파일럿
+초기값이다. 운영 임계값과 함께 실제 영상으로 재조정해야 하며,
+수정할 때는 다음 계약을 유지한다.
+
+- `zoneDefinitionVersion`은 참조하는 Zone snapshot과 같아야 한다.
+- `calibrationReference`는 Zone snapshot과 정확히 같아야 한다.
+- `egressZoneId`는 기존 durable/API 식별자 명칭을 보존하지만,
+  `zone_definition` namespace가 아니라 이 파일 안에서 유일한 ID다.
+- `parkingZoneId`는 `GENERAL / DISABLED / EV_CHARGING` 주차면만
+  참조할 수 있다.

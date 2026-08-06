@@ -12,6 +12,10 @@ import pytest
 from src.domain.models import ObservationState, ObservationStatus
 from src.parking.models import (
     AssignmentState,
+    BlockingRelation,
+    BlockingRelationId,
+    BlockingRelationState,
+    EgressAisleId,
     Incident,
     IncidentId,
     IncidentKey,
@@ -28,6 +32,8 @@ from src.parking.models import (
 )
 from src.session.models import EntryAttemptId
 from src.storage.aggregate_repositories import (
+    BlockingRelationConflictError,
+    BlockingRelationRepository,
     IncidentConflictError,
     IncidentRepository,
     ParkingEpisodeConflictError,
@@ -55,11 +61,17 @@ NOW = datetime(2026, 8, 2, 15, 0, 0, 123456, tzinfo=timezone.utc)
 VEHICLE_ID = PhysicalVehicleId(
     UUID("10000000-0000-4000-8000-000000000001")
 )
+OTHER_VEHICLE_ID = PhysicalVehicleId(
+    UUID("10000000-0000-4000-8000-000000000002")
+)
 VISIT_ID = ZoneVisitId(UUID("20000000-0000-4000-8000-000000000001"))
 EPISODE_ID = ParkingEpisodeId(
     UUID("30000000-0000-4000-8000-000000000001")
 )
 INCIDENT_ID = IncidentId(UUID("40000000-0000-4000-8000-000000000001"))
+RELATION_ID = BlockingRelationId(
+    UUID("35000000-0000-4000-8000-000000000001")
+)
 ENTRY_ATTEMPT_ID = EntryAttemptId(
     UUID("50000000-0000-4000-8000-000000000001")
 )
@@ -70,9 +82,11 @@ OBSERVED = ObservationStatus(
 )
 
 
-def _vehicle() -> PhysicalVehicle:
+def _vehicle(
+    physical_vehicle_id: PhysicalVehicleId = VEHICLE_ID,
+) -> PhysicalVehicle:
     return PhysicalVehicle(
-        physical_vehicle_id=VEHICLE_ID,
+        physical_vehicle_id=physical_vehicle_id,
         state=PhysicalVehicleState.ACTIVE,
         observation=OBSERVED,
         absence_trusted_seconds=0.0,
@@ -120,6 +134,7 @@ def _episode() -> ParkingEpisode:
         publication_revision=0,
         created_at=NOW,
         updated_at=NOW,
+        assignment=_assignment(NOW),
     )
 
 
@@ -156,6 +171,100 @@ def _incident() -> Incident:
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+def _blocking_relation() -> BlockingRelation:
+    return BlockingRelation(
+        blocking_relation_id=RELATION_ID,
+        subject_physical_vehicle_id=OTHER_VEHICLE_ID,
+        victim_physical_vehicle_id=VEHICLE_ID,
+        egress_zone_id=EgressAisleId(101),
+        source_parking_episode_id=EPISODE_ID,
+        state=BlockingRelationState.CANDIDATE,
+        observation=OBSERVED,
+        confirm_trusted_seconds=0.0,
+        clear_trusted_seconds=0.0,
+        confirm_duration_seconds=2.0,
+        clear_duration_seconds=3.0,
+        record_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
+def test_blocking_relation_round_trip_and_terminal_cardinality(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    repository = BlockingRelationRepository(connection)
+    relation = _blocking_relation()
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_vehicle())
+            PhysicalVehicleRepository(connection).ensure(
+                _vehicle(OTHER_VEHICLE_ID)
+            )
+            ParkingEpisodeRepository(connection).add(_episode())
+            repository.add(relation)
+
+        assert repository.get(RELATION_ID) == relation
+        assert repository.list_active() == (relation,)
+
+        duplicate = replace(
+            relation,
+            blocking_relation_id=BlockingRelationId(
+                UUID("35000000-0000-4000-8000-000000000002")
+            ),
+        )
+        with pytest.raises(BlockingRelationConflictError):
+            with UnitOfWork(connection):
+                repository.add(duplicate)
+
+        confirmed_at = NOW + timedelta(seconds=2)
+        blocking = replace(
+            relation,
+            state=BlockingRelationState.BLOCKING,
+            confirm_trusted_seconds=2.0,
+            confirmed_at=confirmed_at,
+            record_version=2,
+            updated_at=confirmed_at,
+        )
+        with UnitOfWork(connection):
+            repository.save(blocking, expected_record_version=1)
+        assert repository.get(RELATION_ID) == blocking
+
+        resolved_at = confirmed_at + timedelta(seconds=3)
+        resolved = replace(
+            blocking,
+            state=BlockingRelationState.RESOLVED,
+            clear_trusted_seconds=3.0,
+            resolved_at=resolved_at,
+            terminated_at=resolved_at,
+            termination_reason="BLOCKING_RELATION_CLEAR_CONFIRMED",
+            record_version=3,
+            updated_at=resolved_at,
+        )
+        with UnitOfWork(connection):
+            repository.save(resolved, expected_record_version=2)
+        assert repository.list_active() == ()
+        assert repository.get(RELATION_ID) == resolved
+
+        with pytest.raises(BlockingRelationConflictError, match="cannot be reactivated"):
+            with UnitOfWork(connection):
+                repository.save(
+                    replace(
+                        resolved,
+                        state=BlockingRelationState.BLOCKING,
+                        resolved_at=None,
+                        terminated_at=None,
+                        termination_reason=None,
+                        record_version=4,
+                        updated_at=resolved_at + timedelta(seconds=1),
+                    ),
+                    expected_record_version=3,
+                )
+    finally:
+        connection.close()
 
 
 def test_zone_visit_round_trip_active_cardinality_and_optimistic_save(
@@ -271,6 +380,9 @@ def test_parking_episode_round_trips_assignment_and_guards_session_correlation(
         with UnitOfWork(connection):
             PhysicalVehicleRepository(connection).ensure(_vehicle())
             repository.add(episode)
+
+        assert repository.get(EPISODE_ID) == episode
+        assert repository.get_active(VEHICLE_ID).assignment == _assignment(NOW)
 
         duplicate = replace(
             episode,

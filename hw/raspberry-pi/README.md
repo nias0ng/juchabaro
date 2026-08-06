@@ -32,15 +32,18 @@
 6프레임 촬영, OCR pipeline 실행, Backend 입차 등록 요청과 `ALLOW` 판정의
 초록 LED 표시가 연결되어 있다.
 
-서비스 시작 시 Backend 설정을 검증하고 `BackendClient`, OCR pipeline과
-`GreenLed`를 각각 한 번 생성한다. OCR이 번호판을 확정한 경우에만 Backend
+서비스 시작 시 Backend·Jetson 설정을 검증하고 `BackendClient`,
+`JetsonClient`, OCR pipeline과 `GreenLed`를 각각 한 번 생성한다. OCR이
+번호판을 확정한 경우에만 Backend
 입차 등록 API를 호출하며, 응답의 `entryAttemptId`를 검증한 뒤 `ALLOW`,
 `REVIEW`, `DENY` 판정을 로그로 기록한다. 검증된 `ALLOW` 판정에서만
-초록 LED를 제어한다.
+초록 LED를 켜고 Jetson에 EntryDecision을 전달한다. Jetson POST 소요 시간을
+포함해 초록 LED를 3초간 표시하며, Jetson 통신 실패는 이미 확정된 ALLOW
+표시를 취소하지 않는다.
 
-현재 구현에는 Jetson 전송, 차단기 제어, 자동 재시도와 Backend 응답 영속
-저장이 포함되어 있지 않다. `REVIEW`와 `DENY`의 별도 LED 표시 정책도
-아직 결정되지 않았다.
+현재 구현에는 차단기 제어, 자동 재시도, 로컬 DB·응답 영속 저장과 Jetson
+매칭 결과 GET polling이 포함되어 있지 않다. `REVIEW`와 `DENY`는 입차를
+허용하지 않으므로 LED를 표시하거나 Jetson에 전달하지 않는다.
 
 ## Backend 입차 등록 연동
 
@@ -52,17 +55,22 @@
 | --- | --- |
 | `BACKEND_BASE_URL` | Backend API base URL |
 | `BACKEND_HW_API_KEY` | Backend HW API 인증 key |
+| `JETSON_BASE_URL` | Jetson 내부 API base URL |
+| `INTERNAL_API_KEY` | Jetson 내부 API 인증 key |
 
-두 값이 비어 있거나 공백뿐이면 OCR pipeline, 센서와 카메라를 초기화하기
-전에 실행을 중단한다. Raspberry Pi의 `BACKEND_HW_API_KEY`는 Backend에
+네 값 중 하나라도 비어 있거나 공백뿐이면 OCR pipeline, 센서와 카메라를
+초기화하기 전에 실행을 중단한다. Raspberry Pi의 `BACKEND_HW_API_KEY`는 Backend에
 설정된 HW API key와 일치해야 하며, 요청의 `X-HW-API-Key` header로
-전달된다. API key 실제 값은 로그에 기록하지 않는다.
+전달된다. `INTERNAL_API_KEY`는 Jetson 설정과 일치해야 하며 Jetson 요청의
+`X-Internal-API-Key` header로 전달된다. API key 실제 값은 로그에 기록하지 않는다.
 
 `.env.example`의 배포 환경 예시는 다음과 같다.
 
 ```text
 BACKEND_BASE_URL=https://i15e202.p.ssafy.io/api/
 BACKEND_HW_API_KEY=
+JETSON_BASE_URL=http://192.168.30.37:8000
+INTERNAL_API_KEY=
 ```
 
 입차 등록 endpoint는 다음과 같다.
@@ -130,7 +138,7 @@ OCR pipeline이 반환한 `PlateReadResult.rec_score`를 Backend 요청의
 ```text
 PlateDecision.winner_rec_score
 → PlateReadResult.rec_score
-→ BackendEntryRequest.confidence
+→ BackendEntryRequest.ocr_confidence
 → JSON의 ocrConfidence
 ```
 
@@ -157,9 +165,10 @@ Backend 응답의 `entryAttemptId`가 요청 값과 다르면 예상하지 못�
 않고 LED를 제어하지 않는다. JSON의 `entryAttemptId`는 Python 응답 객체의
 `entry_attempt_id`로 변환되며 현재 `EntryEvent`의 값과 비교한다.
 
-응답 ID가 일치하면 판정 로그를 먼저 기록한다. `ALLOW`에서는 로그 기록
-후 초록 LED를 3초간 켰다가 끈다. `REVIEW`와 `DENY`에서는 기존 warning
-로그만 기록하고 LED를 제어하지 않는다.
+응답 ID가 일치하면 판정 로그를 먼저 기록한다. `ALLOW`에서는 로그 기록 후
+초록 LED를 즉시 켜고 Jetson POST를 수행한다. POST 소요 시간을 포함해 최소
+3초가 지나면 LED를 끈다. `REVIEW`와 `DENY`에서는 warning 로그만 기록하고
+LED와 Jetson을 호출하지 않는다.
 
 `BackendClientError`는 연결 실패, timeout, HTTP 오류, 잘못된 JSON과
 응답 계약 오류를 나타낸다. 이 오류는 현재 입차 이벤트의 실패로 기록하고
@@ -168,6 +177,25 @@ Backend 응답의 `entryAttemptId`가 요청 값과 다르면 예상하지 못�
 예상하지 못한 예외와 응답 ID 불일치는 상위로 전파한다. `main()`의
 `finally`는 이 경우에도 LED, 카메라와 초음파 센서를 정리한다. 현재 자동
 재시도는 구현되어 있지 않다.
+
+## Jetson EntryDecision 연동
+
+`ALLOW` 판정에서만 다음 내부 API를 호출한다.
+
+```http
+POST /internal/entry-events
+```
+
+Backend 요청과 응답으로 `JetsonEntryRequest`를 만들며 `entryAttemptId`,
+`decisionRevision`, `entryTime`과 authoritative `sessionContext`를 전달한다.
+Backend 요청에 사용한 `Idempotency-Key`를 Jetson 요청에도 유지한다. Jetson은
+durable 접수를 마친 뒤 `202 ACCEPTED`와 `ACCEPTED` 또는 `ALREADY_ACCEPTED`를
+반환한다.
+
+Jetson POST는 LED를 켠 직후 한 번 수행한다. `JetsonClientError`가 발생하면
+오류를 기록하지만 Backend가 확정한 ALLOW 표시를 취소하지 않는다. 자동
+재시도, 로컬 영속 저장과 매칭 결과 GET polling은 수행하지 않는다. Jetson이
+202로 접수한 뒤의 PhysicalVehicle 매칭은 Jetson 내부 workflow 책임이다.
 
 ## 초록 LED 입차 허용 표시
 
