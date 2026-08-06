@@ -132,3 +132,36 @@ def test_tof_settings_are_required(
         if error["type"] == "missing"
     }
     assert field_name in missing_fields
+
+
+def test_live_stream_is_disabled_by_default() -> None:
+    """운영 배포가 MJPEG 인코딩 비용을 기본으로 떠안지 않는다."""
+
+    settings = Settings(_env_file=None)
+
+    assert settings.live_stream_enabled is False
+    assert settings.live_stream_target_fps == 15.0
+    assert settings.live_stream_jpeg_quality == 80
+
+
+def test_live_stream_settings_parse_environment_variable_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVE_STREAM_ENABLED", "true")
+    monkeypatch.setenv("LIVE_STREAM_TARGET_FPS", "10.0")
+    monkeypatch.setenv("LIVE_STREAM_JPEG_QUALITY", "60")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.live_stream_enabled is True
+    assert settings.live_stream_target_fps == 10.0
+    assert settings.live_stream_jpeg_quality == 60
+
+
+def test_live_stream_rejects_non_positive_target_fps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVE_STREAM_TARGET_FPS", "0")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
