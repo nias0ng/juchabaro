@@ -22,6 +22,7 @@ from src.application.session_observation_workflow import (
     SessionObservationWorkflow,
 )
 from src.camera.frame_source import FrameSource
+from src.diagnostics import DiagnosticsSink
 from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.egress_aisle_registry import EgressAisleRegistry
@@ -101,6 +102,7 @@ class MonitoringDependencies:
     actuator_command_planner: ActuatorCommandPlanner | None = None
     actuator_port: ActuatorPort | None = None
     evidence_capture_sink: EvidenceCaptureSink | None = None
+    diagnostics_sink: DiagnosticsSink | None = None
 
 
 def build_monitoring_pipeline(
@@ -115,6 +117,7 @@ def build_monitoring_pipeline(
     entry_match_coordinator = EntryMatchCoordinator(
         zones=zones,
         entry_zone_min_overlap_ratio=policy.entry_zone_min_overlap_ratio,
+        diagnostics_sink=dependencies.diagnostics_sink,
     )
     context_binding_coordinator = ContextBindingCoordinator()
     session_workflow = SessionObservationWorkflow(
@@ -182,6 +185,7 @@ def build_monitoring_pipeline(
         blocking_min_egress_coverage_ratio=(
             policy.blocking_min_egress_coverage_ratio
         ),
+        diagnostics_sink=dependencies.diagnostics_sink,
     )
     frame_workflow = FrameObservationWorkflow(
         session_workflow=session_workflow,
@@ -222,6 +226,7 @@ def build_monitoring_pipeline(
         detector=dependencies.detector,
         entity_resolver=entity_resolver,
         motion_estimator=motion_estimator,
+        diagnostics_sink=dependencies.diagnostics_sink,
         absence_confirmation_seconds=policy.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=(
             policy.trusted_sample_max_gap_seconds

@@ -18,6 +18,14 @@ import cv2
 import numpy as np
 
 from src.camera.models import CapturedFrame
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
 from src.evidence.capture_models import EvidenceCaptureIntent, EvidenceCropKind
 from src.evidence.models import EvidenceRetentionDisposition
 from src.evidence.spool import (
@@ -371,6 +379,7 @@ class EvidenceCaptureCoordinator:
         filesystem_floor_ratio: float,
         capture_stop_free_ratio: float,
         policy: EvidenceCapturePolicy | None = None,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         self._connection_factory = connection_factory
         self._renderer = IncidentEvidenceRenderer(zones=zones, policy=policy)
@@ -378,6 +387,11 @@ class EvidenceCaptureCoordinator:
         self._spool_cap_bytes = spool_cap_bytes
         self._filesystem_floor_ratio = filesystem_floor_ratio
         self._capture_stop_free_ratio = capture_stop_free_ratio
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
 
     def recover(self) -> EvidenceRecoveryReport:
         """Backend publisher가 꺼진 배포에서도 중단된 local capture를 복구한다."""
@@ -414,14 +428,27 @@ class EvidenceCaptureCoordinator:
                 filesystem_floor_ratio=self._filesystem_floor_ratio,
                 capture_stop_free_ratio=self._capture_stop_free_ratio,
             )
-        except Exception:
+        except Exception as error:
             if connection is not None:
                 connection.close()
             logger.exception("Evidence spool을 열지 못해 capture를 연기합니다.")
+            for intent in intents:
+                self._observe_capture(
+                    intent,
+                    intents=intents,
+                    result="CAPTURE_DEFERRED",
+                    severity=DiagnosticSeverity.ERROR,
+                    error=error,
+                )
             return
 
         try:
             for intent in intents:
+                self._observe_capture(
+                    intent,
+                    intents=intents,
+                    result="CAPTURE_REQUESTED",
+                )
                 try:
                     payload = self._renderer.render_jpeg(frame, batch, intent)
                 except Exception as error:
@@ -446,23 +473,95 @@ class EvidenceCaptureCoordinator:
                             intent.evidence_id,
                             message,
                         )
+                    self._observe_capture(
+                        intent,
+                        intents=intents,
+                        result="CAPTURE_FAILED",
+                        severity=DiagnosticSeverity.ERROR,
+                        error=error,
+                    )
                     continue
 
                 try:
-                    spool.store_jpeg(
+                    stored = spool.store_jpeg(
                         intent.evidence_id,
                         payload,
                         now=intent.captured_at,
                     )
-                except EvidenceSpoolError:
+                except EvidenceSpoolError as error:
                     # store_jpeg은 가능한 실패를 FAILED metadata로 먼저 보존한다.
                     logger.exception(
                         "Evidence JPEG를 durable spool에 기록하지 못했습니다: %s",
                         intent.evidence_id,
                     )
+                    self._observe_capture(
+                        intent,
+                        intents=intents,
+                        result="SPOOL_STORE_FAILED",
+                        severity=DiagnosticSeverity.ERROR,
+                        error=error,
+                    )
+                else:
+                    self._observe_capture(
+                        intent,
+                        intents=intents,
+                        result="CAPTURE_READY",
+                        byte_size=stored.byte_size,
+                    )
         finally:
             assert connection is not None
             connection.close()
+
+    def _observe_capture(
+        self,
+        intent: EvidenceCaptureIntent,
+        *,
+        intents: tuple[EvidenceCaptureIntent, ...],
+        result: str,
+        severity: DiagnosticSeverity = DiagnosticSeverity.INFO,
+        byte_size: int | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        reserved_count = sum(
+            candidate.incident_id == intent.incident_id
+            for candidate in intents
+        )
+        expected_count = 2 if intent.rule_code == "DOUBLE_PARKING" else 1
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=(
+                    DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
+                ),
+                occurred_at=intent.captured_at,
+                severity=severity,
+                attributes={
+                    "byteSize": byte_size,
+                    "cropKind": intent.crop_kind.value,
+                    "errorType": (
+                        type(error).__name__ if error is not None else None
+                    ),
+                    "evidenceId": str(intent.evidence_id),
+                    "expectedCropCount": expected_count,
+                    "incidentId": str(intent.incident_id),
+                    "phase": "CAPTURE",
+                    "physicalVehicleId": str(intent.physical_vehicle_id),
+                    "reservedCropCount": reserved_count,
+                    "result": result,
+                    "ruleCode": intent.rule_code,
+                    "victimPhysicalVehicleId": (
+                        str(intent.victim_physical_vehicle_id)
+                        if intent.victim_physical_vehicle_id is not None
+                        else None
+                    ),
+                    "zoneId": (
+                        int(intent.zone_id)
+                        if intent.zone_id is not None
+                        else None
+                    ),
+                },
+            ),
+        )
 
 
 def _bbox_rect(bbox: BoundingBox, width: int, height: int) -> _FloatRect:

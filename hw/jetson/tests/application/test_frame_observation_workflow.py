@@ -205,7 +205,11 @@ class _ParkingPipeline:
         self.runtime_revision += 1
         return self.process_result
 
-    def exit_zone_traversal_observed(self, physical_vehicle_id) -> bool:
+    def exit_zone_traversal_observed(
+        self,
+        physical_vehicle_id,
+        **_diagnostic_context,
+    ) -> bool:
         assert physical_vehicle_id == VEHICLE_ID
         if physical_vehicle_id in self._terminated_traversal_vehicle_ids:
             # 실제 ParkingPipeline과 마찬가지로, physical_exit()이 이 차량의

@@ -27,6 +27,14 @@ from src.communication.backend_requests import (
     EvidenceUnavailableRequest,
     EvidenceUploadRequest,
 )
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
 from src.evidence.models import EvidenceArtifact, EvidenceState
 from src.evidence.spool import EvidenceSpool
 from src.storage.evidence_repository import EvidenceArtifactRepository
@@ -83,6 +91,7 @@ class EvidencePublicationPublisher:
         retry_initial_seconds: float = 1.0,
         retry_max_seconds: float = 300.0,
         clock: EvidenceClock = _utc_now,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         if retry_initial_seconds <= 0:
             raise ValueError("retry_initial_seconds must be positive")
@@ -99,6 +108,11 @@ class EvidencePublicationPublisher:
         self._retry_initial_seconds = retry_initial_seconds
         self._retry_max_seconds = retry_max_seconds
         self._clock = clock
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
 
     def recover(self) -> int:
         """spool을 먼저 복구하고 중단된 HTTP 전송을 retry 대기로 되돌린다."""
@@ -131,6 +145,10 @@ class EvidencePublicationPublisher:
         artifact = self._claim_next()
         if artifact is None:
             return False
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_ATTEMPTED",
+        )
         try:
             if artifact.state is EvidenceState.UPLOADING:
                 confirmation = self._publish_upload(artifact)
@@ -284,6 +302,13 @@ class EvidencePublicationPublisher:
             next_attempt_at.isoformat(),
             _error_text(error),
         )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_RETRY_SCHEDULED",
+            severity=DiagnosticSeverity.WARNING,
+            error=error,
+            next_attempt_at=next_attempt_at,
+        )
 
     def _mark_delivered(
         self,
@@ -321,6 +346,11 @@ class EvidencePublicationPublisher:
             artifact.delivery_attempt_count,
             confirmation.application_status.value,
         )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_SUCCEEDED",
+            application_status=confirmation.application_status.value,
+        )
 
     def _mark_failed_terminal(
         self,
@@ -346,6 +376,12 @@ class EvidencePublicationPublisher:
             artifact.incident_id,
             artifact.delivery_attempt_count,
             _error_text(error),
+        )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_FAILED_TERMINAL",
+            severity=DiagnosticSeverity.ERROR,
+            error=error,
         )
 
     def _mark_upload_unavailable(
@@ -376,6 +412,52 @@ class EvidencePublicationPublisher:
                 )
         finally:
             connection.close()
+        self._observe_publication(
+            artifact,
+            result="UPLOAD_MARKED_UNAVAILABLE",
+            severity=DiagnosticSeverity.WARNING,
+            error=error,
+        )
+
+    def _observe_publication(
+        self,
+        artifact: EvidenceArtifact,
+        *,
+        result: str,
+        severity: DiagnosticSeverity = DiagnosticSeverity.INFO,
+        error: Exception | None = None,
+        next_attempt_at: datetime | None = None,
+        application_status: str | None = None,
+    ) -> None:
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=(
+                    DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
+                ),
+                occurred_at=self._now(),
+                severity=severity,
+                attributes={
+                    "applicationStatus": application_status,
+                    "attempt": artifact.delivery_attempt_count,
+                    "claimedDeliveryState": artifact.delivery_state.value,
+                    "errorType": (
+                        type(error).__name__ if error is not None else None
+                    ),
+                    "evidenceId": str(artifact.evidence_id),
+                    "incidentId": str(artifact.incident_id),
+                    "nextAttemptAt": (
+                        next_attempt_at.isoformat()
+                        if next_attempt_at is not None
+                        else None
+                    ),
+                    "phase": "BACKEND_PUBLICATION",
+                    "publicationRevision": artifact.publication_revision,
+                    "publicationType": _publication_type(artifact),
+                    "result": result,
+                },
+            ),
+        )
 
     def _now(self) -> datetime:
         now = self._clock()

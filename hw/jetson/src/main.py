@@ -66,6 +66,7 @@ from src.config.monitoring_policy import (
     build_monitoring_policy as _build_monitoring_policy,
 )
 from src.config.settings import Settings, get_settings
+from src.diagnostics import DiagnosticsSink, LoggingDiagnosticsAdapter
 from src.evidence.capture import EvidenceCaptureCoordinator
 from src.parking.egress_aisle_registry import EgressAisleRegistry
 from src.parking.zone_registry import ZoneRegistry
@@ -125,6 +126,7 @@ class RuntimeContext:
     connection_factory: DatabaseConnectionFactory
     publication_preparer: BackendPublicationPreparer
     evidence_capture_coordinator: EvidenceCaptureCoordinator
+    diagnostics_sink: DiagnosticsSink | None = None
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
@@ -206,6 +208,9 @@ def build_runtime_monitoring_pipeline(
         publication_preparer=context.publication_preparer,
         connection_factory=context.connection_factory,
         evidence_capture_sink=context.evidence_capture_coordinator,
+        diagnostics_sink=(
+            context.diagnostics_sink or LoggingDiagnosticsAdapter()
+        ),
     )
     return build_monitoring_pipeline(
         zones=context.zones,
@@ -277,6 +282,7 @@ def create_app(
         application.state.database_connection_factory = connection_factory
         publication_preparer = BackendPublicationPreparer()
         application.state.publication_preparer = publication_preparer
+        diagnostics_sink = LoggingDiagnosticsAdapter()
         evidence_capture_coordinator = EvidenceCaptureCoordinator(
             connection_factory=connection_factory,
             zones=zones,
@@ -288,6 +294,7 @@ def create_app(
             capture_stop_free_ratio=(
                 resolved_settings.evidence_capture_stop_free_ratio
             ),
+            diagnostics_sink=diagnostics_sink,
         )
         application.state.evidence_capture_coordinator = (
             evidence_capture_coordinator
@@ -305,6 +312,7 @@ def create_app(
                     evidence_capture_coordinator=(
                         evidence_capture_coordinator
                     ),
+                    diagnostics_sink=diagnostics_sink,
                 )
             )
             if (
@@ -345,6 +353,7 @@ def create_app(
                     capture_stop_free_ratio=(
                         resolved_settings.evidence_capture_stop_free_ratio
                     ),
+                    diagnostics_sink=diagnostics_sink,
                 )
             )
             outbox_publisher_worker = OutboxPublisherWorker(

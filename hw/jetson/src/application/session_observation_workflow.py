@@ -143,6 +143,8 @@ class SessionObservationWorkflow:
                 pending_attempts,
                 observed_at=batch.observed_at,
                 observation=batch.observation,
+                camera_id=batch.camera_id,
+                frame_id=batch.frame_id,
             )
             for expired in expired_attempts:
                 attempt_repository.save(
@@ -218,6 +220,8 @@ class SessionObservationWorkflow:
                 pending_attempts,
                 observed_vehicle_bboxes=matchable_bboxes,
                 observed_at=batch.observed_at,
+                camera_id=batch.camera_id,
+                frame_id=batch.frame_id,
             )
             if matched is not None:
                 attempt_repository.save(

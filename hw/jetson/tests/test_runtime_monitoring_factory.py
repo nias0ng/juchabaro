@@ -338,6 +338,10 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         passed["dependencies"].evidence_capture_sink
         is evidence_capture_coordinator
     )
+    assert isinstance(
+        passed["dependencies"].diagnostics_sink,
+        main.LoggingDiagnosticsAdapter,
+    )
 
 
 def test_monitoring_policy_maps_all_settings_without_interpretation(

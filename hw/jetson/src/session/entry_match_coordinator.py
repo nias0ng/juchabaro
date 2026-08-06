@@ -13,9 +13,17 @@ from datetime import datetime
 from typing import Iterable, Mapping
 
 from src.domain.models import ObservationState, ObservationStatus, require_aware
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
 from src.parking.geometry import NormalizedPolygon as GeometryPolygon
 from src.parking.geometry import overlap_ratio
-from src.parking.models import EntryExitRole, ZoneType
+from src.parking.models import EntryExitRole, ZoneId, ZoneType
 from src.parking.zone_registry import ZoneRegistry
 from src.session.models import (
     EntryAttemptId,
@@ -64,6 +72,7 @@ class EntryMatchCoordinator:
         *,
         zones: ZoneRegistry,
         entry_zone_min_overlap_ratio: float = 0.40,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         if not 0.0 < entry_zone_min_overlap_ratio <= 1.0:
             raise ValueError(
@@ -76,6 +85,11 @@ class EntryMatchCoordinator:
             and zone.entry_exit_role is EntryExitRole.ENTRY
         )
         self._entry_zone_min_overlap_ratio = entry_zone_min_overlap_ratio
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
 
     def open_attempt(
         self,
@@ -191,6 +205,8 @@ class EntryMatchCoordinator:
         *,
         observed_vehicle_bboxes: Mapping[PhysicalVehicleId, BoundingBox],
         observed_at: datetime,
+        camera_id: str | None = None,
+        frame_id: int | None = None,
     ) -> EntryMatchAttempt | None:
         """한 sample의 ENTRY 후보가 하나일 때만 가장 오래된 attempt를 매칭한다.
 
@@ -203,14 +219,34 @@ class EntryMatchCoordinator:
         """
 
         require_aware(observed_at, "observed_at")
+        attempts = tuple(attempts)
         entry_candidates = tuple(
-            physical_vehicle_id
+            (
+                physical_vehicle_id,
+                zone_id,
+                ratio,
+            )
             for physical_vehicle_id, bbox in observed_vehicle_bboxes.items()
-            if self._is_in_entry_zone(bbox)
+            for zone_id, ratio in (self._best_entry_zone_overlap(bbox),)
+            if zone_id is not None
+            and ratio >= self._entry_zone_min_overlap_ratio
         )
         if len(entry_candidates) != 1:
+            if attempts:
+                self._observe_match_evaluation(
+                    observed_at=observed_at,
+                    camera_id=camera_id,
+                    frame_id=frame_id,
+                    candidate_count=len(entry_candidates),
+                    eligible_attempt_count=0,
+                    result=(
+                        "NO_ENTRY_ZONE_CANDIDATE"
+                        if not entry_candidates
+                        else "AMBIGUOUS_ENTRY_ZONE_CANDIDATES"
+                    ),
+                )
             return None
-        physical_vehicle_id = entry_candidates[0]
+        physical_vehicle_id, zone_id, overlap = entry_candidates[0]
 
         eligible = sorted(
             (
@@ -223,10 +259,22 @@ class EntryMatchCoordinator:
             key=lambda attempt: (attempt.created_at, str(attempt.entry_attempt_id)),
         )
         if not eligible:
+            if attempts:
+                self._observe_match_evaluation(
+                    observed_at=observed_at,
+                    camera_id=camera_id,
+                    frame_id=frame_id,
+                    candidate_count=1,
+                    eligible_attempt_count=0,
+                    result="NO_ELIGIBLE_PENDING_ATTEMPT",
+                    candidate_physical_vehicle_id=physical_vehicle_id,
+                    candidate_zone_id=zone_id,
+                    candidate_overlap_ratio=overlap,
+                )
             return None
 
         attempt = eligible[0]
-        return replace(
+        matched = replace(
             attempt,
             match_state=EntryMatchState.MATCHED,
             matched_physical_vehicle_id=physical_vehicle_id,
@@ -234,6 +282,19 @@ class EntryMatchCoordinator:
             record_version=attempt.record_version + 1,
             updated_at=observed_at,
         )
+        self._observe_match_evaluation(
+            observed_at=observed_at,
+            camera_id=camera_id,
+            frame_id=frame_id,
+            candidate_count=1,
+            eligible_attempt_count=len(eligible),
+            result="MATCHED",
+            candidate_physical_vehicle_id=physical_vehicle_id,
+            candidate_zone_id=zone_id,
+            candidate_overlap_ratio=overlap,
+            selected_entry_attempt_id=attempt.entry_attempt_id,
+        )
+        return matched
 
     def expire_due(
         self,
@@ -241,6 +302,8 @@ class EntryMatchCoordinator:
         *,
         observed_at: datetime,
         observation: ObservationStatus,
+        camera_id: str | None = None,
+        frame_id: int | None = None,
     ) -> tuple[EntryMatchAttempt, ...]:
         """deadline을 지난 PENDING attempt를 명시적 EXPIRED로 만든다.
 
@@ -255,7 +318,7 @@ class EntryMatchCoordinator:
             if observation.state is ObservationState.OBSERVED
             else "SOURCE_UNAVAILABLE"
         )
-        return tuple(
+        expired = tuple(
             self.terminate(
                 attempt,
                 state=EntryMatchState.EXPIRED,
@@ -266,6 +329,18 @@ class EntryMatchCoordinator:
             if attempt.match_state is EntryMatchState.PENDING
             and observed_at > attempt.match_deadline_at
         )
+        for attempt in expired:
+            self._observe_match_evaluation(
+                observed_at=observed_at,
+                camera_id=camera_id,
+                frame_id=frame_id,
+                candidate_count=0,
+                eligible_attempt_count=0,
+                result="EXPIRED",
+                selected_entry_attempt_id=attempt.entry_attempt_id,
+                terminal_reason=attempt.terminal_reason,
+            )
+        return expired
 
     def terminate(
         self,
@@ -303,11 +378,76 @@ class EntryMatchCoordinator:
             updated_at=terminated_at,
         )
 
-    def _is_in_entry_zone(self, bbox: BoundingBox) -> bool:
-        # ZoneDefinition의 tuple polygon을 기존 순수 geometry value object로
-        # 번역한다. 구역의 정본은 여전히 ZoneRegistry snapshot이다.
-        return any(
-            overlap_ratio(GeometryPolygon(tuple(zone.polygon)), bbox)
-            >= self._entry_zone_min_overlap_ratio
-            for zone in self._entry_zones
+    def _best_entry_zone_overlap(
+        self,
+        bbox: BoundingBox,
+    ) -> tuple[ZoneId | None, float]:
+        ranked = sorted(
+            (
+                (
+                    overlap_ratio(GeometryPolygon(tuple(zone.polygon)), bbox),
+                    zone.zone_id,
+                )
+                for zone in self._entry_zones
+            ),
+            key=lambda item: (-item[0], int(item[1])),
+        )
+        if not ranked:
+            return None, 0.0
+        ratio, zone_id = ranked[0]
+        return zone_id, ratio
+
+    def _observe_match_evaluation(
+        self,
+        *,
+        observed_at: datetime,
+        camera_id: str | None,
+        frame_id: int | None,
+        candidate_count: int,
+        eligible_attempt_count: int,
+        result: str,
+        candidate_physical_vehicle_id: PhysicalVehicleId | None = None,
+        candidate_zone_id: ZoneId | None = None,
+        candidate_overlap_ratio: float | None = None,
+        selected_entry_attempt_id: EntryAttemptId | None = None,
+        terminal_reason: str | None = None,
+    ) -> None:
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=DiagnosticEventType.ENTRY_MATCH_EVALUATED,
+                occurred_at=observed_at,
+                severity=(
+                    DiagnosticSeverity.INFO
+                    if result == "MATCHED"
+                    else DiagnosticSeverity.WARNING
+                ),
+                attributes={
+                    "cameraId": camera_id,
+                    "candidateCount": candidate_count,
+                    "candidateOverlapRatio": candidate_overlap_ratio,
+                    "candidatePhysicalVehicleId": (
+                        str(candidate_physical_vehicle_id)
+                        if candidate_physical_vehicle_id is not None
+                        else None
+                    ),
+                    "candidateZoneId": (
+                        int(candidate_zone_id)
+                        if candidate_zone_id is not None
+                        else None
+                    ),
+                    "eligibleAttemptCount": eligible_attempt_count,
+                    "entryZoneMinOverlapRatio": (
+                        self._entry_zone_min_overlap_ratio
+                    ),
+                    "frameId": frame_id,
+                    "result": result,
+                    "selectedEntryAttemptId": (
+                        str(selected_entry_attempt_id)
+                        if selected_entry_attempt_id is not None
+                        else None
+                    ),
+                    "terminalReason": terminal_reason,
+                },
+            ),
         )

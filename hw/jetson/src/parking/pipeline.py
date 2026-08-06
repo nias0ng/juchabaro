@@ -35,6 +35,14 @@ from dataclasses import dataclass
 from datetime import datetime
 import math
 
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking import assignment_resolver
 from src.parking.blocking_relation_tracker import BlockingRelationTracker
@@ -66,6 +74,7 @@ from src.parking.models import (
     PresenceSignal,
     ZoneDefinition,
     ZoneId,
+    ZoneType,
     ZoneVisit,
     ZoneVisitState,
 )
@@ -135,6 +144,7 @@ class ParkingPipeline:
         out_of_zone_min_spot_overlap_ratio: float,
         blocking_min_subject_overlap_ratio: float,
         blocking_min_egress_coverage_ratio: float,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         _validate_ratio(min_overlap_ratio, "min_overlap_ratio")
         _validate_ratio(
@@ -188,6 +198,11 @@ class ParkingPipeline:
         )
         self._blocking_min_egress_coverage_ratio = (
             blocking_min_egress_coverage_ratio
+        )
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
         )
         # 구역 정의는 불변이라 외부측 기준선은 여기서 1회만 계산한다(571).
         self._exit_outward_baselines = zones.exit_outward_baselines()
@@ -372,6 +387,19 @@ class ParkingPipeline:
                 parking_transitions.extend(
                     _parking_transitions(previous_episode, episode)
                 )
+                if (
+                    previous_episode is None
+                    or previous_episode.state is not episode.state
+                ):
+                    self._observe_parking_eligibility(
+                        batch=batch,
+                        vehicle=vehicle,
+                        previous_episode=previous_episode,
+                        episode=episode,
+                        assignment=assignment,
+                        evidence=ephemeral_evidence,
+                        motion_observation=motion_observation,
+                    )
 
             for visit in terminal_visits:
                 self._collect_reductions(
@@ -522,6 +550,13 @@ class ParkingPipeline:
                 incident_transitions,
             )
 
+        self._observe_incident_transitions(
+            incident_transitions,
+            observed_at=batch.observed_at,
+            camera_id=batch.camera_id,
+            frame_id=batch.frame_id,
+            signal_diagnostics=incident_signal_diagnostics,
+        )
         return ParkingPipelineResult(
             zone_visit_updates=tuple(zone_visit_updates),
             parking_episode_updates=tuple(parking_episode_updates),
@@ -662,6 +697,10 @@ class ParkingPipeline:
     def exit_zone_traversal_observed(
         self,
         physical_vehicle_id: PhysicalVehicleId,
+        *,
+        observed_at: datetime | None = None,
+        absence_trusted_seconds: float | None = None,
+        absence_confirmation_seconds: float | None = None,
     ) -> bool:
         """마지막 관측에서 출차 구역의 외부측에 도달해 있었는지 반환한다(571).
 
@@ -679,14 +718,54 @@ class ParkingPipeline:
         """
 
         contacts = self._exit_outward_contacts.get(physical_vehicle_id)
-        if not contacts:
-            return False
-        # ``contacts``는 EXIT role 구역 id만 담는다(ZoneRegistry가 그렇게
-        # 유도한다). 그래서 role 재확인 없이 교집합만 보면 된다.
-        return any(
-            visit.zone_id in contacts
-            for visit in self._zone_visit_tracker.active_visits(physical_vehicle_id)
+        active_visits = self._zone_visit_tracker.active_visits(
+            physical_vehicle_id
         )
+        matching_visits = tuple(
+            visit
+            for visit in active_visits
+            if contacts and visit.zone_id in contacts
+        )
+        traversal_observed = bool(matching_visits)
+        if observed_at is not None:
+            emit_best_effort(
+                self._diagnostics_sink,
+                DiagnosticEvent(
+                    event_type=DiagnosticEventType.EXIT_TRAVERSAL_EVALUATED,
+                    occurred_at=observed_at,
+                    severity=(
+                        DiagnosticSeverity.INFO
+                        if traversal_observed
+                        else DiagnosticSeverity.WARNING
+                    ),
+                    attributes={
+                        "absenceConfirmationSeconds": (
+                            absence_confirmation_seconds
+                        ),
+                        "absenceTrustedSeconds": absence_trusted_seconds,
+                        "activeVisitCount": len(active_visits),
+                        "matchingExitVisitCount": len(matching_visits),
+                        "matchedExitZoneId": (
+                            int(matching_visits[0].zone_id)
+                            if matching_visits
+                            else None
+                        ),
+                        "outwardContactCount": len(contacts or ()),
+                        "physicalVehicleId": str(physical_vehicle_id),
+                        "result": (
+                            "EXIT_OUTWARD_CONTACT_CONFIRMED"
+                            if traversal_observed
+                            else (
+                                "NO_OUTWARD_CONTACT"
+                                if not contacts
+                                else "NO_ACTIVE_EXIT_VISIT"
+                            )
+                        ),
+                        "traversalObserved": traversal_observed,
+                    },
+                ),
+            )
+        return traversal_observed
 
     def _outward_contacts(
         self,
@@ -758,6 +837,14 @@ class ParkingPipeline:
             ),
             incident_updates,
             incident_transitions,
+        )
+
+        self._observe_incident_transitions(
+            incident_transitions,
+            observed_at=observed_at,
+            camera_id=None,
+            frame_id=None,
+            signal_diagnostics=(),
         )
 
         return ParkingPipelineResult(
@@ -845,6 +932,210 @@ class ParkingPipeline:
                         incident_transitions,
                     )
         return tuple(evaluated_signals)
+
+    def _observe_parking_eligibility(
+        self,
+        *,
+        batch: TrackingBatch,
+        vehicle: PhysicalVehicleSnapshot,
+        previous_episode: ParkingEpisode | None,
+        episode: ParkingEpisode,
+        assignment: ParkingAssignment,
+        evidence: PlacementEvidence,
+        motion_observation: ObservationStatus,
+    ) -> None:
+        entry_exit_overlaps = sorted(
+            (
+                (overlap_ratio(zone.polygon, vehicle.bbox), zone)
+                for zone in self._zones.all()
+                if zone.zone_type is ZoneType.ENTRY_EXIT
+            ),
+            key=lambda item: (-item[0], int(item[1].zone_id)),
+        )
+        entry_exit_ratio, entry_exit_zone = (
+            entry_exit_overlaps[0]
+            if entry_exit_overlaps
+            else (0.0, None)
+        )
+        result_by_state = {
+            ParkingState.STOP_PENDING: "STOP_CANDIDATE_OPENED",
+            ParkingState.PARKED: "PARKING_CONFIRMED",
+            ParkingState.MOVE_PENDING: "MOVEMENT_CANDIDATE_OPENED",
+            ParkingState.ENDED: "PARKING_ENDED",
+            ParkingState.CANCELED: "STOP_CANDIDATE_CANCELED",
+        }
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=DiagnosticEventType.PARKING_ELIGIBILITY_EVALUATED,
+                occurred_at=vehicle.observed_at,
+                severity=(
+                    DiagnosticSeverity.WARNING
+                    if entry_exit_zone is not None
+                    and entry_exit_ratio >= self._min_overlap_ratio
+                    else DiagnosticSeverity.INFO
+                ),
+                attributes={
+                    "assignmentConfidence": assignment.confidence,
+                    "assignmentState": assignment.state.value,
+                    "assignmentZoneId": (
+                        int(assignment.zone_id)
+                        if assignment.zone_id is not None
+                        else None
+                    ),
+                    "cameraId": batch.camera_id,
+                    "entryExitOverlapRatio": entry_exit_ratio,
+                    "entryExitRole": (
+                        entry_exit_zone.entry_exit_role.value
+                        if entry_exit_zone is not None
+                        and entry_exit_zone.entry_exit_role is not None
+                        else None
+                    ),
+                    "entryExitZoneId": (
+                        int(entry_exit_zone.zone_id)
+                        if entry_exit_zone is not None
+                        else None
+                    ),
+                    "frameId": batch.frame_id,
+                    "motionObservationReason": (
+                        motion_observation.reason.value
+                        if motion_observation.reason is not None
+                        else None
+                    ),
+                    "motionObservationState": motion_observation.state.value,
+                    "motionSignal": episode.last_signal.value,
+                    "movementConfirmationSeconds": (
+                        episode.movement_confirmation_seconds
+                    ),
+                    "movementTrustedSeconds": episode.movement_trusted_seconds,
+                    "parkingEpisodeId": str(episode.episode_id),
+                    "parkingState": episode.state.value,
+                    "physicalVehicleId": str(vehicle.physical_vehicle_id),
+                    "previousParkingState": (
+                        previous_episode.state.value
+                        if previous_episode is not None
+                        else None
+                    ),
+                    "primaryOverlapRatio": evidence.primary_overlap_ratio,
+                    "primaryZoneId": (
+                        int(evidence.primary_zone_id)
+                        if evidence.primary_zone_id is not None
+                        else None
+                    ),
+                    "result": result_by_state[episode.state],
+                    "secondaryOverlapRatio": evidence.secondary_overlap_ratio,
+                    "secondaryZoneId": (
+                        int(evidence.secondary_zone_id)
+                        if evidence.secondary_zone_id is not None
+                        else None
+                    ),
+                    "stationaryConfirmationSeconds": (
+                        episode.parking_confirmation_seconds
+                    ),
+                    "stationaryTrustedSeconds": (
+                        episode.stationary_trusted_seconds
+                    ),
+                    "terminationReason": episode.termination_reason,
+                    "trackSegmentId": int(vehicle.track_segment_id),
+                },
+            ),
+        )
+
+    def _observe_incident_transitions(
+        self,
+        transitions: Collection[IncidentTransition],
+        *,
+        observed_at: datetime,
+        camera_id: str | None,
+        frame_id: int | None,
+        signal_diagnostics: Collection[IncidentSignalDiagnostic],
+    ) -> None:
+        diagnostic_by_key = {
+            item.signal.key: item for item in signal_diagnostics
+        }
+        for transition in transitions:
+            incident = transition.incident
+            diagnostic = diagnostic_by_key.get(incident.key)
+            signal = None if diagnostic is None else diagnostic.signal
+            timing = None if diagnostic is None else diagnostic.timing
+            if incident.zone_id is not None:
+                zone_provenance = (
+                    "ZONE_VISIT"
+                    if incident.key.scope_type is IncidentKeyScope.ZONE_VISIT
+                    else "INCIDENT_CONTEXT"
+                )
+            elif incident.key.scope_type is IncidentKeyScope.PHYSICAL_VEHICLE:
+                zone_provenance = "NONE_PHYSICAL_VEHICLE_SCOPE"
+            elif incident.key.scope_type is IncidentKeyScope.BLOCKING_RELATION:
+                zone_provenance = "NONE_BLOCKING_RELATION_SCOPE"
+            else:
+                zone_provenance = "NONE"
+            emit_best_effort(
+                self._diagnostics_sink,
+                DiagnosticEvent(
+                    event_type=(
+                        DiagnosticEventType.INCIDENT_PROJECTION_EVALUATED
+                    ),
+                    occurred_at=observed_at,
+                    severity=(
+                        DiagnosticSeverity.WARNING
+                        if transition.transition_type.value == "OPEN"
+                        else DiagnosticSeverity.INFO
+                    ),
+                    attributes={
+                        "cameraId": camera_id,
+                        "clearDurationSeconds": (
+                            timing.clear_duration_seconds
+                            if timing is not None
+                            else incident.clear_duration_seconds
+                        ),
+                        "clearTrustedSeconds": incident.clear_trusted_seconds,
+                        "confirmDurationSeconds": (
+                            timing.confirm_duration_seconds
+                            if timing is not None
+                            else incident.confirm_duration_seconds
+                        ),
+                        "confirmTrustedSeconds": incident.confirm_trusted_seconds,
+                        "entryAttemptId": (
+                            str(incident.entry_attempt_id)
+                            if incident.entry_attempt_id is not None
+                            else None
+                        ),
+                        "frameId": frame_id,
+                        "incidentId": str(incident.incident_id),
+                        "incidentState": incident.state.value,
+                        "parkingSessionId": (
+                            int(incident.parking_session_id)
+                            if incident.parking_session_id is not None
+                            else None
+                        ),
+                        "physicalVehicleId": str(
+                            incident.physical_vehicle_id
+                        ),
+                        "ruleCode": incident.key.rule_code,
+                        "scopeId": str(incident.key.scope_id),
+                        "scopeType": incident.key.scope_type.value,
+                        "signalConfirmable": (
+                            signal.confirmable if signal is not None else None
+                        ),
+                        "signalValue": (
+                            signal.value.value if signal is not None else None
+                        ),
+                        "transitionType": transition.transition_type.value,
+                        "victimPhysicalVehicleId": (
+                            str(incident.victim_physical_vehicle_id)
+                            if incident.victim_physical_vehicle_id is not None
+                            else None
+                        ),
+                        "zoneId": (
+                            int(incident.zone_id)
+                            if incident.zone_id is not None
+                            else None
+                        ),
+                        "zoneProvenance": zone_provenance,
+                    },
+                ),
+            )
 
     @staticmethod
     def _collect_reductions(
