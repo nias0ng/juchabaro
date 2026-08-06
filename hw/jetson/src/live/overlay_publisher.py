@@ -21,15 +21,15 @@ from src.camera.models import CapturedFrame
 from src.live.frame_publishing import (
     DEFAULT_TARGET_FPS,
     LatestFrameBuffer,
+    RenderFn,
+    build_default_render,
     placeholder_jpeg,
 )
-from src.live.live_overlay_renderer import render_overlay_jpeg
 from src.parking.zone_registry import ZoneRegistry
 from src.tracking.models import TrackingBatch
 
 LOGGER = logging.getLogger(__name__)
 
-RenderFn = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], bytes]
 MonotonicFn = Callable[[], float]
 
 
@@ -49,11 +49,7 @@ class OverlayPublisher:
             raise ValueError("zones 또는 render 중 하나는 반드시 지정해야 합니다")
         if target_fps <= 0:
             raise ValueError("target_fps는 0보다 커야 합니다")
-        self._render: RenderFn = render or (
-            lambda frame, tracking_batch, result: render_overlay_jpeg(
-                frame, tracking_batch, result, zones=zones, jpeg_quality=jpeg_quality
-            )
-        )
+        self._render: RenderFn = render or build_default_render(zones, jpeg_quality)
         self._min_interval_seconds = 1.0 / target_fps
         self._monotonic = monotonic
         self._buffer = LatestFrameBuffer()

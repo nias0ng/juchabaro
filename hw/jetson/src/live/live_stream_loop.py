@@ -12,17 +12,17 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from threading import Event, Thread
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.application.monitoring_pipeline import MonitoringPipeline
 from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.camera.models import CapturedFrame
-from src.live.live_overlay_renderer import render_overlay_jpeg
 from src.live.frame_publishing import (
     DEFAULT_TARGET_FPS,
     LatestFrameBuffer,
+    RenderFn,
+    build_default_render,
     placeholder_jpeg,
 )
 from src.parking.zone_registry import ZoneRegistry
@@ -32,8 +32,6 @@ LOGGER = logging.getLogger(__name__)
 
 _TARGET_FPS = DEFAULT_TARGET_FPS
 _RECONNECT_BACKOFF_SECONDS = 2.0
-
-RenderFn = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], bytes]
 
 
 def _throttle_sleep_seconds(elapsed_seconds: float, *, target_fps: float = _TARGET_FPS) -> float:
@@ -75,11 +73,7 @@ class LiveStreamLoop:
         self._pipeline = pipeline
         self._reconnect_backoff_seconds = reconnect_backoff_seconds
         self._target_fps = target_fps
-        self._render: RenderFn = render or (
-            lambda frame, tracking_batch, result: render_overlay_jpeg(
-                frame, tracking_batch, result, zones=zones, jpeg_quality=jpeg_quality
-            )
-        )
+        self._render: RenderFn = render or build_default_render(zones, jpeg_quality)
         self._buffer = LatestFrameBuffer()
         self._stop_requested = Event()
         self._thread: Thread | None = None

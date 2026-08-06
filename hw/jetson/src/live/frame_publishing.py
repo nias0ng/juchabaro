@@ -6,16 +6,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from threading import Lock
 
 import cv2
 import numpy as np
 
-from src.live.live_overlay_renderer import encode_jpeg
+from src.application.frame_observation_workflow import FrameObservationResult
+from src.camera.models import CapturedFrame
+from src.live.live_overlay_renderer import encode_jpeg, render_overlay_jpeg
+from src.parking.zone_registry import ZoneRegistry
+from src.tracking.models import TrackingBatch
 
 DEFAULT_TARGET_FPS = 15.0
 PLACEHOLDER_HEIGHT = 480
 PLACEHOLDER_WIDTH = 640
+
+RenderFn = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], bytes]
 
 
 class LatestFrameBuffer:
@@ -47,3 +54,20 @@ def placeholder_jpeg(message: str) -> bytes:
         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
     )
     return encode_jpeg(canvas)
+
+
+def build_default_render(zones: ZoneRegistry, jpeg_quality: int) -> RenderFn:
+    """`zones`/`jpeg_quality`를 고정한 `render_overlay_jpeg` 클로저를 반환한다.
+
+    `LiveStreamLoop`와 `OverlayPublisher` 둘 다 `render`를 직접 넘기지 않았을 때
+    쓰는 기본 렌더 함수라 여기로 모았다.
+    """
+
+    def render(
+        frame: CapturedFrame, tracking_batch: TrackingBatch, result: FrameObservationResult
+    ) -> bytes:
+        return render_overlay_jpeg(
+            frame, tracking_batch, result, zones=zones, jpeg_quality=jpeg_quality
+        )
+
+    return render
