@@ -29,7 +29,6 @@ const recheckIntervalSeconds = ref(DEFAULT_STANDARDS.recheckIntervalSeconds)
 const disabledZoneWarningEnabled = ref(DEFAULT_TOGGLES.disabledZoneWarningEnabled)
 const evZoneWarningEnabled = ref(DEFAULT_TOGGLES.evZoneWarningEnabled)
 // 전기차 충전 구역 허용 시간은 정책상 고정값이라 편집 UI가 없다.
-const EV_FAST_CHARGE_HOURS = 1
 const EV_SLOW_CHARGE_HOURS = 14
 
 const pushNotificationEnabled = ref(DEFAULT_TOGGLES.pushNotificationEnabled)
