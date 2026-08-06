@@ -36,7 +36,6 @@ from src.application.evidence_publication_worker import (
 )
 from src.application.monitoring_factory import (
     MonitoringDependencies,
-    MonitoringPolicy,
     build_monitoring_pipeline,
 )
 from src.application.monitoring_pipeline import MonitoringPipeline
@@ -63,21 +62,12 @@ from src.communication.backend_client import BackendClient
 from src.communication.backend_publication_preparer import (
     BackendPublicationPreparer,
 )
+from src.config.monitoring_policy import (
+    build_monitoring_policy as _build_monitoring_policy,
+)
 from src.config.settings import Settings, get_settings
 from src.evidence.capture import EvidenceCaptureCoordinator
 from src.parking.egress_aisle_registry import EgressAisleRegistry
-from src.parking.models import IncidentRuleTiming
-from src.parking.rules.bad_parking import (
-    AISLE_BLOCK,
-    BAD_PARKING,
-    OUT_OF_ZONE,
-)
-from src.parking.rules.double_parking import DOUBLE_PARKING
-from src.parking.rules.ev_overstay import EV_OVERSTAY
-from src.parking.rules.restricted_zone import (
-    DISABLED_ZONE_UNAUTHORIZED,
-    EV_ZONE_UNAUTHORIZED,
-)
 from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
@@ -172,155 +162,6 @@ def _validate_monitoring_assets(
             "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
             f"{settings.vehicle_model_path}"
         )
-
-
-def _build_incident_rule_timings(
-    settings: Settings,
-) -> tuple[IncidentRuleTiming, ...]:
-    """배포 설정의 규칙별 debounce 값을 domain 정책 객체로 변환한다."""
-
-    return (
-        IncidentRuleTiming(
-            rule_code=DISABLED_ZONE_UNAUTHORIZED,
-            confirm_duration_seconds=(
-                settings.incident_disabled_zone_unauthorized_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_disabled_zone_unauthorized_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=EV_ZONE_UNAUTHORIZED,
-            confirm_duration_seconds=(
-                settings.incident_ev_zone_unauthorized_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_ev_zone_unauthorized_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=EV_OVERSTAY,
-            confirm_duration_seconds=(
-                settings.incident_ev_overstay_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_ev_overstay_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=BAD_PARKING,
-            confirm_duration_seconds=(
-                settings.incident_bad_parking_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_bad_parking_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=OUT_OF_ZONE,
-            confirm_duration_seconds=(
-                settings.incident_out_of_zone_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_out_of_zone_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=AISLE_BLOCK,
-            confirm_duration_seconds=(
-                settings.incident_aisle_block_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_aisle_block_clear_seconds
-            ),
-        ),
-        IncidentRuleTiming(
-            rule_code=DOUBLE_PARKING,
-            confirm_duration_seconds=(
-                settings.incident_double_parking_confirm_seconds
-            ),
-            clear_duration_seconds=(
-                settings.incident_double_parking_clear_seconds
-            ),
-        ),
-    )
-
-
-def _build_monitoring_policy(settings: Settings) -> MonitoringPolicy:
-    """Settings의 monitoring 정책을 해석 없이 domain factory로 전달한다."""
-
-    return MonitoringPolicy(
-        zone_entry_confirm_seconds=settings.zone_entry_confirm_seconds,
-        zone_exit_confirm_seconds=settings.zone_exit_confirm_seconds,
-        entry_zone_min_overlap_ratio=(
-            settings.entry_zone_min_overlap_ratio
-        ),
-        parking_confirm_seconds=settings.parking_confirm_seconds,
-        parking_move_confirm_seconds=(
-            settings.parking_move_confirm_seconds
-        ),
-        absence_confirmation_seconds=(
-            settings.absence_confirmation_seconds
-        ),
-        trusted_sample_max_gap_seconds=(
-            settings.trusted_sample_max_gap_seconds
-        ),
-        reidentification_max_gap_seconds=(
-            settings.reidentification_max_gap_seconds
-        ),
-        reidentification_min_score=settings.reidentification_min_score,
-        reidentification_ambiguity_margin=(
-            settings.reidentification_ambiguity_margin
-        ),
-        incident_confirm_seconds=settings.incident_confirm_seconds,
-        incident_clear_seconds=settings.incident_clear_seconds,
-        incident_rule_timings=_build_incident_rule_timings(settings),
-        zone_presence_min_overlap_ratio=(
-            settings.zone_presence_min_overlap_ratio
-        ),
-        assignment_min_overlap_ratio=(
-            settings.assignment_min_overlap_ratio
-        ),
-        assignment_ambiguous_margin=(
-            settings.assignment_ambiguous_margin
-        ),
-        bad_parking_min_primary_overlap_ratio=(
-            settings.bad_parking_min_primary_overlap_ratio
-        ),
-        bad_parking_min_secondary_overlap_ratio=(
-            settings.bad_parking_min_secondary_overlap_ratio
-        ),
-        out_of_zone_min_spot_overlap_ratio=(
-            settings.out_of_zone_min_spot_overlap_ratio
-        ),
-        blocking_relation_confirm_seconds=(
-            settings.blocking_relation_confirm_seconds
-        ),
-        blocking_relation_clear_seconds=(
-            settings.blocking_relation_clear_seconds
-        ),
-        blocking_min_subject_overlap_ratio=(
-            settings.blocking_min_subject_overlap_ratio
-        ),
-        blocking_min_egress_coverage_ratio=(
-            settings.blocking_min_egress_coverage_ratio
-        ),
-        motion_window_seconds=settings.motion_window_seconds,
-        motion_min_observation_span_seconds=(
-            settings.motion_min_observation_span_seconds
-        ),
-        motion_max_sample_gap_seconds=(
-            settings.motion_max_sample_gap_seconds
-        ),
-        motion_stationary_threshold=(
-            settings.motion_stationary_threshold
-        ),
-        motion_moving_threshold=settings.motion_moving_threshold,
-        motion_min_samples=settings.motion_min_samples,
-        motion_min_trend_consistency=(
-            settings.motion_min_trend_consistency
-        ),
-    )
 
 
 def build_runtime_monitoring_pipeline(
