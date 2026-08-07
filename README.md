@@ -33,7 +33,7 @@
 
 [5. 레이아웃 및 디자인](#5-레이아웃-및-디자인)
 
-[6. 프로젝트 산출물](#6-프로젝트-산출물)
+[6. 프로젝트 산출물](#6-프로젝트-산출물) — [6.1. 실행 방법](#61-실행-방법) · [6.2. 컨벤션](#62-컨벤션)
 
 ---
 
@@ -51,7 +51,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 ### 🗓️ 구현 기간
 
-🔺2026.07.06 - 08.14
+2026.07.06 - 2026.08.14
 
 ---
 
@@ -168,7 +168,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 | 카메라 보정 | OpenCV fisheye 카메라 캘리브레이션 |
 | Edge 서버 | FastAPI (Jetson Orin Nano) |
 
-> 참고: `hw/jetson`은 현재 FastAPI 스켈레톤(헬스체크)만 구현되어 있고, `ai/tracking`의 베이스라인 스크립트를 기반으로 개발이 진행 중입니다.
+> 참고: `hw/jetson`은 FastAPI 위에서 카메라 프레임 수집·차량 추적·구역 판정·사건 생성·LED/스피커 제어·백엔드 전송(outbox, 증거 업로드)을 수행하는 모니터링 파이프라인으로 동작합니다. 확정된 판정은 로컬 SQLite에 durable하게 기록한 뒤 멱등 키를 붙여 백엔드로 전송합니다. `ai/tracking`은 판정 임계값을 실측·검증하는 베이스라인 스크립트입니다.
 
 ---
 
@@ -191,24 +191,32 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 ### **3.3. 위반 차량 이동 요청**
 
 - **사용 목적**: 잘못 주차된 차량에 개인정보 노출 없이 이동을 요청합니다.
-- **주요 이용 흐름**: 입주민이 위반 차량을 발견 → 앱에서 대상 번호판·위반 유형·사유·사진을 첨부해 이동 요청 등록 → 보낸/받은 이동 요청 목록 조회
-- **시스템 처리 방식**: `MoveRequestController`(`POST /move-requests`, `GET /move-requests`)가 사진 첨부(멀티파트)를 포함한 이동 요청 생성과 목록 조회를 처리하며, 동일 대상에 처리 중인 요청이 있으면 중복 생성을 막습니다(409 응답).
-- **제공되는 결과**: 차량 소유자에게 개인정보 없이 이동 요청이 전달되고, 요청자는 처리 상태를 목록에서 확인할 수 있습니다.
-- **참고**: 요청에 대한 이동 예정 시간 응답, 이동 재확인, 관리자 사건 처리 화면은 `MoveRequestStatus`·`MoveResponseType` 등 데이터 모델에는 정의되어 있으나, 이를 노출하는 API·화면은 아직 구현되지 않았습니다.
+- **주요 이용 흐름**: 입주민이 위반 차량을 발견 → 앱에서 대상 번호판·위반 유형·사유·사진을 첨부해 이동 요청 등록 → 차주가 알림을 받고 예상 이동 시간으로 응답 → 현장 재확인 결과까지 요청 상태에 반영 → 보낸/받은 이동 요청 목록·상세 조회
+- **시스템 처리 방식**: `MoveRequestController`(`POST /move-requests`, `GET /move-requests`, `GET /move-requests/{requestId}`, `POST /move-requests/{requestId}/responses`, `GET /move-requests/stats`)가 사진 첨부(멀티파트)를 포함한 이동 요청 생성, 목록·상세 조회, 차주의 이동 예정 시간 응답을 처리하며, 동일 대상에 처리 중인 요청이 있으면 중복 생성을 막습니다(409 응답). 응답 이후 백엔드는 Jetson에 재확인을 지시하고(`POST /internal/move-verifications`), Jetson은 현장 관측 결과를 `POST /hw/move-requests/{requestId}/verification`(`HwMoveVerificationController`)으로 회신해 실제 이동 여부를 확정합니다.
+- **제공되는 결과**: 차량 소유자에게 개인정보 없이 이동 요청이 전달되고, 요청자는 응답과 실제 이동 확인까지의 처리 상태를 목록에서 확인할 수 있습니다.
+- **관리자 처리**: `AdminEventController`(`/admin/parking-events`)가 사건 목록·이력·상세 조회와 완료(`/complete`)·반려(`/dismiss`)·확인(`/acknowledge`)·재알림(`/reminders`)을 제공하며, 관리자 웹의 `ParkingEventListView`·`ParkingEventDetailView`·`HistoryView` 화면에서 사용합니다.
 
-### **3.4. 알림 조회 **
+### **3.4. 알림 조회 및 푸시 발송**
 
 - **사용 목적**: 이동 요청, 재알림, 전기차 구역 초과, 사건 종료 등 본인에게 필요한 알림을 확인합니다.
-- **주요 이용 흐름**: 알림 목록 조회 → 알림 상세 확인
-- **시스템 처리 방식**: `NotificationController`(`GET /notifications`, `GET /notifications/{id}`)가 페이지 단위로 알림을 조회합니다. 현재는 REST 조회 방식이며, 실시간 푸시 전달은 구현되어 있지 않습니다.
-- **제공되는 결과**: 사용자는 앱에서 본인에게 온 알림 이력을 확인할 수 있습니다.
+- **주요 이용 흐름**: 앱 기기 토큰 등록 → 이벤트 발생 시 푸시 수신 → 알림 목록 조회 → 알림 상세 확인
+- **시스템 처리 방식**: `NotificationController`(`GET /notifications`, `GET /notifications/{id}`)가 페이지 단위로 알림을 조회하고, `DeviceTokenController`가 앱의 푸시 토큰을 등록·해제합니다. 실시간 푸시는 `PushSender` 추상화를 통해 발송하며, 운영 프로필(`application-prod.yml`)은 `app.push.provider=expo`로 Expo Push(`ExpoPushSender`)를 사용하고 로컬 기본값은 로그 출력(`LoggingPushSender`)입니다. 알림 수신 여부는 `NotificationSettingController`로 설정합니다.
+- **제공되는 결과**: 사용자는 앱에서 푸시로 즉시 알림을 받고, 알림 이력을 목록에서 다시 확인할 수 있습니다.
 
 ### **3.5. AI 기반 불편 주차 자동 감지**
 
 - **사용 목적**: 사람이 직접 확인하지 않아도 이중주차·구역 외 주차·장애인 및 전기차 구역 위반을 자동으로 판단합니다.
-- **주요 이용 흐름(설계)**: 입차 시 확보한 번호판-트래킹 ID를 실내 카메라의 차량 추적과 매칭 → 사전에 등록된 주차 구역·통행로 폴리곤과 차량 위치를 비교해 점유·위반 여부 판단 → 위반 의심 시 이동 요청 자동 생성
-- **시스템 처리 방식**: `ai/tracking`의 YOLOv8 + ByteTrack 기반 베이스라인 스크립트가 차량 추적과 구역 겹침 계산, 위반 상태 분류(정상/이중주차/장애인 및 전기차 위반/구역 외 주차 등)의 참조 구현을 제공합니다. 다만 이를 운영 환경에서 구동하는 `hw/jetson`의 추적·판정 모듈과, 판정 결과로 이동 요청을 자동 생성하는 백엔드 로직은 현재 저장소 기준으로 아직 구현되어 있지 않습니다.
-- **제공되는 결과(목표)**: 관리자나 입주민이 직접 순찰하지 않아도 위반 차량이 자동으로 감지되고 이동 요청까지 이어집니다. 현재는 데이터 모델(`ParkingEventType` 등)과 참조 파이프라인까지 준비된 상태입니다.
+- **주요 이용 흐름**: 입차 시 확보한 번호판-트래킹 ID를 실내 카메라의 차량 추적과 매칭 → 사전에 등록된 주차 구역·통행로 폴리곤과 차량 위치를 비교해 점유·위반 여부 판단 → 위반 확정 시 사건과 증거 이미지를 백엔드로 전송하고 이동 요청 자동 생성
+- **시스템 처리 방식**: `hw/jetson`의 `MonitoringPipeline`이 YOLOv8s + ByteTrack 추적, 구역 겹침 계산, 위반 규칙 판정(이중주차·구역 외 주차·통행로 방해·장애인 및 전기차 구역 무단 점유·전기차 초과 점유)을 프레임 단위로 수행합니다. 순간적인 상태 변화를 사건으로 만들지 않도록 규칙별 확정·해소 대기 시간(`INCIDENT_*_CONFIRM_SECONDS` / `INCIDENT_*_CLEAR_SECONDS`)을 두고, 확정된 전이만 로컬 SQLite outbox에 저장한 뒤 멱등 키와 함께 `POST /hw/parking-events/transitions`로 전송합니다. 증거 정지 이미지는 `POST /hw/parking-events/{incidentId}/evidence`로 업로드합니다. 백엔드 `HwIncidentService`는 사건 OPEN 시 `ParkingEvent`를 생성해 `REQUESTED` 상태로 전이시키고 `MoveRequestType.AUTO` 이동 요청을 자동 생성해 알림을 발송하며, RESOLVE 시 해당 이동 요청을 완료 처리합니다. 장애인·전기차 구역은 ToF 센서 판정과 결합해 LED·스피커로 현장 경고를 냅니다.
+- **제공되는 결과**: 관리자나 입주민이 직접 순찰하지 않아도 위반 차량이 자동으로 감지되어 사건으로 등록되고, 이동 요청과 알림까지 자동으로 이어집니다.
+- **참고**: 판정 임계값은 파일럿 영상 리플레이(`hw/jetson/scripts/replay_pilot_video.py`)와 `ai/tracking` 베이스라인으로 실측해 조정하며, 일부 값은 재측정 대상인 provisional 값입니다.
+
+**판정 화면 예시** — 파일럿 영상(`video4`)에 차량 탐지 결과와 구역 폴리곤을 함께 그린 화면입니다. 구역은 일반(GENERAL) · 전기차 충전(EV_CHARGING) · 장애인(DISABLED) · 통행로(AISLE) · 출입구(ENTRY_EXIT)로 구분되며, 탐지된 차량이 어느 구역에 속하는지 실시간으로 판정합니다.
+
+| t = 20.0s | t = 45.0s | t = 140.0s |
+| --- | --- | --- |
+| 장애인 구역 점유 감지 | 전기차 충전 구역 점유 감지 | 일반 구역 정상 주차 |
+| ![장애인 구역 판정](./docs/images/zone_overlay_020s_disabled.jpg) | ![전기차 구역 판정](./docs/images/zone_overlay_045s_ev.jpg) | ![일반 구역 판정](./docs/images/zone_overlay_140s_general.jpg) |
 
 ---
 
@@ -323,8 +331,40 @@ npm run build      # 타입 체크 + 프로덕션 빌드
 
 **AI / HW 서버 실행**
 
-추가 개발 예정 — `ai/training`, `ai/ocr`, `hw/jetson`, `hw/raspberry-pi` 각 디렉터리에 개별 `requirements.txt`와 `README.md`가 있으나, 통합 실행 스크립트나 명령어는 추가할 예정입니다.
-Jetson은 `uvicorn src.main:app`으로 FastAPI 서버를 실행합니다.
+AI·HW는 실행 환경(Jetson, Raspberry Pi, 학습용 PC)이 서로 달라 통합 실행 스크립트를 두지 않고 디렉터리별로 실행합니다. 각 디렉터리의 `README.md`에 환경 변수·모델 준비 절차가 정리되어 있습니다.
+
+*엣지 서버 (Jetson Orin Nano)*
+
+```bash
+cd hw/jetson
+python -m venv .venv && source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env    # 카메라·캘리브레이션·모델 경로 및 MonitoringPolicy 값 입력
+
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
+
+`src.main:app`은 FastAPI와 함께 카메라·추적 워커를 함께 기동하므로, `.env`의 카메라·캘리브레이션·모델 자산이 유효하지 않으면 startup 단계에서 중단됩니다. 상태 확인은 `http://<JETSON_IP>:8000/health`, API 문서는 `/docs`입니다.
+
+*게이트 번호판 인식 (Raspberry Pi)*
+
+```bash
+cd hw/raspberry-pi
+python -m pip install -r requirements.txt
+python scripts/download_models.py    # 번호판 탐지 + 한국어 PaddleOCR ONNX 모델 내려받기
+python -m src.main
+```
+
+*모델 학습*
+
+```bash
+uv venv ai/training/.venv --python 3.12
+uv pip install --python ai/training/.venv -r ai/training/requirements.txt
+
+cd ai/training
+python scripts/train_yolo.py --config configs/yolo_vehicle.yaml   # 차량 탐지
+python scripts/train_yolo.py --config configs/yolo_plate.yaml     # 번호판 탐지
+```
 
 **Docker(운영 환경) 실행**
 
