@@ -13,6 +13,7 @@ export const styles = StyleSheet.create({
   },
   greeting: {
     marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
     fontSize: 26,
     lineHeight: 32.5,
     fontWeight: FontWeight.bold,

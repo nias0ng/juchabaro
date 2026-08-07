@@ -101,14 +101,14 @@ export default function HomeScreen() {
 
           <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
 
-          <QuickActionGrid actions={quickActions} />
-
           <VehicleStatusCard
             session={vehicleStatus}
             additionalCount={additionalSessionCount}
             isLoading={isSessionsLoading}
             hasError={Boolean(sessionsError)}
           />
+
+          <QuickActionGrid actions={quickActions} />
 
           <ParkingStatusCard
             title={PARKING_STATUS_TITLE}

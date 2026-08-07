@@ -30,7 +30,8 @@ type ParkingCongestionBadgeProps = {
 export function ParkingCongestionBadge({ level, rateLabel }: ParkingCongestionBadgeProps) {
   return (
     <View style={styles.row}>
-      <Text style={styles.metric}>혼잡도 {rateLabel}</Text>
+      <Text style={styles.metricLabel}>혼잡도</Text>
+      <Text style={[styles.rate, VALUE_COLOR_STYLE[level]]}>{rateLabel}</Text>
       <View style={[styles.pill, PILL_STYLE[level]]}>
         <Text style={[styles.value, VALUE_COLOR_STYLE[level]]}>{LEVEL_LABEL[level]}</Text>
       </View>

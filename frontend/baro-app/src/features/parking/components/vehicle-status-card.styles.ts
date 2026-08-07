@@ -6,7 +6,7 @@ export const styles = StyleSheet.create({
   card: {
     width: '100%',
     marginBottom: Spacing.base,
-    backgroundColor: Palette.white,
+    backgroundColor: Palette.white80,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
     gap: Spacing.sm,

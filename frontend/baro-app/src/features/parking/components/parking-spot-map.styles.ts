@@ -7,7 +7,7 @@ export const styles = StyleSheet.create({
     width: '100%',
     minHeight: Spacing.xxxl * 2,
     borderRadius: Radius.md + 6,
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
     paddingVertical: Spacing.base,
     paddingHorizontal: Spacing.lg,
     gap: Spacing.md,
@@ -35,7 +35,7 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   mapCellMissing: {
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
   },
   floorLayout: {
     alignSelf: 'center',
@@ -46,7 +46,7 @@ export const styles = StyleSheet.create({
   },
   layoutDivider: {
     height: 22,
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
   },
   layoutRow: {
     flexDirection: 'row',

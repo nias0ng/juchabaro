@@ -8,8 +8,8 @@ export const styles = StyleSheet.create({
   container: {
     width: '100%',
     borderTopWidth: 1,
-    paddingTop: 10,
-    paddingBottom: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   tabsRow: {
     flexDirection: 'row',
@@ -21,18 +21,17 @@ export const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 1,
+  },
+  homeTab: {
+    gap: 0,
   },
   iconContainer: {
+    // 아이콘 원본 크기가 달라도 모든 탭의 라벨 기준선이 같도록 공통 슬롯을 사용한다.
     width: 24,
     height: 24,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  // Figma상 "주차 현황" 아이콘만 다른 탭보다 크게 그려진다.
-  iconContainerLarge: {
-    width: 29,
-    height: 29,
   },
   badge: {
     position: 'absolute',
