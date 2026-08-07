@@ -440,6 +440,13 @@ def test_assessment_rejects_invalid_decision_identity_combinations() -> None:
 
 
 @pytest.mark.parametrize(
+    "visit_state",
+    [
+        ZoneVisitState.ENTERING,
+        ZoneVisitState.INSIDE,
+    ],
+)
+@pytest.mark.parametrize(
     ("zone_type", "disabled", "electric", "expected"),
     [
         (ZoneType.DISABLED, True, False, TofAuthorizationDecision.AUTHORIZED),
@@ -451,13 +458,28 @@ def test_assessment_rejects_invalid_decision_identity_combinations() -> None:
     ],
 )
 def test_zone_qualification_uses_the_shared_zone_specific_policy(
+    visit_state: ZoneVisitState,
     zone_type: ZoneType,
     disabled: bool | None,
     electric: bool | None,
     expected: TofAuthorizationDecision,
 ) -> None:
+    visit = _visit(
+        state=visit_state,
+        entry_trusted_seconds=(
+            0.0
+            if visit_state is ZoneVisitState.ENTERING
+            else 1.0
+        ),
+        entered_at=(
+            None
+            if visit_state is ZoneVisitState.ENTERING
+            else NOW - timedelta(seconds=1)
+        ),
+    )
     context = _context(disabled=disabled, electric=electric)
     candidate = _candidate(
+        visit=visit,
         binding=_binding(context=context),
         mirror=_mirror(context=context),
     )
@@ -641,10 +663,6 @@ def test_candidate_cardinality_is_not_collapsed() -> None:
 @pytest.mark.parametrize(
     ("candidate", "reason"),
     [
-        (
-            _candidate(visit=_visit(state=ZoneVisitState.ENTERING, entered_at=None)),
-            TofAuthorizationReason.ZONE_VISIT_NOT_CONFIRMED,
-        ),
         (
             _candidate(
                 visit=_visit(
