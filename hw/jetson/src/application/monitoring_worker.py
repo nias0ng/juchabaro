@@ -13,11 +13,13 @@ import time
 from collections.abc import Callable
 from numbers import Real
 from threading import Event, Thread
+from time import perf_counter
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.application.monitoring_pipeline import FrameObserver, MonitoringPipeline
 from src.camera.models import CapturedFrame
 from src.parking.models import IncidentTransitionType
+from src.performance_timing import PerformanceTimingWindow, STAGE_NAMES
 from src.session.models import EntryMatchState
 from src.tracking.models import TrackingBatch
 
@@ -63,6 +65,7 @@ class MonitoringWorker:
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._monotonic_clock = monotonic_clock
         self._last_heartbeat_at: float | None = None
+        self._performance_timing_window = PerformanceTimingWindow()
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
@@ -238,8 +241,36 @@ class MonitoringWorker:
                 physical_vehicle_id,
             )
 
+        timing = getattr(frame, "performance_timing", None)
+        observer_started_at = perf_counter()
         if self._frame_observer is not None:
             self._frame_observer(frame, batch, result)
+        if timing is not None:
+            timing.record_seconds(
+                "observer",
+                perf_counter() - observer_started_at,
+            )
+            total_seconds = max(perf_counter() - timing.started_at, 0.0)
+            timing.record_seconds(
+                "total",
+                total_seconds,
+            )
+            accounted_ms = sum(
+                timing.duration_ms(stage) or 0.0
+                for stage in (
+                    "captureTotal",
+                    "detector",
+                    "trackingPostprocess",
+                    "commit",
+                    "evidence",
+                    "observer",
+                )
+            )
+            timing.record_seconds(
+                "unaccounted",
+                max(total_seconds - accounted_ms / 1_000.0, 0.0),
+            )
+            self._performance_timing_window.add(timing)
 
         now = self._monotonic_clock()
         if (
@@ -266,4 +297,25 @@ class MonitoringWorker:
             batch.observation.state.value,
             batch.all_detections_tracked,
             batch.all_identities_resolved,
+        )
+        self._log_performance_timing()
+
+    def _log_performance_timing(self) -> None:
+        """heartbeat window의 단계별 평균/p95를 한 줄로 기록한다."""
+
+        frame_count, summary = self._performance_timing_window.take_summary()
+        if frame_count == 0:
+            return
+        formatted_stages = []
+        for stage in STAGE_NAMES:
+            statistics = summary.get(stage)
+            if statistics is None:
+                continue
+            formatted_stages.append(
+                f"{stage}={statistics.average_ms:.1f}/{statistics.p95_ms:.1f}"
+            )
+        logger.info(
+            "Jetson stage timing. frames=%d values=avg/p95ms %s",
+            frame_count,
+            " ".join(formatted_stages),
         )

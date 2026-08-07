@@ -184,11 +184,14 @@ def build_runtime_monitoring_pipeline(
         camera_index=settings.camera_index,
         width=settings.camera_width,
         height=settings.camera_height,
+        fourcc=settings.camera_fourcc,
+        fps=settings.camera_fps,
     )
     frame_source = RemapFrameSource(
         inner=webcam,
         calibration_path=str(settings.calibration_path),
         balance=settings.remap_balance,
+        backend=settings.remap_backend,
     )
 
     tracker = UltralyticsVehicleTracker(
@@ -216,6 +219,7 @@ def build_runtime_monitoring_pipeline(
         diagnostics_sink=(
             context.diagnostics_sink or LoggingDiagnosticsAdapter()
         ),
+        startup_warm_up=True,
     )
     return build_monitoring_pipeline(
         zones=context.zones,

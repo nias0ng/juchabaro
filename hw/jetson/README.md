@@ -59,6 +59,19 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+`REMAP_BACKEND=vpi`는 PyPI 패키지가 아니라 JetPack의
+`python3.10-vpi3` binding을 사용한다. 시스템 Python에서는 VPI가 보이지만
+격리된 venv에서는 보이지 않으므로, Jetson에서 binding 파일 하나만 venv에
+연결한다. `--system-site-packages`는 시스템 OpenCV까지 섞을 수 있어 사용하지
+않는다.
+
+```bash
+VPI_BINDING_PATH=$(/usr/bin/python3 -c 'import vpi; print(vpi.__file__)')
+VENV_SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])')
+ln -sf "$VPI_BINDING_PATH" "$VENV_SITE_PACKAGES/"
+python -c 'import vpi; print(vpi.__file__, vpi.Backend.CUDA)'
+```
+
 ## 테스트 실행
 
 ### 개발 의존성 설치
@@ -342,6 +355,10 @@ durable commit 이후 전체 active Incident projection 적용 계약은 유지�
 `src.main:app`은 FastAPI와 함께 camera·tracking MonitoringWorker를 시작한다.
 따라서 `.env`의 camera·calibration·model 및 MonitoringPolicy 설정이 유효해야
 하며, asset preflight 또는 장치 open이 실패하면 서버 startup도 실패한다.
+운영 camera pipeline은 `open()`에서 보정 frame 한 장을 캡처해 remap backend와
+YOLO predictor/CUDA를 warm-up한 뒤 worker thread를 시작한다. 이 frame은
+ByteTrack·PhysicalVehicle·주차 workflow에 전달하지 않으며 frame ID만 하나
+소비한다. 리플레이 pipeline은 첫 기록 frame 보존을 위해 warm-up을 기본 생략한다.
 PC 개발 환경에서도 접근 가능한 camera와 calibration/model asset이 필요하다.
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.

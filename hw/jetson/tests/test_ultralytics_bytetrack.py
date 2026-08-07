@@ -215,11 +215,24 @@ class _SuccessfulModel:
         self.byte_tracker = _ByteTrackerState()
         self.predictor = _Predictor(self.byte_tracker)
         self._postprocess_callbacks = []
+        self.predict_calls = []
         self.track_calls = []
 
     def add_callback(self, event: str, callback) -> None:
         if event == "on_predict_postprocess_end":
             self._postprocess_callbacks.append(callback)
+
+    def predict(self, **kwargs):
+        self.predict_calls.append(kwargs)
+        raw_result = _Result(track_ids=(), detection_count=self.detection_count)
+        callback_predictor = type(
+            "CallbackPredictor",
+            (),
+            {"results": [raw_result]},
+        )()
+        for callback in self._postprocess_callbacks:
+            callback(callback_predictor)
+        return [raw_result]
 
     def track(self, **kwargs):
         self.track_calls.append(kwargs)
@@ -308,6 +321,41 @@ def test_open_rejects_model_runtime_contract_mismatch(
 
     assert tracker._model is None
     assert model._postprocess_callbacks == []
+
+
+def test_warm_up_uses_predict_without_creating_bytetrack_state():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.4,
+        capture_detections=True,
+    )
+    model = _SuccessfulModel(track_ids=(7,), detection_count=1)
+    _attach_model(tracker, model)
+    frame = _make_frame(np.zeros((100, 100, 3), dtype=np.uint8))
+
+    tracker.warm_up(frame)
+
+    assert len(model.predict_calls) == 1
+    assert model.track_calls == []
+    assert model.predict_calls[0]["source"] is frame.image
+    assert model.predict_calls[0]["conf"] == pytest.approx(0.4)
+    assert model.predict_calls[0]["verbose"] is False
+    assert tracker._pretrack_detection_count is None
+    assert tracker._pretrack_detections is None
+
+
+def test_warm_up_before_open_raises():
+    tracker = UltralyticsVehicleTracker(
+        model_path="unused.pt",
+        tracker_config="bytetrack.yaml",
+        confidence=0.5,
+    )
+
+    with pytest.raises(TrackingError, match="초기화"):
+        tracker.warm_up(
+            _make_frame(np.zeros((100, 100, 3), dtype=np.uint8))
+        )
 
 
 def test_visible_result_is_normalized_without_inventing_segment_end():

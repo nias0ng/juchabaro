@@ -9,6 +9,7 @@ import pytest
 from src.application.monitoring_worker import MonitoringWorker
 from src.domain.models import ObservationState
 from src.parking.models import IncidentTransitionType
+from src.performance_timing import FramePerformanceTiming
 from src.session.models import EntryDecisionState, EntryMatchState
 
 
@@ -64,6 +65,22 @@ class _ObservingPipeline(_BlockingPipeline):
         while not stop_requested():
             self.closed.wait(0.01)
         return 2
+
+
+class _TimedObservingPipeline(_BlockingPipeline):
+    def run(self, *, frame_observer, stop_requested) -> int:
+        self.entered_run.set()
+        timing = FramePerformanceTiming()
+        timing.record_seconds("rawRead", 0.001)
+        timing.record_seconds("detector", 0.010)
+        frame_observer(
+            SimpleNamespace(performance_timing=timing),
+            _batch(frame_id=1),
+            _empty_result(),
+        )
+        while not stop_requested():
+            self.closed.wait(0.01)
+        return 1
 
 
 def test_worker_opens_once_and_closes_after_graceful_stop() -> None:
@@ -194,6 +211,26 @@ def test_worker_composes_operational_and_external_frame_observers() -> None:
     worker.stop()
 
     assert observed_frame_ids == [1, 2]
+
+
+def test_worker_logs_performance_average_and_p95_with_heartbeat(caplog) -> None:
+    pipeline = _TimedObservingPipeline()
+    worker = MonitoringWorker(pipeline)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.monitoring_worker",
+    ):
+        worker.start()
+        assert pipeline.entered_run.wait(timeout=1.0)
+        worker.stop()
+
+    assert "Jetson stage timing. frames=1 values=avg/p95ms" in caplog.text
+    assert "rawRead=1.0/1.0" in caplog.text
+    assert "detector=10.0/10.0" in caplog.text
+    assert "observer=" in caplog.text
+    assert "unaccounted=" in caplog.text
+    assert "total=" in caplog.text
 
 
 def _batch(*, frame_id: int):

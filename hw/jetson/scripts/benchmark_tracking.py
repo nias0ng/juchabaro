@@ -41,7 +41,9 @@
     # 실제 카메라로
     python -m scripts.benchmark_tracking \\
         --model /home/e202/model/yolov8s.pt \\
-        --camera-index 0
+        --camera-index 0 \\
+        --width 1280 --height 720 \\
+        --fourcc MJPG --camera-fps 30
 
 `--calibration`을 생략하면 remap 없이 원본 프레임으로 잰다. 모델 비용만
 비교할 때는 생략하는 쪽이 변수를 줄인다.
@@ -114,6 +116,8 @@ def _build_source(args: argparse.Namespace) -> FrameSource:
             camera_index=args.camera_index,
             width=args.width,
             height=args.height,
+            fourcc=args.fourcc,
+            fps=args.camera_fps,
         )
     if args.calibration:
         return RemapFrameSource(
@@ -317,6 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remap-balance", type=float, default=0.5)
     parser.add_argument("--width", type=int, default=0)
     parser.add_argument("--height", type=int, default=0)
+    parser.add_argument(
+        "--fourcc",
+        help="카메라 pixel format FOURCC 네 글자. 예: MJPG",
+    )
+    parser.add_argument(
+        "--camera-fps",
+        type=float,
+        default=0.0,
+        help="카메라에 요청할 FPS. 0이면 장치 기본값",
+    )
     parser.add_argument("--tracker", default="bytetrack.yaml")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument(

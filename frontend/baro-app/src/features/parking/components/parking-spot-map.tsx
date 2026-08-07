@@ -48,35 +48,25 @@ function groupRowsWithLeadingDivider(rows: LayoutRow[]): LayoutRow[][] {
   return groups;
 }
 
-type CellVariant = 'mine' | 'other' | 'emptyDisabled' | 'emptyEv' | 'empty';
+// 상태(내 차/남의 차/빈 자리) 3가지만 색으로 구분한다. 장애인/EV 같은 구역 종류는 색을 더 쓰지 않고
+// 칸 안의 텍스트("장애인"/"EV")로만 구분한다.
+type CellVariant = 'mine' | 'other' | 'empty';
 
 function toCellVariant(cell: SpotCell): CellVariant {
   if (cell.kind === 'mine') return 'mine';
   if (cell.kind === 'occupied') return 'other';
-  if (cell.spotType === 'DISABLED') return 'emptyDisabled';
-  if (cell.spotType === 'EV_CHARGING') return 'emptyEv';
   return 'empty';
 }
 
 const CELL_STYLE: Partial<Record<CellVariant, object>> = {
   mine: styles.mapCellMine,
   other: styles.mapCellOther,
-  emptyDisabled: styles.mapCellEmptyDisabled,
-  emptyEv: styles.mapCellEmptyEv,
 };
 
+// 구역 종류(장애인/EV)만 텍스트로 안내한다. 내 차량은 노란색 배경만으로 구분하고 별도 글자는 없다.
 function toCellLabel(cell: SpotCell): { text: string; style: object } | null {
-  if (cell.kind === 'mine') {
-    const text = cell.spotType === 'DISABLED' ? '장애인' : cell.spotType === 'EV_CHARGING' ? 'EV' : '내 차량';
-    return { text, style: styles.mineLabel };
-  }
-  if (cell.kind === 'occupied') {
-    if (cell.spotType === 'DISABLED') return { text: '장애인', style: styles.otherLabel };
-    if (cell.spotType === 'EV_CHARGING') return { text: 'EV', style: styles.otherLabel };
-    return null;
-  }
-  if (cell.spotType === 'DISABLED') return { text: '장애인', style: styles.disabledLabel };
-  if (cell.spotType === 'EV_CHARGING') return { text: 'EV', style: styles.evLabel };
+  if (cell.spotType === 'DISABLED') return { text: '장애인\n전용', style: styles.zoneTypeLabel };
+  if (cell.spotType === 'EV_CHARGING') return { text: 'EV', style: styles.zoneTypeLabel };
   return null;
 }
 
@@ -130,7 +120,7 @@ export function ParkingSpotMap({
         onPress={onPressCell ? () => onPressCell(cell.spotCode) : undefined}
       >
         {displayText ? (
-          <Text style={[styles.mapCellLabel, displayStyle]} numberOfLines={1} adjustsFontSizeToFit>
+          <Text style={[styles.mapCellLabel, displayStyle]} numberOfLines={2} adjustsFontSizeToFit>
             {displayText}
           </Text>
         ) : null}
@@ -156,11 +146,11 @@ export function ParkingSpotMap({
                     {renderCell(sideCell, `side-${row.rowIndex}`, styles.sideCell)}
                     <View style={styles.gapSlot}>
                       {row.rowIndex === 0 ? (
-                        <View style={[styles.accessBlock, styles.exitBlock]}>
+                        <View style={styles.accessBlock}>
                           <Text style={styles.accessBlockText}>출구</Text>
                         </View>
                       ) : row.rowIndex === lastLayoutRowIndex ? (
-                        <View style={[styles.accessBlock, styles.entryBlock]}>
+                        <View style={styles.accessBlock}>
                           <Text style={styles.accessBlockText}>입구</Text>
                         </View>
                       ) : null}

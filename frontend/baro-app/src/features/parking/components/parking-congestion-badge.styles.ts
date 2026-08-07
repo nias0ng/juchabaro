@@ -8,10 +8,15 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xs,
   },
-  prefix: {
-    fontSize: 13,
+  metricLabel: {
+    fontSize: 12,
+    fontWeight: FontWeight.medium,
+    color: Palette.gray600,
+  },
+  rate: {
+    fontSize: 20,
+    lineHeight: 24,
     fontWeight: FontWeight.bold,
-    color: Palette.gray975,
   },
   pill: {
     borderRadius: Radius.full,
