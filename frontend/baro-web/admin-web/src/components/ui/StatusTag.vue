@@ -1,11 +1,25 @@
 <script setup lang="ts">
-export type TagTone = 'danger' | 'info' | 'success' | 'warning' | 'sky' | 'neutral' | 'primary';
+export type TagTone =
+  | 'danger'
+  | 'info'
+  | 'success'
+  | 'warning'
+  | 'orange'
+  | 'sky'
+  | 'neutral'
+  | 'primary'
+  | 'plain'
+  | 'red'
+  | 'blue';
 
-withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
+withDefaults(defineProps<{ tone?: TagTone; variant?: 'solid' | 'text' }>(), {
+  tone: 'neutral',
+  variant: 'solid',
+});
 </script>
 
 <template>
-  <span class="tag" :class="`tone-${tone}`"><slot /></span>
+  <span class="tag" :class="[`tone-${tone}`, variant === 'text' && 'variant-text']"><slot /></span>
 </template>
 
 <style scoped>
@@ -46,6 +60,11 @@ withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
   color: var(--panel-warning-foreground);
 }
 
+.tone-orange {
+  background: var(--panel-warning-soft);
+  color: color-mix(in oklch, var(--panel-warning) 72%, var(--panel-foreground));
+}
+
 .tone-neutral {
   background: var(--panel-muted);
   color: var(--panel-muted-foreground);
@@ -54,5 +73,27 @@ withDefaults(defineProps<{ tone?: TagTone }>(), { tone: 'neutral' });
 .tone-primary {
   background: var(--panel-primary-soft);
   color: var(--panel-primary);
+}
+
+.tone-plain {
+  background: transparent;
+  color: var(--panel-foreground);
+}
+
+/* red/blue는 danger/info를 그대로 쓰기엔 너무 쨍해서, orange처럼 foreground를 섞어 눌러준다. */
+.tone-red {
+  background: var(--panel-danger-soft);
+  color: color-mix(in oklch, var(--panel-danger) 75%, var(--panel-foreground));
+}
+
+.tone-blue {
+  background: var(--panel-info-soft);
+  color: color-mix(in oklch, var(--panel-info) 75%, var(--panel-foreground));
+}
+
+/* 배경 없이 글자만 보여줄 때 쓴다. 색상(tone)은 그대로 유지해 구분은 되게 한다. */
+.variant-text {
+  background: transparent;
+  padding: 0;
 }
 </style>

@@ -4,7 +4,7 @@ import { CheckCircle2 } from '@lucide/vue'
 
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useAutoRefresh } from '@/composables/use-auto-refresh'
-import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, statusTone, typeTone } from '@/features/parking-events/data'
+import { eventStatusLabel, eventTypeLabel, formatDateTime, formatEventId, formatZoneNumber, statusTone, typeTone } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
 
 // 사건 목록(아래쪽 "사건 상세" 패널)과 사건 상세 페이지가 완전히 동일한 내용(상태 배지,
@@ -40,7 +40,7 @@ const latestResponse = computed(() => {
 const detailFields = computed(() => {
   if (!detail.value) return [] as [string, string][]
   const d = detail.value
-  const location = [d.floor, d.zoneNumber].filter(Boolean).join(' ')
+  const location = d.zoneNumber ? formatZoneNumber(d.zoneNumber) : d.floor
   return [
     ['사건 ID', formatEventId(d.eventId)],
     ['차량 번호', d.plateNumber],
@@ -94,10 +94,7 @@ function handleCompleteClick() {
 <template>
   <div class="detail-header">
     <h3>사건 상세</h3>
-    <span v-if="detail && (detail.eventStatus === 'REQUESTED' || detail.eventStatus === 'RESOLVED')">
-      {{ eventStatusLabel(detail.eventStatus, detail.requestType) }}
-    </span>
-    <StatusTag v-else :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
+    <StatusTag :tone="detail ? statusTone(detail.eventStatus) : 'neutral'">
       {{ detail ? eventStatusLabel(detail.eventStatus, detail.requestType) : '-' }}
     </StatusTag>
   </div>
@@ -122,7 +119,9 @@ function handleCompleteClick() {
     <div class="image-grid">
       <div v-if="detail.images.length === 0" class="image-card">
         <p class="image-label">증거 이미지</p>
-        <div class="image-placeholder">등록된 이미지가 없습니다</div>
+        <div class="image-placeholder">
+          <span>등록된 이미지가<br>없습니다.</span>
+        </div>
       </div>
       <div v-for="image in detail.images" :key="image.imageId" class="image-card">
         <p class="image-label">{{ formatDateTime(image.capturedAt) }}</p>
@@ -253,7 +252,9 @@ function handleCompleteClick() {
   align-items: center;
   justify-content: center;
   background: var(--panel-muted);
+  text-align: center;
   font-size: 12px;
+  line-height: 1.6;
   color: var(--panel-muted-foreground);
 }
 
