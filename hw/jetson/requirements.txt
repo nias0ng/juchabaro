@@ -8,6 +8,8 @@ httpx
 # torch.from_numpy()가 "Numpy is not available"로 실패한다.
 numpy==1.26.4
 opencv-python==4.10.0.84
+# VPI CUDA remap은 pip 패키지가 아니라 JetPack의 python3.10-vpi3를 사용한다.
+# venv binding 연결 방법은 README의 패키지 설치 절을 참고한다.
 
 # sensor 계층: VL53L0X 드라이버, Linux I²C 버스 선택, Jetson XSHUT GPIO 제어
 adafruit-circuitpython-vl53l0x==3.6.19; sys_platform == "linux" and platform_machine == "aarch64"
