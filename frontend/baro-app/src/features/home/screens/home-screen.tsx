@@ -4,10 +4,9 @@ import { Text } from 'react-native';
 
 import { ResponsiveContainer, Screen } from '@/components/ui';
 import { ParkingStatusCard } from '@/features/parking/components/parking-status-card';
-import { VehicleStatusCard } from '@/features/parking/components/vehicle-status-card';
+import { VehicleStatusCarousel } from '@/features/parking/components/vehicle-status-carousel';
 import { useParkingSessions } from '@/features/parking/hooks/use-parking-sessions';
 import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
-import { pickPrimarySession, toVehicleStatusDisplay } from '@/features/parking/utils/parking-session';
 import { toParkingStatusDisplay } from '@/features/parking/utils/parking-zone';
 import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
@@ -63,9 +62,6 @@ export default function HomeScreen() {
     error: sessionsError,
     refetch: refetchSessions,
   } = useParkingSessions();
-  const primarySession = pickPrimarySession(sessions);
-  const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
-  const additionalSessionCount = Math.max(sessions.length - 1, 0);
   const myZoneNumbers = sessions.flatMap((session) =>
     session.zoneNumber ? [session.zoneNumber] : [],
   );
@@ -77,7 +73,11 @@ export default function HomeScreen() {
     error: summaryError,
     refetch: refetchSummary,
   } = useParkingZoneSummary();
-  const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null;
+  const parkingStatuses = {
+    B1: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null,
+    B2: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B2') : null,
+    B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
+  };
 
   return (
     <LinearGradient
@@ -101,9 +101,8 @@ export default function HomeScreen() {
 
           <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
 
-          <VehicleStatusCard
-            session={vehicleStatus}
-            additionalCount={additionalSessionCount}
+          <VehicleStatusCarousel
+            sessions={sessions}
             isLoading={isSessionsLoading}
             hasError={Boolean(sessionsError)}
           />
@@ -112,8 +111,7 @@ export default function HomeScreen() {
 
           <ParkingStatusCard
             title={PARKING_STATUS_TITLE}
-            status={parkingStatus}
-            floor="B1"
+            statuses={parkingStatuses}
             isLoading={isSummaryLoading}
             hasError={Boolean(summaryError)}
             onPress={() => router.push('/resident/parking-map')}

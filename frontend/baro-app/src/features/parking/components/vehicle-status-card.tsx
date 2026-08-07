@@ -1,5 +1,4 @@
-import { router } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
 import { Stack } from '@/components/ui';
 import { useCountdown } from '@/features/move-request/hooks/use-countdown';
@@ -10,7 +9,8 @@ import { styles } from './vehicle-status-card.styles';
 
 type VehicleStatusCardProps = {
   session: VehicleStatusDisplay | null;
-  additionalCount?: number;
+  pageLabel?: string;
+  contained?: boolean;
   isLoading?: boolean;
   hasError?: boolean;
 };
@@ -31,7 +31,8 @@ function formatEvRemainingTime(remainingMs: number): string {
 
 export function VehicleStatusCard({
   session,
-  additionalCount = 0,
+  pageLabel,
+  contained = false,
   isLoading = false,
   hasError = false,
 }: VehicleStatusCardProps) {
@@ -54,20 +55,8 @@ export function VehicleStatusCard({
   const isViolation = session.status === 'VIOLATION';
   const isEvTimeWarning = session.isEvCharging && countdown.remainingMs <= EV_WARNING_THRESHOLD_MS;
 
-  const additionalCountLink =
-    additionalCount > 0 ? (
-      <Pressable
-        accessibilityRole="button"
-        style={styles.additionalCountRow}
-        onPress={() => router.push('/resident/vehicles')}
-      >
-        <Text style={styles.additionalCountText}>외 {additionalCount}대</Text>
-        <Text style={styles.additionalCountChevron}>›</Text>
-      </Pressable>
-    ) : null;
-
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, contained && styles.cardContained]}>
       <View style={styles.topGroup}>
         <View style={styles.headerGroup}>
           <View style={styles.statusRow}>
@@ -88,7 +77,7 @@ export function VehicleStatusCard({
           <Text style={styles.fieldLabel}>위치</Text>
           <View style={styles.valueRow}>
             <Text style={styles.fieldValue}>{session.location}</Text>
-            {!session.isEvCharging ? additionalCountLink : null}
+            {pageLabel ? <Text style={styles.pageIndicatorText}>{pageLabel}</Text> : null}
           </View>
         </Stack>
       </View>
@@ -100,7 +89,7 @@ export function VehicleStatusCard({
             <Text style={[styles.fieldValue, isEvTimeWarning && styles.fieldValueWarning]}>
               {formatEvRemainingTime(countdown.remainingMs)}
             </Text>
-            {additionalCountLink}
+            {pageLabel ? <Text style={styles.pageIndicatorText}>{pageLabel}</Text> : null}
           </View>
         </Stack>
       ) : null}

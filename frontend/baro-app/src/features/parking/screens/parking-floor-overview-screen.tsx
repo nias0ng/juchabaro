@@ -1,23 +1,36 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useRef, useState } from 'react';
+import {
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
 
 import { GradientScreenBackground, ResponsiveContainer, ScreenHeader, SegmentedControl, Stack } from '@/components/ui';
 import { Spacing } from '@/styles';
 
+import { ParkingAvailabilityLabel } from '../components/parking-availability-label';
 import { ParkingCongestionBadge } from '../components/parking-congestion-badge';
 import { ParkingFloorLegend } from '../components/parking-floor-legend';
 import { ParkingSpotMap } from '../components/parking-spot-map';
 import { useParkingSessions } from '../hooks/use-parking-sessions';
 import { useParkingZoneSummary } from '../hooks/use-parking-zone-summary';
-import { toParkingStatusDisplay, type ParkingFloorKey } from '../utils/parking-zone';
+import {
+  PARKING_FLOORS,
+  toParkingStatusDisplay,
+  type ParkingFloorKey,
+  type ParkingStatusDisplay,
+} from '../utils/parking-zone';
 
 import { styles } from './parking-floor-overview-screen.styles';
 
 const FLOOR_TAB_OPTIONS: { key: ParkingFloorKey; label: string }[] = [
-  { key: 'B1', label: '지하 1층' },
-  { key: 'B2', label: '지하 2층' },
-  { key: 'B3', label: '지하 3층' },
+  { key: 'B1', label: 'B1' },
+  { key: 'B2', label: 'B2' },
+  { key: 'B3', label: 'B3' },
 ];
 
 function toParkingFloorKey(floor: string | null): ParkingFloorKey | null {
@@ -34,9 +47,42 @@ function goBack() {
   router.replace('/resident');
 }
 
+type ParkingFloorPageProps = {
+  floor: ParkingFloorKey;
+  status: ParkingStatusDisplay | null;
+  isLoading: boolean;
+  hasError: boolean;
+  width?: number;
+};
+
+function ParkingFloorPage({
+  floor,
+  status,
+  isLoading,
+  hasError,
+  width,
+}: ParkingFloorPageProps) {
+  const mapMessage = isLoading
+    ? '주차 현황을 불러오는 중입니다.'
+    : hasError
+      ? '주차 현황을 불러오지 못했습니다.'
+      : !status || status.cells.length === 0
+        ? '해당 층의 주차 현황이 없습니다.'
+        : undefined;
+
+  return (
+    <View style={[styles.floorPage, width ? { width } : null]}>
+      <ParkingSpotMap cells={status?.cells ?? []} floor={floor} message={mapMessage} />
+      <ParkingFloorLegend />
+    </View>
+  );
+}
+
 // J-01. 주차 도면 전체 보기
 export default function ParkingFloorOverviewScreen() {
+  const floorScrollRef = useRef<ScrollView>(null);
   const [activeFloor, setActiveFloor] = useState<ParkingFloorKey>('B1');
+  const [pageWidth, setPageWidth] = useState(0);
   const {
     sessions,
     isRefreshing: isSessionsRefreshing,
@@ -55,19 +101,28 @@ export default function ParkingFloorOverviewScreen() {
     error,
     refetch: refetchSummary,
   } = useParkingZoneSummary();
-  const parkingStatus = summary
-    ? toParkingStatusDisplay(summary, myZoneNumbers, activeFloor)
-    : null;
-  const mapMessage = isLoading
-    ? '주차 현황을 불러오는 중입니다.'
-    : error
-      ? '주차 현황을 불러오지 못했습니다.'
-      : !parkingStatus || parkingStatus.cells.length === 0
-        ? '해당 층의 주차 현황이 없습니다.'
-        : undefined;
+  const parkingStatuses = {
+    B1: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null,
+    B2: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B2') : null,
+    B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
+  };
+  const parkingStatus = parkingStatuses[activeFloor];
+
+  const selectFloor = (floor: ParkingFloorKey) => {
+    const floorIndex = PARKING_FLOORS.indexOf(floor);
+    setActiveFloor(floor);
+    floorScrollRef.current?.scrollTo({ x: floorIndex * pageWidth, animated: true });
+  };
+
+  const handleFloorScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (pageWidth <= 0) return;
+    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / pageWidth);
+    const nextFloor = PARKING_FLOORS[nextIndex];
+    if (nextFloor) setActiveFloor(nextFloor);
+  };
 
   const handlePressMyCarLocation = () => {
-    if (myVehicleLocation) setActiveFloor(myVehicleLocation);
+    if (myVehicleLocation) selectFloor(myVehicleLocation);
   };
 
   return (
@@ -94,7 +149,7 @@ export default function ParkingFloorOverviewScreen() {
         />
 
         <Stack gap={Spacing.base + 2}>
-          <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={setActiveFloor} />
+          <SegmentedControl options={FLOOR_TAB_OPTIONS} value={activeFloor} onChange={selectFloor} />
 
           <View style={styles.mapCard}>
             {parkingStatus ? (
@@ -102,16 +157,50 @@ export default function ParkingFloorOverviewScreen() {
                 <ParkingCongestionBadge
                   level={parkingStatus.congestionLevel}
                   rateLabel={parkingStatus.congestionRateLabel}
+                  showMetric={false}
+                />
+                <ParkingAvailabilityLabel
+                  availableCount={parkingStatus.availableCount}
+                  congestionLevel={parkingStatus.congestionLevel}
                 />
               </View>
             ) : null}
 
-            <ParkingSpotMap
-              cells={parkingStatus?.cells ?? []}
-              floor={activeFloor}
-              message={mapMessage}
-            />
-            <ParkingFloorLegend />
+            <View
+              style={styles.carouselFrame}
+              onLayout={(event) => setPageWidth(event.nativeEvent.layout.width)}
+            >
+              {pageWidth > 0 ? (
+                <ScrollView
+                  ref={floorScrollRef}
+                  horizontal
+                  pagingEnabled
+                  directionalLockEnabled
+                  nestedScrollEnabled
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.floorScroll}
+                  onMomentumScrollEnd={handleFloorScrollEnd}
+                >
+                  {PARKING_FLOORS.map((floor) => (
+                    <ParkingFloorPage
+                      key={floor}
+                      floor={floor}
+                      status={parkingStatuses[floor]}
+                      isLoading={isLoading}
+                      hasError={Boolean(error)}
+                      width={pageWidth}
+                    />
+                  ))}
+                </ScrollView>
+              ) : (
+                <ParkingFloorPage
+                  floor={activeFloor}
+                  status={parkingStatus}
+                  isLoading={isLoading}
+                  hasError={Boolean(error)}
+                />
+              )}
+            </View>
           </View>
         </Stack>
       </ResponsiveContainer>

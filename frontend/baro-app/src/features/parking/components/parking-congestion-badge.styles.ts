@@ -19,6 +19,8 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
   },
   pill: {
+    minHeight: 24,
+    justifyContent: 'center',
     borderRadius: Radius.full,
     paddingHorizontal: Spacing.sm,
     paddingVertical: 3,

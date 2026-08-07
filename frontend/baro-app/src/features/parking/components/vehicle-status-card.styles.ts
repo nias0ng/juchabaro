@@ -5,12 +5,16 @@ import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   card: {
     width: '100%',
-    marginBottom: Spacing.base,
-    backgroundColor: Palette.white80,
+    backgroundColor: Palette.gray25,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
     gap: Spacing.sm,
     ...Shadows.card,
+  },
+  cardContained: {
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   emptyCard: {
     alignItems: 'center',
@@ -87,18 +91,8 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  additionalCountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xxs,
-  },
-  additionalCountText: {
+  pageIndicatorText: {
     fontSize: 12.5,
-    fontWeight: FontWeight.semibold,
-    color: Palette.violet500,
-  },
-  additionalCountChevron: {
-    fontSize: 14,
     fontWeight: FontWeight.semibold,
     color: Palette.violet500,
   },
