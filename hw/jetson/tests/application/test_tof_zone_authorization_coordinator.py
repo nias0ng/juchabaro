@@ -9,6 +9,12 @@ from uuid import UUID
 
 import pytest
 
+from src.actuators.models import ActuatorCommand
+from src.application.local_warning_coordinator import (
+    LocalWarningCoordinator,
+    LocalWarningDeliveryError,
+    LocalWarningZoneBinding,
+)
 from src.application.sensor_occupancy import (
     OccupancyState,
     OccupancyTransition,
@@ -132,6 +138,7 @@ UNAUTHORIZED_SPEC = _AssessmentSpec(
 def _assessment(
     snapshot: ZoneOccupancySnapshot,
     *,
+    zone_type: ZoneType,
     evaluated_at: datetime,
     spec: _AssessmentSpec,
 ) -> TofZoneAuthorizationAssessment:
@@ -143,7 +150,7 @@ def _assessment(
     return TofZoneAuthorizationAssessment(
         sensor_id=snapshot.sensor_id,
         zone_id=snapshot.zone_id,
-        zone_type=ZoneType.DISABLED,
+        zone_type=zone_type,
         occupancy_state=snapshot.stable_state,
         occupancy_revision=snapshot.revision,
         occupancy_stable_since=snapshot.stable_since,
@@ -212,6 +219,7 @@ class _ConnectionFactory:
 class _FakeService:
     def __init__(self) -> None:
         self.specs: dict[ZoneId, _AssessmentSpec] = {}
+        self.zone_types: dict[ZoneId, ZoneType] = {}
         self.failures: dict[ZoneId, Exception] = {}
         self.calls: list[tuple[ZoneId, _FakeConnection]] = []
 
@@ -244,6 +252,10 @@ class _FakeService:
 
         return _assessment(
             snapshot,
+            zone_type=self.zone_types.get(
+                snapshot.zone_id,
+                ZoneType.DISABLED,
+            ),
             evaluated_at=evaluated_at,
             spec=spec,
         )
@@ -363,6 +375,59 @@ def _coordinator(
         connection_factory=connection_factory or _ConnectionFactory(),
         assessment_consumer=consumer,
         clock=clock or (lambda: NOW),
+    )
+
+
+@dataclass
+class _RecordingActuatorPort:
+    attempts: list[tuple[ActuatorCommand, ...]] = field(
+        default_factory=list
+    )
+    applied_projections: list[tuple[ActuatorCommand, ...]] = field(
+        default_factory=list
+    )
+    fail_first_error: Exception | None = None
+
+    def apply_projection(
+        self,
+        commands: tuple[ActuatorCommand, ...],
+    ) -> None:
+        self.attempts.append(commands)
+
+        if self.fail_first_error is not None:
+            error = self.fail_first_error
+            self.fail_first_error = None
+            raise error
+
+        self.applied_projections.append(commands)
+
+
+def _local_warning_coordinator(
+    *,
+    led_port: _RecordingActuatorPort,
+    speaker_port: _RecordingActuatorPort,
+) -> LocalWarningCoordinator:
+    return LocalWarningCoordinator(
+        bindings=(
+            LocalWarningZoneBinding(
+                zone_id=ZONE_1,
+                zone_type=ZoneType.DISABLED,
+                led_actuator_id="disabled_zone_warning_led",
+                led_action="BLINK",
+                speaker_actuator_id="disabled_zone_warning_speaker",
+                speaker_action="PLAY",
+            ),
+            LocalWarningZoneBinding(
+                zone_id=ZONE_2,
+                zone_type=ZoneType.EV_CHARGING,
+                led_actuator_id="ev_zone_warning_led",
+                led_action="BLINK",
+                speaker_actuator_id="ev_zone_warning_speaker",
+                speaker_action="PLAY",
+            ),
+        ),
+        led_port=led_port,
+        speaker_port=speaker_port,
     )
 
 
@@ -813,6 +878,182 @@ def test_consumer_failure_retries_same_revision_and_other_zone_continues() -> No
         for attempt in attempts
         if attempt.zone_id == ZONE_1
     ] == [1, 1]
+
+
+def test_local_warning_consumer_preserves_other_zone_when_one_zone_becomes_vacant(
+) -> None:
+    store = _SnapshotStore(
+        _snapshot(ZONE_1),
+        _snapshot(ZONE_2),
+    )
+    service = _FakeService()
+    service.specs[ZONE_1] = UNAUTHORIZED_SPEC
+    service.specs[ZONE_2] = UNAUTHORIZED_SPEC
+    service.zone_types[ZONE_2] = ZoneType.EV_CHARGING
+    led_port = _RecordingActuatorPort()
+    speaker_port = _RecordingActuatorPort()
+    local_warning = _local_warning_coordinator(
+        led_port=led_port,
+        speaker_port=speaker_port,
+    )
+    coordinator = _coordinator(
+        store=store,
+        service=service,
+        consumer=local_warning.consume_assessment,
+    )
+
+    coordinator.request_zone(ZONE_1)
+    coordinator.request_zone(ZONE_2)
+    first_run = coordinator.drain_pending()
+
+    assert first_run.failures == ()
+    assert [
+        assessment.zone_id
+        for assessment in first_run.published_assessments
+    ] == [ZONE_1, ZONE_2]
+    assert [
+        assessment.zone_type
+        for assessment in first_run.published_assessments
+    ] == [ZoneType.DISABLED, ZoneType.EV_CHARGING]
+    assert [
+        assessment.assessment_revision
+        for assessment in first_run.published_assessments
+    ] == [1, 1]
+    assert all(
+        assessment.decision
+        is TofAuthorizationDecision.UNAUTHORIZED
+        for assessment in first_run.published_assessments
+    )
+    assert local_warning.active_zone_ids() == (ZONE_1, ZONE_2)
+    assert [
+        command.actuator_id
+        for command in led_port.applied_projections[-1]
+    ] == [
+        "disabled_zone_warning_led",
+        "ev_zone_warning_led",
+    ]
+    assert [
+        command.actuator_id
+        for command in speaker_port.applied_projections[-1]
+    ] == [
+        "disabled_zone_warning_speaker",
+        "ev_zone_warning_speaker",
+    ]
+
+    ev_led_requested_at = (
+        led_port.applied_projections[-1][1].requested_at
+    )
+    ev_speaker_requested_at = (
+        speaker_port.applied_projections[-1][1].requested_at
+    )
+
+    store.set(
+        _snapshot(
+            ZONE_1,
+            state=OccupancyState.VACANT,
+            stable_since=NOW + timedelta(seconds=1),
+            revision=2,
+        )
+    )
+    coordinator.request_zone(ZONE_1)
+    vacant_run = coordinator.drain_pending()
+
+    assert vacant_run.failures == ()
+    assert len(vacant_run.published_assessments) == 1
+    vacant = vacant_run.published_assessments[0]
+    assert vacant.zone_id == ZONE_1
+    assert vacant.zone_type is ZoneType.DISABLED
+    assert vacant.assessment_revision == 2
+    assert vacant.occupancy_state is OccupancyState.VACANT
+    assert vacant.decision is None
+    assert vacant.reason is TofAuthorizationReason.ZONE_VACANT
+
+    assert local_warning.active_zone_ids() == (ZONE_2,)
+    assert [
+        command.actuator_id
+        for command in led_port.applied_projections[-1]
+    ] == ["ev_zone_warning_led"]
+    assert [
+        command.actuator_id
+        for command in speaker_port.applied_projections[-1]
+    ] == ["ev_zone_warning_speaker"]
+    assert (
+        led_port.applied_projections[-1][0].requested_at
+        == ev_led_requested_at
+    )
+    assert (
+        speaker_port.applied_projections[-1][0].requested_at
+        == ev_speaker_requested_at
+    )
+
+
+def test_local_warning_delivery_failure_retries_same_publication_revision(
+) -> None:
+    store = _SnapshotStore(_snapshot(ZONE_1))
+    service = _FakeService()
+    service.specs[ZONE_1] = UNAUTHORIZED_SPEC
+    led_error = RuntimeError("LED unavailable")
+    led_port = _RecordingActuatorPort(
+        fail_first_error=led_error
+    )
+    speaker_port = _RecordingActuatorPort()
+    local_warning = _local_warning_coordinator(
+        led_port=led_port,
+        speaker_port=speaker_port,
+    )
+    coordinator = _coordinator(
+        store=store,
+        service=service,
+        consumer=local_warning.consume_assessment,
+    )
+    coordinator.request_zone(ZONE_1)
+
+    first_run = coordinator.drain_pending()
+
+    assert first_run.published_assessments == ()
+    assert len(first_run.failures) == 1
+    failure = first_run.failures[0]
+    assert failure.zone_id == ZONE_1
+    assert failure.stage is TofAuthorizationCoordinatorStage.PUBLICATION
+    assert isinstance(failure.error, LocalWarningDeliveryError)
+    assert failure.error.primary_error is led_error
+
+    pending = coordinator.latest_assessment(ZONE_1)
+    assert pending is not None
+    assert pending.assessment_revision == 1
+    assert pending.decision is TofAuthorizationDecision.UNAUTHORIZED
+    assert local_warning.active_zone_ids() == (ZONE_1,)
+    assert len(led_port.attempts) == 1
+    assert led_port.applied_projections == []
+    assert len(speaker_port.attempts) == 1
+    assert len(speaker_port.applied_projections) == 1
+
+    second_run = coordinator.drain_pending()
+
+    assert second_run.failures == ()
+    assert len(second_run.published_assessments) == 1
+    retried = second_run.published_assessments[0]
+    assert retried == pending
+    assert retried.assessment_revision == 1
+    assert len(led_port.attempts) == 2
+    assert len(led_port.applied_projections) == 1
+    assert led_port.attempts[1] == led_port.attempts[0]
+    assert led_port.applied_projections == [led_port.attempts[0]]
+    assert len(speaker_port.attempts) == 1
+    assert len(speaker_port.applied_projections) == 1
+
+    latest = coordinator.latest_assessment(ZONE_1)
+    assert latest == retried
+    assert latest.assessment_revision == 1
+
+    third_run = coordinator.drain_pending()
+
+    assert third_run.published_assessments == ()
+    assert third_run.unchanged_zone_ids == ()
+    assert third_run.deferred_zone_ids == ()
+    assert third_run.failures == ()
+    assert len(led_port.attempts) == 2
+    assert len(speaker_port.attempts) == 1
 
 
 def test_semantic_change_replaces_failed_pending_publication() -> None:
