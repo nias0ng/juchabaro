@@ -425,7 +425,10 @@ class TofZoneAuthorizationService:
 
         candidate = candidates[0]
         visit = candidate.visit
-        if visit.state is not ZoneVisitState.INSIDE:
+        if visit.state not in {
+            ZoneVisitState.ENTERING,
+            ZoneVisitState.INSIDE,
+        }:
             return self._unknown(
                 snapshot,
                 zone.zone_type,
