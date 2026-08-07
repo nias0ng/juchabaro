@@ -226,6 +226,37 @@ def test_unqualified_disabled_zone_visit_is_matched_and_confirmable() -> None:
     }
 
 
+def test_entering_visit_does_not_confirm_camera_restricted_zone_incident() -> None:
+    context = make_context(
+        zone_type=ZoneType.DISABLED,
+        session_context=make_session(
+            is_disabled_vehicle=False,
+            is_electric=False,
+        ),
+    )
+    entering_visit = replace(
+        context.active_zone_visits[0],
+        state=ZoneVisitState.ENTERING,
+        entry_trusted_seconds=0.0,
+        entered_at=None,
+    )
+    context = replace(
+        context,
+        active_zone_visits=(entering_visit,),
+    )
+
+    signal = only_signal(context)
+
+    assert signal.value is IncidentSignalValue.UNKNOWN
+    assert signal.confirmable is False
+    assert signal.evidence == {
+        "reason": "REQUIRED_INPUT_UNAVAILABLE",
+        "zoneId": ZoneId(1),
+        "zoneVisitState": ZoneVisitState.ENTERING.value,
+        "isDisabledVehicle": False,
+    }
+
+
 def test_qualified_disabled_zone_visit_is_not_matched() -> None:
     signal = only_signal(
         make_context(

@@ -283,7 +283,9 @@ def _store_candidate_graph(
     connection: sqlite3.Connection,
     *,
     context: SessionContext,
+    visit: ZoneVisit | None = None,
 ) -> tuple[ContextBinding, ParkingSessionMirror]:
+    stored_visit = visit if visit is not None else _visit()
     binding = _binding(context=context)
     mirror = _mirror(context=context)
 
@@ -294,7 +296,7 @@ def _store_candidate_graph(
         )
         ParkingSessionMirrorRepository(connection).add(mirror)
         ContextBindingRepository(connection).add(binding)
-        ZoneVisitRepository(connection).add(_visit())
+        ZoneVisitRepository(connection).add(stored_visit)
 
     return binding, mirror
 
@@ -658,6 +660,74 @@ def test_candidate_cardinality_is_not_collapsed() -> None:
 
     assert no_candidate.reason is TofAuthorizationReason.VEHICLE_NOT_IDENTIFIED
     assert multiple.reason is TofAuthorizationReason.MULTIPLE_VEHICLE_CANDIDATES
+
+
+def test_entering_candidate_is_not_selected_when_an_exiting_candidate_also_exists(
+) -> None:
+    entering_visit = _visit(
+        state=ZoneVisitState.ENTERING,
+        entry_trusted_seconds=0.0,
+        entered_at=None,
+    )
+    exiting_visit = _visit(
+        visit_id=ZoneVisitId(UUID(int=5)),
+        physical_vehicle_id=PhysicalVehicleId(UUID(int=6)),
+        state=ZoneVisitState.EXITING,
+        exit_candidate_at=NOW,
+    )
+
+    assessment = _assess(
+        FakeQuery(
+            (
+                _candidate(visit=entering_visit),
+                _candidate(visit=exiting_visit),
+            )
+        )
+    )
+
+    assert assessment.decision is TofAuthorizationDecision.UNKNOWN
+    assert assessment.reason is (
+        TofAuthorizationReason.MULTIPLE_VEHICLE_CANDIDATES
+    )
+    assert assessment.zone_visit_id is None
+    assert assessment.physical_vehicle_id is None
+
+
+def test_entering_candidate_still_requires_reliable_visit_observation() -> None:
+    candidate = _candidate(
+        visit=_visit(
+            state=ZoneVisitState.ENTERING,
+            observation=_unreliable(),
+            entry_trusted_seconds=0.0,
+            entered_at=None,
+        )
+    )
+
+    assessment = _assess(FakeQuery((candidate,)))
+
+    assert assessment.decision is TofAuthorizationDecision.UNKNOWN
+    assert assessment.reason is (
+        TofAuthorizationReason.ZONE_VISIT_OBSERVATION_UNRELIABLE
+    )
+
+
+def test_entering_candidate_still_requires_an_active_session_binding() -> None:
+    candidate = _candidate(
+        visit=_visit(
+            state=ZoneVisitState.ENTERING,
+            entry_trusted_seconds=0.0,
+            entered_at=None,
+        ),
+        binding=None,
+        mirror=None,
+    )
+
+    assessment = _assess(FakeQuery((candidate,)))
+
+    assert assessment.decision is TofAuthorizationDecision.UNKNOWN
+    assert assessment.reason is (
+        TofAuthorizationReason.CONTEXT_BINDING_UNAVAILABLE
+    )
 
 
 @pytest.mark.parametrize(
@@ -1087,6 +1157,11 @@ def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
         binding, _ = _store_candidate_graph(
             setup_connection,
             context=context,
+            visit=_visit(
+                state=ZoneVisitState.ENTERING,
+                entry_trusted_seconds=0.0,
+                entered_at=None,
+            ),
         )
 
         assert setup_connection.in_transaction is False
@@ -1107,6 +1182,7 @@ def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
         assert second.decision is TofAuthorizationDecision.AUTHORIZED
         assert second.reason is None
         assert second.assessment_revision == 2
+        assert second.zone_visit_id == VISIT_ID
         assert second.physical_vehicle_id == VEHICLE_ID
         assert second.parking_session_id == SESSION_ID
         assert second.context_revision == binding.context_revision
