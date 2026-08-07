@@ -50,6 +50,7 @@ class MonitoringPolicy:
 
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
+    exit_reentry_confirmation_seconds: float
     entry_zone_min_overlap_ratio: float
     parking_confirm_seconds: float
     parking_move_confirm_seconds: float
@@ -195,6 +196,9 @@ def build_monitoring_pipeline(
         parking_pipeline=parking_pipeline,
         context_binding_coordinator=context_binding_coordinator,
         publication_preparer=dependencies.publication_preparer,
+        exit_reentry_confirmation_seconds=(
+            policy.exit_reentry_confirmation_seconds
+        ),
     )
     entity_resolver = dependencies.entity_resolver
     if entity_resolver is None:

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
 import json
-from pathlib import Path
 import sqlite3
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -54,11 +55,30 @@ def _write_calibration(path: Path) -> Path:
     return path
 
 
+def _write_model_manifest(
+    path: Path,
+    *,
+    model_bytes: bytes = b"test-model",
+    **overrides: Any,
+) -> Path:
+    payload: dict[str, Any] = {
+        "schemaVersion": 1,
+        "modelVersion": "test-vehicle-model-v1",
+        "sha256": hashlib.sha256(model_bytes).hexdigest(),
+        "task": "detect",
+        "classNames": {"0": "vehicle"},
+    }
+    payload.update(overrides)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _settings(
     tmp_path: Path,
     *,
     calibration_path: Path,
     model_path: Path,
+    model_manifest_path: Path,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -76,11 +96,13 @@ def _settings(
         calibration_path=calibration_path,
         remap_balance=0.5,
         vehicle_model_path=model_path,
+        vehicle_model_manifest_path=model_manifest_path,
         vehicle_tracker_config="bytetrack.yaml",
         vehicle_tracking_confidence=0.55,
         mask_margin_ratio=0.05,
         zone_entry_confirm_seconds=1.1,
         zone_exit_confirm_seconds=1.2,
+        exit_reentry_confirmation_seconds=1.25,
         entry_zone_min_overlap_ratio=0.31,
         reidentification_max_gap_seconds=2.0,
         reidentification_min_score=0.41,
@@ -263,10 +285,14 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
     calibration_path = _write_calibration(tmp_path / "calibration.json")
     model_path = tmp_path / "vehicle.engine"
     model_path.write_bytes(b"test-model")
+    model_manifest_path = _write_model_manifest(
+        tmp_path / "vehicle-model-manifest.json"
+    )
     settings = _settings(
         tmp_path,
         calibration_path=calibration_path,
         model_path=model_path,
+        model_manifest_path=model_manifest_path,
     )
     calibration_reference = calibration_fingerprint(
         calibration_path,
@@ -359,11 +385,13 @@ def test_monitoring_policy_maps_all_settings_without_interpretation(
         tmp_path,
         calibration_path=tmp_path / "calibration.json",
         model_path=tmp_path / "vehicle.engine",
+        model_manifest_path=tmp_path / "vehicle-model-manifest.json",
     )
 
     assert main._build_monitoring_policy(settings) == MonitoringPolicy(
         zone_entry_confirm_seconds=1.1,
         zone_exit_confirm_seconds=1.2,
+        exit_reentry_confirmation_seconds=1.25,
         entry_zone_min_overlap_ratio=0.31,
         parking_confirm_seconds=600.0,
         parking_move_confirm_seconds=1.3,
@@ -439,10 +467,14 @@ def test_runtime_factory_constructs_pipeline_without_opening_resources(
     calibration_path = _write_calibration(tmp_path / "calibration.json")
     model_path = tmp_path / "vehicle.engine"
     model_path.write_bytes(b"test-model")
+    model_manifest_path = _write_model_manifest(
+        tmp_path / "vehicle-model-manifest.json"
+    )
     settings = _settings(
         tmp_path,
         calibration_path=calibration_path,
         model_path=model_path,
+        model_manifest_path=model_manifest_path,
     )
     calibration_reference = calibration_fingerprint(
         calibration_path,
@@ -465,10 +497,14 @@ def test_calibration_mismatch_fails_before_composition(
     calibration_path = _write_calibration(tmp_path / "calibration.json")
     model_path = tmp_path / "vehicle.engine"
     model_path.write_bytes(b"test-model")
+    model_manifest_path = _write_model_manifest(
+        tmp_path / "vehicle-model-manifest.json"
+    )
     settings = _settings(
         tmp_path,
         calibration_path=calibration_path,
         model_path=model_path,
+        model_manifest_path=model_manifest_path,
     )
     zones = _zones("different-calibration")
     context, *_ = _context(main, settings, zones)
@@ -488,6 +524,13 @@ def test_calibration_mismatch_fails_before_composition(
         ("invalid-calibration-json", "올바른 JSON"),
         ("missing-model", "vehicle_model_path"),
         ("model-directory", "vehicle_model_path"),
+        ("missing-manifest", "vehicle_model_manifest_path"),
+        ("manifest-directory", "vehicle_model_manifest_path"),
+        ("invalid-manifest-json", "올바른 JSON"),
+        ("unsupported-manifest-schema", "schemaVersion"),
+        ("invalid-manifest-task", "task 계약"),
+        ("invalid-manifest-classes", "classNames 계약"),
+        ("model-sha-mismatch", "SHA-256"),
     ),
 )
 def test_invalid_asset_fails_before_composition(
@@ -500,6 +543,7 @@ def test_invalid_asset_fails_before_composition(
 
     calibration_path = tmp_path / "calibration.json"
     model_path = tmp_path / "vehicle.engine"
+    model_manifest_path = tmp_path / "vehicle-model-manifest.json"
 
     if case == "calibration-directory":
         calibration_path.mkdir()
@@ -513,10 +557,32 @@ def test_invalid_asset_fails_before_composition(
     elif case != "missing-model":
         model_path.write_bytes(b"test-model")
 
+    if case == "manifest-directory":
+        model_manifest_path.mkdir()
+    elif case == "invalid-manifest-json":
+        model_manifest_path.write_text("{", encoding="utf-8")
+    elif case != "missing-manifest":
+        overrides: dict[str, Any] = {}
+        model_bytes = b"test-model"
+        if case == "unsupported-manifest-schema":
+            overrides["schemaVersion"] = 2
+        elif case == "invalid-manifest-task":
+            overrides["task"] = "segment"
+        elif case == "invalid-manifest-classes":
+            overrides["classNames"] = {"0": "person"}
+        elif case == "model-sha-mismatch":
+            model_bytes = b"different-model"
+        _write_model_manifest(
+            model_manifest_path,
+            model_bytes=model_bytes,
+            **overrides,
+        )
+
     settings = _settings(
         tmp_path,
         calibration_path=calibration_path,
         model_path=model_path,
+        model_manifest_path=model_manifest_path,
     )
     calibration_reference = (
         calibration_fingerprint(
@@ -545,10 +611,14 @@ def test_invalid_computed_mask_bounds_fail_during_composition(
     calibration_path = _write_calibration(tmp_path / "calibration.json")
     model_path = tmp_path / "vehicle.engine"
     model_path.write_bytes(b"test-model")
+    model_manifest_path = _write_model_manifest(
+        tmp_path / "vehicle-model-manifest.json"
+    )
     settings = _settings(
         tmp_path,
         calibration_path=calibration_path,
         model_path=model_path,
+        model_manifest_path=model_manifest_path,
     )
     calibration_reference = calibration_fingerprint(
         calibration_path,

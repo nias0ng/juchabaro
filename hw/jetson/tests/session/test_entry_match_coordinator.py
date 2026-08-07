@@ -11,6 +11,7 @@ from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.models import (
     EntryExitRole,
+    ExitTraversalDefinition,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -77,6 +78,11 @@ def _zones() -> ZoneRegistry:
         zone_definition_version=ZoneDefinitionVersion(1),
         calibration_reference="camera-1:v1",
         entry_exit_role=EntryExitRole.EXIT,
+        exit_traversal=ExitTraversalDefinition(
+            line=((0.6, 0.45), (0.7, 0.45)),
+            outward_point=(0.65, 0.4),
+            hysteresis=0.0,
+        ),
     )
     return ZoneRegistry([entry_zone, exit_zone])
 

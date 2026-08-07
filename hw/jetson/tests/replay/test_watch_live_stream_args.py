@@ -28,6 +28,7 @@ def test_build_policy_populates_identity_motion_and_placement_fields() -> None:
 
     assert policy.zone_entry_confirm_seconds == 1.0
     assert policy.zone_exit_confirm_seconds == 5.0
+    assert policy.exit_reentry_confirmation_seconds == 1.0
     assert policy.reidentification_max_gap_seconds == 4.0
     assert policy.reidentification_min_score == 0.42
     assert policy.reidentification_ambiguity_margin == 0.08

@@ -33,7 +33,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1, 2, 3, 4, 5)
+        assert runner.apply() == (1, 2, 3, 4, 5, 6)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
@@ -44,6 +44,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
             (3, "0003_parking_timer_policy_snapshots"),
             (4, "0004_inbound_idempotency_keys"),
             (5, "0005_evidence_delivery_state"),
+            (6, "0006_exit_traversal_checkpoint"),
         ]
     finally:
         connection.close()

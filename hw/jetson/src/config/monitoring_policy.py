@@ -104,6 +104,7 @@ class MonitoringPolicyConfig(Protocol):
 
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
+    exit_reentry_confirmation_seconds: float
     entry_zone_min_overlap_ratio: float
     parking_confirm_seconds: float
     parking_move_confirm_seconds: float
@@ -172,6 +173,9 @@ def build_monitoring_policy(
     return MonitoringPolicy(
         zone_entry_confirm_seconds=config.zone_entry_confirm_seconds,
         zone_exit_confirm_seconds=config.zone_exit_confirm_seconds,
+        exit_reentry_confirmation_seconds=(
+            config.exit_reentry_confirmation_seconds
+        ),
         entry_zone_min_overlap_ratio=config.entry_zone_min_overlap_ratio,
         parking_confirm_seconds=config.parking_confirm_seconds,
         parking_move_confirm_seconds=config.parking_move_confirm_seconds,

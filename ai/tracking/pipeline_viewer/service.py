@@ -89,6 +89,9 @@ class ViewerPolicy:
 
     zone_entry_confirm_seconds: float = 1.0
     zone_exit_confirm_seconds: float = 5.0
+    # EXIT 외향 통과 latch를 내향 재진입으로 취소하는 연속 관측 시간이다.
+    # ZoneVisit 진입·이탈 debounce와 별개의 Viewer 판정 테스트 정책이다.
+    exit_reentry_confirmation_seconds: float = 1.0
     entry_zone_min_overlap_ratio: float = 0.40
     # Viewer 판정 테스트의 명시적 override다. 일반 배포의 600초 정책은
     # Settings/배포 계층이 계속 소유하며 이 기본값으로 바꾸지 않는다.

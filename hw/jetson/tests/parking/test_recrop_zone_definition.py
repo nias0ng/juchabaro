@@ -15,6 +15,17 @@ SAMPLE_PAYLOAD = {
             "chargerClass": "FAST",
             "egressZoneIds": [7],
         },
+        {
+            "zoneId": 9,
+            "zoneType": "ENTRY_EXIT",
+            "entryExitRole": "EXIT",
+            "polygon": [[0.60, 0.10], [0.75, 0.10], [0.75, 0.30], [0.60, 0.30]],
+            "exitTraversal": {
+                "line": [[0.62, 0.18], [0.73, 0.22]],
+                "outwardPoint": [0.70, 0.12],
+                "hysteresis": 0.01,
+            },
+        },
     ],
 }
 
@@ -45,6 +56,24 @@ def test_preserves_non_polygon_zone_fields():
     assert zone["allowedDurationSeconds"] == 7200
     assert zone["chargerClass"] == "FAST"
     assert zone["egressZoneIds"] == [7]
+
+
+def test_recomputes_exit_traversal_x_and_preserves_hysteresis():
+    result = recrop_payload(SAMPLE_PAYLOAD, old_width=1920, crop_left_px=150, crop_right_px=0)
+
+    new_width = 1920 - 150
+    traversal = result["zones"][1]["exitTraversal"]
+    assert traversal["line"][0][0] == pytest.approx(
+        (0.62 * 1920 - 150) / new_width,
+        abs=1e-6,
+    )
+    assert traversal["outwardPoint"][0] == pytest.approx(
+        (0.70 * 1920 - 150) / new_width,
+        abs=1e-6,
+    )
+    assert traversal["line"][0][1] == 0.18
+    assert traversal["outwardPoint"][1] == 0.12
+    assert traversal["hysteresis"] == 0.01
 
 
 def test_raises_when_cropped_coordinate_falls_outside_unit_range():

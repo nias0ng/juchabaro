@@ -107,6 +107,7 @@ def _policy() -> MonitoringPolicy:
     return MonitoringPolicy(
         zone_entry_confirm_seconds=1.0,
         zone_exit_confirm_seconds=1.0,
+        exit_reentry_confirmation_seconds=1.0,
         entry_zone_min_overlap_ratio=0.4,
         parking_confirm_seconds=600.0,
         parking_move_confirm_seconds=1.0,

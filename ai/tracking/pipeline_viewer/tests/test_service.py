@@ -41,6 +41,14 @@ def test_placement_defaults_are_forwarded_to_monitoring_policy() -> None:
     assert monitoring.out_of_zone_min_spot_overlap_ratio == 0.50
 
 
+def test_exit_reentry_policy_is_forwarded_exactly() -> None:
+    viewer_policy = ViewerPolicy(exit_reentry_confirmation_seconds=1.25)
+
+    monitoring = viewer_policy.to_monitoring_policy()
+
+    assert monitoring.exit_reentry_confirmation_seconds == pytest.approx(1.25)
+
+
 def test_yolo_confidence_default_is_low_for_viewer_diagnostics() -> None:
     assert ViewerPolicy().confidence == 0.01
 
@@ -123,6 +131,7 @@ def test_policy_snapshot_is_canonical_and_contains_actual_test_overrides() -> No
 
     assert snapshot == _policy_snapshot_json(ViewerPolicy())
     decoded = json.loads(snapshot)
+    assert decoded["exit_reentry_confirmation_seconds"] == 1.0
     assert decoded["parking_confirm_seconds"] == 5.0
     assert decoded["parking_move_confirm_seconds"] == 0.5
     assert decoded["motion_stationary_threshold"] == pytest.approx(0.03)

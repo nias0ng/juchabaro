@@ -30,6 +30,10 @@ from src.parking.models import (
     ZoneVisitState,
 )
 from src.parking.rules.bad_parking import evaluate
+from src.parking.parking_eligibility import (
+    ParkingEligibilityDecision,
+    ParkingEligibilityValue,
+)
 from src.parking.rules.models import RuleContext
 from src.parking.zone_registry import ZoneRegistry
 from src.tracking.models import (
@@ -185,6 +189,7 @@ def make_context(
     context_observation: ObservationStatus | None = None,
     parking_motion_observation: ObservationStatus | None = None,
     episode_observation: ObservationStatus | None = None,
+    parking_eligibility: ParkingEligibilityDecision | None = None,
 ) -> RuleContext:
     status = context_observation or observed()
     evidence = placement_evidence
@@ -204,7 +209,7 @@ def make_context(
         make_zone(2, ZoneType.GENERAL),
         make_zone(3, ZoneType.AISLE),
     )
-    return RuleContext(
+    parameters = dict(
         vehicle=vehicle,
         observation=status,
         parking_motion_observation=parking_motion_observation or observed(),
@@ -230,6 +235,32 @@ def make_context(
         bad_parking_min_secondary_overlap_ratio=0.25,
         out_of_zone_min_spot_overlap_ratio=0.50,
         observed_at=T0,
+    )
+    if parking_eligibility is not None:
+        parameters["parking_eligibility"] = parking_eligibility
+    return RuleContext(**parameters)
+
+
+def test_entry_exit_ineligible_makes_all_placement_rules_unknown() -> None:
+    decision = ParkingEligibilityDecision(
+        value=ParkingEligibilityValue.INELIGIBLE,
+        reason="ENTRY_EXIT_OVERLAP",
+        blocking_zone_id=ZoneId(9),
+        overlap_ratio=1.0,
+    )
+
+    signals = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(),
+            parking_assignment=make_assignment(),
+            parking_eligibility=decision,
+        )
+    )
+
+    assert all(
+        signal.value is IncidentSignalValue.UNKNOWN
+        and signal.evidence["reason"] == "PARKING_ENTRY_EXIT_OVERLAP"
+        for signal in signals.values()
     )
 
 

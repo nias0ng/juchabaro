@@ -1,10 +1,10 @@
 # 구역 정의
 
-메인 배포와 Pipeline Viewer는 `zone_definition.json` version 1을 정본으로
-사용한다. 이 파일은 `zone_definition.pilot.json` version 5의 물리 구역을
-crop하지 않은 full-frame 좌표계로 복원한 것이다.
+메인 배포와 Pipeline Viewer는 `zone_definition.json` version 2를 정본으로
+사용한다. 이 파일은 pilot 물리 구역을 crop하지 않은 full-frame 좌표계로
+복원하고 명시적 EXIT 기준선을 포함한 snapshot이다.
 
-`zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`zone_definition.pilot.json` version 7은 좌측 150px crop을 적용하는
 `CropFrameSource`, `replay_pilot_video.py`, `watch_live_stream.py` 전용이다.
 두 파일을 서로 바꿔 사용하면 정규화된 x좌표와 실제 frame 폭이 어긋난다.
 
@@ -43,11 +43,19 @@ ZoneType에는 이 필드를 두지 않는다. 입차 attempt는 `ENTRY` 구역�
 잇는다. fisheye 보정 후에도 카메라 원근은 남으므로 frame에서는 사다리꼴로
 보인다.
 
+`EXIT` role의 `ENTRY_EXIT`은 `exitTraversal` object를 반드시 갖는다.
+`line`은 통과 기준선의 정규화 좌표 두 점, `outwardPoint`는
+외향 측을 고정하는 정규화 점, `hysteresis`는 기준선 근처
+jitter를 억제하는 정규화 거리다. `ENTRY` role과 다른 ZoneType에는
+`exitTraversal`을 두지 않는다. 인접 AISLE 중심에서 외향을 자동
+유도하지 않는다. 배포 `hysteresis=0.01`은 provisional이며 실제
+bbox 중심 흔들림을 측정한 뒤 version을 올려 재조정한다.
+
 ## 이중주차 egress aisle
 
-`egress_aisle.json`은 메인 `zone_definition.json` version 1과 같은
+`egress_aisle.json`은 메인 `zone_definition.json` version 2와 같은
 full-frame 좌표계를 사용한다. `egress_aisle.pilot.json`은
-`zone_definition.pilot.json` version 6과 같은 좌측 150px crop 좌표계다.
+`zone_definition.pilot.json` version 7과 같은 좌측 150px crop 좌표계다.
 메인·Viewer에는 전자를, crop을 켠 replay·live 스크립트에는 후자를
 사용해야 한다. 두 파일은 주차면 1~6의 같은 물리 출차 공간을
 각 좌표계로 표현한 별도 snapshot이다.

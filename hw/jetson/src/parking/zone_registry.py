@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 from itertools import combinations
 from pathlib import Path
@@ -19,11 +18,12 @@ from src.parking.geometry import (
     convex_polygon_intersection_area,
     is_convex_polygon,
     polygon_area,
-    polygon_centroid,
 )
 from src.parking.models import (
     EntryExitRole,
+    ExitTraversalDefinition,
     NormalizedPolygon,
+    NormalizedPoint,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -36,8 +36,6 @@ RESTRICTED_ZONE_TYPES = frozenset({ZoneType.DISABLED, ZoneType.EV_CHARGING})
 SPOT_ZONE_TYPES = frozenset({ZoneType.GENERAL, ZoneType.DISABLED, ZoneType.EV_CHARGING})
 IGNORED_ZONE_TYPES_FOR_PARKING = frozenset({ZoneType.ENTRY_EXIT})
 
-logger = logging.getLogger(__name__)
-
 # 정규화 좌표의 absolute 면적은 작은 유효 zone을 놓치므로, 더 작은 주차면
 # 면적 대비 비율로 내부 겹침을 판정한다. exact shared edge의 면적 0은 허용한다.
 _MATERIAL_SPOT_OVERLAP_RATIO = 1e-9
@@ -45,7 +43,16 @@ _MATERIAL_SPOT_OVERLAP_RATIO = 1e-9
 _SNAPSHOT_FIELDS = frozenset({"zoneDefinitionVersion", "calibrationReference", "zones"})
 _ZONE_REQUIRED_FIELDS = frozenset({"zoneId", "zoneType", "polygon"})
 _ZONE_OPTIONAL_FIELDS = frozenset(
-    {"entryExitRole", "allowedDurationSeconds", "chargerClass", "egressZoneIds"}
+    {
+        "entryExitRole",
+        "exitTraversal",
+        "allowedDurationSeconds",
+        "chargerClass",
+        "egressZoneIds",
+    }
+)
+_EXIT_TRAVERSAL_FIELDS = frozenset(
+    {"line", "outwardPoint", "hysteresis"}
 )
 
 
@@ -71,7 +78,11 @@ class ZoneRegistry:
         self._zones = {definition.zone_id: definition for definition in ordered}
         self._zone_definition_version = ordered[0].zone_definition_version
         self._calibration_reference = ordered[0].calibration_reference
-        self._exit_outward_baselines = self._build_exit_outward_baselines()
+        self._exit_traversals = {
+            definition.zone_id: definition.exit_traversal
+            for definition in ordered
+            if definition.exit_traversal is not None
+        }
 
     @property
     def zone_definition_version(self) -> ZoneDefinitionVersion:
@@ -175,6 +186,29 @@ class ZoneRegistry:
             if zone_type is ZoneType.ENTRY_EXIT
             else None
         )
+        has_exit_traversal = "exitTraversal" in item
+        requires_exit_traversal = (
+            zone_type is ZoneType.ENTRY_EXIT
+            and entry_exit_role is EntryExitRole.EXIT
+        )
+        if requires_exit_traversal and not has_exit_traversal:
+            raise ZoneRegistryError(
+                f"{context}.exitTraversal은 EXIT role ENTRY_EXIT 구역에 "
+                "반드시 필요합니다"
+            )
+        if not requires_exit_traversal and has_exit_traversal:
+            raise ZoneRegistryError(
+                f"{context}.exitTraversal은 EXIT role ENTRY_EXIT 구역에만 "
+                "사용할 수 있습니다"
+            )
+        exit_traversal = (
+            _parse_exit_traversal(
+                item["exitTraversal"],
+                field_name=f"{context}.exitTraversal",
+            )
+            if requires_exit_traversal
+            else None
+        )
         allowed_duration_seconds = _parse_optional_positive_number(
             item.get("allowedDurationSeconds"),
             field_name=f"{context}.allowedDurationSeconds",
@@ -194,6 +228,7 @@ class ZoneRegistry:
                 zone_definition_version=version,
                 calibration_reference=calibration_reference,
                 entry_exit_role=entry_exit_role,
+                exit_traversal=exit_traversal,
                 allowed_duration_seconds=allowed_duration_seconds,
                 charger_class=charger_class,
                 egress_zone_ids=egress_zone_ids,
@@ -275,110 +310,15 @@ class ZoneRegistry:
                     f"overlapRatio={overlap_ratio:.12f}"
                 )
 
-    def exit_outward_baselines(
-        self,
-    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
-        """EXIT role 구역별 외부측 기준선을 반환한다(571).
+    def exit_traversals(self) -> dict[ZoneId, ExitTraversalDefinition]:
+        """EXIT role 구역별 명시적 통과 기준을 반환한다.
 
-        값은 ``(origin, unit_direction)``이다. ``origin``은 EXIT 구역 중심,
-        ``unit_direction``은 외부 방향 단위벡터다. 호출자는 차량 bbox 중심의
-        ``origin`` 기준 부호 있는 오프셋이 ``unit_direction``으로 양수면
-        외부측으로 판정한다.
-
-        외부 방향을 유도할 수 없는 구역은 키에서 빠진다. 호출자는 키가
-        없으면 그 구역으로 통과를 확정하지 않는다.
+        가장 가까운 AISLE 위치와 같은 배치 추론을 하지 않는다.
+        호출자는 ``ExitTraversalDefinition.signed_offset()``과
+        ``hysteresis``로 bbox 중심의 안쪽·바깥쪽을 판정한다.
         """
 
-        return dict(self._exit_outward_baselines)
-
-    def _build_exit_outward_baselines(
-        self,
-    ) -> dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]]:
-        """구역 정의는 불변이므로 구성 시 1회만 계산한다.
-
-        외부 방향은 가장 가까운 AISLE 구역 중심에서 EXIT 구역 중심으로
-        향하는 단위벡터다. 기준선은 EXIT 중심을 지나고 그 방향에 수직인
-        직선이다. 새 설정 필드를 도입하지 않으려고 기존 폴리곤에서
-        유도한다.
-        """
-
-        exits = tuple(
-            definition
-            for definition in self._definitions
-            if definition.zone_type is ZoneType.ENTRY_EXIT
-            and definition.entry_exit_role is EntryExitRole.EXIT
-        )
-        if not exits:
-            return {}
-
-        aisles = tuple(
-            definition
-            for definition in self._definitions
-            if definition.zone_type is ZoneType.AISLE
-        )
-        if not aisles:
-            logger.warning(
-                "AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 없습니다. "
-                "출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
-                [int(definition.zone_id) for definition in exits],
-            )
-            return {}
-
-        aisle_centers: dict[ZoneId, tuple[float, float]] = {}
-        for definition in aisles:
-            try:
-                aisle_centers[definition.zone_id] = polygon_centroid(definition.polygon)
-            except ValueError:
-                logger.warning(
-                    "AISLE 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
-                    "없습니다. 이 구역은 외부 방향 유도에서 제외됩니다: "
-                    "zone_id=%s",
-                    int(definition.zone_id),
-                )
-        if not aisle_centers:
-            logger.warning(
-                "유효한 AISLE 구역이 없어 출차 구역 외부 방향을 유도할 수 "
-                "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_ids=%s",
-                [int(definition.zone_id) for definition in exits],
-            )
-            return {}
-
-        baselines: dict[ZoneId, tuple[tuple[float, float], tuple[float, float]]] = {}
-        for exit_definition in exits:
-            try:
-                exit_center = polygon_centroid(exit_definition.polygon)
-            except ValueError:
-                logger.warning(
-                    "EXIT 구역의 polygon 면적이 0이어서 중심을 계산할 수 "
-                    "없습니다. 출차 구역 통과가 확정되지 않습니다: zone_id=%s",
-                    int(exit_definition.zone_id),
-                )
-                continue
-            nearest_zone_id = min(
-                aisle_centers,
-                key=lambda zone_id: (
-                    _squared_distance(aisle_centers[zone_id], exit_center),
-                    int(zone_id),
-                ),
-            )
-            aisle_center = aisle_centers[nearest_zone_id]
-            direction = (
-                exit_center[0] - aisle_center[0],
-                exit_center[1] - aisle_center[1],
-            )
-            if direction[0] == 0.0 and direction[1] == 0.0:
-                logger.warning(
-                    "AISLE과 EXIT 구역의 중심이 같아 외부 방향을 유도할 수 "
-                    "없습니다: zone_id=%s",
-                    int(exit_definition.zone_id),
-                )
-                continue
-            # direction이 정확히 (0, 0)이 아님을 위에서 확인했으므로
-            # magnitude는 항상 양수다 — 0 나눗셈이 발생하지 않는다.
-            magnitude = math.hypot(direction[0], direction[1])
-            unit_direction = (direction[0] / magnitude, direction[1] / magnitude)
-            baselines[exit_definition.zone_id] = (exit_center, unit_direction)
-        return baselines
+        return dict(self._exit_traversals)
 
     def all(self) -> tuple[ZoneDefinition, ...]:
         """파일에 기록된 순서대로 모든 구역 정의를 반환한다."""
@@ -464,6 +404,48 @@ def _parse_entry_exit_role(
         ) from exc
 
 
+def _parse_exit_traversal(
+    value: Any,
+    *,
+    field_name: str,
+) -> ExitTraversalDefinition:
+    if not isinstance(value, Mapping):
+        raise ZoneRegistryError(f"{field_name}은 object여야 합니다")
+    _require_exact_fields(value, _EXIT_TRAVERSAL_FIELDS, context=field_name)
+
+    raw_line = value["line"]
+    if not isinstance(raw_line, list) or len(raw_line) != 2:
+        raise ZoneRegistryError(
+            f"{field_name}.line은 두 개의 [x, y]를 가진 배열이어야 합니다"
+        )
+    line = tuple(
+        _parse_normalized_point(
+            point,
+            field_name=f"{field_name}.line[{index}]",
+        )
+        for index, point in enumerate(raw_line)
+    )
+    outward_point = _parse_normalized_point(
+        value["outwardPoint"],
+        field_name=f"{field_name}.outwardPoint",
+    )
+    hysteresis = _parse_non_negative_number(
+        value["hysteresis"],
+        field_name=f"{field_name}.hysteresis",
+    )
+
+    try:
+        return ExitTraversalDefinition(
+            line=(line[0], line[1]),
+            outward_point=outward_point,
+            hysteresis=hysteresis,
+        )
+    except ValueError as exc:
+        raise ZoneRegistryError(
+            f"{field_name}가 ExitTraversalDefinition 계약을 위반했습니다: {exc}"
+        ) from exc
+
+
 def _parse_optional_positive_number(value: Any, *, field_name: str) -> float | None:
     if value is None:
         return None
@@ -473,6 +455,32 @@ def _parse_optional_positive_number(value: Any, *, field_name: str) -> float | N
     if not math.isfinite(parsed) or parsed <= 0:
         raise ZoneRegistryError(f"{field_name}은 유한한 양수여야 합니다")
     return parsed
+
+
+def _parse_non_negative_number(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ZoneRegistryError(f"{field_name}은 숫자여야 합니다")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ZoneRegistryError(f"{field_name}은 유한한 0 이상의 숫자여야 합니다")
+    return parsed
+
+
+def _parse_normalized_point(value: Any, *, field_name: str) -> NormalizedPoint:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ZoneRegistryError(f"{field_name}은 [x, y] 배열이어야 합니다")
+
+    coordinates: list[float] = []
+    for coordinate in value:
+        if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
+            raise ZoneRegistryError(f"{field_name} 좌표는 숫자여야 합니다")
+        parsed = float(coordinate)
+        if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+            raise ZoneRegistryError(
+                f"{field_name} 좌표는 유한한 0~1 정규화 값이어야 합니다"
+            )
+        coordinates.append(parsed)
+    return (coordinates[0], coordinates[1])
 
 
 def _parse_polygon(value: Any, *, field_name: str) -> NormalizedPolygon:
@@ -499,10 +507,3 @@ def _parse_zone_id_array(value: Any, *, field_name: str) -> tuple[ZoneId, ...]:
         ZoneId(_parse_integer(item, field_name=f"{field_name}[{index}]"))
         for index, item in enumerate(value)
     )
-
-
-def _squared_distance(
-    first: tuple[float, float],
-    second: tuple[float, float],
-) -> float:
-    return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2

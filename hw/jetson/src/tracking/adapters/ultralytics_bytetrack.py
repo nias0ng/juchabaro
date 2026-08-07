@@ -13,6 +13,10 @@ import math
 from typing import Any
 
 from src.camera.models import CapturedFrame
+from src.tracking.vehicle_model_contract import (
+    VEHICLE_MODEL_CLASS_NAMES,
+    VEHICLE_MODEL_TASK,
+)
 from src.tracking.models import (
     BoundingBox,
     DetectionObservation,
@@ -95,15 +99,31 @@ class UltralyticsVehicleTracker:
             ) from exc
         self._library_version = getattr(ultralytics, "__version__", "unknown")
         try:
-            self._model = YOLO(self._model_path)
+            loaded_model = YOLO(self._model_path)
+            actual_task = getattr(loaded_model, "task", None)
+            if actual_task != VEHICLE_MODEL_TASK:
+                raise TrackingError(
+                    "YOLO model task가 vehicle detector 계약과 다릅니다: "
+                    f"expected={VEHICLE_MODEL_TASK!r}, actual={actual_task!r}"
+                )
+            actual_class_names = getattr(loaded_model, "names", None)
+            if actual_class_names != VEHICLE_MODEL_CLASS_NAMES:
+                raise TrackingError(
+                    "YOLO model class map이 vehicle 단일 클래스 계약과 다릅니다: "
+                    f"expected={VEHICLE_MODEL_CLASS_NAMES!r}, "
+                    f"actual={actual_class_names!r}"
+                )
             # Ultralytics track callback이 Results를 active track subset으로
             # 교체하기 전에 detection coverage를 보존한다. 이 callback은
             # 첫 model.track() call이 tracker callback을 등록하기 전에
             # 추가되므로 실행 순서가 앞선다.
-            self._model.add_callback(
+            loaded_model.add_callback(
                 "on_predict_postprocess_end",
                 self._capture_pretrack_detection_count,
             )
+            self._model = loaded_model
+        except TrackingError:
+            raise
         except Exception as exc:
             raise TrackingError(f"YOLO 모델 로드에 실패했습니다(model={self._model_path}): {exc}") from exc
 
@@ -152,6 +172,7 @@ class UltralyticsVehicleTracker:
                 persist=True,
                 tracker=self._tracker_config,
                 conf=self._confidence,
+                classes=[0],
                 verbose=False,
             )
             observations = self._to_observations(

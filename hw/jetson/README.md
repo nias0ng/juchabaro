@@ -115,7 +115,13 @@ CAMERA_INDEX=0
 CALIBRATION_PATH=/home/e202/config/camera_calibration.json
 REMAP_BALANCE=0.5
 VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
+VEHICLE_MODEL_MANIFEST_PATH=/home/e202/model/vehicle_model_manifest.json
 ```
+
+차량 모델 binary와 manifest는 항상 같은 release를 배치한다. 기동
+preflight이 manifest의 SHA-256을 binary와 대조하고, model open 후에
+Ultralytics `task='detect'`와 `names={0: 'vehicle'}`를 다시 검증한다.
+두 검증 중 하나라도 실패하면 camera monitoring은 시작하지 않는다.
 
 시연 배포에서 판정 정책은 `.env` → `Settings` → `src.main`의 composition root →
 `MonitoringPolicy` 순서로 전달된다. 규칙별 Incident 값은
@@ -159,13 +165,18 @@ frame과 polygon이 같은 좌표계인지 검증하는 식별자다. 파일을 
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
-`config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
+`config/zone_definition.json` version 2다. 이 파일은 crop하지 않은
 full-frame 좌표계를 사용한다. 구역 정보는 SQLite가 아니라 이 정적
 JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
 
-`config/zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`config/zone_definition.pilot.json` version 7은 좌측 150px crop을 적용하는
 `replay_pilot_video.py`와 `watch_live_stream.py`용 설정이다. 메인 배포와
 Pipeline Viewer의 full-frame 입력에는 사용하지 않는다.
+
+EXIT role 구역의 `exitTraversal`은 기준선·외향점·hysteresis를 명시한다.
+외향 통과는 SQLite checkpoint로 보존되며
+`EXIT_REENTRY_CONFIRMATION_SECONDS` 동안 연속 내향 관측된 경우에만
+재진입으로 취소한다. 이 값은 ZoneVisit 진입·이탈 confirmation과 별도다.
 
 `EGRESS_AISLE_PATH`는 이중주차 `BlockingRelation`에만 사용하는
 주차면별 출차 방해 영역 JSON 경로다. `ZoneDefinition`의
@@ -568,6 +579,7 @@ python -m scripts.replay_pilot_video \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
+    --exit-reentry-confirmation-seconds 1.0 \
     --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \
     --absence-confirmation-seconds 5.0 \
     --trusted-sample-max-gap-seconds 1.0 \

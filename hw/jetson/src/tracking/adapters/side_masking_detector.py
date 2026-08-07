@@ -23,7 +23,7 @@ from src.tracking.models import TrackerFrameResult
 from src.tracking.protocols import Detector, ModelInfo, TrackingError
 
 
-# zone_definition.json version 1의 1~9번 전체 polygon x좌표 합집합은 [0.220, 0.768]이다.
+# zone_definition.json version 2의 1~9번 전체 polygon x좌표 합집합은 [0.220, 0.768]이다.
 # AISLE만 기준으로 하면 좌우 주차면을 침범하므로 전체 구역 기준 고정 경계에 여백
 # 0.040을 더한 값을 기본값으로 쓴다(537 인수인계 §5).
 DEFAULT_LEFT_MASK_END_RATIO = 0.180

@@ -277,7 +277,16 @@ UNKNOWN에서는 현재 state와 timer 하한을 유지한다. `EXITING → ENDE
 
 활성 visit은 `zoneId + zoneDefinitionVersion`을 참조한다. 설정 조회 실패는 zone 삭제가 아니므로 `UNKNOWN / DEPENDENCY_UNAVAILABLE`로 둔다. 실행 중 ZoneDefinition hot replacement는 지원하지 않는다. 새 version은 active scope가 없는 통제된 기동에서 적용하며, active scope를 복구해야 하는 기동에는 기존 version을 함께 제공해야 한다.
 
-`ENTRY_EXIT` ZoneDefinition은 `entryExitRole = ENTRY | EXIT`를 반드시 갖는다. EntryMatchCoordinator는 `ENTRY`에서만 입차 attempt를 매칭하며, 같은 sample의 ENTRY 후보가 두 대 이상이면 detector 순서로 임의 매칭하지 않고 보류한다.
+`ENTRY_EXIT` ZoneDefinition은 `entryExitRole = ENTRY | EXIT`를 반드시 갖는다. `EXIT`는 명시적 `exitTraversal(line, outwardPoint, hysteresis)`를 추가로 갖고, 이 정의 없이 인접 AISLE 배치로 외향을 추론하지 않는다. EntryMatchCoordinator는 `ENTRY`에서만 입차 attempt를 매칭하며, 같은 sample의 ENTRY 후보가 두 대 이상이면 detector 순서로 임의 매칭하지 않고 보류한다.
+
+정상 관측에서 active EXIT visit의 차량 bbox 중심이 기준선 외향 쪽
+`hysteresis`를 넘으면 frame-local `ExitTraversalObservation(OUTWARD)`을 만든다.
+application workflow는 이를 같은 frame transaction에서 차량별 durable
+checkpoint로 latch한다. 이 checkpoint는 ZoneVisit 종료와 process restart 뒤에도
+유지되며, 부재 확정 transaction이 읽고 소비한 경우에만 SessionExit 근거가 된다.
+외향 통과 뒤 같은 기준선의 내향 쪽에서 `exitReentryConfirmationSeconds` 동안
+연속 trusted 관측되면 재진입으로 보아 checkpoint를 삭제한다. 마지막 bbox와
+active visit의 순간 조합만으로 과거 통과 사실을 재구성하지 않는다.
 
 `(physicalVehicleId, zoneId)`당 non-terminal ZoneVisit은 하나만 허용한다.
 
@@ -296,6 +305,14 @@ STOP_PENDING → PARKED → MOVE_PENDING → ENDED
 - `CANCELED`: PARKED 전 정상 관측에서 후보 비성립 확인
 
 STOP_PENDING 중 실제 physical exit가 확인되면 `CANCELED / PHYSICAL_EXIT`다.
+
+ParkingEpisode의 새 후보와 STOP_PENDING timer는 `ParkingEligibility`가
+`ELIGIBLE`일 때만 진행한다. 정상 bbox가 `ENTRY_EXIT` polygon과 겹치거나 해당
+ZoneVisit이 non-terminal이면 `INELIGIBLE`이며, 기존 STOP_PENDING은
+`CANCELED / PARKING_INELIGIBLE`로 닫는다. 관측이 불신뢰하면 `UNKNOWN`으로 timer
+chain만 끊는다. 이미 PARKED인 episode의 종료는 eligibility가 아니라 motion과
+physical exit owner가 계속 담당한다. 이 경계 때문에 ENTRY와 EXIT 통로의 일시
+정지가 PARKED·OUT_OF_ZONE Incident로 승격되지 않는다.
 
 episode는 [직접 설정값](#14-직접-설정값) 중 주차·이동 판단에 실제 적용한 scalar를 생성 시 snapshot한다. UNKNOWN과 downtime을 timer에 합산하지 않으며 진행 중 episode에는 새 설정값을 소급 적용하지 않는다.
 
@@ -380,6 +397,11 @@ EgressAisleDefinition snapshot이 부여한 식별자이며, 호환 필드명만
 관측이 불신뢰면 `UNKNOWN`이다. 이 비율과 임계값은 Assignment·
 BAD_PARKING의 PlacementEvidence와 별도다. 최대 차량·relation 수와
 평가 주기는 성능 실측으로 정한다.
+
+`DOUBLE_PARKING` Incident의 `zoneId`는 egress 영역 자체의 id가 아니라,
+BlockingRelation이 참조한 `EgressAisleDefinition.parkingZoneId`를 투영한다.
+즉 피해 차량이 배정된 주차면을 가리키며, victim 차량 id와 함께 OPEN부터
+고정한다.
 
 `(subjectPhysicalVehicleId, victimPhysicalVehicleId, egressZoneId)`당 non-terminal BlockingRelation은 하나만 허용한다.
 
@@ -528,6 +550,7 @@ UNKNOWN
 | `motionMinTrendConsistency` | `[제안값] TBD` | 이동 방향·크기 일관성의 최소 비율 |
 | `movementConfirmationDurationSeconds` | `[제안값] TBD` | PARKED 뒤 이동 확정 시간 |
 | zone entry/exit confirmation | `[제안값] TBD` | ZoneVisit 진입·이탈 debounce |
+| `exitReentryConfirmationSeconds` | `[제안값] 1.0` | durable EXIT 외향 latch를 취소할 연속 내향 관측 시간; ZoneVisit debounce와 별도 |
 | `assignmentMinOverlap` | `[제안값] TBD` | primary overlap을 assignment 후보로 인정할 하한 |
 | `assignmentAmbiguityMargin` | `[제안값] TBD` | primary·secondary dominance gap의 ambiguity 포함 상한 |
 | `badParkingMinPrimaryOverlap` | `[제안값] TBD` | OUT_OF_ZONE이 아닌 sample에서 단일 주차면이 확보해야 할 최소 overlap |

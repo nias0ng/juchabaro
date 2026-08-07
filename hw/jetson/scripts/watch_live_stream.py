@@ -139,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     # (이 스크립트는 임계값 측정 도구가 아니라 눈으로 보는 용도라 기본값을 둔다.)
     parser.add_argument("--zone-entry-confirm-seconds", type=float, default=1.0)
     parser.add_argument("--zone-exit-confirm-seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--exit-reentry-confirmation-seconds", type=float, default=1.0
+    )
     parser.add_argument("--parking-move-confirm-seconds", type=float, default=0.5)
     parser.add_argument("--absence-confirmation-seconds", type=float, default=5.0)
     parser.add_argument("--trusted-sample-max-gap-seconds", type=float, default=1.0)

@@ -24,6 +24,10 @@ from src.parking.models import (
     PlacementEvidenceSource,
     ZoneVisit,
 )
+from src.parking.parking_eligibility import (
+    ELIGIBLE_PARKING,
+    ParkingEligibilityDecision,
+)
 from src.session.models import SessionContext
 from src.tracking.models import PhysicalVehicleSnapshot
 
@@ -57,6 +61,7 @@ class RuleContext:
     blocking_evidence: Mapping[
         BlockingRelationId, EgressBlockingEvidence
     ] = field(default_factory=dict)
+    parking_eligibility: ParkingEligibilityDecision = ELIGIBLE_PARKING
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")
