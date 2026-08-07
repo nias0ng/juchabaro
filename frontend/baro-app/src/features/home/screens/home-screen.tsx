@@ -18,7 +18,7 @@ import { QuickActionGrid, type QuickAction } from '../components/quick-action-gr
 
 const DEFAULT_AVATAR_INITIAL = '바';
 const DEFAULT_UNIT_LABEL = '동/호수 정보 없음';
-const PARKING_STATUS_TITLE = '주차 현황 · 지하 1층';
+const PARKING_STATUS_TITLE = '주차 현황';
 
 const quickActions: QuickAction[] = [
   {
@@ -99,9 +99,7 @@ export default function HomeScreen() {
             onPressNotification={() => router.push('/resident/notifications')}
           />
 
-          <Text style={styles.greeting}>{'주차, 오늘도\n편안하게'}</Text>
-
-          <QuickActionGrid actions={quickActions} />
+          <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
 
           <VehicleStatusCard
             session={vehicleStatus}
@@ -109,6 +107,8 @@ export default function HomeScreen() {
             isLoading={isSessionsLoading}
             hasError={Boolean(sessionsError)}
           />
+
+          <QuickActionGrid actions={quickActions} />
 
           <ParkingStatusCard
             title={PARKING_STATUS_TITLE}

@@ -27,7 +27,19 @@ from src.communication.backend_requests import (
     EvidenceUnavailableRequest,
     EvidenceUploadRequest,
 )
-from src.evidence.models import EvidenceArtifact, EvidenceState
+from src.diagnostics import (
+    DiagnosticEvent,
+    DiagnosticEventType,
+    DiagnosticSeverity,
+    DiagnosticsSink,
+    NullDiagnosticsSink,
+    emit_best_effort,
+)
+from src.evidence.models import (
+    EvidenceArtifact,
+    EvidencePublicationKind,
+    EvidenceState,
+)
 from src.evidence.spool import EvidenceSpool
 from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.unit_of_work import UnitOfWork
@@ -83,6 +95,7 @@ class EvidencePublicationPublisher:
         retry_initial_seconds: float = 1.0,
         retry_max_seconds: float = 300.0,
         clock: EvidenceClock = _utc_now,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> None:
         if retry_initial_seconds <= 0:
             raise ValueError("retry_initial_seconds must be positive")
@@ -99,6 +112,11 @@ class EvidencePublicationPublisher:
         self._retry_initial_seconds = retry_initial_seconds
         self._retry_max_seconds = retry_max_seconds
         self._clock = clock
+        self._diagnostics_sink = (
+            diagnostics_sink
+            if diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
 
     def recover(self) -> int:
         """spool을 먼저 복구하고 중단된 HTTP 전송을 retry 대기로 되돌린다."""
@@ -116,6 +134,14 @@ class EvidencePublicationPublisher:
         finally:
             connection.close()
 
+        return self._recover_in_flight(now=now)
+
+    def recover_in_flight(self) -> int:
+        """실행 중 중단된 delivery만 복구하고 active capture file은 건드리지 않는다."""
+
+        return self._recover_in_flight(now=self._now())
+
+    def _recover_in_flight(self, *, now: datetime) -> int:
         connection = self._connection_factory()
         try:
             with UnitOfWork(connection):
@@ -131,9 +157,15 @@ class EvidencePublicationPublisher:
         artifact = self._claim_next()
         if artifact is None:
             return False
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_ATTEMPTED",
+        )
         try:
             if artifact.state is EvidenceState.UPLOADING:
-                confirmation = self._publish_upload(artifact)
+                request = self._prepare_upload_request(artifact)
+                artifact = self._mark_upload_dispatch_started(artifact)
+                confirmation = self._publish_upload(artifact, request)
             elif artifact.state in {EvidenceState.FAILED, EvidenceState.EVICTED}:
                 confirmation = self._publish_unavailable(artifact)
             else:  # pragma: no cover - repository claim query owns this invariant.
@@ -163,26 +195,52 @@ class EvidencePublicationPublisher:
         finally:
             connection.close()
 
-    def _publish_upload(
+    def _prepare_upload_request(
         self,
         artifact: EvidenceArtifact,
-    ) -> PublicationConfirmation:
+    ) -> EvidenceUploadRequest:
         if artifact.publication_revision is None:
             raise EvidencePublicationPreparationError(
                 "evidence upload has no publication revision"
             )
         content = self._read_upload_content(artifact)
+        return EvidenceUploadRequest(
+            incident_id=artifact.incident_id,
+            evidence_id=artifact.evidence_id,
+            publication_revision=artifact.publication_revision,
+            content=content,
+            captured_at=artifact.captured_at,
+            mime_type=artifact.image_type,
+            byte_size=artifact.byte_size,
+            checksum=artifact.checksum,
+        )
+
+    def _mark_upload_dispatch_started(
+        self,
+        artifact: EvidenceArtifact,
+    ) -> EvidenceArtifact:
+        connection = self._connection_factory()
+        try:
+            with UnitOfWork(connection):
+                return EvidenceArtifactRepository(
+                    connection
+                ).mark_upload_dispatch_started(
+                    artifact.evidence_id,
+                    expected_record_version=artifact.record_version,
+                    started_at=self._now(),
+                )
+        finally:
+            connection.close()
+
+    def _publish_upload(
+        self,
+        artifact: EvidenceArtifact,
+        request: EvidenceUploadRequest,
+    ) -> PublicationConfirmation:
+        if artifact.publication_revision is None:  # pragma: no cover
+            raise RuntimeError("dispatched upload has no publication revision")
         return self._client.upload_evidence(
-            EvidenceUploadRequest(
-                incident_id=artifact.incident_id,
-                evidence_id=artifact.evidence_id,
-                publication_revision=artifact.publication_revision,
-                content=content,
-                captured_at=artifact.captured_at,
-                mime_type=artifact.image_type,
-                byte_size=artifact.byte_size,
-                checksum=artifact.checksum,
-            ),
+            request,
             idempotency_key=(
                 f"EvidenceArtifact:{artifact.evidence_id}:"
                 f"{artifact.publication_revision}"
@@ -284,6 +342,13 @@ class EvidencePublicationPublisher:
             next_attempt_at.isoformat(),
             _error_text(error),
         )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_RETRY_SCHEDULED",
+            severity=DiagnosticSeverity.WARNING,
+            error=error,
+            next_attempt_at=next_attempt_at,
+        )
 
     def _mark_delivered(
         self,
@@ -321,6 +386,11 @@ class EvidencePublicationPublisher:
             artifact.delivery_attempt_count,
             confirmation.application_status.value,
         )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_SUCCEEDED",
+            application_status=confirmation.application_status.value,
+        )
 
     def _mark_failed_terminal(
         self,
@@ -347,6 +417,12 @@ class EvidencePublicationPublisher:
             artifact.delivery_attempt_count,
             _error_text(error),
         )
+        self._observe_publication(
+            artifact,
+            result="DELIVERY_FAILED_TERMINAL",
+            severity=DiagnosticSeverity.ERROR,
+            error=error,
+        )
 
     def _mark_upload_unavailable(
         self,
@@ -368,7 +444,9 @@ class EvidencePublicationPublisher:
         connection = self._connection_factory()
         try:
             with UnitOfWork(connection):
-                EvidenceArtifactRepository(connection).mark_upload_unavailable(
+                failed = EvidenceArtifactRepository(
+                    connection
+                ).mark_upload_unavailable(
                     artifact.evidence_id,
                     expected_record_version=artifact.record_version,
                     failed_at=self._now(),
@@ -376,6 +454,70 @@ class EvidencePublicationPublisher:
                 )
         finally:
             connection.close()
+        upload_outcome_unknown = (
+            failed.publication_kind is EvidencePublicationKind.UPLOAD
+        )
+        if upload_outcome_unknown:
+            logger.error(
+                "Backend 적용 결과를 확정하지 못한 evidence upload를 "
+                "상충 전송 없이 격리했습니다. evidenceId=%s incidentId=%s",
+                failed.evidence_id,
+                failed.incident_id,
+            )
+        self._observe_publication(
+            artifact,
+            result=(
+                "UPLOAD_OUTCOME_UNKNOWN"
+                if upload_outcome_unknown
+                else "UPLOAD_MARKED_UNAVAILABLE"
+            ),
+            severity=(
+                DiagnosticSeverity.ERROR
+                if upload_outcome_unknown
+                else DiagnosticSeverity.WARNING
+            ),
+            error=error,
+        )
+
+    def _observe_publication(
+        self,
+        artifact: EvidenceArtifact,
+        *,
+        result: str,
+        severity: DiagnosticSeverity = DiagnosticSeverity.INFO,
+        error: Exception | None = None,
+        next_attempt_at: datetime | None = None,
+        application_status: str | None = None,
+    ) -> None:
+        emit_best_effort(
+            self._diagnostics_sink,
+            DiagnosticEvent(
+                event_type=(
+                    DiagnosticEventType.EVIDENCE_PUBLICATION_EVALUATED
+                ),
+                occurred_at=self._now(),
+                severity=severity,
+                attributes={
+                    "applicationStatus": application_status,
+                    "attempt": artifact.delivery_attempt_count,
+                    "claimedDeliveryState": artifact.delivery_state.value,
+                    "errorType": (
+                        type(error).__name__ if error is not None else None
+                    ),
+                    "evidenceId": str(artifact.evidence_id),
+                    "incidentId": str(artifact.incident_id),
+                    "nextAttemptAt": (
+                        next_attempt_at.isoformat()
+                        if next_attempt_at is not None
+                        else None
+                    ),
+                    "phase": "BACKEND_PUBLICATION",
+                    "publicationRevision": artifact.publication_revision,
+                    "publicationType": _publication_type(artifact),
+                    "result": result,
+                },
+            ),
+        )
 
     def _now(self) -> datetime:
         now = self._clock()
@@ -400,6 +542,8 @@ class EvidencePublicationWorker:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
+        self._prepared = False
+        self._publisher_closed = False
 
     @property
     def failure(self) -> Exception | None:
@@ -409,10 +553,26 @@ class EvidencePublicationWorker:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def prepare(self) -> None:
+        """Spool·IN_FLIGHT 복구를 HTTP loop 시작 전에 동기로 완료한다."""
+
+        if self._thread is not None:
+            raise RuntimeError(
+                "running evidence publication worker cannot be prepared"
+            )
+        if self._publisher_closed:
+            raise RuntimeError("evidence publication worker is already closed")
+        if self._prepared:
+            return
+        self._publisher.recover()
+        self._prepared = True
+
     def start(self) -> None:
+        """복구가 완료된 뒤 HTTP publication loop를 시작한다."""
+
         if self._thread is not None:
             raise RuntimeError("evidence publication worker may only be started once")
-        self._publisher.recover()
+        self.prepare()
         thread = Thread(
             target=self._run,
             name="jetson-evidence-publication",
@@ -422,24 +582,56 @@ class EvidencePublicationWorker:
         try:
             thread.start()
         except Exception:
-            self._publisher.close()
+            self._thread = None
+            self._close_publisher()
             raise
 
     def stop(self) -> None:
         self._stop_requested.set()
         if self._thread is not None:
             self._thread.join()
-        self._publisher.close()
+        self._close_publisher()
+
+    def _close_publisher(self) -> None:
+        if self._publisher_closed:
+            return
+        try:
+            self._publisher.close()
+        finally:
+            self._publisher_closed = True
 
     def _run(self) -> None:
-        try:
-            while not self._stop_requested.is_set():
+        while not self._stop_requested.is_set():
+            try:
                 processed = self._publisher.publish_once()
-                if not processed:
-                    self._stop_requested.wait(self._poll_interval_seconds)
-        except Exception as error:
-            self._failure = error
-            logger.exception("Jetson evidence publication worker가 종료됐습니다.")
+            except Exception as error:
+                self._failure = error
+                logger.exception(
+                    "Jetson evidence publication 항목 처리가 중단되어 "
+                    "IN_FLIGHT를 복구합니다."
+                )
+                if not self._recover_until_ready():
+                    break
+                self._stop_requested.wait(self._poll_interval_seconds)
+                continue
+            self._failure = None
+            if not processed:
+                self._stop_requested.wait(self._poll_interval_seconds)
+
+    def _recover_until_ready(self) -> bool:
+        while not self._stop_requested.is_set():
+            try:
+                self._publisher.recover_in_flight()
+            except Exception as error:
+                self._failure = error
+                logger.exception(
+                    "Jetson evidence IN_FLIGHT 복구 전에 "
+                    "publication을 재개하지 않습니다."
+                )
+                self._stop_requested.wait(self._poll_interval_seconds)
+                continue
+            return True
+        return False
 
 
 def _error_text(error: Exception) -> str:

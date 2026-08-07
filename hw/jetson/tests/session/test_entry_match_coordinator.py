@@ -7,9 +7,11 @@ from uuid import UUID
 
 import pytest
 
+from src.diagnostics import DiagnosticEvent, DiagnosticEventType
 from src.domain.models import ObservationReason, ObservationState, ObservationStatus
 from src.parking.models import (
     EntryExitRole,
+    ExitTraversalDefinition,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -33,6 +35,14 @@ OBSERVED = ObservationStatus(
     state=ObservationState.OBSERVED,
     last_reliable_observed_at=NOW,
 )
+
+
+class RecordingDiagnosticsSink:
+    def __init__(self) -> None:
+        self.events: list[DiagnosticEvent] = []
+
+    def emit(self, event: DiagnosticEvent) -> None:
+        self.events.append(event)
 
 
 def _attempt_id(value: int) -> EntryAttemptId:
@@ -68,12 +78,20 @@ def _zones() -> ZoneRegistry:
         zone_definition_version=ZoneDefinitionVersion(1),
         calibration_reference="camera-1:v1",
         entry_exit_role=EntryExitRole.EXIT,
+        exit_traversal=ExitTraversalDefinition(
+            line=((0.6, 0.45), (0.7, 0.45)),
+            outward_point=(0.65, 0.4),
+            hysteresis=0.0,
+        ),
     )
     return ZoneRegistry([entry_zone, exit_zone])
 
 
-def _coordinator() -> EntryMatchCoordinator:
-    return EntryMatchCoordinator(zones=_zones())
+def _coordinator(diagnostics_sink=None) -> EntryMatchCoordinator:
+    return EntryMatchCoordinator(
+        zones=_zones(),
+        diagnostics_sink=diagnostics_sink,
+    )
 
 
 def _open(
@@ -127,7 +145,8 @@ def test_review_resolution_cannot_open_a_new_attempt_without_review_pending() ->
 
 
 def test_matches_earliest_eligible_attempt_in_entry_zone() -> None:
-    coordinator = _coordinator()
+    diagnostics = RecordingDiagnosticsSink()
+    coordinator = _coordinator(diagnostics)
     later = _open(coordinator, identity=2, created_at=NOW)
     earlier = _open(coordinator, identity=1, created_at=NOW - timedelta(seconds=3))
 
@@ -143,6 +162,14 @@ def test_matches_earliest_eligible_attempt_in_entry_zone() -> None:
     assert matched.matched_physical_vehicle_id == _vehicle_id(100)
     assert matched.match_terminated_at == NOW
     assert matched.record_version == earlier.record_version + 1
+    event = diagnostics.events[0]
+    assert event.event_type is DiagnosticEventType.ENTRY_MATCH_EVALUATED
+    assert event.attributes["result"] == "MATCHED"
+    assert event.attributes["candidateCount"] == 1
+    assert event.attributes["candidateZoneId"] == 9
+    assert event.attributes["selectedEntryAttemptId"] == str(
+        earlier.entry_attempt_id
+    )
 
 
 def test_review_and_deny_are_still_physically_matchable() -> None:

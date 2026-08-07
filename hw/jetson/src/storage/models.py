@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
-from src.domain.models import DeliveryState
+from src.domain.models import (
+    DeliveryState,
+    require_aware,
+    require_non_negative,
+    require_positive,
+)
+from src.parking.models import ZoneDefinitionVersion, ZoneId, ZoneVisitId
+from src.tracking.models import PhysicalVehicleId
 
 
 class PendingHandoffState(str, Enum):
@@ -21,6 +29,99 @@ class PublicationApplicationStatus(str, Enum):
 
     APPLIED = "APPLIED"
     ALREADY_APPLIED = "ALREADY_APPLIED"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExitTraversalCheckpointRecord:
+    """Workflow checkpoint for one active exit traversal per vehicle.
+
+    This row is neither a public aggregate nor a publication source. It keeps
+    an observed outward traversal durable after its ZoneVisit ends and across
+    process restarts, until the physical-presence workflow consumes it.
+    """
+
+    physical_vehicle_id: PhysicalVehicleId
+    exit_zone_id: ZoneId
+    exit_zone_visit_id: ZoneVisitId
+    zone_definition_version: ZoneDefinitionVersion
+    outward_observed_at: datetime
+    reentry_candidate_at: datetime | None
+    reentry_trusted_seconds: float
+    reentry_confirmation_seconds: float
+    last_trusted_sample_at: datetime | None
+    record_version: int
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        require_positive(self.exit_zone_id, "exit_zone_id")
+        require_positive(
+            self.zone_definition_version,
+            "zone_definition_version",
+        )
+        require_non_negative(
+            self.reentry_trusted_seconds,
+            "reentry_trusted_seconds",
+        )
+        require_positive(
+            self.reentry_confirmation_seconds,
+            "reentry_confirmation_seconds",
+        )
+        if round(self.reentry_confirmation_seconds * 1_000_000) <= 0:
+            raise ValueError(
+                "reentry_confirmation_seconds must be at least one microsecond"
+            )
+        require_positive(self.record_version, "record_version")
+        for name in (
+            "outward_observed_at",
+            "reentry_candidate_at",
+            "last_trusted_sample_at",
+            "updated_at",
+        ):
+            require_aware(getattr(self, name), name)
+
+        trusted_duration_us = round(self.reentry_trusted_seconds * 1_000_000)
+        if self.reentry_candidate_at is None and trusted_duration_us != 0:
+            raise ValueError(
+                "reentry trusted duration requires reentry_candidate_at"
+            )
+        if (
+            self.reentry_candidate_at is None
+            and self.last_trusted_sample_at is not None
+        ):
+            raise ValueError(
+                "last_trusted_sample_at requires reentry_candidate_at"
+            )
+        if (
+            self.reentry_candidate_at is not None
+            and self.last_trusted_sample_at is None
+        ):
+            raise ValueError(
+                "reentry candidate requires last_trusted_sample_at"
+            )
+
+        for name in (
+            "reentry_candidate_at",
+            "last_trusted_sample_at",
+            "updated_at",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < self.outward_observed_at:
+                raise ValueError(
+                    f"{name} cannot precede outward_observed_at"
+                )
+        if (
+            self.reentry_candidate_at is not None
+            and self.last_trusted_sample_at is not None
+            and self.last_trusted_sample_at < self.reentry_candidate_at
+        ):
+            raise ValueError(
+                "last_trusted_sample_at cannot precede reentry_candidate_at"
+            )
+        if (
+            self.last_trusted_sample_at is not None
+            and self.updated_at < self.last_trusted_sample_at
+        ):
+            raise ValueError("updated_at cannot precede last_trusted_sample_at")
 
 
 @dataclass(frozen=True, kw_only=True)

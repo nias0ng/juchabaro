@@ -13,6 +13,10 @@ import math
 from typing import Any
 
 from src.camera.models import CapturedFrame
+from src.tracking.vehicle_model_contract import (
+    VEHICLE_MODEL_CLASS_NAMES,
+    VEHICLE_MODEL_TASK,
+)
 from src.tracking.models import (
     BoundingBox,
     DetectionObservation,
@@ -95,37 +99,66 @@ class UltralyticsVehicleTracker:
             ) from exc
         self._library_version = getattr(ultralytics, "__version__", "unknown")
         try:
-            self._model = YOLO(self._model_path)
+            loaded_model = YOLO(self._model_path)
+            actual_task = getattr(loaded_model, "task", None)
+            if actual_task != VEHICLE_MODEL_TASK:
+                raise TrackingError(
+                    "YOLO model task가 vehicle detector 계약과 다릅니다: "
+                    f"expected={VEHICLE_MODEL_TASK!r}, actual={actual_task!r}"
+                )
+            actual_class_names = getattr(loaded_model, "names", None)
+            if actual_class_names != VEHICLE_MODEL_CLASS_NAMES:
+                raise TrackingError(
+                    "YOLO model class map이 vehicle 단일 클래스 계약과 다릅니다: "
+                    f"expected={VEHICLE_MODEL_CLASS_NAMES!r}, "
+                    f"actual={actual_class_names!r}"
+                )
             # Ultralytics track callback이 Results를 active track subset으로
             # 교체하기 전에 detection coverage를 보존한다. 이 callback은
             # 첫 model.track() call이 tracker callback을 등록하기 전에
             # 추가되므로 실행 순서가 앞선다.
-            self._model.add_callback(
+            loaded_model.add_callback(
                 "on_predict_postprocess_end",
                 self._capture_pretrack_detection_count,
             )
+            self._model = loaded_model
+        except TrackingError:
+            raise
         except Exception as exc:
             raise TrackingError(f"YOLO 모델 로드에 실패했습니다(model={self._model_path}): {exc}") from exc
+
+    def warm_up(self, frame: CapturedFrame) -> None:
+        """실제 tracking 상태를 만들지 않고 predictor·CUDA를 초기화한다.
+
+        ``predict()``를 사용하므로 ByteTrack callback과 segment는 생성되지 않는다.
+        입력은 운영 경로와 같은 크기·색상 순서를 사용하되 결과는 폐기한다.
+        """
+
+        if self._model is None:
+            raise TrackingError("트래커가 초기화되지 않았습니다.")
+        self._frame_dimensions(frame)
+        cv2 = _import_cv2()
+        try:
+            source_bgr = cv2.cvtColor(frame.image, cv2.COLOR_RGB2BGR)
+            self._model.predict(
+                source=source_bgr,
+                conf=self._confidence,
+                verbose=False,
+            )
+        except Exception as exc:
+            raise TrackingError(f"YOLO warm-up에 실패했습니다: {exc}") from exc
+        finally:
+            # 공용 postprocess callback이 predict warm-up에서도 호출될 수 있다.
+            # 첫 실제 track 결과가 warm-up 진단값을 재사용하지 않게 비운다.
+            self._pretrack_detection_count = None
+            self._pretrack_detections = None
 
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         """YOLO/ByteTrack 관측·detection coverage·segment 종료를 반환한다."""
 
         if self._model is None:
             raise TrackingError("트래커가 초기화되지 않았습니다.")
-        shape = getattr(frame.image, "shape", None)
-        if shape is None or len(shape) < 2:
-            raise TrackingError("프레임 이미지 크기를 확인할 수 없습니다.")
-        image_height, image_width = int(shape[0]), int(shape[1])
-        if image_height <= 0 or image_width <= 0:
-            # 카메라가 순간적으로 빈 프레임을 반환해도 나눗셈까지
-            # 진행하지 않는다.
-            raise TrackingError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
-        if image_width != frame.width or image_height != frame.height:
-            raise TrackingError(
-                "frame metadata does not match image shape: "
-                f"metadata={frame.width}x{frame.height}, "
-                f"image={image_width}x{image_height}"
-            )
+        image_height, image_width = self._frame_dimensions(frame)
         cv2 = _import_cv2()
         # CapturedFrame.image는 RGB인데 Ultralytics는 ndarray source를 BGR로
         # 해석한다. 학습 이미지는 cv2.imwrite로 BGR 저장했으므로
@@ -139,6 +172,7 @@ class UltralyticsVehicleTracker:
                 persist=True,
                 tracker=self._tracker_config,
                 conf=self._confidence,
+                classes=[0],
                 verbose=False,
             )
             observations = self._to_observations(
@@ -177,6 +211,26 @@ class UltralyticsVehicleTracker:
             raise TrackingError(
                 f"YOLO/ByteTrack frame 처리에 실패했습니다: {exc}"
             ) from exc
+
+    @staticmethod
+    def _frame_dimensions(frame: CapturedFrame) -> tuple[int, int]:
+        """프레임 배열과 metadata가 일치하는지 확인하고 ``(H, W)``를 반환한다."""
+
+        shape = getattr(frame.image, "shape", None)
+        if shape is None or len(shape) < 2:
+            raise TrackingError("프레임 이미지 크기를 확인할 수 없습니다.")
+        image_height, image_width = int(shape[0]), int(shape[1])
+        if image_height <= 0 or image_width <= 0:
+            # 카메라가 순간적으로 빈 프레임을 반환해도 나눗셈까지
+            # 진행하지 않는다.
+            raise TrackingError(f"프레임 크기가 올바르지 않습니다: shape={shape}")
+        if image_width != frame.width or image_height != frame.height:
+            raise TrackingError(
+                "frame metadata does not match image shape: "
+                f"metadata={frame.width}x{frame.height}, "
+                f"image={image_width}x{image_height}"
+            )
+        return image_height, image_width
 
     def _to_observations(
         self,

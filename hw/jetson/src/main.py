@@ -67,6 +67,7 @@ from src.config.monitoring_policy import (
     build_monitoring_policy as _build_monitoring_policy,
 )
 from src.config.settings import Settings, get_settings
+from src.diagnostics import DiagnosticsSink, LoggingDiagnosticsAdapter
 from src.evidence.capture import EvidenceCaptureCoordinator
 from src.live.overlay_publisher import OverlayPublisher
 from src.parking.egress_aisle_registry import EgressAisleRegistry
@@ -74,6 +75,7 @@ from src.parking.zone_registry import ZoneRegistry
 from src.session.context_binding_coordinator import ContextBindingCoordinator
 from src.session.entry_match_coordinator import EntryMatchCoordinator
 from src.storage.database import connect_database, open_database
+from src.storage.publication_runtime_lock import PublicationRuntimeLock
 from src.tracking.adapters.side_masking_detector import (
     SideMaskingDetector,
     compute_mask_ratios_from_zones,
@@ -81,6 +83,7 @@ from src.tracking.adapters.side_masking_detector import (
 from src.tracking.adapters.ultralytics_bytetrack import (
     UltralyticsVehicleTracker,
 )
+from src.tracking.model_manifest import validate_vehicle_model_assets
 
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,7 @@ class RuntimeContext:
     connection_factory: DatabaseConnectionFactory
     publication_preparer: BackendPublicationPreparer
     evidence_capture_coordinator: EvidenceCaptureCoordinator
+    diagnostics_sink: DiagnosticsSink | None = None
 
 
 MonitoringPipelineFactory = Callable[[RuntimeContext], MonitoringPipeline]
@@ -159,11 +163,12 @@ def _validate_monitoring_assets(
             f"calibrationReference={zones.calibration_reference}"
         )
 
-    if not settings.vehicle_model_path.is_file():
-        raise ValueError(
-            "vehicle_model_path가 실제 vehicle model 파일이 아닙니다: "
-            f"{settings.vehicle_model_path}"
-        )
+    # 파일명이 같은 stock COCO model을 오배치해도 장치 객체를
+    # 만들기 전에 fail-closed로 중단한다.
+    validate_vehicle_model_assets(
+        model_path=settings.vehicle_model_path,
+        manifest_path=settings.vehicle_model_manifest_path,
+    )
 
 
 def build_runtime_monitoring_pipeline(
@@ -179,11 +184,14 @@ def build_runtime_monitoring_pipeline(
         camera_index=settings.camera_index,
         width=settings.camera_width,
         height=settings.camera_height,
+        fourcc=settings.camera_fourcc,
+        fps=settings.camera_fps,
     )
     frame_source = RemapFrameSource(
         inner=webcam,
         calibration_path=str(settings.calibration_path),
         balance=settings.remap_balance,
+        backend=settings.remap_backend,
     )
 
     tracker = UltralyticsVehicleTracker(
@@ -208,6 +216,10 @@ def build_runtime_monitoring_pipeline(
         publication_preparer=context.publication_preparer,
         connection_factory=context.connection_factory,
         evidence_capture_sink=context.evidence_capture_coordinator,
+        diagnostics_sink=(
+            context.diagnostics_sink or LoggingDiagnosticsAdapter()
+        ),
+        startup_warm_up=True,
     )
     return build_monitoring_pipeline(
         zones=context.zones,
@@ -246,7 +258,7 @@ def create_app(
         return connect_database(resolved_settings.database_path)
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI):
+    async def runtime_lifespan(application: FastAPI):
         """Migration 후 application을 조립하고 종료 시 worker를 회수한다."""
 
         _prepare_database_path(resolved_settings.database_path)
@@ -279,6 +291,7 @@ def create_app(
         application.state.database_connection_factory = connection_factory
         publication_preparer = BackendPublicationPreparer()
         application.state.publication_preparer = publication_preparer
+        diagnostics_sink = LoggingDiagnosticsAdapter()
         evidence_capture_coordinator = EvidenceCaptureCoordinator(
             connection_factory=connection_factory,
             zones=zones,
@@ -290,6 +303,7 @@ def create_app(
             capture_stop_free_ratio=(
                 resolved_settings.evidence_capture_stop_free_ratio
             ),
+            diagnostics_sink=diagnostics_sink,
         )
         application.state.evidence_capture_coordinator = (
             evidence_capture_coordinator
@@ -316,6 +330,7 @@ def create_app(
                     evidence_capture_coordinator=(
                         evidence_capture_coordinator
                     ),
+                    diagnostics_sink=diagnostics_sink,
                 )
             )
             if (
@@ -358,6 +373,7 @@ def create_app(
                     capture_stop_free_ratio=(
                         resolved_settings.evidence_capture_stop_free_ratio
                     ),
+                    diagnostics_sink=diagnostics_sink,
                 )
             )
             outbox_publisher_worker = OutboxPublisherWorker(
@@ -379,19 +395,25 @@ def create_app(
         )
         application.state.outbox_publisher_worker = outbox_publisher_worker
         try:
-            # MonitoringPipeline.open()이 durable recovery를 끝낸 뒤 기존·신규
-            # publication을 보내기 시작한다.
+            # Local recovery는 external publication·신규 frame보다 먼저
+            # 완료한다. 그 뒤 parent Incident outbox, child Evidence
+            # publisher, frame producer 순서로 허용한다.
             if evidence_publication_worker is not None:
-                evidence_publication_worker.start()
+                evidence_publication_worker.prepare()
             else:
                 # Backend key가 없어 publisher를 끈 현장도 interrupted local
                 # JPEG를 다음 capture 전 일관된 FAILED/READY 상태로 만든다.
                 evidence_capture_coordinator.recover()
             if monitoring_worker is not None:
+                monitoring_worker.prepare()
+            if outbox_publisher_worker is not None:
+                outbox_publisher_worker.start()
+            if evidence_publication_worker is not None:
+                evidence_publication_worker.start()
+            if monitoring_worker is not None:
                 monitoring_worker.start()
             move_verification_worker.start()
             if outbox_publisher_worker is not None:
-                outbox_publisher_worker.start()
                 logger.info("Backend publication workers가 시작됐습니다.")
             yield
         finally:
@@ -406,6 +428,19 @@ def create_app(
                 # 덮어쓰지 않는다.
                 suppress_errors=sys.exc_info()[1] is not None,
             )
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        publication_runtime_lock = PublicationRuntimeLock(
+            _publication_runtime_lock_path(resolved_settings)
+        )
+        application.state.publication_runtime_lock = publication_runtime_lock
+        publication_runtime_lock.acquire()
+        try:
+            async with runtime_lifespan(application):
+                yield
+        finally:
+            publication_runtime_lock.release()
 
     application = FastAPI(
         title=resolved_settings.app_name,
@@ -436,6 +471,20 @@ def _prepare_database_path(database_path: Path) -> None:
 
     if str(database_path) != ":memory:":
         database_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _publication_runtime_lock_path(settings: Settings) -> Path:
+    """DB file 단위의 process lock 경로를 결정한다."""
+
+    if str(settings.database_path) == ":memory:":
+        return (
+            settings.evidence_spool_path.parent
+            / f".{settings.evidence_spool_path.name}.publication.lock"
+        )
+    database_path = settings.database_path.resolve(strict=False)
+    return database_path.with_name(
+        f".{database_path.name}.publication.lock"
+    )
 
 
 configure_logging()

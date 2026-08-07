@@ -1,4 +1,5 @@
-import { Text, View } from 'react-native';
+import { router } from 'expo-router';
+import { Pressable, Text, View } from 'react-native';
 
 import { Stack } from '@/components/ui';
 import { useCountdown } from '@/features/move-request/hooks/use-countdown';
@@ -53,39 +54,55 @@ export function VehicleStatusCard({
   const isViolation = session.status === 'VIOLATION';
   const isEvTimeWarning = session.isEvCharging && countdown.remainingMs <= EV_WARNING_THRESHOLD_MS;
 
+  const additionalCountLink =
+    additionalCount > 0 ? (
+      <Pressable
+        accessibilityRole="button"
+        style={styles.additionalCountRow}
+        onPress={() => router.push('/resident/vehicles')}
+      >
+        <Text style={styles.additionalCountText}>외 {additionalCount}대</Text>
+        <Text style={styles.additionalCountChevron}>›</Text>
+      </Pressable>
+    ) : null;
+
   return (
     <View style={styles.card}>
-      <View style={styles.headerGroup}>
-        <View style={styles.statusRow}>
-          <View style={[styles.statusDot, isViolation && styles.statusDotViolation]} />
-          <Text style={[styles.statusLabel, isViolation && styles.statusLabelViolation]}>
-            {session.statusLabel}
-          </Text>
-          <Text style={styles.statusTime}>{session.statusTime}</Text>
+      <View style={styles.topGroup}>
+        <View style={styles.headerGroup}>
+          <View style={styles.statusRow}>
+            <View style={[styles.statusDot, isViolation && styles.statusDotViolation]} />
+            <Text style={[styles.statusLabel, isViolation && styles.statusLabelViolation]}>
+              {session.statusLabel}
+            </Text>
+            <Text style={styles.statusTime}>{session.statusTime}</Text>
+          </View>
+
+          <View style={styles.plateRow}>
+            <Text style={styles.plateText}>{session.plateNumber}</Text>
+            {session.model ? <Text style={styles.modelText}>{session.model}</Text> : null}
+          </View>
         </View>
 
-        <View style={styles.plateRow}>
-          <Text style={styles.plateText}>{session.plateNumber}</Text>
-          {session.model ? <Text style={styles.modelText}>{session.model}</Text> : null}
-        </View>
+        <Stack gap={Spacing.xxs}>
+          <Text style={styles.fieldLabel}>위치</Text>
+          <View style={styles.valueRow}>
+            <Text style={styles.fieldValue}>{session.location}</Text>
+            {!session.isEvCharging ? additionalCountLink : null}
+          </View>
+        </Stack>
       </View>
 
-      <Stack gap={Spacing.xxs}>
-        <Text style={styles.fieldLabel}>위치</Text>
-        <Text style={styles.fieldValue}>{session.location}</Text>
-      </Stack>
-
       {session.isEvCharging ? (
-        <View style={[styles.evTimeBox, isEvTimeWarning && styles.evTimeBoxWarning]}>
-          <Text style={styles.evTimeLabel}>충전구역 이용 종료까지</Text>
-          <Text style={[styles.evTimeValue, isEvTimeWarning && styles.evTimeValueWarning]}>
-            {formatEvRemainingTime(countdown.remainingMs)}
-          </Text>
-        </View>
-      ) : null}
-
-      {additionalCount > 0 ? (
-        <Text style={styles.additionalCountBadge}>+{additionalCount}대 더 주차 중</Text>
+        <Stack gap={Spacing.xxs}>
+          <Text style={styles.fieldLabel}>충전 종료까지</Text>
+          <View style={styles.valueRow}>
+            <Text style={[styles.fieldValue, isEvTimeWarning && styles.fieldValueWarning]}>
+              {formatEvRemainingTime(countdown.remainingMs)}
+            </Text>
+            {additionalCountLink}
+          </View>
+        </Stack>
       ) : null}
     </View>
   );

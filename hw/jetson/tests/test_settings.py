@@ -165,3 +165,28 @@ def test_live_stream_rejects_non_positive_target_fps(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_remap_backend_defaults_to_opencv() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.remap_backend == "opencv"
+
+
+def test_remap_backend_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REMAP_BACKEND", " VPI ")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.remap_backend == "vpi"
+
+
+def test_remap_backend_rejects_unknown_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REMAP_BACKEND", "cuda")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

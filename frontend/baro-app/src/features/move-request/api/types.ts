@@ -55,10 +55,12 @@ export type MoveRequestDetail = {
   event: {
     eventId: number;
     eventType: MoveEventType;
-    reason: string | null;
     zoneNumber: string | null; // 구역 외 주차면이면 null
     images: MoveRequestImage[];
   };
+  // 이동 요청자가 남긴 사유. 예전엔 event.reason이었는데, 목록 API(MoveRequestSummary.message)와
+  // 필드를 통일하면서 요청(request) 쪽 최상위 필드로 옮겨왔다.
+  message: string | null;
   responses: MoveRequestResponseItem[];
   history: MoveRequestHistoryItem[]; // notifications를 requestId 기준, sentAt 순 정렬
 };

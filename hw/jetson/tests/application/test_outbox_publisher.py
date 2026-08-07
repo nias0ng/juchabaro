@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from threading import Event
 
-from src.application.outbox_publisher import OutboxPublisher
+import pytest
+
+from src.application.outbox_publisher import (
+    OutboxPublisher,
+    OutboxPublisherWorker,
+)
 from src.communication.backend_client import (
     PublicationConfirmation,
     RetryableBackendPublicationError,
@@ -36,6 +42,60 @@ class _Client:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _RecoveringWorkerPublisher:
+    def __init__(self) -> None:
+        self.recover_count = 0
+        self.publish_count = 0
+        self.closed_count = 0
+        self.resumed = Event()
+
+    def recover_in_flight(self) -> int:
+        self.recover_count += 1
+        if self.recover_count == 2:
+            raise RuntimeError("recovery storage busy")
+        return 1
+
+    def publish_once(self) -> bool:
+        self.publish_count += 1
+        if self.publish_count == 1:
+            raise RuntimeError("local ACK persistence failed")
+        self.resumed.set()
+        return False
+
+    def close(self) -> None:
+        self.closed_count += 1
+
+
+def test_worker_recovers_in_flight_and_continues_after_item_failure() -> None:
+    publisher = _RecoveringWorkerPublisher()
+    worker = OutboxPublisherWorker(
+        publisher,
+        poll_interval_seconds=0.01,
+    )
+
+    worker.start()
+    assert publisher.resumed.wait(timeout=1.0)
+    assert worker.is_running is True
+    worker.stop()
+
+    assert publisher.recover_count == 3
+    assert publisher.closed_count == 1
+    assert worker.failure is None
+
+
+def test_worker_cannot_start_after_it_has_closed_the_publisher() -> None:
+    publisher = _RecoveringWorkerPublisher()
+    worker = OutboxPublisherWorker(publisher)
+
+    worker.stop()
+    with pytest.raises(RuntimeError, match="already closed"):
+        worker.start()
+
+    assert publisher.recover_count == 0
+    assert publisher.publish_count == 0
+    assert publisher.closed_count == 1
 
 
 def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(
@@ -83,6 +143,54 @@ def test_publish_once_marks_applied_row_delivered_and_keeps_receipt(
         assert receipt["expires_at_us"] - receipt["confirmed_at_us"] == (
             14 * 24 * 60 * 60 * 1_000_000
         )
+    finally:
+        connection.close()
+
+
+def test_ack_persistence_failure_retries_exact_outbox_publication(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "jetson.db"
+    prepared = _seed(database)
+    client = _Client(
+        PublicationConfirmation(
+            application_status=PublicationApplicationStatus.APPLIED,
+            payload_hash=hashlib.sha256(prepared.payload).hexdigest(),
+            backend_correlation={"eventId": 301},
+        )
+    )
+    publisher = _publisher(database, client)
+    real_mark_delivered = publisher._mark_delivered
+    failures = [RuntimeError("local ACK commit failed")]
+
+    def fail_once(publication, confirmation) -> None:
+        if failures:
+            raise failures.pop()
+        real_mark_delivered(publication, confirmation)
+
+    monkeypatch.setattr(publisher, "_mark_delivered", fail_once)
+
+    with pytest.raises(RuntimeError, match="local ACK commit failed"):
+        publisher.publish_once()
+    assert publisher.recover_in_flight() == 1
+    assert publisher.publish_once() is True
+
+    assert len(client.published) == 2
+    assert client.published[0].payload == client.published[1].payload
+    assert (
+        client.published[0].idempotency_key
+        == client.published[1].idempotency_key
+        == prepared.idempotency_key
+    )
+    connection = connect_database(database)
+    try:
+        delivered = OutboxRepository(connection).get_by_delivery_id(
+            prepared.delivery_id
+        )
+        assert delivered is not None
+        assert delivered.delivery_state is DeliveryState.DELIVERED
+        assert delivered.attempt_count == 2
     finally:
         connection.close()
 

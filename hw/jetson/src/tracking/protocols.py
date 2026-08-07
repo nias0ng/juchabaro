@@ -44,6 +44,9 @@ class Detector(Protocol):
     def open(self) -> None:
         """탐지·트래킹 모델을 애플리케이션 시작 시 한 번 초기화한다."""
 
+    def warm_up(self, frame: CapturedFrame) -> None:
+        """도메인·tracker 상태를 만들지 않고 첫 추론 초기화를 완료한다."""
+
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         """프레임 관측·detection coverage·확정 segment 종료를 반환한다."""
 

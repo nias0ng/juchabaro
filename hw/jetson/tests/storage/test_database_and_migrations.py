@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
+from src.domain.models import DeliveryState
+from src.evidence.models import EvidenceId, EvidencePublicationKind
 from src.storage.database import connect_database, open_database, quick_check
+from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.migration_runner import (
     MigrationApplyError,
     MigrationChecksumMismatch,
@@ -33,7 +37,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1, 2, 3, 4, 5)
+        assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
@@ -44,6 +48,9 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
             (3, "0003_parking_timer_policy_snapshots"),
             (4, "0004_inbound_idempotency_keys"),
             (5, "0005_evidence_delivery_state"),
+            (6, "0006_exit_traversal_checkpoint"),
+            (7, "0007_evidence_parent_ack_ordering"),
+            (8, "0008_evidence_publication_kind"),
         ]
     finally:
         connection.close()
@@ -263,6 +270,287 @@ def test_evidence_delivery_migration_preserves_existing_artifacts(
             """
         ).fetchone()
         assert tuple(row) == (None, 0, None, None)
+    finally:
+        connection.close()
+
+
+def test_evidence_parent_ack_migration_repairs_only_legacy_ordering_404(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    for version in (
+        "0001_initial.sql",
+        "0002_tracking_session_lifecycle.sql",
+        "0003_parking_timer_policy_snapshots.sql",
+        "0004_inbound_idempotency_keys.sql",
+        "0005_evidence_delivery_state.sql",
+        "0006_exit_traversal_checkpoint.sql",
+    ):
+        (migrations / version).write_text(
+            (source / version).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    ordering_error = (
+        "TerminalBackendPublicationError: Backend returned HTTP 404"
+    )
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == (
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        connection.executemany(
+            """
+            INSERT INTO evidence_artifacts(
+                evidence_id, incident_id, publication_revision,
+                captured_at_us, image_type, workflow_state,
+                backend_acked_at_us, delivery_state,
+                delivery_attempt_count, next_delivery_attempt_at_us,
+                last_delivery_error, record_version,
+                created_at_us, updated_at_us
+            ) VALUES (?, ?, ?, 10, 'image/jpeg', ?, ?, 'FAILED_TERMINAL',
+                      3, NULL, ?, 5, 10, ?)
+            """,
+            (
+                (
+                    "legacy-ordering-404",
+                    "incident-ordering",
+                    1,
+                    "READY",
+                    None,
+                    ordering_error,
+                    100,
+                ),
+                (
+                    "legacy-unavailable-404",
+                    "incident-unavailable",
+                    1,
+                    "FAILED",
+                    None,
+                    ordering_error,
+                    101,
+                ),
+                (
+                    "legacy-evicted-404",
+                    "incident-evicted",
+                    1,
+                    "EVICTED",
+                    None,
+                    ordering_error,
+                    102,
+                ),
+                (
+                    "terminal-contract-error",
+                    "incident-contract",
+                    1,
+                    "READY",
+                    None,
+                    "TerminalBackendPublicationError: Backend returned HTTP 422",
+                    110,
+                ),
+                (
+                    "local-only-ordering-404",
+                    "incident-local-only",
+                    None,
+                    "READY",
+                    None,
+                    ordering_error,
+                    120,
+                ),
+                (
+                    "acked-ordering-404",
+                    "incident-acked",
+                    1,
+                    "READY",
+                    125,
+                    ordering_error,
+                    130,
+                ),
+                (
+                    "reserved-ordering-404",
+                    "incident-reserved",
+                    1,
+                    "RESERVED",
+                    None,
+                    ordering_error,
+                    140,
+                ),
+            ),
+        )
+        connection.commit()
+
+        migration = "0007_evidence_parent_ack_ordering.sql"
+        (migrations / migration).write_text(
+            (source / migration).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        assert MigrationRunner(connection, migrations).apply() == (7,)
+
+        rows = {
+            str(row["evidence_id"]): row
+            for row in connection.execute(
+                """
+                SELECT evidence_id, workflow_state, delivery_state,
+                       delivery_attempt_count, next_delivery_attempt_at_us,
+                       last_delivery_error, record_version, updated_at_us
+                FROM evidence_artifacts
+                """
+            )
+        }
+        for repaired_id, workflow_state, updated_at_us in (
+            ("legacy-ordering-404", "READY", 100),
+            ("legacy-unavailable-404", "FAILED", 101),
+            ("legacy-evicted-404", "EVICTED", 102),
+        ):
+            repaired = rows[repaired_id]
+            assert tuple(repaired) == (
+                repaired_id,
+                workflow_state,
+                "RETRY_WAIT",
+                3,
+                updated_at_us,
+                ordering_error,
+                6,
+                updated_at_us,
+            )
+        for untouched_id in (
+            "terminal-contract-error",
+            "local-only-ordering-404",
+            "acked-ordering-404",
+            "reserved-ordering-404",
+        ):
+            untouched = rows[untouched_id]
+            assert untouched["delivery_state"] == "FAILED_TERMINAL"
+            assert untouched["next_delivery_attempt_at_us"] is None
+            assert untouched["record_version"] == 5
+    finally:
+        connection.close()
+
+
+def test_evidence_publication_kind_migration_backfills_active_delivery_mode(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    for version in (
+        "0001_initial.sql",
+        "0002_tracking_session_lifecycle.sql",
+        "0003_parking_timer_policy_snapshots.sql",
+        "0004_inbound_idempotency_keys.sql",
+        "0005_evidence_delivery_state.sql",
+        "0006_exit_traversal_checkpoint.sql",
+        "0007_evidence_parent_ack_ordering.sql",
+    ):
+        (migrations / version).write_text(
+            (source / version).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == tuple(
+            range(1, 8)
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        ambiguous_id = "10000000-0000-4000-8000-000000000001"
+        connection.executemany(
+            """
+            INSERT INTO evidence_artifacts(
+                evidence_id, incident_id, publication_revision,
+                captured_at_us, image_type, workflow_state,
+                backend_acked_at_us, delivery_state,
+                delivery_attempt_count, record_version,
+                created_at_us, updated_at_us
+            ) VALUES (
+                ?, '20000000-0000-4000-8000-000000000001',
+                1, 1, 'image/jpeg', ?, ?, ?, ?, 1, 1, 1
+            )
+            """,
+            (
+                ("ready-upload", "READY", None, "RETRY_WAIT", 1),
+                ("uploading", "UPLOADING", None, "IN_FLIGHT", 1),
+                (
+                    "eviction-pending-upload",
+                    "EVICTION_PENDING",
+                    None,
+                    "RETRY_WAIT",
+                    2,
+                ),
+                (ambiguous_id, "FAILED", None, "RETRY_WAIT", 1),
+                ("evicted-unavailable", "EVICTED", None, "PENDING", 1),
+                ("never-attempted", "READY", None, None, 0),
+                ("already-acked", "EVICTED", 2, "DELIVERED", 1),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE evidence_artifacts
+            SET last_error = 'legacy binary unavailable',
+                retention_disposition = 'LOST_OR_CORRUPTED',
+                next_delivery_attempt_at_us = 2,
+                last_delivery_error = 'offline'
+            WHERE evidence_id = ?
+            """,
+            (ambiguous_id,),
+        )
+        connection.commit()
+
+        migration = "0008_evidence_publication_kind.sql"
+        (migrations / migration).write_text(
+            (source / migration).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        assert MigrationRunner(connection, migrations).apply() == (8,)
+
+        modes = {
+            str(row["evidence_id"]): row["publication_kind"]
+            for row in connection.execute(
+                "SELECT evidence_id, publication_kind FROM evidence_artifacts"
+            )
+        }
+        assert modes == {
+            "ready-upload": "UPLOAD",
+            "uploading": "UPLOAD",
+            "eviction-pending-upload": "UPLOAD",
+            ambiguous_id: "AMBIGUOUS",
+            "evicted-unavailable": "AMBIGUOUS",
+            "never-attempted": None,
+            "already-acked": None,
+        }
+        ambiguous = EvidenceArtifactRepository(connection).get(
+            EvidenceId(UUID(ambiguous_id))
+        )
+        assert ambiguous is not None
+        assert ambiguous.publication_kind is EvidencePublicationKind.AMBIGUOUS
+        assert ambiguous.delivery_state is DeliveryState.FAILED_TERMINAL
+        assert ambiguous.next_delivery_attempt_at is None
+        assert ambiguous.last_delivery_error == (
+            "LEGACY_PUBLICATION_OUTCOME_UNKNOWN"
+        )
+        assert EvidenceArtifactRepository(
+            connection
+        ).list_unavailable_candidates() == ()
+        with pytest.raises(sqlite3.IntegrityError, match="kind is immutable"):
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    UPDATE evidence_artifacts
+                    SET publication_kind = 'UNAVAILABLE'
+                    WHERE evidence_id = 'ready-upload'
+                    """
+                )
+            finally:
+                connection.rollback()
     finally:
         connection.close()
 

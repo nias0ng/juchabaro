@@ -39,12 +39,14 @@ const REQUEST_STATUS_LABEL: Record<MoveRequestStatus, string> = {
 };
 
 export type RequestDetailDisplay = {
+  requestId: number;
   requestSourceLabel: string;
   requestSourceVariant: 'manual' | 'ai';
   reasonQuote: string;
   violationTypeLabel: string;
   plateNumber: string;
   location: string;
+  requestedAtLabel: string;
   photos: { imageId: number; imageUrl: string }[];
 };
 
@@ -53,12 +55,14 @@ export function toRequestDetailDisplay(detail: MoveRequestDetail): RequestDetail
   const requestSource = REQUEST_TYPE_DISPLAY[detail.requestType];
 
   return {
+    requestId: detail.requestId,
     requestSourceLabel: requestSource.label,
     requestSourceVariant: requestSource.variant,
-    reasonQuote: detail.event.reason ? `"${detail.event.reason}"` : '',
+    reasonQuote: detail.message ? `"${detail.message}"` : '',
     violationTypeLabel: EVENT_TYPE_LABEL[detail.event.eventType],
     plateNumber: detail.targetVehicle.plateNumber,
     location: toDisplayZoneNumber(detail.event.zoneNumber) ?? DEFAULT_LOCATION_LABEL,
+    requestedAtLabel: formatDateTimeLabel(detail.requestedAt),
     photos: detail.event.images
       .filter((image) => image.imageType === 'PARKING_STATE' || image.imageType === 'REPORT')
       .map((image) => ({ imageId: image.imageId, imageUrl: image.imageUrl })),

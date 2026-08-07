@@ -153,6 +153,17 @@ def test_prepare_incident_maps_local_rule_code_for_api_7(
     assert payload["terminationReason"] is None
 
 
+def test_prepare_double_parking_open_requires_victim_parking_zone() -> None:
+    transition = _open_incident("DOUBLE_PARKING")
+    without_zone = replace(
+        transition,
+        incident=replace(transition.incident, zone_id=None),
+    )
+
+    with pytest.raises(ValueError, match="requires zoneId"):
+        BackendPublicationPreparer().prepare_incident(without_zone)
+
+
 def test_prepare_incident_resolve_uses_resolution_fact() -> None:
     opened = _open_incident("EV_OVERSTAY").incident
     resolved = replace(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,15 +86,29 @@ def _entry_decision(**overrides: object) -> EntryDecisionInput:
     return EntryDecisionInput(**fields)  # type: ignore[arg-type]
 
 
-def test_allow_is_stored_with_wire_revision_in_one_uow(tmp_path: Path) -> None:
+def test_allow_is_stored_with_wire_revision_in_one_uow(
+    tmp_path: Path,
+    caplog,
+) -> None:
     connection = open_database(tmp_path / "jetson.db")
     intake = _intake()
     try:
-        acceptance = intake.receive(
-            _entry_decision(),
-            idempotency_key="rpi-request-1",
-            connection=connection,
-        )
+        with caplog.at_level(
+            logging.INFO,
+            logger="src.application.entry_event_intake",
+        ):
+            acceptance = intake.receive(
+                _entry_decision(),
+                idempotency_key="rpi-request-1",
+                connection=connection,
+            )
+
+        assert "입차 결정을 접수했습니다." in caplog.text
+        assert f"entryAttemptId={ENTRY_ATTEMPT_ID}" in caplog.text
+        assert "decisionState=ALLOW" in caplog.text
+        assert "revision=1" in caplog.text
+        assert "created=True" in caplog.text
+        assert "rpi-request-1" not in caplog.text
 
         assert acceptance.created is True
         assert acceptance.entry_attempt_id == EntryAttemptId(ENTRY_ATTEMPT_ID)

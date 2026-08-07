@@ -26,6 +26,7 @@ from src.camera.frame_source import calibration_fingerprint
 REQUIRED_THRESHOLD_ARGS = [
     "--zone-entry-confirm-seconds", "3.0",
     "--zone-exit-confirm-seconds", "3.0",
+    "--exit-reentry-confirmation-seconds", "1.0",
     "--parking-move-confirm-seconds", "0.5",
     "--absence-confirmation-seconds", "5.0",
     "--trusted-sample-max-gap-seconds", "1.0",
@@ -162,6 +163,7 @@ def test_build_policy_passes_every_cli_value_through_unchanged():
 
     assert policy.zone_entry_confirm_seconds == 3.0
     assert policy.zone_exit_confirm_seconds == 3.0
+    assert policy.exit_reentry_confirmation_seconds == 1.0
     assert policy.parking_move_confirm_seconds == 0.5
     assert policy.absence_confirmation_seconds == 5.0
     assert policy.trusted_sample_max_gap_seconds == 1.0

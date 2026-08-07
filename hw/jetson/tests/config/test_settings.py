@@ -15,7 +15,9 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
         "camera_index",
         "calibration_path",
         "vehicle_model_path",
+        "vehicle_model_manifest_path",
         "vehicle_tracking_confidence",
+        "exit_reentry_confirmation_seconds",
         "reidentification_max_gap_seconds",
         "reidentification_min_score",
         "reidentification_ambiguity_margin",
@@ -48,6 +50,8 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
 
     assert fields["camera_width"].default == 0
     assert fields["camera_height"].default == 0
+    assert fields["camera_fourcc"].default is None
+    assert fields["camera_fps"].default == 0.0
     assert fields["remap_balance"].default == DEFAULT_REMAP_BALANCE
     assert fields["vehicle_tracker_config"].default == "bytetrack.yaml"
     assert fields["entry_zone_min_overlap_ratio"].default == 0.40
@@ -62,6 +66,12 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
         ("camera_index", -1),
         ("camera_width", -1),
         ("camera_height", -1),
+        ("camera_fourcc", ""),
+        ("camera_fourcc", "YUYV1"),
+        ("camera_fourcc", "한글AB"),
+        ("camera_fps", -1),
+        ("camera_fps", float("nan")),
+        ("camera_fps", float("inf")),
         ("calibration_path", ""),
         ("calibration_path", "   "),
         ("remap_balance", -0.1),
@@ -70,11 +80,17 @@ def test_monitoring_runtime_fields_keep_only_established_defaults() -> None:
         ("remap_balance", float("inf")),
         ("vehicle_model_path", ""),
         ("vehicle_model_path", "   "),
+        ("vehicle_model_manifest_path", ""),
+        ("vehicle_model_manifest_path", "   "),
         ("vehicle_tracker_config", " "),
         ("vehicle_tracking_confidence", -0.1),
         ("vehicle_tracking_confidence", 1.1),
         ("vehicle_tracking_confidence", float("nan")),
         ("vehicle_tracking_confidence", float("inf")),
+        ("exit_reentry_confirmation_seconds", 0.0),
+        ("exit_reentry_confirmation_seconds", -0.1),
+        ("exit_reentry_confirmation_seconds", float("nan")),
+        ("exit_reentry_confirmation_seconds", float("inf")),
     ),
 )
 def test_settings_reject_invalid_device_configuration(
@@ -89,6 +105,12 @@ def test_settings_reject_invalid_device_configuration(
         for error in exc_info.value.errors()
     }
     assert error_fields == {field_name}
+
+
+def test_camera_fourcc_is_normalized() -> None:
+    settings = Settings(_env_file=None, camera_fourcc=" mjpg ")
+
+    assert settings.camera_fourcc == "MJPG"
 
 
 @pytest.mark.parametrize(

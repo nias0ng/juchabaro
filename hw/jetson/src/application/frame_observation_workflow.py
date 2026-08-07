@@ -45,6 +45,7 @@ from src.parking.models import (
 )
 from src.parking.pipeline import ParkingPipeline
 from src.session.context_binding_coordinator import ContextBindingCoordinator
+from src.session.models import EntryMatchAttempt
 from src.storage.aggregate_repositories import (
     BlockingRelationRepository,
     IncidentRepository,
@@ -94,6 +95,7 @@ class FrameObservationResult:
     retired_physical_vehicle_ids: tuple[PhysicalVehicleId, ...]
     active_incidents: tuple[Incident, ...] = ()
     evidence_capture_intents: tuple[EvidenceCaptureIntent, ...] = ()
+    entry_match_updates: tuple[EntryMatchAttempt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,12 +122,16 @@ class FrameObservationWorkflow:
         parking_pipeline: ParkingPipeline,
         context_binding_coordinator: ContextBindingCoordinator,
         publication_preparer: PublicationPreparer,
+        exit_reentry_confirmation_seconds: float,
     ) -> None:
         self._session_workflow = session_workflow
         self._parking_pipeline = parking_pipeline
         self._physical_presence_workflow = PhysicalPresenceWorkflow(
             context_binding_coordinator=context_binding_coordinator,
             parking_pipeline=parking_pipeline,
+            exit_reentry_confirmation_seconds=(
+                exit_reentry_confirmation_seconds
+            ),
         )
         self._pending_handoff_workflow = PendingHandoffWorkflow()
         self._publication_preparer = publication_preparer
@@ -372,6 +378,10 @@ class FrameObservationWorkflow:
                         batch.not_present_confirmed_vehicle_ids
                     ),
                 )
+                self._physical_presence_workflow.apply_exit_traversal_observations(
+                    parking_result.exit_traversal_observations,
+                    connection=connection,
+                )
 
                 departure_plans = tuple(
                     self._physical_presence_workflow.plan_departure(
@@ -451,6 +461,7 @@ class FrameObservationWorkflow:
             ),
             active_incidents=active_incidents,
             evidence_capture_intents=evidence_capture_intents,
+            entry_match_updates=session_result.entry_match_updates,
         )
 
     @staticmethod
@@ -799,6 +810,11 @@ def _combine_parking_results(
             item
             for result in results
             for item in result.incident_signal_diagnostics
+        ),
+        exit_traversal_observations=tuple(
+            item
+            for result in results
+            for item in result.exit_traversal_observations
         ),
     )
 

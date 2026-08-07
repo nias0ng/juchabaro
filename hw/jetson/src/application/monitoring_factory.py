@@ -22,6 +22,7 @@ from src.application.session_observation_workflow import (
     SessionObservationWorkflow,
 )
 from src.camera.frame_source import FrameSource
+from src.diagnostics import DiagnosticsSink
 from src.evidence.capture_models import EvidenceCaptureSink
 from src.parking.blocking_relation_tracker import InMemoryBlockingRelationTracker
 from src.parking.egress_aisle_registry import EgressAisleRegistry
@@ -49,6 +50,7 @@ class MonitoringPolicy:
 
     zone_entry_confirm_seconds: float
     zone_exit_confirm_seconds: float
+    exit_reentry_confirmation_seconds: float
     entry_zone_min_overlap_ratio: float
     parking_confirm_seconds: float
     parking_move_confirm_seconds: float
@@ -101,6 +103,10 @@ class MonitoringDependencies:
     actuator_command_planner: ActuatorCommandPlanner | None = None
     actuator_port: ActuatorPort | None = None
     evidence_capture_sink: EvidenceCaptureSink | None = None
+    diagnostics_sink: DiagnosticsSink | None = None
+    # 실시간 카메라는 startup에서 첫 capture·추론 비용을 지불한다. 리플레이는
+    # 첫 기록 프레임을 소비하면 안 되므로 기본적으로 끈다.
+    startup_warm_up: bool = False
 
 
 def build_monitoring_pipeline(
@@ -115,6 +121,7 @@ def build_monitoring_pipeline(
     entry_match_coordinator = EntryMatchCoordinator(
         zones=zones,
         entry_zone_min_overlap_ratio=policy.entry_zone_min_overlap_ratio,
+        diagnostics_sink=dependencies.diagnostics_sink,
     )
     context_binding_coordinator = ContextBindingCoordinator()
     session_workflow = SessionObservationWorkflow(
@@ -182,12 +189,16 @@ def build_monitoring_pipeline(
         blocking_min_egress_coverage_ratio=(
             policy.blocking_min_egress_coverage_ratio
         ),
+        diagnostics_sink=dependencies.diagnostics_sink,
     )
     frame_workflow = FrameObservationWorkflow(
         session_workflow=session_workflow,
         parking_pipeline=parking_pipeline,
         context_binding_coordinator=context_binding_coordinator,
         publication_preparer=dependencies.publication_preparer,
+        exit_reentry_confirmation_seconds=(
+            policy.exit_reentry_confirmation_seconds
+        ),
     )
     entity_resolver = dependencies.entity_resolver
     if entity_resolver is None:
@@ -222,6 +233,7 @@ def build_monitoring_pipeline(
         detector=dependencies.detector,
         entity_resolver=entity_resolver,
         motion_estimator=motion_estimator,
+        diagnostics_sink=dependencies.diagnostics_sink,
         absence_confirmation_seconds=policy.absence_confirmation_seconds,
         trusted_sample_max_gap_seconds=(
             policy.trusted_sample_max_gap_seconds
@@ -236,4 +248,5 @@ def build_monitoring_pipeline(
         actuator_command_planner=dependencies.actuator_command_planner,
         actuator_port=dependencies.actuator_port,
         evidence_capture_sink=dependencies.evidence_capture_sink,
+        warm_up_on_open=dependencies.startup_warm_up,
     )

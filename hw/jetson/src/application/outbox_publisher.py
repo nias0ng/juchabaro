@@ -233,6 +233,7 @@ class OutboxPublisherWorker:
         self._stop_requested = Event()
         self._thread: Thread | None = None
         self._failure: Exception | None = None
+        self._publisher_closed = False
 
     @property
     def failure(self) -> Exception | None:
@@ -247,6 +248,8 @@ class OutboxPublisherWorker:
 
         if self._thread is not None:
             raise RuntimeError("outbox publisher worker may only be started once")
+        if self._publisher_closed:
+            raise RuntimeError("outbox publisher worker is already closed")
         self._publisher.recover_in_flight()
         thread = Thread(
             target=self._run,
@@ -257,7 +260,8 @@ class OutboxPublisherWorker:
         try:
             thread.start()
         except Exception:
-            self._publisher.close()
+            self._thread = None
+            self._close_publisher()
             raise
 
     def stop(self) -> None:
@@ -266,17 +270,48 @@ class OutboxPublisherWorker:
         self._stop_requested.set()
         if self._thread is not None:
             self._thread.join()
-        self._publisher.close()
+        self._close_publisher()
+
+    def _close_publisher(self) -> None:
+        if self._publisher_closed:
+            return
+        try:
+            self._publisher.close()
+        finally:
+            self._publisher_closed = True
 
     def _run(self) -> None:
-        try:
-            while not self._stop_requested.is_set():
+        while not self._stop_requested.is_set():
+            try:
                 processed = self._publisher.publish_once()
-                if not processed:
-                    self._stop_requested.wait(self._poll_interval_seconds)
-        except Exception as error:
-            self._failure = error
-            logger.exception("Jetson outbox publisher가 종료됐습니다.")
+            except Exception as error:
+                self._failure = error
+                logger.exception(
+                    "Jetson outbox publication 항목 처리가 중단되어 "
+                    "IN_FLIGHT를 복구합니다."
+                )
+                if not self._recover_until_ready():
+                    break
+                self._stop_requested.wait(self._poll_interval_seconds)
+                continue
+            self._failure = None
+            if not processed:
+                self._stop_requested.wait(self._poll_interval_seconds)
+
+    def _recover_until_ready(self) -> bool:
+        while not self._stop_requested.is_set():
+            try:
+                self._publisher.recover_in_flight()
+            except Exception as error:
+                self._failure = error
+                logger.exception(
+                    "Jetson outbox IN_FLIGHT 복구 전에 publication을 "
+                    "재개하지 않습니다."
+                )
+                self._stop_requested.wait(self._poll_interval_seconds)
+                continue
+            return True
+        return False
 
 
 def _error_text(error: Exception) -> str:

@@ -31,21 +31,42 @@ sha256  3ac438bb2378ded109329a4d3efd610419b695f09fa47817e34045dc09ab7b5d
 
 ```text
 hw/jetson/model/yolov8s.pt
+hw/jetson/model/vehicle_model_manifest.json
 ```
 
 Jetson 배포 시에는 다음 절대경로에 같은 파일을 배치한다.
 
 ```text
 /home/e202/model/yolov8s.pt
+/home/e202/model/vehicle_model_manifest.json
 ```
 
-모델 가중치는 Git에 포함하지 않는다. Viewer 실행 또는 Jetson 기동 전에
-해당 환경의 경로에 위 출처의 `yolov8s.pt`를 직접 배치해야 한다.
+모델 가중치는 Git에 포함하지 않지만 manifest는 Git에서 버전
+관리한다. Jetson 기동 전에 해당 환경의 경로에 위 출처의
+`yolov8s.pt`와 같은 release의 manifest를 함께 배치해야 한다.
+`.env`의 `VEHICLE_MODEL_MANIFEST_PATH`는 배치한 manifest 경로를
+가리켜야 한다.
+
+## 기동 시 자동 검증
+
+Monitoring composition은 camera·YOLO 객체를 만들기 전에 manifest의
+`schemaVersion`, `modelVersion`, `sha256`, `task`, `classNames`를 검증한다.
+Binary SHA-256이 일치하지 않으면 기동을 중단한다. Binary를 로드한
+후에도 Ultralytics runtime의 `task == 'detect'`와 class map
+`{0: 'vehicle'}`를 재검증한다. 실제 tracking 호출은 `classes=[0]`을
+명시해 차량 단일 클래스만 ByteTrack에 전달한다.
+
+Manifest SHA preflight은 운영 `src.main` composition root의 release 고정
+책임이다. `replay_pilot_video.py`, `watch_live_stream.py`, Pipeline Viewer는
+차량 단일 클래스의 다른 학습 run도 비교할 수 있도록 manifest 경로를 받지
+않는다. 이 개발·진단 경로에도 tracker의 task·class map 검증과
+`classes=[0]` runtime 계약은 동일하게 적용된다.
 
 ## 배치한 파일이 맞는지 확인하는 방법
 
-파일명만으로는 스톡 COCO 모델과 파인튜닝 모델을 구분할 수 없으므로,
-배치 후 반드시 아래 두 가지를 확인한다.
+아래 명령은 기동 실패 원인을 배포 환경에서 직접 재현할 때
+사용한다. 정상 기동 경로에서는 위 자동 검증이 같은 계약을
+강제한다.
 
 ### 1. sha256 대조
 

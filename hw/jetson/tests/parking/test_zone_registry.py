@@ -12,6 +12,7 @@ import pytest
 from src.parking.geometry import bbox_center
 from src.parking.models import (
     EntryExitRole,
+    ExitTraversalDefinition,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -28,22 +29,20 @@ from src.parking.zone_registry import (
 from src.tracking.models import BoundingBox
 
 
-def _signed_offset(
-    point: tuple[float, float],
-    origin: tuple[float, float],
-    direction: tuple[float, float],
-) -> float:
-    """``origin``에서 ``point``까지 벡터를 단위벡터 ``direction``에 투영한다.
-
-    ``ParkingPipeline._outward_contacts``가 실제로 쓰는 것과 같은 계산을
-    독립적으로 재구현해, 프로덕션 코드의 private 헬퍼에 기대지 않고
-    ``exit_outward_baselines()``의 계약만으로 부호를 검증한다.
-    """
-
-    return (point[0] - origin[0]) * direction[0] + (point[1] - origin[1]) * direction[1]
-
-
 SQUARE = [[0.10, 0.20], [0.28, 0.20], [0.28, 0.55], [0.10, 0.55]]
+EXIT_TRAVERSAL_JSON = {
+    "line": [[0.10, 0.40], [0.28, 0.40]],
+    "outwardPoint": [0.19, 0.25],
+    "hysteresis": 0.01,
+}
+
+
+def exit_traversal_definition() -> ExitTraversalDefinition:
+    return ExitTraversalDefinition(
+        line=((0.10, 0.40), (0.28, 0.40)),
+        outward_point=(0.19, 0.25),
+        hysteresis=0.01,
+    )
 
 
 def zone(
@@ -54,6 +53,12 @@ def zone(
     payload = {"zoneId": zone_id, "zoneType": zone_type, "polygon": SQUARE, **optional}
     if zone_type == "ENTRY_EXIT" and "entryExitRole" not in payload:
         payload["entryExitRole"] = "ENTRY"
+    if (
+        zone_type == "ENTRY_EXIT"
+        and payload.get("entryExitRole") == "EXIT"
+        and "exitTraversal" not in payload
+    ):
+        payload["exitTraversal"] = EXIT_TRAVERSAL_JSON
     return payload
 
 
@@ -84,6 +89,7 @@ def definition(
     calibration_reference: str = "camera-1:v2",
     egress_zone_ids: tuple[ZoneId, ...] = (),
     entry_exit_role: EntryExitRole | None = None,
+    exit_traversal: ExitTraversalDefinition | None = None,
     polygon: tuple[tuple[float, float], ...] | None = None,
 ) -> ZoneDefinition:
     return ZoneDefinition(
@@ -98,6 +104,11 @@ def definition(
         calibration_reference=calibration_reference,
         egress_zone_ids=egress_zone_ids,
         entry_exit_role=entry_exit_role,
+        exit_traversal=(
+            exit_traversal_definition()
+            if entry_exit_role is EntryExitRole.EXIT and exit_traversal is None
+            else exit_traversal
+        ),
     )
 
 
@@ -139,7 +150,7 @@ def test_loads_tracked_main_deployment_snapshot() -> None:
 
     registry = ZoneRegistry.from_file(path)
 
-    assert registry.zone_definition_version == ZoneDefinitionVersion(1)
+    assert registry.zone_definition_version == ZoneDefinitionVersion(2)
     assert len(registry.all()) == 9
     assert registry.get(1).zone_type is ZoneType.GENERAL
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)
@@ -150,6 +161,7 @@ def test_loads_tracked_main_deployment_snapshot() -> None:
     assert registry.get(8).entry_exit_role is EntryExitRole.ENTRY
     assert registry.get(9).zone_type is ZoneType.ENTRY_EXIT
     assert registry.get(9).entry_exit_role is EntryExitRole.EXIT
+    assert registry.get(9).exit_traversal is not None
 
 
 def test_accepts_all_canonical_zone_types(tmp_path: Path) -> None:
@@ -234,6 +246,92 @@ def test_non_entry_exit_zone_rejects_entry_exit_role(tmp_path: Path) -> None:
             write_snapshot(
                 tmp_path,
                 [zone(1, "GENERAL", entryExitRole="ENTRY")],
+            )
+        )
+
+
+def test_exit_role_requires_exit_traversal(tmp_path: Path) -> None:
+    exit_zone = zone(1, "ENTRY_EXIT", entryExitRole="EXIT")
+    del exit_zone["exitTraversal"]
+
+    with pytest.raises(ZoneRegistryError, match="exitTraversal.*반드시"):
+        ZoneRegistry.from_file(write_snapshot(tmp_path, [exit_zone]))
+
+
+@pytest.mark.parametrize(
+    "zone_payload",
+    [
+        zone(1, "ENTRY_EXIT", entryExitRole="ENTRY", exitTraversal=EXIT_TRAVERSAL_JSON),
+        zone(1, "GENERAL", exitTraversal=EXIT_TRAVERSAL_JSON),
+    ],
+)
+def test_entry_and_other_zones_reject_exit_traversal(
+    tmp_path: Path,
+    zone_payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ZoneRegistryError, match="exitTraversal.*만 사용"):
+        ZoneRegistry.from_file(write_snapshot(tmp_path, [zone_payload]))
+
+
+@pytest.mark.parametrize("missing", ["line", "outwardPoint", "hysteresis"])
+def test_exit_traversal_requires_exact_fields(tmp_path: Path, missing: str) -> None:
+    traversal = {
+        "line": [[0.1, 0.4], [0.3, 0.4]],
+        "outwardPoint": [0.2, 0.2],
+        "hysteresis": 0.01,
+    }
+    del traversal[missing]
+
+    with pytest.raises(ZoneRegistryError, match="필수 필드"):
+        ZoneRegistry.from_file(
+            write_snapshot(
+                tmp_path,
+                [zone(1, "ENTRY_EXIT", entryExitRole="EXIT", exitTraversal=traversal)],
+            )
+        )
+
+    traversal[missing] = EXIT_TRAVERSAL_JSON[missing]
+    traversal["mode"] = "AUTO"
+    with pytest.raises(ZoneRegistryError, match="지원하지 않는 필드"):
+        ZoneRegistry.from_file(
+            write_snapshot(
+                tmp_path,
+                [zone(1, "ENTRY_EXIT", entryExitRole="EXIT", exitTraversal=traversal)],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("line", [[0.1, 0.4]], "두 개"),
+        ("line", [[0.1, 0.4], [0.1, 0.4]], "distinct"),
+        ("line", [[-0.1, 0.4], [0.3, 0.4]], "0~1"),
+        ("outwardPoint", [0.2, 0.4], "must not lie"),
+        ("outwardPoint", [0.2], r"\[x, y\]"),
+        ("hysteresis", -0.01, "0 이상"),
+        ("hysteresis", True, "숫자"),
+        ("hysteresis", float("inf"), "유한하지 않은"),
+    ],
+)
+def test_rejects_invalid_exit_traversal_geometry(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+    message: str,
+) -> None:
+    traversal = {
+        "line": [[0.1, 0.4], [0.3, 0.4]],
+        "outwardPoint": [0.2, 0.2],
+        "hysteresis": 0.01,
+    }
+    traversal[field] = value
+
+    with pytest.raises(ZoneRegistryError, match=message):
+        ZoneRegistry.from_file(
+            write_snapshot(
+                tmp_path,
+                [zone(1, "ENTRY_EXIT", entryExitRole="EXIT", exitTraversal=traversal)],
             )
         )
 
@@ -415,16 +513,7 @@ def test_spot_and_aisle_may_overlap() -> None:
     assert len(registry.all()) == 2
 
 
-def _aisle_and_exit_registry() -> ZoneRegistry:
-    """aisle이 아래쪽, exit이 위쪽인 최소 구성. 외부 방향은 -y다."""
-
-    aisle = ZoneDefinition(
-        zone_id=ZoneId(7),
-        zone_type=ZoneType.AISLE,
-        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-    )
+def _exit_registry() -> ZoneRegistry:
     exit_zone = ZoneDefinition(
         zone_id=ZoneId(9),
         zone_type=ZoneType.ENTRY_EXIT,
@@ -432,21 +521,45 @@ def _aisle_and_exit_registry() -> ZoneRegistry:
         zone_definition_version=ZoneDefinitionVersion(1),
         calibration_reference="cam-1-v1",
         entry_exit_role=EntryExitRole.EXIT,
+        exit_traversal=ExitTraversalDefinition(
+            line=((0.0, 0.5), (1.0, 0.5)),
+            outward_point=(0.5, 0.1),
+            hysteresis=0.01,
+        ),
     )
-    return ZoneRegistry((aisle, exit_zone))
+    return ZoneRegistry((exit_zone,))
 
 
-def test_exit_outward_baseline_points_away_from_the_aisle() -> None:
-    registry = _aisle_and_exit_registry()
-    baselines = registry.exit_outward_baselines()
+def test_exit_traversal_signed_offset_points_to_explicit_outward_point() -> None:
+    registry = _exit_registry()
+    traversals = registry.exit_traversals()
 
-    assert set(baselines) == {ZoneId(9)}
-    origin, direction = baselines[ZoneId(9)]
-    # exit 구역은 y 0.0~0.4, 중심 (0.5, 0.2). aisle 중심은 (0.5, 0.75)로
-    # x는 같고 y만 아래이므로 외부 방향은 정확히 -y다.
-    assert origin == pytest.approx((0.5, 0.2))
-    assert direction == pytest.approx((0.0, -1.0))
-    assert math.hypot(*direction) == pytest.approx(1.0)
+    assert set(traversals) == {ZoneId(9)}
+    traversal = traversals[ZoneId(9)]
+    assert traversal.signed_offset((0.5, 0.1)) > 0.0
+    assert traversal.signed_offset((0.5, 0.9)) < 0.0
+    assert traversal.signed_offset((0.5, 0.5)) == pytest.approx(0.0)
+    assert traversal.outward_unit_normal == pytest.approx((0.0, -1.0))
+    assert math.hypot(*traversal.outward_unit_normal) == pytest.approx(1.0)
+
+
+def test_reversing_line_points_does_not_reverse_outward_sign() -> None:
+    forward = ExitTraversalDefinition(
+        line=((0.0, 0.5), (1.0, 0.5)),
+        outward_point=(0.5, 0.1),
+        hysteresis=0.0,
+    )
+    reversed_line = ExitTraversalDefinition(
+        line=((1.0, 0.5), (0.0, 0.5)),
+        outward_point=(0.5, 0.1),
+        hysteresis=0.0,
+    )
+
+    assert forward.signed_offset((0.5, 0.1)) > 0.0
+    assert reversed_line.signed_offset((0.5, 0.1)) > 0.0
+    assert forward.outward_unit_normal == pytest.approx(
+        reversed_line.outward_unit_normal
+    )
 
 
 def test_entry_role_zone_gets_no_outward_baseline() -> None:
@@ -465,36 +578,29 @@ def test_entry_role_zone_gets_no_outward_baseline() -> None:
         calibration_reference="cam-1-v1",
         entry_exit_role=EntryExitRole.ENTRY,
     )
-    assert ZoneRegistry((aisle, entry_zone)).exit_outward_baselines() == {}
+    assert ZoneRegistry((aisle, entry_zone)).exit_traversals() == {}
 
 
-def test_registry_without_aisle_yields_no_outward_baseline() -> None:
-    """외부 방향을 유도할 수 없으면 통과를 확정하지 않는다(fail-safe)."""
-
-    exit_zone = ZoneDefinition(
-        zone_id=ZoneId(9),
-        zone_type=ZoneType.ENTRY_EXIT,
-        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-        entry_exit_role=EntryExitRole.EXIT,
-    )
-    assert ZoneRegistry((exit_zone,)).exit_outward_baselines() == {}
+def test_exit_traversal_does_not_depend_on_an_aisle_zone() -> None:
+    assert set(_exit_registry().exit_traversals()) == {ZoneId(9)}
 
 
-def test_exit_outward_baselines_are_cached_and_identical_across_calls() -> None:
-    registry = _aisle_and_exit_registry()
-    assert registry.exit_outward_baselines() == registry.exit_outward_baselines()
+def test_exit_traversal_query_returns_an_isolated_mapping() -> None:
+    registry = _exit_registry()
+    first = registry.exit_traversals()
+    first.clear()
+
+    assert set(registry.exit_traversals()) == {ZoneId(9)}
 
 
 @pytest.mark.parametrize(
     "filename",
     ["zone_definition.json", "zone_definition.pilot.json"],
 )
-def test_deployed_configs_derive_outward_direction_into_upper_right(
+def test_deployed_configs_explicitly_define_outward_direction_into_upper_right(
     filename: str,
 ) -> None:
-    """배포 설정의 외부 방향이 화면 오른쪽 위(+x, -y)임을 고정한다(571).
+    """배포 설정의 명시적 외향 방향을 화면 오른쪽 위로 고정한다.
 
     현장 확인으로 차량이 화면 오른쪽 위로 빠져나간다는 것을 검증했다.
     폴리곤이 재작성되어 이 사분면을 벗어나면 판정이 조용히 반대가 되므로
@@ -505,12 +611,13 @@ def test_deployed_configs_derive_outward_direction_into_upper_right(
     # (`test_loads_tracked_deployment_snapshot` 참고).
     path = Path(__file__).parents[2] / "config" / filename
     registry = ZoneRegistry.from_file(path)
-    baselines = registry.exit_outward_baselines()
-    assert set(baselines) == {ZoneId(9)}
+    traversals = registry.exit_traversals()
+    assert set(traversals) == {ZoneId(9)}
 
-    _, direction = baselines[ZoneId(9)]
+    direction = traversals[ZoneId(9)].outward_unit_normal
     assert direction[0] > 0.0
     assert direction[1] < 0.0
+    assert traversals[ZoneId(9)].hysteresis == pytest.approx(0.01)
 
 
 @pytest.mark.parametrize(
@@ -527,17 +634,9 @@ def test_real_scale_car_bbox_center_determines_outward_side(filename: str) -> No
     축 기준 약 0.105인데 실측 차량 투영은 약 0.193으로 1.84배 크다).
     중심 판정은 이 문제가 없다.
 
-    아래 두 bbox 중심은 ``zone_definition.json``의 EXIT(9) 기준선에서
-    유도했다:
-      exit_center = (0.664947, 0.166388)
-      unit_direction = (0.468839, -0.883283)
-      outer_center = exit_center + 0.03 * unit_direction = (0.679012, 0.139889)
-      inner_center = exit_center - 0.03 * unit_direction = (0.650881, 0.192886)
-    ``zone_definition.pilot.json``은 EXIT 기준선이 달라
-    (exit_center=(0.636552, 0.166388), unit_direction=(0.498975, -0.866617))
-    이 절대 좌표를 그 기준선에 다시 투영해 부호를 따로 검산했다:
-    outer offset=+0.0442, inner offset=-0.0158 — 여전히 같은 쪽이므로 두
-    설정에 같은 bbox를 재사용한다(파라미터화).
+    아래 두 bbox는 두 배포 snapshot의 명시적 `exitTraversal`
+    기준선에 투영했을 때 각각 양수·음수가 되도록 고정한 실차량
+    크기의 회귀 샘플이다.
     """
 
     outer_bbox = BoundingBox(0.624012, 0.059889, 0.734012, 0.219889)
@@ -545,69 +644,33 @@ def test_real_scale_car_bbox_center_determines_outward_side(filename: str) -> No
 
     path = Path(__file__).parents[2] / "config" / filename
     registry = ZoneRegistry.from_file(path)
-    origin, direction = registry.exit_outward_baselines()[ZoneId(9)]
+    traversal = registry.exit_traversals()[ZoneId(9)]
 
-    outer_offset = _signed_offset(bbox_center(outer_bbox), origin, direction)
-    inner_offset = _signed_offset(bbox_center(inner_bbox), origin, direction)
+    outer_offset = traversal.signed_offset(bbox_center(outer_bbox))
+    inner_offset = traversal.signed_offset(bbox_center(inner_bbox))
 
     assert outer_offset > 0.0
     assert inner_offset < 0.0
 
 
-_DEGENERATE_POLYGON = ((0.1, 0.1), (0.2, 0.2), (0.3, 0.3))
+def test_direct_zone_definition_enforces_exit_traversal_scope() -> None:
+    with pytest.raises(ValueError, match="requires exit_traversal"):
+        ZoneDefinition(
+            zone_id=ZoneId(9),
+            zone_type=ZoneType.ENTRY_EXIT,
+            polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+            zone_definition_version=ZoneDefinitionVersion(1),
+            calibration_reference="cam-1-v1",
+            entry_exit_role=EntryExitRole.EXIT,
+        )
 
-
-def test_degenerate_aisle_polygon_is_skipped_without_raising() -> None:
-    """면적이 0인 AISLE polygon(CVAT 라벨링 실수 등)이 있어도 registry 구성이
-
-    죽지 않아야 한다(fail-safe, 571). 중심을 계산할 수 없는 AISLE은
-    외부 방향 유도에서 제외되고, 유효한 AISLE이 남지 않으면 그 EXIT 구역은
-    결과에서 빠진다.
-    """
-
-    degenerate_aisle = ZoneDefinition(
-        zone_id=ZoneId(7),
-        zone_type=ZoneType.AISLE,
-        polygon=_DEGENERATE_POLYGON,
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-    )
-    exit_zone = ZoneDefinition(
-        zone_id=ZoneId(9),
-        zone_type=ZoneType.ENTRY_EXIT,
-        polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-        entry_exit_role=EntryExitRole.EXIT,
-    )
-
-    registry = ZoneRegistry((degenerate_aisle, exit_zone))
-
-    assert registry.exit_outward_baselines() == {}
-
-
-def test_degenerate_exit_polygon_is_skipped_without_raising() -> None:
-    """면적이 0인 EXIT polygon이 있어도 registry 구성이 죽지 않아야 한다
-
-    (fail-safe, 571). 중심을 계산할 수 없는 EXIT 구역은 결과에서 빠진다.
-    """
-
-    aisle = ZoneDefinition(
-        zone_id=ZoneId(7),
-        zone_type=ZoneType.AISLE,
-        polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)),
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-    )
-    degenerate_exit = ZoneDefinition(
-        zone_id=ZoneId(9),
-        zone_type=ZoneType.ENTRY_EXIT,
-        polygon=_DEGENERATE_POLYGON,
-        zone_definition_version=ZoneDefinitionVersion(1),
-        calibration_reference="cam-1-v1",
-        entry_exit_role=EntryExitRole.EXIT,
-    )
-
-    registry = ZoneRegistry((aisle, degenerate_exit))
-
-    assert registry.exit_outward_baselines() == {}
+    with pytest.raises(ValueError, match="must not carry"):
+        ZoneDefinition(
+            zone_id=ZoneId(8),
+            zone_type=ZoneType.ENTRY_EXIT,
+            polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.0, 0.4)),
+            zone_definition_version=ZoneDefinitionVersion(1),
+            calibration_reference="cam-1-v1",
+            entry_exit_role=EntryExitRole.ENTRY,
+            exit_traversal=exit_traversal_definition(),
+        )

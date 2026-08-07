@@ -1,3 +1,5 @@
+import { formatPlateNumberDisplay } from '@/features/vehicle/validation/register-car';
+
 import type { ParkingSession, ParkingSessionStatus } from '../api/types';
 import { toDisplayZoneNumber } from './parking-zone';
 
@@ -53,14 +55,9 @@ export function toVehicleStatusDisplay(session: ParkingSession): VehicleStatusDi
 
   return {
     status: session.status,
-    statusLabel:
-      session.status === 'VIOLATION'
-        ? '위반 중'
-        : isEvCharging
-          ? '전기차 구역 이용 중'
-          : '정상 주차 중',
+    statusLabel: session.status === 'VIOLATION' ? '위반 주차' : '정상 주차',
     statusTime: `${formatTime(session.enteredAt)} 입차`,
-    plateNumber: session.plateNumber,
+    plateNumber: formatPlateNumberDisplay(session.plateNumber),
     location: formatParkingLocation(session.floor, session.zoneNumber),
     isEvCharging,
     dueAt: isEvCharging ? session.dueAt : null,

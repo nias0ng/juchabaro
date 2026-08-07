@@ -3,6 +3,7 @@
 from .models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -10,6 +11,7 @@ from .models import (
 __all__ = [
     "EvidenceArtifact",
     "EvidenceId",
+    "EvidencePublicationKind",
     "EvidenceRetentionDisposition",
     "EvidenceState",
 ]

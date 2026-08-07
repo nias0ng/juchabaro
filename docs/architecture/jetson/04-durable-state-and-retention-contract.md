@@ -211,8 +211,14 @@ confirmedAt
    `EVIDENCE_SPOOL_CAP_BYTES`를 읽고 hard cap 이하인지 검증한 뒤 현재
    filesystem·영역 사용량과 watermark를 다시 계산해 필요한 DRAIN을 적용한다.
    runtime은 현재 free space를 설치 baseline으로 삼아 cap을 재산출하지 않는다.
-8. outbox publisher를 시작한다.
-9. store가 정상이라면 camera·model을 기동하고 첫 정상 전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존 PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며 새 scope·Candidate는 만들지 않는다.
+8. store와 model asset이 정상이라면 camera·model 자원을 연다. 이
+   단계에서는 아직 frame loop를 시작하지 않는다.
+9. Incident를 전송하는 outbox publisher를 시작한 뒤, Incident ACK에
+   의존하는 evidence publisher를 시작한다.
+10. 두 publisher가 시작된 뒤 camera frame loop를 허용하고 첫 정상
+    전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존
+    PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며
+    새 scope·Candidate는 만들지 않는다.
 
 TrackSegment와 raw frame은 복구하지 않는다. 복구된 OPEN Incident를 새 incidentId로 만들거나 PARKED 차량이 이동했다고 추정하지 않는다.
 

@@ -43,7 +43,11 @@ from src.parking.models import (
     ParkingState,
     ParkingTransition,
     ParkingTransitionType,
+    ExitTraversalObservation,
+    ExitTraversalSide,
+    ZoneDefinitionVersion,
     ZoneId,
+    ZoneVisitId,
 )
 from src.parking.parking_episode_tracker import MOVEMENT_CONFIRMED
 from src.session.context_binding_coordinator import ContextBindingCoordinator
@@ -68,6 +72,10 @@ from src.storage.aggregate_repositories import (
 )
 from src.storage.database import open_database
 from src.storage.evidence_repository import EvidenceArtifactRepository
+from src.storage.exit_traversal_checkpoint_repository import (
+    ExitTraversalCheckpointRepository,
+)
+from src.storage.models import ExitTraversalCheckpointRecord
 from src.storage.repositories import (
     ContextBindingRepository,
     EntryMatchAttemptRepository,
@@ -111,6 +119,9 @@ INCIDENT_ID = IncidentId(
 )
 BLOCKING_RELATION_ID = BlockingRelationId(
     UUID("60000000-0000-4000-8000-000000000011")
+)
+EXIT_VISIT_ID = ZoneVisitId(
+    UUID("70000000-0000-4000-8000-000000000011")
 )
 
 OBSERVED_T0 = ObservationStatus(
@@ -166,17 +177,14 @@ class _ParkingPipeline:
         self.exit_result = exit_result or _empty_result()
         self.runtime_revision = 0
         self.exit_reasons: list[str] = []
-        self.exit_zone_traversal = True
         self.restored_episodes: tuple[ParkingEpisode, ...] = ()
         self.restored_relations = ()
-        self._terminated_traversal_vehicle_ids: set[PhysicalVehicleId] = set()
 
     def checkpoint_state(self):
         return (
             self.runtime_revision,
             self.restored_episodes,
             self.restored_relations,
-            frozenset(self._terminated_traversal_vehicle_ids),
         )
 
     def restore_state(self, checkpoint) -> None:
@@ -184,9 +192,7 @@ class _ParkingPipeline:
             self.runtime_revision,
             self.restored_episodes,
             self.restored_relations,
-            terminated,
         ) = checkpoint
-        self._terminated_traversal_vehicle_ids = set(terminated)
 
     def restore_active(
         self,
@@ -205,16 +211,6 @@ class _ParkingPipeline:
         self.runtime_revision += 1
         return self.process_result
 
-    def exit_zone_traversal_observed(self, physical_vehicle_id) -> bool:
-        assert physical_vehicle_id == VEHICLE_ID
-        if physical_vehicle_id in self._terminated_traversal_vehicle_ids:
-            # 실제 ParkingPipeline과 마찬가지로, physical_exit()이 이 차량의
-            # zone visit을 이미 종료시켰다면 더 이상 통과를 관측할 수 없다.
-            # 프로덕션이 읽기/physical_exit 호출 순서를 뒤집으면 이 double도
-            # False를 반환해 회귀를 드러낸다.
-            return False
-        return self.exit_zone_traversal
-
     def physical_exit(
         self,
         *,
@@ -225,7 +221,6 @@ class _ParkingPipeline:
         assert physical_vehicle_id == VEHICLE_ID
         assert observed_at == T1
         self.runtime_revision += 1
-        self._terminated_traversal_vehicle_ids.add(physical_vehicle_id)
         self.exit_reasons.append(incident_termination_reason)
         restored = next(
             (
@@ -417,6 +412,77 @@ def _empty_result() -> ParkingPipelineResult:
     )
 
 
+def _exit_observation(
+    side: ExitTraversalSide,
+    *,
+    observed_at: datetime,
+) -> ExitTraversalObservation:
+    return ExitTraversalObservation(
+        physical_vehicle_id=VEHICLE_ID,
+        exit_zone_id=ZoneId(12),
+        exit_zone_visit_id=EXIT_VISIT_ID,
+        zone_definition_version=ZoneDefinitionVersion(7),
+        observed_at=observed_at,
+        side=side,
+        signed_offset=(
+            0.05
+            if side is ExitTraversalSide.OUTWARD
+            else -0.05
+            if side is ExitTraversalSide.INWARD
+            else 0.0
+        ),
+    )
+
+
+def _result_with_exit_observation(
+    side: ExitTraversalSide,
+    *,
+    observed_at: datetime,
+) -> ParkingPipelineResult:
+    return replace(
+        _empty_result(),
+        exit_traversal_observations=(
+            _exit_observation(side, observed_at=observed_at),
+        ),
+    )
+
+
+def _exit_checkpoint(
+    *,
+    outward_observed_at: datetime = T0,
+) -> ExitTraversalCheckpointRecord:
+    return ExitTraversalCheckpointRecord(
+        physical_vehicle_id=VEHICLE_ID,
+        exit_zone_id=ZoneId(12),
+        exit_zone_visit_id=EXIT_VISIT_ID,
+        zone_definition_version=ZoneDefinitionVersion(7),
+        outward_observed_at=outward_observed_at,
+        reentry_candidate_at=None,
+        reentry_trusted_seconds=0.0,
+        reentry_confirmation_seconds=1.0,
+        last_trusted_sample_at=None,
+        record_version=1,
+        updated_at=outward_observed_at,
+    )
+
+
+def _matched_attempt() -> EntryMatchAttempt:
+    return EntryMatchAttempt(
+        entry_attempt_id=ATTEMPT_ID,
+        match_state=EntryMatchState.MATCHED,
+        decision_state=EntryDecisionState.ALLOW,
+        decision_revision=1,
+        matched_physical_vehicle_id=VEHICLE_ID,
+        authoritative_session_id=SESSION_ID,
+        authoritative_context=_context(),
+        match_terminated_at=T1,
+        match_deadline_at=T1,
+        record_version=2,
+        created_at=T0,
+        updated_at=T1,
+    )
+
+
 def _blocking_relation_result() -> ParkingPipelineResult:
     relation = BlockingRelation(
         blocking_relation_id=BLOCKING_RELATION_ID,
@@ -473,6 +539,7 @@ def _workflow(session, parking, preparer) -> FrameObservationWorkflow:
         parking_pipeline=parking,
         context_binding_coordinator=ContextBindingCoordinator(),
         publication_preparer=preparer,
+        exit_reentry_confirmation_seconds=1.0,
     )
 
 
@@ -509,6 +576,200 @@ def test_frame_rolls_back_session_parking_outbox_and_runtime_then_retries(
         assert parking.runtime_revision == 1
     finally:
         connection.close()
+
+
+def test_frame_result_exposes_only_committed_entry_match_updates(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "entry-match-result.db")
+    matched = _matched_attempt()
+    session = _SessionWorkflow(
+        ensure_vehicle=True,
+        result=SessionObservationResult(
+            session_contexts={},
+            entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+            entry_match_updates=(matched,),
+        ),
+    )
+    workflow = _workflow(
+        session,
+        _ParkingPipeline(process_result=_empty_result()),
+        _PublicationPreparer(),
+    )
+    try:
+        result = workflow.process(_batch(), connection=connection)
+
+        assert result.entry_match_updates == (matched,)
+    finally:
+        connection.close()
+
+
+def test_outward_exit_observation_is_latched_in_frame_unit_of_work(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "exit-traversal-frame.db")
+    observed_at = T0 + timedelta(milliseconds=200)
+    session = _SessionWorkflow(ensure_vehicle=True)
+    parking = _ParkingPipeline(
+        process_result=_result_with_exit_observation(
+            ExitTraversalSide.OUTWARD,
+            observed_at=observed_at,
+        )
+    )
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    try:
+        result = workflow.process(_batch(), connection=connection)
+
+        checkpoint = ExitTraversalCheckpointRepository(connection).get(
+            VEHICLE_ID
+        )
+        assert checkpoint is not None
+        assert checkpoint.outward_observed_at == observed_at
+        assert checkpoint.exit_zone_id == ZoneId(12)
+        assert checkpoint.exit_zone_visit_id == EXIT_VISIT_ID
+        assert checkpoint.reentry_confirmation_seconds == 1.0
+        assert result.parking_result.exit_traversal_observations == (
+            _exit_observation(
+                ExitTraversalSide.OUTWARD,
+                observed_at=observed_at,
+            ),
+        )
+    finally:
+        connection.close()
+
+
+def test_inward_reentry_invalidates_latch_and_stale_samples_are_ignored(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "exit-reentry.db")
+    session = _SessionWorkflow(ensure_vehicle=False)
+    parking = _ParkingPipeline(process_result=_empty_result())
+    workflow = _workflow(session, parking, _PublicationPreparer())
+    repository = ExitTraversalCheckpointRepository(connection)
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            repository.add(_exit_checkpoint())
+
+        first_inward_at = T0 + timedelta(milliseconds=200)
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.INWARD,
+            observed_at=first_inward_at,
+        )
+        workflow.process(_batch(), connection=connection)
+        first_candidate = repository.get(VEHICLE_ID)
+        assert first_candidate is not None
+        assert first_candidate.reentry_candidate_at == first_inward_at
+        assert first_candidate.reentry_trusted_seconds == 0.0
+
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.INWARD,
+            observed_at=T0 + timedelta(milliseconds=100),
+        )
+        workflow.process(_batch(), connection=connection)
+        assert repository.get(VEHICLE_ID) == first_candidate
+
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.NEUTRAL,
+            observed_at=T0 + timedelta(milliseconds=300),
+        )
+        workflow.process(_batch(), connection=connection)
+        reset = repository.get(VEHICLE_ID)
+        assert reset is not None
+        assert reset.reentry_candidate_at is None
+        assert reset.reentry_trusted_seconds == 0.0
+
+        second_inward_at = T0 + timedelta(milliseconds=400)
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.INWARD,
+            observed_at=second_inward_at,
+        )
+        workflow.process(_batch(), connection=connection)
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.OUTWARD,
+            observed_at=T0 + timedelta(milliseconds=500),
+        )
+        workflow.process(_batch(), connection=connection)
+        reset_by_outward = repository.get(VEHICLE_ID)
+        assert reset_by_outward is not None
+        assert reset_by_outward.reentry_candidate_at is None
+
+        final_inward_at = T0 + timedelta(milliseconds=600)
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.INWARD,
+            observed_at=final_inward_at,
+        )
+        workflow.process(_batch(), connection=connection)
+        parking.process_result = _result_with_exit_observation(
+            ExitTraversalSide.INWARD,
+            observed_at=final_inward_at + timedelta(seconds=1),
+        )
+        workflow.process(_batch(), connection=connection)
+        assert repository.get(VEHICLE_ID) is None
+    finally:
+        connection.close()
+
+
+def test_restart_uses_durable_exit_latch_and_consumes_it_on_departure(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "exit-traversal-restart.db"
+    connection = open_database(database_path)
+    observed_at = T0 + timedelta(milliseconds=200)
+    first_workflow = _workflow(
+        _SessionWorkflow(ensure_vehicle=True),
+        _ParkingPipeline(
+            process_result=_result_with_exit_observation(
+                ExitTraversalSide.OUTWARD,
+                observed_at=observed_at,
+            )
+        ),
+        _PublicationPreparer(),
+    )
+    first_workflow.process(_batch(), connection=connection)
+    assert ExitTraversalCheckpointRepository(connection).get(
+        VEHICLE_ID
+    ) is not None
+    connection.close()
+
+    reopened = open_database(database_path)
+    try:
+        with UnitOfWork(reopened):
+            repository = PhysicalVehicleRepository(reopened)
+            active = repository.get(VEHICLE_ID)
+            assert active is not None
+            repository.save(
+                replace(
+                    active,
+                    observation=ABSENT,
+                    absence_trusted_seconds=5.0,
+                    absence_confirmed_at=T1,
+                    record_version=active.record_version + 1,
+                    updated_at=T1,
+                ),
+                expected_record_version=active.record_version,
+            )
+
+        restarted = _workflow(
+            _SessionWorkflow(ensure_vehicle=False),
+            _ParkingPipeline(process_result=_empty_result()),
+            _PublicationPreparer(),
+        )
+        recovery = restarted.recover_runtime(
+            connection=reopened,
+            recovered_at=T1 + timedelta(minutes=1),
+        )
+
+        vehicle = PhysicalVehicleRepository(reopened).get(VEHICLE_ID)
+        assert recovery.completed_departure_count == 1
+        assert vehicle is not None
+        assert vehicle.state is PhysicalVehicleState.RETIRED
+        assert vehicle.termination_reason == PHYSICAL_VEHICLE_LEFT
+        assert ExitTraversalCheckpointRepository(reopened).get(
+            VEHICLE_ID
+        ) is None
+    finally:
+        reopened.close()
 
 
 def test_frame_persists_and_restart_restores_active_blocking_relation(
@@ -824,6 +1085,9 @@ def test_session_exit_failure_rolls_back_then_commit_is_idempotently_ackable(
         assert ParkingSessionMirrorRepository(connection).get(
             SESSION_ID
         ).physical_presence_state is PhysicalPresenceState.INSIDE
+        assert ExitTraversalCheckpointRepository(connection).get(
+            VEHICLE_ID
+        ) is not None
         assert _outbox_count(connection) == 0
         assert session.runtime_revision == 0
         assert parking.runtime_revision == 0
@@ -845,6 +1109,9 @@ def test_session_exit_failure_rolls_back_then_commit_is_idempotently_ackable(
         )
         assert mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         assert mirror.exited_at == T1
+        assert ExitTraversalCheckpointRepository(connection).get(
+            VEHICLE_ID
+        ) is None
         assert _outbox_count(connection) == 1
         assert parking.exit_reasons == [SESSION_EXITED, SESSION_EXITED]
 
@@ -931,19 +1198,10 @@ def test_admin_closed_session_keeps_admin_end_and_still_records_physical_exit(
         connection.close()
 
 
-def test_traversal_read_must_happen_before_physical_exit_terminates_it(
+def test_departure_consumes_durable_traversal_before_retirement(
     tmp_path: Path,
 ) -> None:
-    """읽기 순서 회귀 고정(565).
-
-    ``exit_zone_traversal_observed()``는 ``physical_exit()``이 zone visit을
-    종료시키기 **전에** 호출돼야 한다. ``_ParkingPipeline`` double은
-    ``physical_exit()``이 호출된 차량에 대해 이후 ``exit_zone_traversal_observed``가
-    False를 반환하도록 실제 파이프라인의 동작을 그대로 모사한다. 그래서
-    ``PhysicalPresenceWorkflow.plan_departure``가 이 순서를 뒤집으면(먼저
-    ``physical_exit``을 호출한 뒤 통과 여부를 읽으면) 이 테스트가 실패한다 —
-    SessionExit이 전혀 발행되지 않고 mirror가 EXITED로 갱신되지 않는다.
-    """
+    """출차 checkpoint는 SessionExit 근거로 읽힌 뒤 같은 UoW에서 소비된다."""
 
     connection = open_database(tmp_path / "traversal-read-order.db")
     session = _SessionWorkflow(ensure_vehicle=False)
@@ -962,6 +1220,9 @@ def test_traversal_read_must_happen_before_physical_exit_terminates_it(
         assert (
             mirror.physical_exit_evidence is PhysicalExitEvidence.ENTRY_EXIT_TRAVERSAL
         )
+        assert ExitTraversalCheckpointRepository(connection).get(
+            VEHICLE_ID
+        ) is None
         assert _outbox_count(connection) == 1
     finally:
         connection.close()
@@ -1015,6 +1276,9 @@ def test_same_batch_late_allow_is_historical_correlation_before_departure(
             )
             EntryMatchAttemptRepository(connection).add(attempt)
             ParkingSessionMirrorRepository(connection).add(mirror)
+            ExitTraversalCheckpointRepository(connection).add(
+                _exit_checkpoint()
+            )
 
         committed = workflow.process(
             _batch(departure=True),
@@ -1050,6 +1314,9 @@ def test_unbound_departure_retires_locally_without_session_exit(
             PhysicalVehicleRepository(connection).ensure(
                 _confirmed_absent_vehicle()
             )
+            ExitTraversalCheckpointRepository(connection).add(
+                _exit_checkpoint()
+            )
 
         result = workflow.process(_batch(departure=True), connection=connection)
 
@@ -1076,10 +1343,9 @@ def test_bound_absence_without_exit_zone_traversal_does_not_publish_session_exit
     connection = open_database(tmp_path / "departure-no-evidence.db")
     session = _SessionWorkflow(ensure_vehicle=False)
     parking = _ParkingPipeline(process_result=_empty_result())
-    parking.exit_zone_traversal = False
     workflow = _workflow(session, parking, _PublicationPreparer())
     try:
-        _seed_bound_departure(connection)
+        _seed_bound_departure(connection, with_exit_checkpoint=False)
 
         result = workflow.process(_batch(departure=True), connection=connection)
 
@@ -1118,7 +1384,6 @@ def test_unbound_absence_without_exit_zone_traversal_records_absence_reason(
     connection = open_database(tmp_path / "unbound-no-evidence.db")
     session = _SessionWorkflow(ensure_vehicle=False)
     parking = _ParkingPipeline(process_result=_empty_result())
-    parking.exit_zone_traversal = False
     workflow = _workflow(session, parking, _PublicationPreparer())
     try:
         with UnitOfWork(connection):
@@ -1255,7 +1520,11 @@ def test_restart_marks_remaining_active_observations_unknown_without_timer_gain(
         connection.close()
 
 
-def _seed_bound_departure(connection) -> None:
+def _seed_bound_departure(
+    connection,
+    *,
+    with_exit_checkpoint: bool = True,
+) -> None:
     attempt = EntryMatchAttempt(
         entry_attempt_id=ATTEMPT_ID,
         match_state=EntryMatchState.MATCHED,
@@ -1303,3 +1572,7 @@ def _seed_bound_departure(connection) -> None:
         EntryMatchAttemptRepository(connection).add(attempt)
         ParkingSessionMirrorRepository(connection).add(mirror)
         ContextBindingRepository(connection).add(binding)
+        if with_exit_checkpoint:
+            ExitTraversalCheckpointRepository(connection).add(
+                _exit_checkpoint()
+            )

@@ -74,6 +74,10 @@ export function TextField({
         autoCapitalize={autoCapitalize}
         keyboardType={keyboardType}
         autoComplete={autoComplete}
+        // autoComplete를 지정하지 않은 필드는 안드로이드가 자체 판단으로 자동완성 대상인지 추측해
+        // 입력창 둘레에 강조 박스를 계속 그린다. 아이디/비밀번호처럼 자동완성을 의도한 필드만
+        // autoComplete를 명시하므로, 그 외에는 여기서 명시적으로 꺼서 그 박스가 안 뜨게 한다.
+        importantForAutofill={autoComplete ? 'yes' : 'no'}
         maxLength={maxLength}
         editable={editable}
         style={styles.input}

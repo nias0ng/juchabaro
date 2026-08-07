@@ -16,6 +16,7 @@ from src.domain.models import DeliveryState, require_aware
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -57,7 +58,7 @@ _ALLOWED_STATE_TRANSITIONS: dict[EvidenceState, frozenset[EvidenceState]] = {
         {EvidenceState.EVICTION_PENDING, EvidenceState.FAILED}
     ),
     EvidenceState.EVICTION_PENDING: frozenset(
-        {EvidenceState.EVICTED, EvidenceState.FAILED}
+        {EvidenceState.READY, EvidenceState.EVICTED, EvidenceState.FAILED}
     ),
     EvidenceState.EVICTED: frozenset(),
     EvidenceState.FAILED: frozenset(),
@@ -75,12 +76,18 @@ def _optional_datetime(value: object) -> datetime | None:
 def _artifact_from_row(row: sqlite3.Row) -> EvidenceArtifact:
     disposition = row["retention_disposition"]
     delivery_state = row["delivery_state"]
+    publication_kind = row["publication_kind"]
     return EvidenceArtifact(
         evidence_id=EvidenceId(uuid_from_text(str(row["evidence_id"]))),
         incident_id=IncidentId(uuid_from_text(str(row["incident_id"]))),
         publication_revision=(
             int(row["publication_revision"])
             if row["publication_revision"] is not None
+            else None
+        ),
+        publication_kind=(
+            EvidencePublicationKind(str(publication_kind))
+            if publication_kind is not None
             else None
         ),
         captured_at=datetime_from_epoch_microseconds(int(row["captured_at_us"])),
@@ -259,6 +266,12 @@ class EvidenceArtifactRepository:
                 OR (
                     workflow_state = 'READY'
                     AND captured_at_us <= ?
+                    AND (
+                        publication_kind IS NULL
+                        OR publication_kind <> 'UPLOAD'
+                        OR backend_acked_at_us IS NOT NULL
+                        OR delivery_state = 'FAILED_TERMINAL'
+                    )
                 )
             ORDER BY
                 CASE workflow_state WHEN 'ACKNOWLEDGED' THEN 0 ELSE 1 END,
@@ -275,7 +288,16 @@ class EvidenceArtifactRepository:
         rows = self._connection.execute(
             """
             SELECT * FROM evidence_artifacts
-            WHERE workflow_state IN ('ACKNOWLEDGED', 'READY')
+            WHERE workflow_state = 'ACKNOWLEDGED'
+               OR (
+                    workflow_state = 'READY'
+                    AND (
+                        publication_kind IS NULL
+                        OR publication_kind <> 'UPLOAD'
+                        OR backend_acked_at_us IS NOT NULL
+                        OR delivery_state = 'FAILED_TERMINAL'
+                    )
+               )
             ORDER BY
                 CASE workflow_state WHEN 'ACKNOWLEDGED' THEN 0 ELSE 1 END,
                 COALESCE(backend_acked_at_us, captured_at_us),
@@ -293,34 +315,120 @@ class EvidenceArtifactRepository:
             WHERE publication_revision IS NOT NULL
               AND backend_acked_at_us IS NULL
               AND workflow_state IN ('FAILED', 'EVICTED')
+              AND (
+                    publication_kind IS NULL
+                    OR publication_kind = 'UNAVAILABLE'
+              )
             ORDER BY updated_at_us, evidence_id
             """
         ).fetchall()
         return tuple(_artifact_from_row(row) for row in rows)
 
+    def mark_capture_failed(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        failed_at: datetime,
+        error: str,
+        disposition: EvidenceRetentionDisposition = (
+            EvidenceRetentionDisposition.LOST_OR_CORRUPTED
+        ),
+    ) -> EvidenceArtifact:
+        """재현 불가능한 RESERVED capture를 durable FAILED로 종결한다."""
+
+        require_write_transaction(self._connection)
+        require_aware(failed_at, "failed_at")
+        if not error:
+            raise ValueError("error must not be empty")
+
+        current = self.get(evidence_id)
+        if current is None:
+            raise EvidenceArtifactConflictError(
+                f"unknown evidence identity: {evidence_id}"
+            )
+        if current.state is EvidenceState.FAILED:
+            return current
+        if current.state is not EvidenceState.RESERVED:
+            raise EvidenceArtifactConflictError(
+                f"evidence {evidence_id} is {current.state.value}, not RESERVED"
+            )
+
+        failed = replace(
+            current,
+            state=EvidenceState.FAILED,
+            local_path=None,
+            last_error=error,
+            retention_disposition=disposition,
+            record_version=current.record_version + 1,
+            updated_at=max(current.updated_at, failed_at),
+        )
+        self.save(failed, expected_record_version=current.record_version)
+        return failed
+
     def claim_next_delivery(self, *, now: datetime) -> EvidenceArtifact | None:
-        """전송 가능한 API 8·9 대상 하나를 ``IN_FLIGHT``으로 claim한다."""
+        """Incident OPEN ACK가 확인된 API 8·9 대상 하나를 claim한다."""
 
         require_write_transaction(self._connection)
         now_us = datetime_to_epoch_microseconds(now)
         row = self._connection.execute(
             """
-            SELECT * FROM evidence_artifacts
-            WHERE publication_revision IS NOT NULL
-              AND backend_acked_at_us IS NULL
-              AND workflow_state IN ('READY', 'FAILED', 'EVICTED')
+            SELECT evidence.*
+            FROM evidence_artifacts AS evidence
+            WHERE evidence.publication_revision IS NOT NULL
+              AND evidence.backend_acked_at_us IS NULL
               AND (
-                    delivery_state IS NULL
-                    OR delivery_state IN ('PENDING', 'RETRY_WAIT')
+                    (
+                        evidence.workflow_state = 'READY'
+                        AND (
+                            evidence.publication_kind IS NULL
+                            OR evidence.publication_kind = 'UPLOAD'
+                        )
+                    )
+                    OR (
+                        evidence.workflow_state IN ('FAILED', 'EVICTED')
+                        AND (
+                            evidence.publication_kind IS NULL
+                            OR evidence.publication_kind = 'UNAVAILABLE'
+                        )
+                    )
               )
               AND (
-                    next_delivery_attempt_at_us IS NULL
-                    OR next_delivery_attempt_at_us <= ?
+                    evidence.delivery_state IS NULL
+                    OR evidence.delivery_state IN ('PENDING', 'RETRY_WAIT')
+              )
+              AND (
+                    evidence.next_delivery_attempt_at_us IS NULL
+                    OR evidence.next_delivery_attempt_at_us <= ?
+              )
+              AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM outbox AS parent
+                        WHERE parent.aggregate_type = 'Incident'
+                          AND parent.aggregate_id = evidence.incident_id
+                          AND parent.destination = 'backend'
+                          AND parent.publication_revision =
+                              evidence.publication_revision
+                          AND parent.transition_type = 'OPEN'
+                          AND parent.delivery_state = 'DELIVERED'
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM delivery_receipts AS receipt
+                        WHERE receipt.aggregate_type = 'Incident'
+                          AND receipt.aggregate_id = evidence.incident_id
+                          AND receipt.destination = 'backend'
+                          AND receipt.publication_revision =
+                              evidence.publication_revision
+                    )
               )
             ORDER BY
-                COALESCE(next_delivery_attempt_at_us, updated_at_us),
-                updated_at_us,
-                evidence_id
+                COALESCE(
+                    evidence.next_delivery_attempt_at_us,
+                    evidence.updated_at_us
+                ),
+                evidence.updated_at_us,
+                evidence.evidence_id
             LIMIT 1
             """,
             (now_us,),
@@ -331,6 +439,15 @@ class EvidenceArtifactRepository:
         current = _artifact_from_row(row)
         claimed = replace(
             current,
+            publication_kind=(
+                EvidencePublicationKind.UNAVAILABLE
+                if current.publication_kind is None
+                and current.state in {
+                    EvidenceState.FAILED,
+                    EvidenceState.EVICTED,
+                }
+                else current.publication_kind
+            ),
             state=(
                 EvidenceState.UPLOADING
                 if current.state is EvidenceState.READY
@@ -346,6 +463,41 @@ class EvidenceArtifactRepository:
         if persisted is None:  # pragma: no cover
             raise RuntimeError("claimed EvidenceArtifact disappeared")
         return persisted
+
+    def mark_upload_dispatch_started(
+        self,
+        evidence_id: EvidenceId,
+        *,
+        expected_record_version: int,
+        started_at: datetime,
+    ) -> EvidenceArtifact:
+        """API 8 HTTP dispatch 직전에 publication 종류를 durable하게 고정한다."""
+
+        require_write_transaction(self._connection)
+        require_aware(started_at, "started_at")
+        current = self._require_in_flight(
+            evidence_id,
+            expected_record_version=expected_record_version,
+        )
+        if current.state is not EvidenceState.UPLOADING:
+            raise EvidenceArtifactConflictError(
+                "only UPLOADING evidence can start an upload dispatch"
+            )
+        if current.publication_kind is EvidencePublicationKind.UNAVAILABLE:
+            raise EvidenceArtifactConflictError(
+                "UNAVAILABLE evidence cannot start an upload dispatch"
+            )
+        if current.publication_kind is EvidencePublicationKind.UPLOAD:
+            return current
+
+        dispatched = replace(
+            current,
+            publication_kind=EvidencePublicationKind.UPLOAD,
+            record_version=current.record_version + 1,
+            updated_at=max(current.updated_at, started_at),
+        )
+        self.save(dispatched, expected_record_version=current.record_version)
+        return dispatched
 
     def recover_in_flight(self, *, now: datetime) -> int:
         """process 중단 시 남은 API 8·9 전송을 즉시 재시도 가능하게 만든다."""
@@ -487,7 +639,7 @@ class EvidenceArtifactRepository:
         failed_at: datetime,
         error: str,
     ) -> EvidenceArtifact:
-        """읽을 수 없는 API 8 binary를 API 9 제공 불가 대상으로 전환한다."""
+        """첫 dispatch 전 API 8 binary 손실만 API 9 대상으로 전환한다."""
 
         require_write_transaction(self._connection)
         current = self._require_in_flight(
@@ -498,6 +650,9 @@ class EvidenceArtifactRepository:
             raise EvidenceArtifactConflictError(
                 "only UPLOADING evidence can become unavailable"
             )
+        upload_was_dispatched = (
+            current.publication_kind is EvidencePublicationKind.UPLOAD
+        )
         failed = replace(
             current,
             state=EvidenceState.FAILED,
@@ -506,9 +661,17 @@ class EvidenceArtifactRepository:
             retention_disposition=(
                 EvidenceRetentionDisposition.LOST_OR_CORRUPTED
             ),
-            delivery_state=DeliveryState.PENDING,
+            delivery_state=(
+                DeliveryState.FAILED_TERMINAL
+                if upload_was_dispatched
+                else DeliveryState.PENDING
+            ),
             next_delivery_attempt_at=None,
-            last_delivery_error=error,
+            last_delivery_error=(
+                f"UPLOAD_OUTCOME_UNKNOWN: {error}"
+                if upload_was_dispatched
+                else error
+            ),
             updated_at=failed_at,
             record_version=current.record_version + 1,
         )
@@ -550,6 +713,7 @@ class EvidenceArtifactRepository:
                 artifact.backend_acked_at,
                 artifact.retention_disposition,
                 artifact.evicted_at,
+                artifact.publication_kind,
             )
         ):
             raise ValueError("RESERVED evidence cannot already carry binary or terminal metadata")
@@ -564,6 +728,7 @@ class EvidenceArtifactRepository:
                 """
                 INSERT INTO evidence_artifacts(
                     evidence_id, incident_id, publication_revision,
+                    publication_kind,
                     captured_at_us, image_type, local_path, byte_size, checksum,
                     workflow_state, last_error, backend_ack_payload,
                     backend_acked_at_us, retention_disposition, evicted_at_us,
@@ -571,7 +736,7 @@ class EvidenceArtifactRepository:
                     next_delivery_attempt_at_us, last_delivery_error,
                     record_version, created_at_us, updated_at_us
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
@@ -579,6 +744,11 @@ class EvidenceArtifactRepository:
                     uuid_to_text(artifact.evidence_id),
                     uuid_to_text(artifact.incident_id),
                     artifact.publication_revision,
+                    (
+                        artifact.publication_kind.value
+                        if artifact.publication_kind is not None
+                        else None
+                    ),
                     datetime_to_epoch_microseconds(artifact.captured_at),
                     artifact.image_type,
                     str(artifact.local_path) if artifact.local_path is not None else None,
@@ -653,6 +823,11 @@ class EvidenceArtifactRepository:
                 expected_record_version=expected_record_version,
                 changes={
                     "publication_revision": artifact.publication_revision,
+                    "publication_kind": (
+                        artifact.publication_kind.value
+                        if artifact.publication_kind is not None
+                        else None
+                    ),
                     "local_path": (
                         str(artifact.local_path)
                         if artifact.local_path is not None
@@ -739,6 +914,12 @@ class EvidenceArtifactRepository:
             replacement.publication_revision != existing.publication_revision
         ):
             raise EvidenceArtifactConflictError("publication_revision is immutable once bound")
+        if existing.publication_kind is not None and (
+            replacement.publication_kind is not existing.publication_kind
+        ):
+            raise EvidenceArtifactConflictError(
+                "publication_kind is immutable once dispatch starts"
+            )
         if existing.byte_size is not None and replacement.byte_size != existing.byte_size:
             raise EvidenceArtifactConflictError("byte_size is immutable once recorded")
         if existing.checksum is not None and replacement.checksum != existing.checksum:
@@ -751,8 +932,16 @@ class EvidenceArtifactRepository:
             raise EvidenceArtifactConflictError("evicted_at is immutable once recorded")
         if existing.last_error is not None and replacement.last_error != existing.last_error:
             raise EvidenceArtifactConflictError("last_error is immutable once recorded")
-        if existing.retention_disposition is not None and (
-            replacement.retention_disposition != existing.retention_disposition
+        cancels_unfinished_eviction = (
+            existing.state is EvidenceState.EVICTION_PENDING
+            and replacement.state is EvidenceState.READY
+            and replacement.retention_disposition is None
+        )
+        if (
+            existing.retention_disposition is not None
+            and replacement.retention_disposition
+            != existing.retention_disposition
+            and not cancels_unfinished_eviction
         ):
             raise EvidenceArtifactConflictError(
                 "retention_disposition is immutable once selected"

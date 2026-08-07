@@ -59,6 +59,19 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+`REMAP_BACKEND=vpi`는 PyPI 패키지가 아니라 JetPack의
+`python3.10-vpi3` binding을 사용한다. 시스템 Python에서는 VPI가 보이지만
+격리된 venv에서는 보이지 않으므로, Jetson에서 binding 파일 하나만 venv에
+연결한다. `--system-site-packages`는 시스템 OpenCV까지 섞을 수 있어 사용하지
+않는다.
+
+```bash
+VPI_BINDING_PATH=$(/usr/bin/python3 -c 'import vpi; print(vpi.__file__)')
+VENV_SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])')
+ln -sf "$VPI_BINDING_PATH" "$VENV_SITE_PACKAGES/"
+python -c 'import vpi; print(vpi.__file__, vpi.Backend.CUDA)'
+```
+
 ## 테스트 실행
 
 ### 개발 의존성 설치
@@ -102,7 +115,13 @@ CAMERA_INDEX=0
 CALIBRATION_PATH=/home/e202/config/camera_calibration.json
 REMAP_BALANCE=0.5
 VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
+VEHICLE_MODEL_MANIFEST_PATH=/home/e202/model/vehicle_model_manifest.json
 ```
+
+차량 모델 binary와 manifest는 항상 같은 release를 배치한다. 기동
+preflight이 manifest의 SHA-256을 binary와 대조하고, model open 후에
+Ultralytics `task='detect'`와 `names={0: 'vehicle'}`를 다시 검증한다.
+두 검증 중 하나라도 실패하면 camera monitoring은 시작하지 않는다.
 
 시연 배포에서 판정 정책은 `.env` → `Settings` → `src.main`의 composition root →
 `MonitoringPolicy` 순서로 전달된다. 규칙별 Incident 값은
@@ -146,13 +165,18 @@ frame과 polygon이 같은 좌표계인지 검증하는 식별자다. 파일을 
 
 `ZONE_DEFINITION_PATH`에는 현재 카메라 calibration 좌표계에 맞는 versioned
 구역 JSON 경로를 지정한다. 기본 운영 정본은
-`config/zone_definition.json` version 1이다. 이 파일은 crop하지 않은
+`config/zone_definition.json` version 2다. 이 파일은 crop하지 않은
 full-frame 좌표계를 사용한다. 구역 정보는 SQLite가 아니라 이 정적
 JSON을 원본으로 사용하며, 파일 전체가 유효하지 않으면 기동을 거부한다.
 
-`config/zone_definition.pilot.json` version 6은 좌측 150px crop을 적용하는
+`config/zone_definition.pilot.json` version 7은 좌측 150px crop을 적용하는
 `replay_pilot_video.py`와 `watch_live_stream.py`용 설정이다. 메인 배포와
 Pipeline Viewer의 full-frame 입력에는 사용하지 않는다.
+
+EXIT role 구역의 `exitTraversal`은 기준선·외향점·hysteresis를 명시한다.
+외향 통과는 SQLite checkpoint로 보존되며
+`EXIT_REENTRY_CONFIRMATION_SECONDS` 동안 연속 내향 관측된 경우에만
+재진입으로 취소한다. 이 값은 ZoneVisit 진입·이탈 confirmation과 별도다.
 
 `EGRESS_AISLE_PATH`는 이중주차 `BlockingRelation`에만 사용하는
 주차면별 출차 방해 영역 JSON 경로다. `ZoneDefinition`의
@@ -278,8 +302,12 @@ process가 중단돼도 `CHECKING` command를 다음 기동에서 다시 읽으�
 나머지 4xx는 재시도하지 않는다.
 
 camera·model owner는 배포 entrypoint가 `MonitoringPipelineFactory`를
-명시적으로 주입했을 때만 하나 기동한다. Monitoring recovery가 끝난 뒤
-outbox publisher를 시작하므로 복구 중인 aggregate와 동시에 전송하지 않는다.
+명시적으로 주입했을 때만 하나 기동한다. 기동 시 Evidence spool과
+Monitoring durable state를 먼저 복구하고 camera·model open을 검증한다.
+그 다음 parent Incident outbox publisher, child Evidence publisher를 순서대로
+시작한 뒤에만 Monitoring·MoveVerification producer loop를 허용한다.
+따라서 복구 중인 aggregate나 아직 Incident ACK가 없는 Evidence를
+동시에 전송하지 않는다.
 
 `EVIDENCE_SPOOL_PATH`는 Incident 정지 이미지 binary를 두는 제한된
 file spool 기반이다. 파일당 2MiB, Incident당 2장·4MiB를 넘지 않으며,
@@ -327,6 +355,10 @@ durable commit 이후 전체 active Incident projection 적용 계약은 유지�
 `src.main:app`은 FastAPI와 함께 camera·tracking MonitoringWorker를 시작한다.
 따라서 `.env`의 camera·calibration·model 및 MonitoringPolicy 설정이 유효해야
 하며, asset preflight 또는 장치 open이 실패하면 서버 startup도 실패한다.
+운영 camera pipeline은 `open()`에서 보정 frame 한 장을 캡처해 remap backend와
+YOLO predictor/CUDA를 warm-up한 뒤 worker thread를 시작한다. 이 frame은
+ByteTrack·PhysicalVehicle·주차 workflow에 전달하지 않으며 frame ID만 하나
+소비한다. 리플레이 pipeline은 첫 기록 frame 보존을 위해 warm-up을 기본 생략한다.
 PC 개발 환경에서도 접근 가능한 camera와 calibration/model asset이 필요하다.
 
 PC에서 동작을 확인할 때는 로컬 인터페이스에 바인딩하고 코드 변경을 자동으로 반영하도록 `--reload`를 사용한다.
@@ -551,6 +583,7 @@ python -m scripts.replay_pilot_video \
     --calibration ../../ai/tracking/camera_calibration.json \
     --model-path ../../ai/training/yolo26n.pt \
     --zone-entry-confirm-seconds 3.0 --zone-exit-confirm-seconds 3.0 \
+    --exit-reentry-confirmation-seconds 1.0 \
     --parking-confirm-seconds 5.0 --parking-move-confirm-seconds 0.5 \
     --absence-confirmation-seconds 5.0 \
     --trusted-sample-max-gap-seconds 1.0 \

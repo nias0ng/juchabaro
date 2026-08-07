@@ -6,7 +6,10 @@
 `TrackingPipeline`은 임시 TrackSegment와 PhysicalVehicle 관측 신호만
 만든다. ``FrameObservationWorkflow``가 SessionContext 매칭, parking
 aggregate, physical departure, outbox를 하나의 SQLite UnitOfWork로
-commit한다. NOT_PRESENT ACK는 그 commit이 성공한 뒤에만 전달한다.
+commit한다. 같은 frame의 Evidence adapter는 commit 직후 호출하며, 정상
+경로에서는 READY/FAILED 종결 뒤에만 tracker retire·actuator
+projection·observer를 실행한다. local storage 장애는 adapter가 명시적인
+재조정 대상으로 보존한다.
 
 프레임 캡처나 추론이 실패하면 부재 누적 연속성을 먼저 끊고
 원래 예외를 전파한다. 그렇지 않으면 다음 정상 frame이 장애 구간의
@@ -18,7 +21,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+import logging
 import sqlite3
+from time import perf_counter
 
 from src.actuators.ports import ActuatorCommandPlanner, ActuatorPort
 from src.application.frame_observation_workflow import (
@@ -35,6 +40,7 @@ from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import TrackingError
 
 FrameObserver = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], None]
+LOGGER = logging.getLogger(__name__)
 
 
 class MonitoringPipeline:
@@ -51,6 +57,7 @@ class MonitoringPipeline:
         actuator_command_planner: ActuatorCommandPlanner | None = None,
         actuator_port: ActuatorPort | None = None,
         evidence_capture_sink: EvidenceCaptureSink | None = None,
+        warm_up_on_open: bool = False,
     ) -> None:
         if not calibration_reference:
             raise ValueError("calibration_reference must not be empty")
@@ -58,6 +65,8 @@ class MonitoringPipeline:
             raise ValueError(
                 "actuator_command_planner and actuator_port must be provided together"
             )
+        if not isinstance(warm_up_on_open, bool):
+            raise TypeError("warm_up_on_open must be bool")
         self._frame_source = frame_source
         self._tracking_pipeline = tracking_pipeline
         self._frame_workflow = frame_workflow
@@ -66,6 +75,7 @@ class MonitoringPipeline:
         self._actuator_command_planner = actuator_command_planner
         self._actuator_port = actuator_port
         self._evidence_capture_sink = evidence_capture_sink
+        self._warm_up_on_open = warm_up_on_open
 
     @property
     def has_evidence_capture_sink(self) -> bool:
@@ -81,7 +91,7 @@ class MonitoringPipeline:
         self._evidence_capture_sink = sink
 
     def open(self) -> None:
-        """durable runtime을 복원한 뒤 프레임 소스와 추적을 연다."""
+        """durable runtime을 복원하고 운영 자원과 선택적 warm-up을 완료한다."""
 
         connection = self._connection_factory()
         try:
@@ -108,6 +118,15 @@ class MonitoringPipeline:
             raise
         try:
             self._tracking_pipeline.open()
+            if self._warm_up_on_open:
+                self._warm_up_runtime()
+        except FrameSourceError as error:
+            self._commit_interruption(
+                observed_at=error.observed_at,
+                observation=error.observation,
+            )
+            self._close_startup_resources_best_effort()
+            raise
         except TrackingError:
             self._commit_interruption(
                 observed_at=datetime.now(timezone.utc),
@@ -116,13 +135,44 @@ class MonitoringPipeline:
                     reason=ObservationReason.PIPELINE_STALLED,
                 ),
             )
-            self._frame_source.close()
+            self._close_startup_resources_best_effort()
             raise
         except Exception:
-            # frame source를 먼저 연 뒤 model 로드가 실패해도
-            # camera handle을 남기지 않는다. 원래 기동 예외는 유지한다.
-            self._frame_source.close()
+            # frame source를 먼저 연 뒤 model load·warm-up이 실패해도
+            # 자원을 남기지 않고 원래 기동 예외를 유지한다.
+            self._close_startup_resources_best_effort()
             raise
+
+    def _warm_up_runtime(self) -> None:
+        """실제 frame을 한 장 소비해 camera/remap과 detector를 준비한다.
+
+        warm-up frame은 tracking resolver나 durable workflow에 전달하지 않는다.
+        따라서 frame ID 하나만 소비하며 차량 ID·부재·주차 상태에는 관여하지 않는다.
+        """
+
+        started_at = perf_counter()
+        frame = self._frame_source.capture()
+        self._tracking_pipeline.warm_up(frame)
+        LOGGER.info(
+            "Jetson monitoring pipeline warm-up이 완료됐습니다. "
+            "frameId=%s frame=%sx%s elapsedMs=%.1f",
+            frame.frame_id,
+            frame.width,
+            frame.height,
+            (perf_counter() - started_at) * 1000.0,
+        )
+
+    def _close_startup_resources_best_effort(self) -> None:
+        """startup 원인 예외를 보존하면서 부분 초기화 자원을 역순으로 닫는다."""
+
+        for name, resource in (
+            ("tracking pipeline", self._tracking_pipeline),
+            ("frame source", self._frame_source),
+        ):
+            try:
+                resource.close()
+            except Exception:
+                LOGGER.exception("Startup 실패 후 %s 정리에 실패했습니다.", name)
 
     def process_next_frame(
         self, *, frame_observer: FrameObserver | None = None
@@ -133,13 +183,15 @@ class MonitoringPipeline:
         오류(`FrameSourceError`/`TrackingError`)가 그대로 전파된다 — 호출부가
         판단할 문제다.
 
-        `frame_observer`는 commit이 성공한 뒤에만 `(frame, tracking_batch,
-        result)`로 호출되는 선택적 telemetry·overlay 훅이다(`result_consumer`와
-        같은 정책 — 예외를 숨기지 않고, durable 저장 책임을 갖지 않는다).
+        `frame_observer`는 commit과 Evidence capture 시도, process-local
+        projection 뒤에만 `(frame, tracking_batch, result)`로 호출되는 선택적
+        telemetry·overlay 훅이다(`result_consumer`와 같은 정책 — 예외를 숨기지
+        않고, durable 저장 책임을 갖지 않는다).
         `_commit_interruption` 경로(카메라·추적 장애)는 신뢰할 수 있는
         frame/tracking_batch가 없으므로 호출하지 않는다.
         """
 
+        capture_started_at = perf_counter()
         try:
             frame = self._frame_source.capture()
         except EndOfVideo:
@@ -150,7 +202,14 @@ class MonitoringPipeline:
                 observation=error.observation,
             )
             raise
+        timing = getattr(frame, "performance_timing", None)
+        if timing is not None:
+            timing.record_seconds(
+                "captureTotal",
+                perf_counter() - capture_started_at,
+            )
 
+        tracking_started_at = perf_counter()
         try:
             tracking_batch = self._tracking_pipeline.process(
                 frame,
@@ -170,14 +229,37 @@ class MonitoringPipeline:
                 ),
             )
             raise
+        if timing is not None:
+            tracking_seconds = perf_counter() - tracking_started_at
+            detector_ms = timing.duration_ms("detector") or 0.0
+            timing.record_seconds(
+                "trackingPostprocess",
+                max(tracking_seconds - detector_ms / 1_000.0, 0.0),
+            )
 
+        commit_started_at = perf_counter()
         result = self._commit_batch(tracking_batch)
+        if timing is not None:
+            timing.record_seconds(
+                "commit",
+                perf_counter() - commit_started_at,
+            )
+        evidence_started_at = perf_counter()
         if self._evidence_capture_sink is not None:
             self._evidence_capture_sink.capture(
                 frame,
                 tracking_batch,
                 result.evidence_capture_intents,
             )
+        if timing is not None:
+            timing.record_seconds(
+                "evidence",
+                perf_counter() - evidence_started_at,
+            )
+        self._apply_post_commit_effects(
+            result,
+            observed_at=tracking_batch.observed_at,
+        )
         if frame_observer is not None:
             frame_observer(frame, tracking_batch, result)
         return result
@@ -194,31 +276,43 @@ class MonitoringPipeline:
             observed_at=observed_at,
             observation=observation,
         )
-        return self._commit_batch(batch)
+        result = self._commit_batch(batch)
+        self._apply_post_commit_effects(result, observed_at=batch.observed_at)
+        return result
 
     def _commit_batch(
         self,
         tracking_batch: TrackingBatch,
     ) -> FrameObservationResult:
-        """TrackingBatch를 commit하고 그 이후의 projection side effect를 적용한다."""
+        """TrackingBatch의 local transaction만 commit한다."""
 
         connection = self._connection_factory()
         try:
-            result = self._frame_workflow.process(
+            return self._frame_workflow.process(
                 tracking_batch,
                 connection=connection,
             )
         finally:
             connection.close()
+
+    def _apply_post_commit_effects(
+        self,
+        result: FrameObservationResult,
+        *,
+        observed_at: datetime,
+    ) -> None:
+        """Evidence adapter 호출 뒤 commit 결과를 process-local projection에
+        반영한다.
+        """
+
         for physical_vehicle_id in result.retired_physical_vehicle_ids:
             self._tracking_pipeline.forget_physical_vehicle(
                 physical_vehicle_id
             )
         self._apply_actuator_projection(
             result.active_incidents,
-            requested_at=tracking_batch.observed_at,
+            requested_at=observed_at,
         )
-        return result
 
     def _apply_actuator_projection(
         self,
@@ -269,9 +363,19 @@ class MonitoringPipeline:
         return frames
 
     def close(self) -> None:
-        """프레임 소스와 추적 모델 자원을 해제한다."""
+        """보류 Evidence를 재조정한 뒤 프레임 소스와 추적 자원을 해제한다."""
 
         try:
-            self._frame_source.close()
+            if self._evidence_capture_sink is not None:
+                flush_pending = getattr(
+                    self._evidence_capture_sink,
+                    "flush_pending",
+                    None,
+                )
+                if callable(flush_pending):
+                    flush_pending()
         finally:
-            self._tracking_pipeline.close()
+            try:
+                self._tracking_pipeline.close()
+            finally:
+                self._frame_source.close()

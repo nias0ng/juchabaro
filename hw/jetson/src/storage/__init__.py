@@ -27,6 +27,7 @@ from .migration_runner import (
 from .models import (
     AcceptedInputRecord,
     DeliveryReceiptRecord,
+    ExitTraversalCheckpointRecord,
     OutboxRecord,
     PendingHandoffRecord,
     PendingHandoffState,
@@ -44,6 +45,10 @@ from .aggregate_repositories import (
 from .evidence_repository import (
     EvidenceArtifactConflictError,
     EvidenceArtifactRepository,
+)
+from .exit_traversal_checkpoint_repository import (
+    ExitTraversalCheckpointConflictError,
+    ExitTraversalCheckpointRepository,
 )
 from .repositories import (
     AcceptedInputConflictError,
@@ -71,6 +76,9 @@ __all__ = [
     "DeliveryReceiptRecord",
     "EvidenceArtifactConflictError",
     "EvidenceArtifactRepository",
+    "ExitTraversalCheckpointConflictError",
+    "ExitTraversalCheckpointRecord",
+    "ExitTraversalCheckpointRepository",
     "IncidentConflictError",
     "IncidentRepository",
     "MigrationApplyError",

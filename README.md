@@ -1,7 +1,7 @@
 # 🅿️ **스마트 주차장 서비스 [🚗 주차바로🚗]**
 
 
-[🚖 서비스 번들 다운로드(추가예정)](https://🔺도메인)
+[🚖 서비스 번들 다운로드 (Android 전용)](https://drive.google.com/drive/folders/1m4rUBzDPmmm41PEe1OWc4jHygtWS2sUb?usp=sharing)
 
 [🚘 관리자 웹 바로가기](https://i15e202.p.ssafy.io/admin/)
 

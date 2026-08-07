@@ -21,7 +21,7 @@ export const styles = StyleSheet.create({
   },
   mapCard: {
     width: '100%',
-    backgroundColor: Palette.white,
+    backgroundColor: Palette.white80,
     borderRadius: Radius.xl + 2,
     padding: Spacing.md,
     gap: Spacing.base,

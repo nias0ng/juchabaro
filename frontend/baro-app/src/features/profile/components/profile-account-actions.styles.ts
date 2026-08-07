@@ -12,7 +12,7 @@ export const styles = StyleSheet.create({
     width: '100%',
     minHeight: ControlHeight.md,
     paddingVertical: Spacing.base + 1,
-    borderRadius: Radius.full,
+    borderRadius: Radius.lg,
     backgroundColor: Palette.white,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 6 },

@@ -46,7 +46,10 @@ export function ParkingStatusCard({
       <View style={styles.card}>
         {status ? (
           <View style={styles.congestionPill}>
-            <ParkingCongestionBadge level={status.congestionLevel} valueLabel={status.congestionValueLabel} />
+            <ParkingCongestionBadge
+              level={status.congestionLevel}
+              rateLabel={status.congestionRateLabel}
+            />
           </View>
         ) : null}
 
@@ -56,9 +59,7 @@ export function ParkingStatusCard({
           items={[
             { label: '내 차량', color: Palette.yellow100 },
             { label: '사용중', color: Palette.violet300 },
-            { label: status ? status.availableLabel : '비어 있음 -', color: Palette.gray100 },
-            { label: '충전구역', color: Palette.sky100 },
-            { label: '장애인구역', color: Palette.green100 },
+            { label: status ? status.availableLabel : '비어 있음 -', color: Palette.lilac100 },
           ]}
         />
       </View>

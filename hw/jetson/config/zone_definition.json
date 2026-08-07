@@ -1,5 +1,5 @@
 {
-  "zoneDefinitionVersion": 1,
+  "zoneDefinitionVersion": 2,
   "calibrationReference": "a26d3085c3d4fc4f",
   "zones": [
     {
@@ -55,7 +55,12 @@
       "zoneId": 9,
       "zoneType": "ENTRY_EXIT",
       "entryExitRole": "EXIT",
-      "polygon": [[0.596, 0.078], [0.728, 0.082], [0.737, 0.253], [0.599, 0.250]]
+      "polygon": [[0.596, 0.078], [0.728, 0.082], [0.737, 0.253], [0.599, 0.250]],
+      "exitTraversal": {
+        "line": [[0.598701, 0.131225], [0.731193, 0.201551]],
+        "outwardPoint": [0.702454, 0.095725],
+        "hysteresis": 0.01
+      }
     }
   ]
 }

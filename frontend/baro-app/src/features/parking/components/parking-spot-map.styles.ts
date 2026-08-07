@@ -7,7 +7,7 @@ export const styles = StyleSheet.create({
     width: '100%',
     minHeight: Spacing.xxxl * 2,
     borderRadius: Radius.md + 6,
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
     paddingVertical: Spacing.base,
     paddingHorizontal: Spacing.lg,
     gap: Spacing.md,
@@ -30,12 +30,12 @@ export const styles = StyleSheet.create({
     width: 32,
     height: 41,
     borderRadius: 7,
-    backgroundColor: Palette.gray100,
+    backgroundColor: Palette.lilac100,
     alignItems: 'center',
     justifyContent: 'center',
   },
   mapCellMissing: {
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
   },
   floorLayout: {
     alignSelf: 'center',
@@ -46,7 +46,7 @@ export const styles = StyleSheet.create({
   },
   layoutDivider: {
     height: 22,
-    backgroundColor: Palette.violet50,
+    backgroundColor: Palette.lilac25,
   },
   layoutRow: {
     flexDirection: 'row',
@@ -61,21 +61,15 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // 입구/출구는 실제 주차 상태 정보가 아니라 구조 안내라, 배경 박스 없이 글자만 둔다.
   accessBlock: {
     width: 40,
     height: 32,
-    borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  exitBlock: {
-    backgroundColor: Palette.blue500,
-  },
-  entryBlock: {
-    backgroundColor: Palette.emerald500,
-  },
   accessBlockText: {
-    color: Palette.white,
+    color: Palette.gray500,
     fontSize: 10,
     fontWeight: FontWeight.bold,
   },
@@ -87,17 +81,12 @@ export const styles = StyleSheet.create({
     width: 32,
     height: 41,
   },
+  // 차가 있는(사용 중) 칸은 보라색으로 표시한다.
   mapCellOther: {
     backgroundColor: Palette.violet300,
   },
   mapCellMine: {
     backgroundColor: Palette.yellow100,
-  },
-  mapCellEmptyDisabled: {
-    backgroundColor: Palette.green100,
-  },
-  mapCellEmptyEv: {
-    backgroundColor: Palette.sky100,
   },
   mapCellSelected: {
     borderWidth: 2,
@@ -106,22 +95,14 @@ export const styles = StyleSheet.create({
   mapCellLabel: {
     fontSize: 9,
     fontWeight: FontWeight.bold,
+    textAlign: 'center',
   },
-  mineLabel: {
-    color: Palette.yellow700,
-    fontWeight: FontWeight.regular,
-  },  
-  otherLabel: {
-    color: Palette.purple700,
-    fontWeight: FontWeight.regular,
-  },
-  disabledLabel: {
-    color: Palette.emerald500,
-    fontWeight: FontWeight.regular,
-  },
-  evLabel: {
-    color: Palette.blue600,
-    fontWeight: FontWeight.regular,
+  // 장애인/EV 구역 종류 안내. 칸이 작아서 꽉 차 보이지 않게 조금 더 작게 둔다.
+  zoneTypeLabel: {
+    color: Palette.gray600,
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: FontWeight.medium,
   },
   spotCodeLabel: {
     color: Palette.gray975,

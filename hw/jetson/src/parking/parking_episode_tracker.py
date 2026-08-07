@@ -15,18 +15,28 @@ import math
 from typing import Protocol
 from uuid import uuid4
 
-from src.domain.models import ObservationState, ObservationStatus
+from src.domain.models import (
+    ObservationReason,
+    ObservationState,
+    ObservationStatus,
+)
 from src.parking.models import (
     ParkingAssignment,
     ParkingEpisode,
     ParkingEpisodeId,
     ParkingState,
 )
+from src.parking.parking_eligibility import (
+    ELIGIBLE_PARKING,
+    ParkingEligibilityDecision,
+    ParkingEligibilityValue,
+)
 from src.parking.time_guard import ensure_forward_observation
 from src.tracking.models import MotionSignal, ParkingSessionId, PhysicalVehicleId
 
 
 STOP_NOT_CONFIRMED = "STOP_NOT_CONFIRMED"
+PARKING_INELIGIBLE = "PARKING_INELIGIBLE"
 MOVEMENT_CONFIRMED = "MOVEMENT_CONFIRMED"
 PHYSICAL_EXIT = "PHYSICAL_EXIT"
 
@@ -48,6 +58,7 @@ class ParkingEpisodeTracker(Protocol):
         observation: ObservationStatus,
         observed_at: datetime,
         assignment: ParkingAssignment | None = None,
+        eligibility: ParkingEligibilityDecision = ELIGIBLE_PARKING,
     ) -> ParkingEpisode | None:
         """현재 snapshot 또는 이번 sample에서 생긴 terminal 전이를 반환한다."""
 
@@ -192,6 +203,7 @@ class InMemoryParkingEpisodeTracker:
         observation: ObservationStatus,
         observed_at: datetime,
         assignment: ParkingAssignment | None = None,
+        eligibility: ParkingEligibilityDecision = ELIGIBLE_PARKING,
     ) -> ParkingEpisode | None:
         """한 motion sample을 적용한다.
 
@@ -201,6 +213,8 @@ class InMemoryParkingEpisodeTracker:
         있도록 고정된 snapshot이다.
         """
 
+        if not isinstance(eligibility, ParkingEligibilityDecision):
+            raise TypeError("eligibility must be a ParkingEligibilityDecision")
         if (
             signal is MotionSignal.UNKNOWN
             and observation.state is ObservationState.OBSERVED
@@ -218,6 +232,8 @@ class InMemoryParkingEpisodeTracker:
             slot = None
 
         if slot is None:
+            if eligibility.value is not ParkingEligibilityValue.ELIGIBLE:
+                return None
             if not _is_reliable(signal, observation) or signal is not MotionSignal.STATIONARY:
                 return None
             return self._open_candidate(
@@ -232,6 +248,33 @@ class InMemoryParkingEpisodeTracker:
         previous_anchor = slot.trusted_anchor_at
         self._bind_session(slot, parking_session_id)
         try:
+            if eligibility.value is ParkingEligibilityValue.UNKNOWN:
+                slot.break_chain()
+                slot.episode = self._replace_sample(
+                    slot.episode,
+                    signal=MotionSignal.UNKNOWN,
+                    observation=_dependency_unknown(observation),
+                    observed_at=observed_at,
+                )
+                return slot.episode
+            if (
+                eligibility.value is ParkingEligibilityValue.INELIGIBLE
+                and slot.episode.state is ParkingState.STOP_PENDING
+            ):
+                slot.break_chain()
+                slot.episode = replace(
+                    slot.episode,
+                    state=ParkingState.CANCELED,
+                    observation=observation,
+                    last_signal=signal,
+                    record_version=slot.episode.record_version + 1,
+                    updated_at=observed_at,
+                    assignment=None,
+                    ended_at=observed_at,
+                    termination_reason=PARKING_INELIGIBLE,
+                )
+                del self._slots[physical_vehicle_id]
+                return slot.episode
             if not _is_reliable(signal, observation):
                 slot.break_chain()
                 slot.episode = self._replace_sample(
@@ -594,4 +637,16 @@ def _preserve_last_reliable(
     return replace(
         observation,
         last_reliable_observed_at=previous.last_reliable_observed_at,
+    )
+
+
+def _dependency_unknown(observation: ObservationStatus) -> ObservationStatus:
+    """정상 bbox와 별개로 주차 자격 dependency가 불명확함을 표현한다."""
+
+    if observation.state is not ObservationState.OBSERVED:
+        return observation
+    return ObservationStatus(
+        state=ObservationState.UNKNOWN,
+        reason=ObservationReason.DEPENDENCY_UNAVAILABLE,
+        last_reliable_observed_at=observation.last_reliable_observed_at,
     )

@@ -178,7 +178,10 @@ def _render_policy_inputs() -> ViewerPolicy:
             )
 
         with zone_tab:
-            st.caption("ZoneVisit → footprint overlap → Assignment/BAD_PARKING")
+            st.caption(
+                "ZoneVisit / EXIT traversal → footprint overlap → "
+                "Assignment/BAD_PARKING"
+            )
             columns = st.columns(4)
             values["zone_entry_confirm_seconds"] = columns[0].number_input(
                 "Zone entry confirm (s)",
@@ -190,45 +193,50 @@ def _render_policy_inputs() -> ViewerPolicy:
                 min_value=0.0,
                 value=defaults.zone_exit_confirm_seconds,
             )
-            values["entry_match_window_seconds"] = columns[2].number_input(
+            values["exit_reentry_confirmation_seconds"] = (
+                columns[2].number_input(
+                    "EXIT re-entry confirm (s)",
+                    min_value=0.001,
+                    value=defaults.exit_reentry_confirmation_seconds,
+                    help=(
+                        "외향 통과 latch를 취소하려면 EXIT 기준선 내향에서 "
+                        "연속 관측되어야 하는 시간입니다."
+                    ),
+                )
+            )
+            values["entry_match_window_seconds"] = columns[3].number_input(
                 "Entry match window (s)",
                 min_value=0.001,
                 value=defaults.entry_match_window_seconds,
             )
-            values["entry_zone_min_overlap_ratio"] = columns[3].number_input(
+
+            columns = st.columns(4)
+            values["entry_zone_min_overlap_ratio"] = columns[0].number_input(
                 "Entry overlap",
                 min_value=0.0,
                 max_value=1.0,
                 value=defaults.entry_zone_min_overlap_ratio,
             )
-
-            columns = st.columns(4)
-            values["zone_presence_min_overlap_ratio"] = columns[0].number_input(
+            values["zone_presence_min_overlap_ratio"] = columns[1].number_input(
                 "Zone presence overlap",
                 min_value=0.0,
                 max_value=1.0,
                 value=defaults.zone_presence_min_overlap_ratio,
             )
-            values["assignment_min_overlap_ratio"] = columns[1].number_input(
+            values["assignment_min_overlap_ratio"] = columns[2].number_input(
                 "Assignment overlap",
                 min_value=0.0,
                 max_value=1.0,
                 value=defaults.assignment_min_overlap_ratio,
             )
-            values["assignment_ambiguous_margin"] = columns[2].number_input(
+            values["assignment_ambiguous_margin"] = columns[3].number_input(
                 "Assignment margin",
                 min_value=0.0,
                 max_value=1.0,
                 value=defaults.assignment_ambiguous_margin,
             )
-            values["out_of_zone_min_spot_overlap_ratio"] = columns[3].number_input(
-                "Out-of-zone spot-union overlap",
-                min_value=0.0,
-                max_value=1.0,
-                value=defaults.out_of_zone_min_spot_overlap_ratio,
-            )
 
-            columns = st.columns(2)
+            columns = st.columns(3)
             values["bad_parking_min_primary_overlap_ratio"] = columns[0].number_input(
                 "BAD_PARKING primary overlap",
                 min_value=0.0,
@@ -242,6 +250,12 @@ def _render_policy_inputs() -> ViewerPolicy:
                 max_value=1.0,
                 value=defaults.bad_parking_min_secondary_overlap_ratio,
                 help="두 번째 주차면 overlap이 이 값 이상이면 두 칸 차지 근거가 됩니다.",
+            )
+            values["out_of_zone_min_spot_overlap_ratio"] = columns[2].number_input(
+                "Out-of-zone spot-union overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=defaults.out_of_zone_min_spot_overlap_ratio,
             )
 
         with parking_tab:
