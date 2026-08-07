@@ -11,12 +11,14 @@ import { styles } from './request-detail-section.styles';
 const AUTO_ESCALATION_MESSAGE = '관리자에게 신고 데이터가 자동으로 전송되었습니다.';
 
 type RequestDetailSectionProps = {
+  requestId: number;
   photos: { imageId: number; imageUrl: string }[];
   summaryTitle: string;
   reasonQuote: string;
   violationType: string;
   plateNumber: string;
   location: string;
+  requestedAtLabel: string;
   showActions: boolean;
   reminderMessage: string;
   noticeMessage?: string;
@@ -32,12 +34,14 @@ type RequestDetailSectionProps = {
 
 // E-11: 이동 요청 상세 화면 본문 (사진 + 사유/위반정보 + 응답 액션)
 export function RequestDetailSection({
+  requestId,
   photos,
   summaryTitle,
   reasonQuote,
   violationType,
   plateNumber,
   location,
+  requestedAtLabel,
   showActions,
   reminderMessage,
   noticeMessage,
@@ -51,11 +55,14 @@ export function RequestDetailSection({
   onPressDecline,
 }: RequestDetailSectionProps) {
   return (
-    <>
+    <View style={styles.root}>
       <RequestPhoto photos={photos} />
 
       <View style={styles.mainCard}>
         <View style={styles.summary}>
+          <Text style={styles.summaryMeta}>
+            #{requestId} · {requestedAtLabel}
+          </Text>
           <Text style={styles.summaryTitle}>{summaryTitle}</Text>
           <Text style={styles.summaryReason}>{reasonQuote}</Text>
         </View>
@@ -88,6 +95,6 @@ export function RequestDetailSection({
           <RequestReminderNotice message={noticeMessage} />
         ) : null}
       </View>
-    </>
+    </View>
   );
 }

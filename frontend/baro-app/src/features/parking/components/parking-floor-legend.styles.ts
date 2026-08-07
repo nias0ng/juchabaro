@@ -3,9 +3,6 @@ import { StyleSheet } from 'react-native';
 import { Palette, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
-  container: {
-    gap: Spacing.xs,
-  },
   row: {
     flexDirection: 'row',
     columnGap: Spacing.md - 4,
@@ -30,6 +27,4 @@ export const LEGEND_DOT_COLOR = {
   mine: Palette.yellow100,
   occupied: Palette.violet300,
   empty: Palette.lilac100,
-  ev: Palette.sky100,
-  disabled: Palette.green100,
 } as const;
