@@ -21,13 +21,27 @@ export const styles = StyleSheet.create({
   },
   mapCard: {
     width: '100%',
-    backgroundColor: Palette.white80,
+    backgroundColor: Palette.gray25,
     borderRadius: Radius.xl + 2,
     padding: Spacing.md,
     gap: Spacing.base,
     ...Shadows.card,
   },
   congestionRow: {
-    alignSelf: 'flex-end',
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: Spacing.xs,
+    paddingRight: Spacing.sm,
+  },
+  carouselFrame: {
+    width: '100%',
+  },
+  floorScroll: {
+    width: '100%',
+  },
+  floorPage: {
+    gap: Spacing.base,
   },
 });

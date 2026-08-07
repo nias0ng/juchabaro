@@ -25,13 +25,22 @@ const LEVEL_LABEL: Record<CongestionLevel, string> = {
 type ParkingCongestionBadgeProps = {
   level: CongestionLevel;
   rateLabel: string;
+  showMetric?: boolean;
 };
 
-export function ParkingCongestionBadge({ level, rateLabel }: ParkingCongestionBadgeProps) {
+export function ParkingCongestionBadge({
+  level,
+  rateLabel,
+  showMetric = true,
+}: ParkingCongestionBadgeProps) {
   return (
     <View style={styles.row}>
-      <Text style={styles.metricLabel}>혼잡도</Text>
-      <Text style={[styles.rate, VALUE_COLOR_STYLE[level]]}>{rateLabel}</Text>
+      {showMetric ? (
+        <>
+          <Text style={styles.metricLabel}>혼잡도</Text>
+          <Text style={[styles.rate, VALUE_COLOR_STYLE[level]]}>{rateLabel}</Text>
+        </>
+      ) : null}
       <View style={[styles.pill, PILL_STYLE[level]]}>
         <Text style={[styles.value, VALUE_COLOR_STYLE[level]]}>{LEVEL_LABEL[level]}</Text>
       </View>

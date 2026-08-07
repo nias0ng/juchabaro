@@ -17,7 +17,6 @@ export function zoneTypeLabel(type: ZoneType): string {
 export function zoneTypeTone(type: ZoneType) {
   if (type === 'EV_CHARGING') return 'success' as const;
   if (type === 'DISABLED') return 'info' as const;
-  if (type === 'AISLE' || type === 'ENTRY_EXIT') return 'primary' as const;
   return 'neutral' as const;
 }
 
@@ -36,7 +35,7 @@ export function occupancyLabel(status: OccupancyStatus): string {
 export function occupancyTone(status: OccupancyStatus) {
   if (status === 'VIOLATION') return 'danger' as const;
   if (status === 'EMPTY') return 'success' as const;
-  return 'warning' as const;
+  return 'amber' as const;
 }
 
 // 위반 > 장애인 구역 > 전기차 구역 > 사용 중 > 비어 있음 순으로 우선한다(baro-app과 동일한 우선순위).
@@ -50,7 +49,7 @@ export function toCellVariant(spot: { zoneType: ZoneType; occupancyStatus: Occup
 
 // 백엔드는 분(allowedMinutes) 단위로 주고받지만, 화면에는 시간 단위로 보여준다.
 export function allowedTimeLabel(allowedMinutes: number | null): string {
-  if (allowedMinutes === null) return '무제한';
+  if (allowedMinutes === null) return '-';
   const hours = allowedMinutes / 60;
   const formatted = Number.isInteger(hours) ? String(hours) : hours.toFixed(1);
   return `${formatted}시간`;

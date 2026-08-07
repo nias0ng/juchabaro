@@ -26,7 +26,7 @@ export type AdminEventSummary = {
   eventId: number;
   plateNumber: string;
   eventType: EventType;
-  requestType: RequestType;
+  requestType: RequestType | null;
   requestStatus: RequestStatus | null;
   zoneNumber: string | null;
   detectedAt: string;
@@ -70,7 +70,7 @@ export type AdminEventDetail = {
   plateNumber: string;
   eventType: EventType;
   eventStatus: EventStatus;
-  requestType: RequestType;
+  requestType: RequestType | null;
   requestStatus: RequestStatus | null;
   zoneNumber: string | null;
   floor: string | null;

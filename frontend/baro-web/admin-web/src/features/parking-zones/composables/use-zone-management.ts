@@ -26,6 +26,8 @@ export function useZoneManagement() {
   return {
     FLOOR_KEYS: catalog.FLOOR_KEYS,
     selectedFloor: catalog.selectedFloor,
+    zoneFloorFilter: catalog.zoneFloorFilter,
+    selectFloor: catalog.selectFloor,
     zonesLoading: catalog.zonesLoading,
     zonesError: catalog.zonesError,
     spots: catalog.spots,
@@ -38,6 +40,8 @@ export function useZoneManagement() {
     congestion: catalog.congestion,
     zoneStats: catalog.zoneStats,
     filteredRows: catalog.filteredRows,
+    hasActiveFilters: catalog.hasActiveFilters,
+    resetFilters: catalog.resetFilters,
     selectedZone: catalog.selectedZone,
     editDraft: editor.editDraft,
     saveError: editor.saveError,

@@ -17,7 +17,7 @@ import type {
   AdminHistoryItem,
   AdminHistoryParams,
 } from '@/features/parking-events/api/types';
-import { dateStringDaysAgo } from '@/features/parking-events/data';
+import { dateStringDaysAgo, localDateString, todayDateString } from '@/features/parking-events/data';
 import { useAuthStore } from '@/stores/auth-store';
 
 function requireAccessToken(): string {
@@ -26,9 +26,45 @@ function requireAccessToken(): string {
   return accessToken;
 }
 
-// 날짜 필터를 고르지 않았을 때, 오늘 데이터가 없으면 이 안쪽으로 하루씩 과거를 훑는다.
-// 그래도 없으면 실제로 최근 사건이 없는 것으로 보고 빈 목록을 보여준다(무한정 훑지 않음).
-const MAX_LOOKBACK_DAYS = 14;
+// 날짜를 선택하지 않은 목록은 오늘을 포함한 최근 14개 달력 날짜를 대상으로 한다.
+const RECENT_EVENT_DAY_COUNT = 14;
+
+function isDateInRecentRange(iso: string, fromDate: string, toDate: string): boolean {
+  const eventDate = localDateString(iso);
+  return eventDate >= fromDate && eventDate <= toDate;
+}
+
+async function getRecentParkingEvents(
+  params: AdminEventListParams,
+  accessToken: string,
+): Promise<AdminEventSummary[]> {
+  const fromDate = dateStringDaysAgo(RECENT_EVENT_DAY_COUNT - 1);
+  const toDate = todayDateString();
+  const eventsById = new Map<number, AdminEventSummary>();
+  let page = 0;
+
+  while (true) {
+    const result = await getParkingEvents({ ...params, date: undefined, page }, accessToken);
+
+    for (const event of result.events) {
+      if (isDateInRecentRange(event.detectedAt, fromDate, toDate)) {
+        eventsById.set(event.eventId, event);
+      }
+    }
+
+    const reachedBeforeRange = result.events.some(
+      (event) => localDateString(event.detectedAt) < fromDate,
+    );
+    const isLastPage = result.events.length === 0 || page + 1 >= result.totalPages;
+    if (reachedBeforeRange || isLastPage) break;
+
+    page += 1;
+  }
+
+  return [...eventsById.values()].sort(
+    (left, right) => new Date(right.detectedAt).getTime() - new Date(left.detectedAt).getTime(),
+  );
+}
 
 // 사건 목록(ParkingEventListView)의 '사건 상세' 패널과 사건 상세 페이지(ParkingEventDetailView)가
 // 같은 사건에 대해 목록·상세·처리 이력을 공유해야 해서 Pinia로 끌어올렸다.
@@ -77,15 +113,8 @@ export const useParkingEventStore = defineStore('parking-event', () => {
         // 날짜를 직접 골랐으면 그 하루치만 조회한다(서버가 이미 detectedAt 내림차순으로 정렬해 줌).
         found = (await getParkingEvents(params, accessToken)).events;
       } else {
-        // 날짜를 안 골랐으면 오늘부터 하루씩 과거로 거슬러 올라가며 사건이 있는 가장 최근 날을 찾는다.
-        found = [];
-        for (let daysAgo = 0; daysAgo <= MAX_LOOKBACK_DAYS; daysAgo++) {
-          const result = await getParkingEvents({ ...params, date: dateStringDaysAgo(daysAgo) }, accessToken);
-          if (result.events.length > 0) {
-            found = result.events;
-            break;
-          }
-        }
+        // 날짜 미선택 시 최신순 페이지를 필요한 만큼만 읽어 최근 14일 전체 사건을 합친다.
+        found = await getRecentParkingEvents(params, accessToken);
       }
 
       if (requestId !== eventsRequestId) return;

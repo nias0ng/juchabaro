@@ -7,6 +7,7 @@ export const Palette = {
   white80: 'rgba(255, 255, 255, 0.8)',
   black: '#000000',
 
+  gray25: '#fcfcfc',
   gray50: '#f8f8fa',
   gray100: '#f0f0f3',
   gray200: '#e1e1e8',

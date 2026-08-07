@@ -5,6 +5,7 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   container: {
     gap: Spacing.sm,
+    marginTop: -Spacing.sm,
     marginBottom: Spacing.sm,
   },
   scroll: {
@@ -13,11 +14,13 @@ export const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: Spacing.sm,
-    paddingRight: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    paddingLeft: Spacing.xs,
+    paddingRight: Spacing.lg + Spacing.xs,
   },
   action: {
     width: 96,
-    minHeight: 105,
+    minHeight: 116,
     justifyContent: 'space-between',
     borderRadius: Radius.input,
     padding: Spacing.base,
@@ -25,10 +28,10 @@ export const styles = StyleSheet.create({
     paddingRight: Spacing.sm,
     gap: Spacing.sm,
     shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.09,
+    shadowRadius: 10,
+    elevation: 3,
   },
   label: {
     flexShrink: 1,
