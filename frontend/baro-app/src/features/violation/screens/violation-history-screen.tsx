@@ -119,8 +119,22 @@ export default function ViolationHistoryScreen() {
                 <View key={group.monthLabel} style={styles.monthGroup}>
                   <Text style={styles.monthLabel}>{group.monthLabel}</Text>
                   <View style={styles.monthItems}>
-                    {group.items.map((item) => (
-                      <ViolationListItem key={item.requestId} item={item} />
+                    {group.items.map((item, index) => (
+                      <View key={item.requestId} style={styles.historyItem}>
+                        <ViolationListItem
+                          item={item}
+                          onPress={() =>
+                            router.push({
+                              pathname: '/resident/request-detail',
+                              params: {
+                                requestId: String(item.requestId),
+                                viewMode: 'recipient',
+                              },
+                            })
+                          }
+                        />
+                        {index < group.items.length - 1 ? <View style={styles.itemDivider} /> : null}
+                      </View>
                     ))}
                   </View>
                 </View>
