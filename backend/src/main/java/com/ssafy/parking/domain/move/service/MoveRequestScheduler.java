@@ -2,9 +2,9 @@ package com.ssafy.parking.domain.move.service;
 
 import com.ssafy.parking.domain.move.entity.MoveRequest;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
+import com.ssafy.parking.domain.parking.entity.ParkingEventStatus;
 import com.ssafy.parking.domain.move.repository.MoveRequestRepository;
 import com.ssafy.parking.domain.notification.entity.NotificationType;
-import com.ssafy.parking.domain.notification.repository.NotificationRepository;
 import com.ssafy.parking.domain.hw.outbox.MoveVerificationNotifier;
 import com.ssafy.parking.domain.notification.service.NotificationDispatcher;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +58,7 @@ public class MoveRequestScheduler {
         List<MoveRequest> targets = moveRequestRepository.findEscalationTargets(escalateThreshold, TERMINAL);
         for (MoveRequest mr : targets) {
             mr.markNeedAdmin();
+            mr.getEvent().changeStatus(ParkingEventStatus.NEED_ADMIN);
         }
     }
 }
