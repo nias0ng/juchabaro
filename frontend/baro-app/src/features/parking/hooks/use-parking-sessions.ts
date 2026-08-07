@@ -5,6 +5,7 @@ import { useAuth } from '@/providers/auth-provider';
 import { queryKeys } from '@/services/query-keys';
 
 import { getMyParkingSessions } from '../api/parking-api';
+import { getLatestSessionsByVehicle } from '../utils/parking-session';
 
 export function useParkingSessions() {
   const { accessToken, status } = useAuth();
@@ -15,9 +16,10 @@ export function useParkingSessions() {
     enabled: status === 'authenticated' && !!accessToken,
   });
   useRefetchOnFocus(query.refetch, query.isStale);
+  const sessions = getLatestSessionsByVehicle(query.data ?? []);
 
   return {
-    sessions: query.data ?? [],
+    sessions,
     isLoading: query.isLoading,
     isRefreshing: query.isFetching && !query.isLoading,
     // 백그라운드 갱신 실패는 이미 화면에 표시된 데이터를 지우지 않는다 — 캐시가 없을 때만 오류로 노출한다.

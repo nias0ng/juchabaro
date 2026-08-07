@@ -12,6 +12,21 @@ function isEvChargingSession(session: ParkingSession): session is ParkingSession
   );
 }
 
+// 테스트 과정에서 같은 차량의 종료되지 않은 세션이 중복으로 남아도 홈 카드가 세션 수만큼
+// 늘어나지 않도록, 차량별 가장 최근 입차 세션 하나만 화면에 사용한다.
+export function getLatestSessionsByVehicle(sessions: ParkingSession[]): ParkingSession[] {
+  const latestByVehicle = new Map<number, ParkingSession>();
+
+  for (const session of sessions) {
+    const current = latestByVehicle.get(session.vehicleId);
+    if (!current || new Date(session.enteredAt).getTime() > new Date(current.enteredAt).getTime()) {
+      latestByVehicle.set(session.vehicleId, session);
+    }
+  }
+
+  return [...latestByVehicle.values()];
+}
+
 // 전기차 충전 구역 이용 차량은 종료 시각이 가까운 순으로 우선하고, 그 외에는 최신 입차 차량을 표시한다.
 export function pickPrimarySession(sessions: ParkingSession[]): ParkingSession | null {
   if (sessions.length === 0) return null;

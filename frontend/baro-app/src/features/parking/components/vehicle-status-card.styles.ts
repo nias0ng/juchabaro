@@ -5,6 +5,9 @@ import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   card: {
     width: '100%',
+    minHeight: 168,
+    position: 'relative',
+    justifyContent: 'center',
     backgroundColor: Palette.gray25,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
@@ -19,9 +22,6 @@ export const styles = StyleSheet.create({
   emptyCard: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  topGroup: {
-    gap: Spacing.xs,
   },
   headerGroup: {
     gap: Spacing.none,
@@ -86,12 +86,19 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
-  valueRow: {
+  detailsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: Spacing.base,
+  },
+  detailColumn: {
+    flex: 1,
+    gap: Spacing.xxs,
   },
   pageIndicatorText: {
+    flexShrink: 0,
+    marginLeft: 'auto',
+    paddingBottom: 1,
     fontSize: 12.5,
     fontWeight: FontWeight.semibold,
     color: Palette.violet500,
