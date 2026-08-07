@@ -89,8 +89,16 @@ export function useZoneCatalog() {
 
   const typeFilter = ref<ZoneType | null>(null);
   const statusFilter = ref<OccupancyStatus | null>(null);
+  // 구역 목록 전용 층 필터. null이면 "전체"(모든 층)를 보여준다. 특정 층을 고르면 지도 쪽
+  // 층 탭(selectedFloor)도 같이 그 층으로 바뀐다(selectFloor 참고).
+  const zoneFloorFilter = ref<FloorKey | null>(selectedFloor.value);
   const codeQuery = ref('');
   const selectedZoneId = ref<number | null>(null);
+
+  function selectFloor(floor: FloorKey | null) {
+    zoneFloorFilter.value = floor;
+    if (floor) selectedFloor.value = floor;
+  }
 
   function occupancyOf(zoneId: number): OccupancyStatus | null {
     return findSpotSummary(spots.value, zoneId)?.occupancyStatus ?? null;
@@ -100,19 +108,20 @@ export function useZoneCatalog() {
   // 응답 최상위 값 대신 선택한 층의 구역만 걸러서 화면에서 직접 계산한다.
   const congestion = computed(() => computeFloorCongestion(selectedFloor.value, spots.value));
 
-  const floorZones = computed(() =>
-    zones.value
-      .filter((z) => zoneFloorOf(z.zoneNumber) === selectedFloor.value)
-      .slice()
-      .sort((a, b) => compareZoneNumbers(a.zoneNumber, b.zoneNumber)),
-  );
-
+  // "전체 구역" 등 라벨이 실제로 전체를 뜻하므로, 선택한 층이 아니라 건물 전체 구역 기준으로 센다.
   const zoneStats = computed(() => ({
-    total: floorZones.value.length,
-    general: floorZones.value.filter((z) => z.zoneType === 'GENERAL').length,
-    disabled: floorZones.value.filter((z) => z.zoneType === 'DISABLED').length,
-    ev: floorZones.value.filter((z) => z.zoneType === 'EV_CHARGING').length,
+    total: zones.value.length,
+    general: zones.value.filter((z) => z.zoneType === 'GENERAL').length,
+    disabled: zones.value.filter((z) => z.zoneType === 'DISABLED').length,
+    ev: zones.value.filter((z) => z.zoneType === 'EV_CHARGING').length,
   }));
+
+  // 구역 목록은 zoneFloorFilter를 따른다 — null(전체)이면 모든 층, 아니면 그 층만.
+  const floorZones = computed(() => {
+    const sorted = zones.value.slice().sort((a, b) => compareZoneNumbers(a.zoneNumber, b.zoneNumber));
+    if (!zoneFloorFilter.value) return sorted;
+    return sorted.filter((z) => zoneFloorOf(z.zoneNumber) === zoneFloorFilter.value);
+  });
 
   const filteredRows = computed(() => {
     const query = codeQuery.value.trim().toUpperCase();
@@ -128,15 +137,39 @@ export function useZoneCatalog() {
     () => zones.value.find((z) => z.zoneId === selectedZoneId.value) ?? filteredRows.value[0] ?? null,
   );
 
+  const hasActiveFilters = computed(
+    () =>
+      zoneFloorFilter.value !== null
+      || typeFilter.value !== null
+      || statusFilter.value !== null
+      || codeQuery.value.trim() !== '',
+  );
+
+  // 지도 쪽 층(selectedFloor)은 그대로 두고, 목록 필터만 초기 상태(전체)로 되돌린다.
+  function resetFilters() {
+    zoneFloorFilter.value = null;
+    typeFilter.value = null;
+    statusFilter.value = null;
+    codeQuery.value = '';
+  }
+
   // 층 탭을 바꾸면 이전 층에서 고르던 구역 선택을 초기화해, 다른 층 이름의 구역이 그대로
   // "선택 구역 정보"에 남아있지 않게 한다(편집 draft 초기화는 use-zone-management.ts에서
-  // 별도로 처리 — 이 composable은 편집 상태를 모른다).
+  // 별도로 처리 — 이 composable은 편집 상태를 모른다). 다만 selectZoneId가 구역 목록 클릭에
+  // 맞춰 층까지 같이 바꿔준 경우에는(아래) 그 구역이 이미 새 층 소속이라 초기화하지 않는다.
   watch(selectedFloor, () => {
-    selectedZoneId.value = null;
+    const zone = zones.value.find((z) => z.zoneId === selectedZoneId.value);
+    if (!zone || zoneFloorOf(zone.zoneNumber) !== selectedFloor.value) {
+      selectedZoneId.value = null;
+    }
   });
 
+  // 구역 목록에서 다른 층의 구역을 클릭하면 지도 쪽 층 탭도 그 층으로 같이 바뀐다.
   function selectZoneId(zoneId: number) {
     selectedZoneId.value = zoneId;
+    const zone = zones.value.find((z) => z.zoneId === zoneId);
+    const floor = zone ? zoneFloorOf(zone.zoneNumber) : null;
+    if (floor) selectedFloor.value = floor;
   }
 
   function selectSpot(spot: ParkingSpotSummary) {
@@ -146,6 +179,8 @@ export function useZoneCatalog() {
   return {
     FLOOR_KEYS,
     selectedFloor,
+    zoneFloorFilter,
+    selectFloor,
     zones,
     zonesLoading,
     zonesError,
@@ -158,9 +193,10 @@ export function useZoneCatalog() {
     selectedZoneId,
     occupancyOf,
     congestion,
-    floorZones,
     zoneStats,
     filteredRows,
+    hasActiveFilters,
+    resetFilters,
     selectedZone,
     selectZoneId,
     selectSpot,

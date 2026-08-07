@@ -10,7 +10,8 @@ export type TagTone =
   | 'primary'
   | 'plain'
   | 'red'
-  | 'blue';
+  | 'blue'
+  | 'amber';
 
 withDefaults(defineProps<{ tone?: TagTone; variant?: 'solid' | 'text' }>(), {
   tone: 'neutral',
@@ -89,6 +90,12 @@ withDefaults(defineProps<{ tone?: TagTone; variant?: 'solid' | 'text' }>(), {
 .tone-blue {
   background: var(--panel-info-soft);
   color: color-mix(in oklch, var(--panel-info) 75%, var(--panel-foreground));
+}
+
+/* warning/orange보다 채도 있는 노란-주황색이 필요할 때(예: 구역 "사용 중" 상태) 쓴다. */
+.tone-amber {
+  background: var(--panel-warning-soft);
+  color: var(--panel-warning);
 }
 
 /* 배경 없이 글자만 보여줄 때 쓴다. 색상(tone)은 그대로 유지해 구분은 되게 한다. */

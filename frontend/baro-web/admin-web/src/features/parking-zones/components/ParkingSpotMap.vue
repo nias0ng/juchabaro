@@ -55,18 +55,21 @@ function spotAt(zoneNumber: string | null): ParkingSpotSummary | null {
   return spotByZoneNumber.value.get(zoneNumber.trim()) ?? null
 }
 
+// baro-app 주차 현황 카드와 같은 팔레트를 쓴다(empty=lilac100, occupied=violet300).
+// 앱에는 "내 차량(노란색)" 칸이 있지만 관리자 화면에는 그 개념이 없어서, 그 자리를
+// 위반 주차 강조(빨강)로 대신 쓴다. 장애인/전기차 구역도 색으로 구분하지 않고 empty와
+// 같은 배경을 쓰며, 구역 번호(D1-01/EV1-01)로만 구분한다.
 const CELL_BG: Record<CellVariant, string> = {
   empty: '#e7e5f3',
-  occupied: '#c9c2f0',
-  violation: '#ffdccd',
-  disabled: '#d5e6ff',
-  ev: '#dff3ef',
+  occupied: '#c3bcff',
+  violation: '#c96a6a',
+  disabled: '#e7e5f3',
+  ev: '#e7e5f3',
 }
 
+// 장애인/전기차는 구역 번호(D1-01/EV1-01)만으로 구분되니 별도 라벨을 붙이지 않는다.
 const CELL_LABEL: Partial<Record<CellVariant, { text: string; color: string }>> = {
-  violation: { text: '위반', color: '#d4553a' },
-  disabled: { text: 'DIS', color: '#3f7bd6' },
-  ev: { text: 'EV', color: '#1e8d80' },
+  violation: { text: '위반', color: '#ffffff' },
 }
 
 // 장애인/전기차 구역도 실제 차량이 있으면(사용 중) 일반 구역과 똑같이 보라색으로 채워서,
@@ -80,8 +83,8 @@ function isOccupiedSpecialZone(spot: ParkingSpotSummary): boolean {
 
 function cellBg(spot: ParkingSpotSummary | null): string {
   // spot이 null이면 "실제 데이터가 아직 없는 자리"라는 뜻이라, 자리(크기)는 유지하되
-  // 컨테이너 배경과 같은 색으로만 채워 눈에 띄지 않게 한다.
-  if (!spot) return '#eeecf8'
+  // 컨테이너 배경과 같은 색(lilac25)으로만 채워 눈에 띄지 않게 한다.
+  if (!spot) return '#f7f6fb'
   if (isOccupiedSpecialZone(spot)) return CELL_BG.occupied
   return CELL_BG[toCellVariant(spot)]
 }
@@ -93,12 +96,39 @@ function cellLabel(spot: ParkingSpotSummary | null) {
   return label
 }
 
+// 위반은 빨간 배경이라 밝은 글자, 나머지는 무난한 회색 글자로 구역 번호를 작게 곁들인다.
+function cellCodeColor(spot: ParkingSpotSummary | null): string {
+  if (!spot) return 'transparent'
+  return toCellVariant(spot) === 'violation' ? 'rgba(255, 255, 255, 0.85)' : 'var(--panel-muted-foreground)'
+}
+
 function isSelected(spot: ParkingSpotSummary | null): boolean {
   return Boolean(spot) && props.selectedZoneId === spot?.zoneId
 }
 
 function handleSelect(spot: ParkingSpotSummary | null) {
   if (spot) emit('selectSpot', spot)
+}
+
+type CellView = {
+  spot: ParkingSpotSummary | null
+  bg: string
+  code: string | null
+  label: { text: string; color: string } | null
+  selected: boolean
+}
+
+// 칸 하나를 그리는 데 필요한 값(배경/라벨/구역 번호/선택 여부)을 한 번에 묶어서,
+// 템플릿에서 spotAt()을 여러 번 반복 호출하지 않게 한다.
+function cellView(zoneNumber: string | null): CellView {
+  const spot = spotAt(zoneNumber)
+  return {
+    spot,
+    bg: cellBg(spot),
+    code: spot ? spot.zoneNumber.trim() : null,
+    label: cellLabel(spot),
+    selected: isSelected(spot),
+  }
 }
 </script>
 
@@ -110,22 +140,32 @@ function handleSelect(spot: ParkingSpotSummary | null) {
         <button
           type="button"
           class="cell side-cell"
-          :class="{ selected: isSelected(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null)) }"
-          :style="{ background: cellBg(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null)) }"
+          :class="{ selected: cellView(SIDE_BY_ROW[row.rowIndex] ?? null).selected }"
+          :style="{ background: cellView(SIDE_BY_ROW[row.rowIndex] ?? null).bg }"
           :title="SIDE_BY_ROW[row.rowIndex] ?? undefined"
-          :disabled="!spotAt(SIDE_BY_ROW[row.rowIndex] ?? null)"
-          @click="handleSelect(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null))"
+          :disabled="!cellView(SIDE_BY_ROW[row.rowIndex] ?? null).spot"
+          @click="handleSelect(cellView(SIDE_BY_ROW[row.rowIndex] ?? null).spot)"
         >
-          <span
-            v-if="cellLabel(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null))"
-            :style="{ color: cellLabel(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null))!.color }"
-          >
-            {{ cellLabel(spotAt(SIDE_BY_ROW[row.rowIndex] ?? null))!.text }}
+          <span class="cell-content">
+            <span
+              v-if="cellView(SIDE_BY_ROW[row.rowIndex] ?? null).label"
+              class="cell-status"
+              :style="{ color: cellView(SIDE_BY_ROW[row.rowIndex] ?? null).label!.color }"
+            >
+              {{ cellView(SIDE_BY_ROW[row.rowIndex] ?? null).label!.text }}
+            </span>
+            <span
+              v-if="cellView(SIDE_BY_ROW[row.rowIndex] ?? null).code"
+              class="cell-code"
+              :style="{ color: cellCodeColor(cellView(SIDE_BY_ROW[row.rowIndex] ?? null).spot) }"
+            >
+              {{ cellView(SIDE_BY_ROW[row.rowIndex] ?? null).code }}
+            </span>
           </span>
         </button>
         <div class="gap-slot">
-          <div v-if="row.rowIndex === 0" class="exit-block" title="출구(EXIT)">출구</div>
-          <div v-else-if="row.rowIndex === LAST_ROW_INDEX" class="entry-block" title="입구(ENTRY)">입구</div>
+          <div v-if="row.rowIndex === 0" class="access-block" title="출구(EXIT)">출구</div>
+          <div v-else-if="row.rowIndex === LAST_ROW_INDEX" class="access-block" title="입구(ENTRY)">입구</div>
         </div>
         <div class="main-row">
           <button
@@ -133,14 +173,19 @@ function handleSelect(spot: ParkingSpotSummary | null) {
             :key="zoneNumber ?? `${row.rowIndex}-${columnIndex}`"
             type="button"
             class="cell main-cell"
-            :class="{ selected: isSelected(spotAt(zoneNumber)) }"
-            :style="{ background: cellBg(spotAt(zoneNumber)) }"
+            :class="{ selected: cellView(zoneNumber).selected }"
+            :style="{ background: cellView(zoneNumber).bg }"
             :title="zoneNumber ?? undefined"
-            :disabled="!spotAt(zoneNumber)"
-            @click="handleSelect(spotAt(zoneNumber))"
+            :disabled="!cellView(zoneNumber).spot"
+            @click="handleSelect(cellView(zoneNumber).spot)"
           >
-            <span v-if="cellLabel(spotAt(zoneNumber))" :style="{ color: cellLabel(spotAt(zoneNumber))!.color }">
-              {{ cellLabel(spotAt(zoneNumber))!.text }}
+            <span class="cell-content">
+              <span v-if="cellView(zoneNumber).label" class="cell-status" :style="{ color: cellView(zoneNumber).label!.color }">
+                {{ cellView(zoneNumber).label!.text }}
+              </span>
+              <span v-if="cellView(zoneNumber).code" class="cell-code" :style="{ color: cellCodeColor(cellView(zoneNumber).spot) }">
+                {{ cellView(zoneNumber).code }}
+              </span>
             </span>
           </button>
         </div>
@@ -158,7 +203,7 @@ function handleSelect(spot: ParkingSpotSummary | null) {
   margin: 0 auto;
   padding: var(--spacing-base);
   border-radius: var(--radius-lg);
-  background: #eeecf8;
+  background: #f7f6fb;
 }
 
 .row-group {
@@ -170,7 +215,7 @@ function handleSelect(spot: ParkingSpotSummary | null) {
 .divider {
   height: 22px;
   margin: 0 calc(var(--spacing-base) * -1);
-  background: #eeecf8;
+  background: #f7f6fb;
 }
 
 .group-row {
@@ -185,33 +230,25 @@ function handleSelect(spot: ParkingSpotSummary | null) {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 48px;
+  width: 56px;
 }
 
-.exit-block,
-.entry-block {
+/* 입구/출구는 실제 주차 상태 정보가 아니라 구조 안내라, baro-app과 동일하게 배경 박스 없이
+   글자만 둔다. */
+.access-block {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 32px;
-  font-size: 10px;
+  width: 56px;
+  height: 40px;
+  font-size: 13px;
   font-weight: 700;
-  color: #fff;
-  border-radius: var(--radius-sm);
-}
-
-.exit-block {
-  background: #3b82f6;
-}
-
-.entry-block {
-  background: #22c55e;
+  color: var(--panel-muted-foreground);
 }
 
 .main-row {
   display: flex;
-  gap: 5px;
+  gap: 6px;
 }
 
 .cell {
@@ -221,7 +258,7 @@ function handleSelect(spot: ParkingSpotSummary | null) {
   flex-shrink: 0;
   border: none;
   border-radius: var(--radius-sm);
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
   transition: outline-color 0.15s ease;
@@ -231,14 +268,34 @@ function handleSelect(spot: ParkingSpotSummary | null) {
   cursor: default;
 }
 
+.cell-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.cell-status {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.cell-code {
+  font-size: 11px;
+  font-weight: 600;
+  /* 좁은 칸 폭 때문에 구역 번호(예: EV1-01)가 줄바꿈될 때 줄 사이가 너무 붙지 않게 한다. */
+  line-height: 1.35;
+}
+
 .side-cell {
-  width: 40px;
-  height: 32px;
+  width: 56px;
+  height: 48px;
 }
 
 .main-cell {
-  width: 32px;
-  aspect-ratio: 0.78;
+  width: 48px;
+  height: 64px;
 }
 
 .selected {
