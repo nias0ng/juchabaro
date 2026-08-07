@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum, auto
 from threading import Lock
 
 from src.actuators.models import ActuatorCommand
@@ -71,6 +72,85 @@ class LocalWarningZoneBinding:
         _require_non_blank(self.speaker_action, "speaker_action")
 
 
+class LocalWarningAssessmentConflictError(ValueError):
+    """같은 zone revision에 서로 다른 assessment가 전달된 계약 오류."""
+
+    def __init__(
+        self,
+        *,
+        zone_id: ZoneId,
+        assessment_revision: int,
+        existing_assessment: TofZoneAuthorizationAssessment,
+        incoming_assessment: TofZoneAuthorizationAssessment,
+    ) -> None:
+        super().__init__(
+            "동일한 assessment revision에 서로 다른 평가가 전달되었습니다: "
+            f"zone_id={zone_id}, "
+            f"assessment_revision={assessment_revision}"
+        )
+        self.zone_id = zone_id
+        self.assessment_revision = assessment_revision
+        self.existing_assessment = existing_assessment
+        self.incoming_assessment = incoming_assessment
+
+
+class LocalWarningDeliveryStage(str, Enum):
+    LED = "LED"
+    SPEAKER = "SPEAKER"
+
+
+@dataclass(frozen=True)
+class LocalWarningDeliveryFailure:
+    """한 actuator port에 projection을 전달하지 못한 결과."""
+
+    stage: LocalWarningDeliveryStage
+    error: Exception
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, LocalWarningDeliveryStage):
+            raise ValueError(
+                "stage는 LocalWarningDeliveryStage여야 합니다."
+            )
+        if not isinstance(self.error, Exception):
+            raise ValueError("error는 Exception이어야 합니다.")
+
+
+class LocalWarningDeliveryError(RuntimeError):
+    """하나 이상의 actuator port projection 전달 실패."""
+
+    def __init__(
+        self,
+        *,
+        failures: tuple[LocalWarningDeliveryFailure, ...],
+        active_zone_ids: tuple[ZoneId, ...],
+    ) -> None:
+        if not isinstance(failures, tuple) or not failures:
+            raise ValueError(
+                "failures는 비어 있지 않은 tuple이어야 합니다."
+            )
+        if any(
+            not isinstance(failure, LocalWarningDeliveryFailure)
+            for failure in failures
+        ):
+            raise ValueError(
+                "failures의 모든 항목은 "
+                "LocalWarningDeliveryFailure여야 합니다."
+            )
+
+        self.failures = failures
+        self.primary_error = failures[0].error
+        self.active_zone_ids = active_zone_ids
+
+        details = "; ".join(
+            f"{failure.stage.value}: {failure.error}"
+            for failure in failures
+        )
+        super().__init__(
+            "로컬 경고 projection 전달에 실패했습니다: "
+            f"{details}"
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class _LocalWarningZoneState:
     warning_active: bool
@@ -90,6 +170,18 @@ class _LocalWarningZoneState:
             raise ValueError(
                 "비활성 경고에는 warning_started_at을 둘 수 없습니다."
             )
+
+
+class _AssessmentAcceptance(Enum):
+    NEW = auto()
+    RETRY = auto()
+    STALE = auto()
+
+
+@dataclass
+class _ProjectionDeliveryState:
+    last_successful_projection: tuple[ActuatorCommand, ...] = ()
+    dirty: bool = False
 
 
 _INACTIVE_STATE = _LocalWarningZoneState(
@@ -127,16 +219,20 @@ class LocalWarningCoordinator:
             zone_id: _INACTIVE_STATE
             for zone_id in self._bindings
         }
+        self._latest_assessments: dict[
+            ZoneId,
+            TofZoneAuthorizationAssessment,
+        ] = {}
 
         # Adapter의 초기 상태도 경고가 없는 빈 projection이라는 계약을 따른다.
-        self._last_led_projection: tuple[ActuatorCommand, ...] = ()
-        self._last_speaker_projection: tuple[ActuatorCommand, ...] = ()
+        self._led_delivery_state = _ProjectionDeliveryState()
+        self._speaker_delivery_state = _ProjectionDeliveryState()
 
     def consume_assessment(
         self,
         assessment: TofZoneAuthorizationAssessment,
     ) -> None:
-        """Assessment 하나를 반영하고 필요한 전체 projection을 전달한다."""
+        """Assessment 하나를 수락하고 필요한 전체 projection을 전달한다."""
 
         if not isinstance(assessment, TofZoneAuthorizationAssessment):
             raise ValueError(
@@ -159,26 +255,44 @@ class LocalWarningCoordinator:
                     f"zone_id={assessment.zone_id}"
                 )
 
-            self._update_state(assessment)
+            acceptance = self._accept_assessment(assessment)
+            if acceptance is _AssessmentAcceptance.STALE:
+                return
+            if acceptance is _AssessmentAcceptance.NEW:
+                self._update_state(assessment)
+
             led_projection, speaker_projection = self._build_projections()
+            failures: list[LocalWarningDeliveryFailure] = []
 
-            if led_projection != self._last_led_projection:
-                self._led_port.apply_projection(led_projection)
-                self._last_led_projection = led_projection
+            led_failure = self._reconcile_port(
+                stage=LocalWarningDeliveryStage.LED,
+                port=self._led_port,
+                delivery_state=self._led_delivery_state,
+                desired_projection=led_projection,
+            )
+            if led_failure is not None:
+                failures.append(led_failure)
 
-            if speaker_projection != self._last_speaker_projection:
-                self._speaker_port.apply_projection(speaker_projection)
-                self._last_speaker_projection = speaker_projection
+            speaker_failure = self._reconcile_port(
+                stage=LocalWarningDeliveryStage.SPEAKER,
+                port=self._speaker_port,
+                delivery_state=self._speaker_delivery_state,
+                desired_projection=speaker_projection,
+            )
+            if speaker_failure is not None:
+                failures.append(speaker_failure)
+
+            if failures:
+                delivery_error = self._build_delivery_error(
+                    tuple(failures)
+                )
+                raise delivery_error from delivery_error.primary_error
 
     def active_zone_ids(self) -> tuple[ZoneId, ...]:
         """현재 로컬 경고가 활성화된 zone ID를 정렬해 반환한다."""
 
         with self._lock:
-            return tuple(
-                zone_id
-                for zone_id in sorted(self._states)
-                if self._states[zone_id].warning_active
-            )
+            return self._active_zone_ids_unlocked()
 
     @staticmethod
     def _validate_bindings(
@@ -244,6 +358,36 @@ class LocalWarningCoordinator:
             )
 
         return by_zone_id
+
+    def _accept_assessment(
+        self,
+        assessment: TofZoneAuthorizationAssessment,
+    ) -> _AssessmentAcceptance:
+        revision = assessment.assessment_revision
+        if revision < 1:
+            raise ValueError("assessment_revision은 1 이상이어야 합니다.")
+
+        existing = self._latest_assessments.get(assessment.zone_id)
+        if existing is None:
+            self._latest_assessments[assessment.zone_id] = assessment
+            return _AssessmentAcceptance.NEW
+
+        if revision > existing.assessment_revision:
+            self._latest_assessments[assessment.zone_id] = assessment
+            return _AssessmentAcceptance.NEW
+
+        if revision < existing.assessment_revision:
+            return _AssessmentAcceptance.STALE
+
+        if assessment == existing:
+            return _AssessmentAcceptance.RETRY
+
+        raise LocalWarningAssessmentConflictError(
+            zone_id=assessment.zone_id,
+            assessment_revision=revision,
+            existing_assessment=existing,
+            incoming_assessment=assessment,
+        )
 
     def _update_state(
         self,
@@ -313,3 +457,49 @@ class LocalWarningCoordinator:
             )
 
         return tuple(led_commands), tuple(speaker_commands)
+
+    @staticmethod
+    def _reconcile_port(
+        *,
+        stage: LocalWarningDeliveryStage,
+        port: ActuatorPort,
+        delivery_state: _ProjectionDeliveryState,
+        desired_projection: tuple[ActuatorCommand, ...],
+    ) -> LocalWarningDeliveryFailure | None:
+        if (
+            not delivery_state.dirty
+            and desired_projection
+            == delivery_state.last_successful_projection
+        ):
+            return None
+
+        try:
+            port.apply_projection(desired_projection)
+        except Exception as error:
+            # Port가 명령 적용 전후 중 언제 실패했는지 application 계층은
+            # 확정할 수 없으므로 다음 수락 입력에서 반드시 재조정한다.
+            delivery_state.dirty = True
+            return LocalWarningDeliveryFailure(
+                stage=stage,
+                error=error,
+            )
+
+        delivery_state.last_successful_projection = desired_projection
+        delivery_state.dirty = False
+        return None
+
+    def _build_delivery_error(
+        self,
+        failures: tuple[LocalWarningDeliveryFailure, ...],
+    ) -> LocalWarningDeliveryError:
+        return LocalWarningDeliveryError(
+            failures=failures,
+            active_zone_ids=self._active_zone_ids_unlocked(),
+        )
+
+    def _active_zone_ids_unlocked(self) -> tuple[ZoneId, ...]:
+        return tuple(
+            zone_id
+            for zone_id in sorted(self._states)
+            if self._states[zone_id].warning_active
+        )
