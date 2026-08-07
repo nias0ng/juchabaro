@@ -12,9 +12,11 @@ from uuid import uuid4
 
 import pytest
 
+from src.domain.models import DeliveryState
 from src.evidence.models import (
     EvidenceArtifact,
     EvidenceId,
+    EvidencePublicationKind,
     EvidenceRetentionDisposition,
     EvidenceState,
 )
@@ -23,6 +25,7 @@ from src.evidence.spool import (
     EvidenceIntegrityError,
     EvidenceResourceLimitError,
     EvidenceSpool,
+    EvidenceStateError,
 )
 import src.evidence.spool as spool_module
 from src.parking.models import IncidentId
@@ -521,5 +524,68 @@ def test_retention_and_pressure_eviction_are_durable_and_ack_first(
         assert [item.evidence_id for item in spool.list_unavailable_candidates()] == [
             unacked.evidence_id
         ]
+    finally:
+        connection.close()
+
+
+def test_dispatched_unacknowledged_upload_is_not_evicted(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    root = tmp_path / "evidence"
+    spool = _spool(connection, root, cap=1_000_000)
+    repository = EvidenceArtifactRepository(connection)
+    try:
+        artifact = _reserved(
+            connection,
+            captured_at=NOW - timedelta(days=8),
+        )
+        ready = spool.store_jpeg(
+            artifact.evidence_id,
+            JPEG,
+            now=NOW - timedelta(days=8),
+        )
+        waiting = _transition(
+            connection,
+            ready,
+            publication_kind=EvidencePublicationKind.UPLOAD,
+            delivery_state=DeliveryState.RETRY_WAIT,
+            delivery_attempt_count=1,
+            next_delivery_attempt_at=NOW + timedelta(seconds=1),
+        )
+
+        assert spool.evict_expired(now=NOW) == ()
+        assert spool.evict_for_pressure(1, now=NOW) == ()
+        with pytest.raises(
+            EvidenceStateError,
+            match="unacknowledged dispatched upload",
+        ):
+            spool.evict(
+                waiting.evidence_id,
+                EvidenceRetentionDisposition.STORAGE_PRESSURE,
+                now=NOW,
+            )
+
+        persisted = repository.get(waiting.evidence_id)
+        assert persisted == waiting
+        assert waiting.local_path is not None
+        assert waiting.local_path.read_bytes() == JPEG
+
+        terminal = _transition(
+            connection,
+            waiting,
+            delivery_state=DeliveryState.FAILED_TERMINAL,
+            next_delivery_attempt_at=None,
+            last_delivery_error="Backend rejected upload contract",
+        )
+        evicted = spool.evict(
+            terminal.evidence_id,
+            EvidenceRetentionDisposition.RETENTION_EXPIRED,
+            now=NOW + timedelta(seconds=2),
+        )
+        assert evicted.state is EvidenceState.EVICTED
+        assert evicted.publication_kind is EvidencePublicationKind.UPLOAD
+        assert evicted.delivery_state is DeliveryState.FAILED_TERMINAL
+        assert spool.list_unavailable_candidates() == ()
     finally:
         connection.close()

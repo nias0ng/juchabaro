@@ -6,7 +6,10 @@
 `TrackingPipeline`은 임시 TrackSegment와 PhysicalVehicle 관측 신호만
 만든다. ``FrameObservationWorkflow``가 SessionContext 매칭, parking
 aggregate, physical departure, outbox를 하나의 SQLite UnitOfWork로
-commit한다. NOT_PRESENT ACK는 그 commit이 성공한 뒤에만 전달한다.
+commit한다. 같은 frame의 Evidence adapter는 commit 직후 호출하며, 정상
+경로에서는 READY/FAILED 종결 뒤에만 tracker retire·actuator
+projection·observer를 실행한다. local storage 장애는 adapter가 명시적인
+재조정 대상으로 보존한다.
 
 프레임 캡처나 추론이 실패하면 부재 누적 연속성을 먼저 끊고
 원래 예외를 전파한다. 그렇지 않으면 다음 정상 frame이 장애 구간의
@@ -180,9 +183,10 @@ class MonitoringPipeline:
         오류(`FrameSourceError`/`TrackingError`)가 그대로 전파된다 — 호출부가
         판단할 문제다.
 
-        `frame_observer`는 commit이 성공한 뒤에만 `(frame, tracking_batch,
-        result)`로 호출되는 선택적 telemetry·overlay 훅이다(`result_consumer`와
-        같은 정책 — 예외를 숨기지 않고, durable 저장 책임을 갖지 않는다).
+        `frame_observer`는 commit과 Evidence capture 시도, process-local
+        projection 뒤에만 `(frame, tracking_batch, result)`로 호출되는 선택적
+        telemetry·overlay 훅이다(`result_consumer`와 같은 정책 — 예외를 숨기지
+        않고, durable 저장 책임을 갖지 않는다).
         `_commit_interruption` 경로(카메라·추적 장애)는 신뢰할 수 있는
         frame/tracking_batch가 없으므로 호출하지 않는다.
         """
@@ -252,6 +256,10 @@ class MonitoringPipeline:
                 "evidence",
                 perf_counter() - evidence_started_at,
             )
+        self._apply_post_commit_effects(
+            result,
+            observed_at=tracking_batch.observed_at,
+        )
         if frame_observer is not None:
             frame_observer(frame, tracking_batch, result)
         return result
@@ -268,31 +276,43 @@ class MonitoringPipeline:
             observed_at=observed_at,
             observation=observation,
         )
-        return self._commit_batch(batch)
+        result = self._commit_batch(batch)
+        self._apply_post_commit_effects(result, observed_at=batch.observed_at)
+        return result
 
     def _commit_batch(
         self,
         tracking_batch: TrackingBatch,
     ) -> FrameObservationResult:
-        """TrackingBatch를 commit하고 그 이후의 projection side effect를 적용한다."""
+        """TrackingBatch의 local transaction만 commit한다."""
 
         connection = self._connection_factory()
         try:
-            result = self._frame_workflow.process(
+            return self._frame_workflow.process(
                 tracking_batch,
                 connection=connection,
             )
         finally:
             connection.close()
+
+    def _apply_post_commit_effects(
+        self,
+        result: FrameObservationResult,
+        *,
+        observed_at: datetime,
+    ) -> None:
+        """Evidence adapter 호출 뒤 commit 결과를 process-local projection에
+        반영한다.
+        """
+
         for physical_vehicle_id in result.retired_physical_vehicle_ids:
             self._tracking_pipeline.forget_physical_vehicle(
                 physical_vehicle_id
             )
         self._apply_actuator_projection(
             result.active_incidents,
-            requested_at=tracking_batch.observed_at,
+            requested_at=observed_at,
         )
-        return result
 
     def _apply_actuator_projection(
         self,
@@ -343,9 +363,19 @@ class MonitoringPipeline:
         return frames
 
     def close(self) -> None:
-        """프레임 소스와 추적 모델 자원을 해제한다."""
+        """보류 Evidence를 재조정한 뒤 프레임 소스와 추적 자원을 해제한다."""
 
         try:
-            self._tracking_pipeline.close()
+            if self._evidence_capture_sink is not None:
+                flush_pending = getattr(
+                    self._evidence_capture_sink,
+                    "flush_pending",
+                    None,
+                )
+                if callable(flush_pending):
+                    flush_pending()
         finally:
-            self._frame_source.close()
+            try:
+                self._tracking_pipeline.close()
+            finally:
+                self._frame_source.close()

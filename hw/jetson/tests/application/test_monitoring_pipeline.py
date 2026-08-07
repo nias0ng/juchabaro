@@ -19,6 +19,8 @@ from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.domain.models import ObservationReason, ObservationState
 from src.parking.models import ParkingPipelineResult
 from src.performance_timing import FramePerformanceTiming
+from src.storage.database import connect_database, open_database
+from src.storage.unit_of_work import UnitOfWork
 from src.tracking.models import PhysicalVehicleId
 from src.tracking.protocols import TrackingError
 
@@ -189,13 +191,14 @@ def _pipeline(
     actuator_command_planner=None,
     actuator_port=None,
     evidence_capture_sink=None,
+    connection_factory=_Connection,
     warm_up_on_open: bool = False,
 ) -> MonitoringPipeline:
     return MonitoringPipeline(
         frame_source=frame_source,
         tracking_pipeline=tracking,
         frame_workflow=workflow,
-        connection_factory=_Connection,
+        connection_factory=connection_factory,
         calibration_reference="pilot-v1",
         actuator_command_planner=actuator_command_planner,
         actuator_port=actuator_port,
@@ -308,6 +311,34 @@ def test_open_and_close_delegate_resource_lifecycle() -> None:
     assert len(workflow.recovery_connections) == 1
     assert workflow.recovery_connections[0].closed
     assert tracking.restored_checkpoints == [()]
+
+
+def test_close_flushes_pending_evidence_before_releasing_frame_resources() -> None:
+    frame_source = _FrameSource([])
+    tracking = _TrackingPipeline()
+    flushed: list[str] = []
+
+    class _CaptureSink:
+        def capture(self, *_args) -> None:
+            return
+
+        def flush_pending(self) -> None:
+            assert frame_source.closed is False
+            assert tracking.closed is False
+            flushed.append("evidence")
+
+    pipeline = _pipeline(
+        frame_source,
+        tracking,
+        _FrameWorkflow(),
+        evidence_capture_sink=_CaptureSink(),
+    )
+
+    pipeline.close()
+
+    assert flushed == ["evidence"]
+    assert frame_source.closed is True
+    assert tracking.closed is True
 
 
 def test_open_warms_runtime_without_committing_warm_up_frame() -> None:
@@ -501,22 +532,53 @@ def test_process_next_frame_calls_frame_observer_after_commit() -> None:
     assert observed_result is workflow.results[0]
 
 
-def test_process_next_frame_completes_evidence_before_telemetry_observer() -> None:
+def test_process_next_frame_orders_commit_evidence_and_post_commit_effects() -> None:
     frame = SimpleNamespace(calibration_id="pilot-v1")
-    workflow = _FrameWorkflow(evidence_capture_intents=("capture-intent",))
     order: list[str] = []
+    incident = SimpleNamespace(incident_id="incident-1")
+
+    class _OrderedWorkflow(_FrameWorkflow):
+        def process(self, batch, *, connection) -> FrameObservationResult:
+            result = super().process(batch, connection=connection)
+            order.append("commit")
+            return result
+
+    class _OrderedTracking(_TrackingPipeline):
+        def forget_physical_vehicle(self, physical_vehicle_id) -> None:
+            order.append("retire")
+            super().forget_physical_vehicle(physical_vehicle_id)
+
+    class _OrderedPlanner(_ActuatorPlanner):
+        def plan(self, incidents, *, requested_at):
+            order.append("actuator-plan")
+            return super().plan(incidents, requested_at=requested_at)
+
+    class _OrderedPort(_ActuatorPort):
+        def apply_projection(self, commands) -> None:
+            order.append("actuator-apply")
+            super().apply_projection(commands)
+
+    workflow = _OrderedWorkflow(
+        retired=(VEHICLE_ID,),
+        active_incidents=(incident,),
+        evidence_capture_intents=("capture-intent",),
+    )
+    tracking = _OrderedTracking()
 
     class _CaptureSink:
         def capture(self, captured_frame, batch, intents) -> None:
             assert captured_frame is frame
             assert batch in workflow.batches
+            assert all(connection.closed for connection in workflow.connections)
             assert intents == ("capture-intent",)
             order.append("capture")
 
     pipeline = _pipeline(
         _FrameSource([frame]),
-        _TrackingPipeline(),
+        tracking,
         workflow,
+        actuator_command_planner=_OrderedPlanner(),
+        actuator_port=_OrderedPort(),
         evidence_capture_sink=_CaptureSink(),
     )
 
@@ -524,7 +586,57 @@ def test_process_next_frame_completes_evidence_before_telemetry_observer() -> No
         frame_observer=lambda *_args: order.append("observer")
     )
 
-    assert order == ["capture", "observer"]
+    assert order == [
+        "commit",
+        "capture",
+        "retire",
+        "actuator-plan",
+        "actuator-apply",
+        "observer",
+    ]
+    assert tracking.forgotten == [VEHICLE_ID]
+
+
+def test_evidence_sink_reads_committed_state_from_separate_connection(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "monitoring.db"
+    connection = open_database(database_path)
+    try:
+        connection.execute(
+            "CREATE TABLE phase_two_commit_probe (probe_id INTEGER PRIMARY KEY)"
+        )
+    finally:
+        connection.close()
+
+    class _DurableWorkflow:
+        def process(self, _batch, *, connection) -> FrameObservationResult:
+            with UnitOfWork(connection):
+                connection.execute(
+                    "INSERT INTO phase_two_commit_probe(probe_id) VALUES (1)"
+                )
+            return _result(evidence_capture_intents=("capture-intent",))
+
+    class _CaptureSink:
+        def capture(self, _frame, _batch, _intents) -> None:
+            reader = connect_database(database_path)
+            try:
+                row = reader.execute(
+                    "SELECT probe_id FROM phase_two_commit_probe"
+                ).fetchone()
+            finally:
+                reader.close()
+            assert row is not None and int(row[0]) == 1
+
+    pipeline = _pipeline(
+        _FrameSource([SimpleNamespace(calibration_id="pilot-v1")]),
+        _TrackingPipeline(),
+        _DurableWorkflow(),
+        evidence_capture_sink=_CaptureSink(),
+        connection_factory=lambda: connect_database(database_path),
+    )
+
+    pipeline.process_next_frame()
 
 
 def test_process_next_frame_records_application_stage_timings() -> None:
@@ -545,6 +657,111 @@ def test_process_next_frame_records_application_stage_timings() -> None:
     assert timing.duration_ms("trackingPostprocess") is not None
     assert timing.duration_ms("commit") is not None
     assert timing.duration_ms("evidence") is not None
+
+
+def test_evidence_failure_prevents_retire_actuator_and_observer() -> None:
+    frame = SimpleNamespace(calibration_id="pilot-v1")
+    incident = SimpleNamespace(incident_id="incident-1")
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow(
+        retired=(VEHICLE_ID,),
+        active_incidents=(incident,),
+        evidence_capture_intents=("capture-intent",),
+    )
+    planner = _ActuatorPlanner()
+    port = _ActuatorPort()
+    observed: list[tuple] = []
+
+    class _FailingCaptureSink:
+        def capture(self, *_args) -> None:
+            raise RuntimeError("evidence remained WRITING")
+
+    pipeline = _pipeline(
+        _FrameSource([frame]),
+        tracking,
+        workflow,
+        actuator_command_planner=planner,
+        actuator_port=port,
+        evidence_capture_sink=_FailingCaptureSink(),
+    )
+
+    with pytest.raises(RuntimeError, match="remained WRITING"):
+        pipeline.process_next_frame(
+            frame_observer=lambda *args: observed.append(args)
+        )
+
+    assert tracking.forgotten == []
+    assert planner.calls == []
+    assert port.projections == []
+    assert observed == []
+
+
+def test_retire_failure_propagates_after_evidence_capture() -> None:
+    order: list[str] = []
+
+    class _FailingTracking(_TrackingPipeline):
+        def forget_physical_vehicle(self, physical_vehicle_id) -> None:
+            order.append("retire")
+            raise RuntimeError("retire failed")
+
+    class _CaptureSink:
+        def capture(self, *_args) -> None:
+            order.append("capture")
+
+    pipeline = _pipeline(
+        _FrameSource([SimpleNamespace(calibration_id="pilot-v1")]),
+        _FailingTracking(),
+        _FrameWorkflow(
+            retired=(VEHICLE_ID,),
+            evidence_capture_intents=("capture-intent",),
+        ),
+        evidence_capture_sink=_CaptureSink(),
+    )
+
+    with pytest.raises(RuntimeError, match="retire failed"):
+        pipeline.process_next_frame(
+            frame_observer=lambda *_args: order.append("observer")
+        )
+
+    assert order == ["capture", "retire"]
+
+
+def test_actuator_failure_propagates_after_evidence_capture_and_retire() -> None:
+    order: list[str] = []
+
+    class _CaptureSink:
+        def capture(self, *_args) -> None:
+            order.append("capture")
+
+    class _FailingPort(_ActuatorPort):
+        def apply_projection(self, _commands) -> None:
+            order.append("actuator")
+            raise RuntimeError("actuator failed")
+
+    class _OrderedTracking(_TrackingPipeline):
+        def forget_physical_vehicle(self, physical_vehicle_id) -> None:
+            order.append("retire")
+            super().forget_physical_vehicle(physical_vehicle_id)
+
+    pipeline = _pipeline(
+        _FrameSource([SimpleNamespace(calibration_id="pilot-v1")]),
+        _OrderedTracking(),
+        _FrameWorkflow(
+            retired=(VEHICLE_ID,),
+            active_incidents=(SimpleNamespace(incident_id="incident-1"),),
+            evidence_capture_intents=("capture-intent",),
+        ),
+        actuator_command_planner=_ActuatorPlanner(),
+        actuator_port=_FailingPort(),
+        evidence_capture_sink=_CaptureSink(),
+    )
+
+    with pytest.raises(RuntimeError, match="actuator failed"):
+        pipeline.process_next_frame(
+            frame_observer=lambda *_args: order.append("observer")
+        )
+
+    assert order == ["capture", "retire", "actuator"]
 
 
 def test_process_next_frame_skips_observer_when_capture_fails() -> None:
