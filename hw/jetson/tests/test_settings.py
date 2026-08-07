@@ -2,10 +2,94 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from src.config.settings import Settings
+
+TOF_OPTIONAL_ENV_FIELDS = (
+    ("TOF_I2C_BUS", "tof_i2c_bus"),
+    ("TOF_SHUTDOWN_SETTLE_SECONDS", "tof_shutdown_settle_seconds"),
+    ("TOF_BOOT_SETTLE_SECONDS", "tof_boot_settle_seconds"),
+    ("TOF_IO_TIMEOUT_SECONDS", "tof_io_timeout_seconds"),
+    ("TOF_DISABLED_ZONE_ID", "tof_disabled_zone_id"),
+    ("TOF_EV_CHARGING_ZONE_ID", "tof_ev_charging_zone_id"),
+    ("TOF_POLL_INTERVAL_SECONDS", "tof_poll_interval_seconds"),
+    ("TOF_ENTER_DISTANCE_MM", "tof_enter_distance_mm"),
+    ("TOF_EXIT_DISTANCE_MM", "tof_exit_distance_mm"),
+    ("TOF_ENTER_CONFIRM_SECONDS", "tof_enter_confirm_seconds"),
+    ("TOF_EXIT_CONFIRM_SECONDS", "tof_exit_confirm_seconds"),
+    (
+        "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS",
+        "tof_trusted_sample_max_gap_seconds",
+    ),
+    ("TOF_STALE_AFTER_SECONDS", "tof_stale_after_seconds"),
+    (
+        "TOF_OCCUPANCY_FRESHNESS_SECONDS",
+        "tof_occupancy_freshness_seconds",
+    ),
+    (
+        "TOF_MONITORING_FRESHNESS_SECONDS",
+        "tof_monitoring_freshness_seconds",
+    ),
+    (
+        "TOF_MAX_PRE_OCCUPANCY_OBSERVATION_SECONDS",
+        "tof_max_pre_occupancy_observation_seconds",
+    ),
+    (
+        "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
+        "tof_disabled_zone_warning_wav_path",
+    ),
+    (
+        "TOF_EV_ZONE_WARNING_WAV_PATH",
+        "tof_ev_zone_warning_wav_path",
+    ),
+    ("TOF_WARNING_AUDIO_DEVICE", "tof_warning_audio_device"),
+)
+
+
+def test_tof_is_disabled_and_optional_settings_are_absent_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TOF_ENABLED", raising=False)
+    for environment_name, _field_name in TOF_OPTIONAL_ENV_FIELDS:
+        monkeypatch.delenv(environment_name, raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tof_enabled is False
+    assert all(
+        getattr(settings, field_name) is None
+        for _environment_name, field_name in TOF_OPTIONAL_ENV_FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    (("true", True), ("false", False)),
+)
+def test_tof_enabled_parses_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv("TOF_ENABLED", raw_value)
+
+    assert Settings(_env_file=None).tof_enabled is expected
+
+
+def test_tof_enabled_rejects_invalid_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOF_ENABLED", "not-a-boolean")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    error_fields = {error["loc"][0] for error in exc_info.value.errors()}
+    assert error_fields == {"tof_enabled"}
 
 
 def test_tof_settings_parse_environment_variable_types(
@@ -27,6 +111,21 @@ def test_tof_settings_parse_environment_variable_types(
         "1.0",
     )
     monkeypatch.setenv("TOF_STALE_AFTER_SECONDS", "2.0")
+    monkeypatch.setenv("TOF_OCCUPANCY_FRESHNESS_SECONDS", "5")
+    monkeypatch.setenv("TOF_MONITORING_FRESHNESS_SECONDS", "6")
+    monkeypatch.setenv(
+        "TOF_MAX_PRE_OCCUPANCY_OBSERVATION_SECONDS",
+        "2",
+    )
+    monkeypatch.setenv(
+        "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
+        "unverified/disabled.wav",
+    )
+    monkeypatch.setenv(
+        "TOF_EV_ZONE_WARNING_WAV_PATH",
+        "unverified/ev.wav",
+    )
+    monkeypatch.setenv("TOF_WARNING_AUDIO_DEVICE", "plughw:CARD=Device,DEV=0")
 
     settings = Settings(_env_file=None)
 
@@ -51,6 +150,9 @@ def test_tof_settings_parse_environment_variable_types(
         "tof_exit_confirm_seconds",
         "tof_trusted_sample_max_gap_seconds",
         "tof_stale_after_seconds",
+        "tof_occupancy_freshness_seconds",
+        "tof_monitoring_freshness_seconds",
+        "tof_max_pre_occupancy_observation_seconds",
     )
     assert all(
         isinstance(getattr(settings, field_name), float)
@@ -63,75 +165,87 @@ def test_tof_settings_parse_environment_variable_types(
     assert settings.tof_exit_confirm_seconds == 0.0
     assert settings.tof_trusted_sample_max_gap_seconds == 1.0
     assert settings.tof_stale_after_seconds == 2.0
+    assert settings.tof_occupancy_freshness_seconds == 5.0
+    assert settings.tof_monitoring_freshness_seconds == 6.0
+    assert settings.tof_max_pre_occupancy_observation_seconds == 2.0
+    assert settings.tof_disabled_zone_warning_wav_path == Path(
+        "unverified/disabled.wav"
+    )
+    assert settings.tof_ev_zone_warning_wav_path == Path("unverified/ev.wav")
+    assert settings.tof_warning_audio_device == "plughw:CARD=Device,DEV=0"
 
 
-@pytest.mark.parametrize(
-    "environment_name,field_name",
-    [
-        ("TOF_I2C_BUS", "tof_i2c_bus"),
-        (
-            "TOF_SHUTDOWN_SETTLE_SECONDS",
-            "tof_shutdown_settle_seconds",
-        ),
-        (
-            "TOF_BOOT_SETTLE_SECONDS",
-            "tof_boot_settle_seconds",
-        ),
-        (
-            "TOF_IO_TIMEOUT_SECONDS",
-            "tof_io_timeout_seconds",
-        ),
-        ("TOF_DISABLED_ZONE_ID", "tof_disabled_zone_id"),
-        (
-            "TOF_EV_CHARGING_ZONE_ID",
-            "tof_ev_charging_zone_id",
-        ),
-        (
-            "TOF_POLL_INTERVAL_SECONDS",
-            "tof_poll_interval_seconds",
-        ),
-        (
-            "TOF_ENTER_DISTANCE_MM",
-            "tof_enter_distance_mm",
-        ),
-        (
-            "TOF_EXIT_DISTANCE_MM",
-            "tof_exit_distance_mm",
-        ),
-        (
-            "TOF_ENTER_CONFIRM_SECONDS",
-            "tof_enter_confirm_seconds",
-        ),
-        (
-            "TOF_EXIT_CONFIRM_SECONDS",
-            "tof_exit_confirm_seconds",
-        ),
-        (
-            "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS",
-            "tof_trusted_sample_max_gap_seconds",
-        ),
-        (
-            "TOF_STALE_AFTER_SECONDS",
-            "tof_stale_after_seconds",
-        ),
-    ],
-)
-def test_tof_settings_are_required(
+def test_disabled_tof_rejects_provided_invalid_runtime_value(
     monkeypatch: pytest.MonkeyPatch,
-    environment_name: str,
-    field_name: str,
 ) -> None:
-    monkeypatch.delenv(environment_name)
+    monkeypatch.setenv("TOF_ENABLED", "false")
+    monkeypatch.setenv("TOF_I2C_BUS", "not-an-integer")
 
     with pytest.raises(ValidationError) as exc_info:
         Settings(_env_file=None)
 
-    missing_fields = {
-        error["loc"][0]
-        for error in exc_info.value.errors()
-        if error["type"] == "missing"
-    }
-    assert field_name in missing_fields
+    error_fields = {error["loc"][0] for error in exc_info.value.errors()}
+    assert error_fields == {"tof_i2c_bus"}
+
+
+def test_enabled_tof_allows_incomplete_runtime_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOF_ENABLED", "true")
+    monkeypatch.setenv("TOF_I2C_BUS", "7")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tof_enabled is True
+    assert settings.tof_i2c_bus == 7
+    assert settings.tof_boot_settle_seconds is None
+
+
+def test_partial_speaker_configuration_is_preserved_for_runtime_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOF_ENABLED", "true")
+    monkeypatch.setenv(
+        "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
+        "unverified/disabled.wav",
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tof_enabled is True
+    assert settings.tof_disabled_zone_warning_wav_path == Path(
+        "unverified/disabled.wav"
+    )
+    assert settings.tof_ev_zone_warning_wav_path is None
+    assert settings.tof_warning_audio_device is None
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "field_name"),
+    (
+        (
+            "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
+            "tof_disabled_zone_warning_wav_path",
+        ),
+        (
+            "TOF_EV_ZONE_WARNING_WAV_PATH",
+            "tof_ev_zone_warning_wav_path",
+        ),
+        ("TOF_WARNING_AUDIO_DEVICE", "tof_warning_audio_device"),
+    ),
+)
+def test_tof_speaker_settings_reject_blank_strings(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_name: str,
+    field_name: str,
+) -> None:
+    monkeypatch.setenv(environment_name, "   ")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    error_fields = {error["loc"][0] for error in exc_info.value.errors()}
+    assert error_fields == {field_name}
 
 
 def test_live_stream_is_disabled_by_default() -> None:

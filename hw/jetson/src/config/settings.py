@@ -18,24 +18,38 @@ class Settings(BaseSettings):
 
     internal_api_key: str = ""
 
-    # 듀얼 VL53L0X 어댑터의 Linux I²C bus와 생명주기 시간값.
-    # 물리 헤더 핀 번호로 bus를 추정하지 않고 배포 환경이 명시한다.
-    tof_i2c_bus: int
-    tof_shutdown_settle_seconds: float
-    tof_boot_settle_seconds: float
-    tof_io_timeout_seconds: float
+    # 실제 장치 설정을 검증한 뒤 후속 composition 계층에서 활성화한다.
+    tof_enabled: bool = False
 
-    # ToF 점유 runtime의 zone 결속, polling 및 상태 확정 정책.
-    # 환경변수 parsing만 담당하며 의미 검증은 factory와 각 domain owner가 한다.
-    tof_disabled_zone_id: int
-    tof_ev_charging_zone_id: int
-    tof_poll_interval_seconds: float
-    tof_enter_distance_mm: float
-    tof_exit_distance_mm: float
-    tof_enter_confirm_seconds: float
-    tof_exit_confirm_seconds: float
-    tof_trusted_sample_max_gap_seconds: float
-    tof_stale_after_seconds: float
+    # ToF sensor/I²C 및 occupancy runtime 설정. 물리 헤더 핀 번호로 bus를
+    # 추정하지 않으며 완전성과 의미 검증은 후속 core factory가 담당한다.
+    tof_i2c_bus: int | None = None
+    tof_shutdown_settle_seconds: float | None = None
+    tof_boot_settle_seconds: float | None = None
+    tof_io_timeout_seconds: float | None = None
+
+    tof_disabled_zone_id: int | None = None
+    tof_ev_charging_zone_id: int | None = None
+    tof_poll_interval_seconds: float | None = None
+    tof_enter_distance_mm: float | None = None
+    tof_exit_distance_mm: float | None = None
+    tof_enter_confirm_seconds: float | None = None
+    tof_exit_confirm_seconds: float | None = None
+    tof_trusted_sample_max_gap_seconds: float | None = None
+    tof_stale_after_seconds: float | None = None
+
+    # ToF authorization freshness 설정. 운영값과 완전성은 후속 core factory가
+    # 검증한 뒤 domain policy에 전달한다.
+    tof_occupancy_freshness_seconds: float | None = None
+    tof_monitoring_freshness_seconds: float | None = None
+    tof_max_pre_occupancy_observation_seconds: float | None = None
+
+    # Optional local speaker 설정. Settings는 부분 설정도 보존하며 완전성 판단은
+    # 후속 composition에 위임한다. 누락·부분 설정·open 실패는 speaker에만
+    # 격리하고 sensor와 LED를 유지한다.
+    tof_disabled_zone_warning_wav_path: Path | None = None
+    tof_ev_zone_warning_wav_path: Path | None = None
+    tof_warning_audio_device: str | None = None
 
     # Jetson local durable state. 요청 thread와 tracking worker는 각자
     # connection을 열고 SQLite file만 공유한다.
@@ -281,6 +295,8 @@ class Settings(BaseSettings):
         "calibration_path",
         "vehicle_model_path",
         "vehicle_model_manifest_path",
+        "tof_disabled_zone_warning_wav_path",
+        "tof_ev_zone_warning_wav_path",
         mode="before",
     )
     @classmethod
@@ -290,6 +306,17 @@ class Settings(BaseSettings):
         info: ValidationInfo,
     ) -> object:
         if isinstance(value, str) and not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("tof_warning_audio_device")
+    @classmethod
+    def _require_optional_non_blank_string(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError(f"{info.field_name} must not be blank")
         return value
 
