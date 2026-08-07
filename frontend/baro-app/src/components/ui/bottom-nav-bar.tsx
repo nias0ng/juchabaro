@@ -72,9 +72,9 @@ export function BottomNavBar({
               accessibilityLabel={item.label}
               accessibilityState={{ selected: focused }}
               onPress={() => onPressItem(item.key)}
-              style={styles.tab}
+              style={[styles.tab, item.icon === 'home' && styles.homeTab]}
             >
-              <View style={[styles.iconContainer, item.icon === 'parking' && styles.iconContainerLarge]}>
+              <View style={styles.iconContainer}>
                 {item.icon === 'request' ? (
                   <IconGlyph
                     d={REQUEST_ICON_PATH}
@@ -88,11 +88,15 @@ export function BottomNavBar({
                     d={PARKING_ICON_PATHS}
                     color={color}
                     variant="fill"
-                    size={29}
+                    size={24}
                     viewBoxSize={PARKING_ICON_VIEWBOX_SIZE}
                   />
                 ) : (
-                  <IconGlyph d={STROKE_ICON_PATHS[item.icon]} color={color} />
+                  <IconGlyph
+                    d={STROKE_ICON_PATHS[item.icon]}
+                    color={color}
+                    size={item.icon === 'home' ? 23 : undefined}
+                  />
                 )}
                 {item.badge ? <View style={styles.badge} /> : null}
               </View>

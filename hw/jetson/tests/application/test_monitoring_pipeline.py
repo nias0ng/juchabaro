@@ -18,6 +18,7 @@ from src.actuators.models import ActuatorCommand
 from src.camera.frame_source import EndOfVideo, FrameSourceError
 from src.domain.models import ObservationReason, ObservationState
 from src.parking.models import ParkingPipelineResult
+from src.performance_timing import FramePerformanceTiming
 from src.tracking.models import PhysicalVehicleId
 from src.tracking.protocols import TrackingError
 
@@ -79,12 +80,15 @@ class _TrackingPipeline:
         self,
         *,
         open_error: Exception | None = None,
+        warm_up_error: Exception | None = None,
         process_error: Exception | None = None,
     ) -> None:
         self.opened = False
         self.closed = False
         self.open_error = open_error
+        self.warm_up_error = warm_up_error
         self.process_error = process_error
+        self.warm_up_frames: list[object] = []
         self.pause_count = 0
         self.full_area_flags: list[bool] = []
         self.forgotten: list[PhysicalVehicleId] = []
@@ -95,6 +99,11 @@ class _TrackingPipeline:
         if self.open_error is not None:
             raise self.open_error
         self.opened = True
+
+    def warm_up(self, frame) -> None:
+        if self.warm_up_error is not None:
+            raise self.warm_up_error
+        self.warm_up_frames.append(frame)
 
     def process(self, frame, *, full_area_observed: bool):
         if self.process_error is not None:
@@ -180,6 +189,7 @@ def _pipeline(
     actuator_command_planner=None,
     actuator_port=None,
     evidence_capture_sink=None,
+    warm_up_on_open: bool = False,
 ) -> MonitoringPipeline:
     return MonitoringPipeline(
         frame_source=frame_source,
@@ -190,6 +200,7 @@ def _pipeline(
         actuator_command_planner=actuator_command_planner,
         actuator_port=actuator_port,
         evidence_capture_sink=evidence_capture_sink,
+        warm_up_on_open=warm_up_on_open,
     )
 
 
@@ -297,6 +308,86 @@ def test_open_and_close_delegate_resource_lifecycle() -> None:
     assert len(workflow.recovery_connections) == 1
     assert workflow.recovery_connections[0].closed
     assert tracking.restored_checkpoints == [()]
+
+
+def test_open_warms_runtime_without_committing_warm_up_frame() -> None:
+    warm_up_frame = SimpleNamespace(
+        camera_id="cam-1",
+        frame_id=1,
+        width=1024,
+        height=576,
+    )
+    frame_source = _FrameSource([warm_up_frame])
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(
+        frame_source,
+        tracking,
+        workflow,
+        warm_up_on_open=True,
+    )
+
+    pipeline.open()
+
+    assert tracking.warm_up_frames == [warm_up_frame]
+    assert workflow.batches == []
+    assert workflow.results == []
+    with pytest.raises(EndOfVideo):
+        frame_source.capture()
+
+
+def test_open_cleans_resources_and_commits_interruption_when_warm_up_fails() -> None:
+    warm_up_frame = SimpleNamespace(
+        camera_id="cam-1",
+        frame_id=1,
+        width=1024,
+        height=576,
+    )
+    frame_source = _FrameSource([warm_up_frame])
+    tracking = _TrackingPipeline(
+        warm_up_error=TrackingError("warm-up inference failed")
+    )
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(
+        frame_source,
+        tracking,
+        workflow,
+        warm_up_on_open=True,
+    )
+
+    with pytest.raises(TrackingError, match="warm-up inference failed"):
+        pipeline.open()
+
+    assert tracking.closed is True
+    assert frame_source.closed is True
+    assert len(workflow.batches) == 1
+    assert (
+        workflow.batches[0].observation.reason
+        is ObservationReason.PIPELINE_STALLED
+    )
+
+
+def test_open_cleans_resources_when_warm_up_capture_fails() -> None:
+    frame_source = _FailingFrameSource([])
+    tracking = _TrackingPipeline()
+    workflow = _FrameWorkflow()
+    pipeline = _pipeline(
+        frame_source,
+        tracking,
+        workflow,
+        warm_up_on_open=True,
+    )
+
+    with pytest.raises(FrameSourceError, match="camera unavailable"):
+        pipeline.open()
+
+    assert tracking.closed is True
+    assert frame_source.closed is True
+    assert len(workflow.batches) == 1
+    assert (
+        workflow.batches[0].observation.reason
+        is ObservationReason.CAMERA_UNAVAILABLE
+    )
 
 
 def test_camera_open_failure_commits_unknown_observation_before_propagating() -> None:
@@ -434,6 +525,26 @@ def test_process_next_frame_completes_evidence_before_telemetry_observer() -> No
     )
 
     assert order == ["capture", "observer"]
+
+
+def test_process_next_frame_records_application_stage_timings() -> None:
+    timing = FramePerformanceTiming()
+    frame = SimpleNamespace(
+        calibration_id="pilot-v1",
+        performance_timing=timing,
+    )
+    pipeline = _pipeline(
+        _FrameSource([frame]),
+        _TrackingPipeline(),
+        _FrameWorkflow(),
+    )
+
+    pipeline.process_next_frame()
+
+    assert timing.duration_ms("captureTotal") is not None
+    assert timing.duration_ms("trackingPostprocess") is not None
+    assert timing.duration_ms("commit") is not None
+    assert timing.duration_ms("evidence") is not None
 
 
 def test_process_next_frame_skips_observer_when_capture_fails() -> None:

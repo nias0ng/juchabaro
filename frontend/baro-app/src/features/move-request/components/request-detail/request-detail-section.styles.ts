@@ -3,7 +3,11 @@ import { StyleSheet } from 'react-native';
 import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
   mainCard: {
+    flexGrow: 1,
     gap: Spacing.base + 1,
     backgroundColor: Palette.gray50,
     paddingTop: Spacing.lg + 4,
@@ -17,6 +21,10 @@ export const styles = StyleSheet.create({
   },
   summary: {
     gap: Spacing.xs,
+  },
+  summaryMeta: {
+    fontSize: 11.5,
+    color: Palette.gray400,
   },
   summaryTitle: {
     fontSize: 19,

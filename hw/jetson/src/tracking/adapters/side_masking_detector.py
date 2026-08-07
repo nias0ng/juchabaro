@@ -139,6 +139,11 @@ class SideMaskingDetector:
 
         self._inner.close()
 
+    def warm_up(self, frame: CapturedFrame) -> None:
+        """운영 경로와 같은 마스킹 입력으로 ``inner``를 warm-up한다."""
+
+        self._inner.warm_up(self._masked_frame(frame))
+
     def track(self, frame: CapturedFrame) -> TrackerFrameResult:
         """좌우만 검정 마스킹한 프레임 복사본을 `inner.track()`에 전달한다.
 
@@ -146,6 +151,11 @@ class SideMaskingDetector:
         맞춘다 — shape을 확인할 수 없거나 metadata와 실제 이미지 크기가 다르면
         `TrackingError`로 fail-closed 거부한다.
         """
+
+        return self._inner.track(self._masked_frame(frame))
+
+    def _masked_frame(self, frame: CapturedFrame) -> CapturedFrame:
+        """검증된 입력을 재사용 buffer에 복사·마스킹해 delegate frame을 만든다."""
 
         image: Any = frame.image
         shape = getattr(image, "shape", None)
@@ -180,5 +190,4 @@ class SideMaskingDetector:
         if right_start_px < image_width:
             masked_image[:, right_start_px:] = _MASK_COLOR
 
-        masked_frame = replace(frame, image=masked_image)
-        return self._inner.track(masked_frame)
+        return replace(frame, image=masked_image)

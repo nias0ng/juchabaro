@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -61,12 +62,14 @@ class Settings(BaseSettings):
     # egress aisle snapshot. ZoneDefinition과 version·calibration을 기동 시 대조한다.
     egress_aisle_path: Path
 
-    # USB camera 장치와 요청 해상도. width/height의 0은 장치 기본 해상도를
-    # 사용한다는 OpenCvWebcamFrameSource 계약이다.
+    # USB camera 장치와 요청 capture mode. width/height/fps의 0과 fourcc의
+    # None은 해당 항목을 요청하지 않고 장치 기본값을 사용한다는 계약이다.
     camera_id: str
     camera_index: int = Field(ge=0)
     camera_width: int = Field(default=0, ge=0)
     camera_height: int = Field(default=0, ge=0)
+    camera_fourcc: str | None = None
+    camera_fps: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
 
     # 데모용 라이브 오버레이 MJPEG 스트리밍. 운영 배포는 기본값(꺼짐)을
     # 유지한다 — 켜면 매 프레임 JPEG 인코딩 비용이 판정 루프와 같은
@@ -86,6 +89,7 @@ class Settings(BaseSettings):
         le=1.0,
         allow_inf_nan=False,
     )
+    remap_backend: Literal["opencv", "vpi"] = "opencv"
 
     # Model binary와 별도의 versioned manifest를 함께 지정한다.
     # composition preflight은 manifest의 SHA-256으로 배포 binary를
@@ -248,6 +252,29 @@ class Settings(BaseSettings):
     ) -> str:
         if not value.strip():
             raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("camera_fourcc")
+    @classmethod
+    def _normalize_camera_fourcc(cls, value: str | None) -> str | None:
+        """OpenCV VideoWriter_fourcc에 전달할 printable ASCII 4자를 정규화한다."""
+
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if len(normalized) != 4 or not all(
+            32 <= ord(char) <= 126 for char in normalized
+        ):
+            raise ValueError(
+                "camera_fourcc must be exactly four printable ASCII characters"
+            )
+        return normalized
+
+    @field_validator("remap_backend", mode="before")
+    @classmethod
+    def _normalize_remap_backend(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
 
     @field_validator(

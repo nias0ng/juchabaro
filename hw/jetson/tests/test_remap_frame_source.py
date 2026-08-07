@@ -6,6 +6,7 @@
 """
 
 import json
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 from src.camera.frame_source import FrameSourceError, RemapFrameSource
 from src.domain.models import ObservationReason, ObservationState
+from src.performance_timing import FramePerformanceTiming
 
 # 눈에 보일 만큼 휘게 만드는, 실제 광각 렌즈에 가까운 배럴 왜곡 계수.
 FIXTURE_K = [[260.0, 0.0, 205.0], [0.0, 260.0, 148.0], [0.0, 0.0, 1.0]]
@@ -45,12 +47,60 @@ class FakeFrameSource:
             width=self.image.shape[1],
             height=self.image.shape[0],
             calibration_id=None,
+            performance_timing=FramePerformanceTiming(),
         )
         self._next_frame_id += 1
         return frame
 
     def close(self):
         self.closed = True
+
+
+class FakeVpiWarpMap:
+    def __init__(self, frame_size):
+        width, height = frame_size
+        self.values = np.zeros((height, width, 2), dtype=np.float32)
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.values, dtype=dtype)
+
+
+class FakeVpiImage:
+    def __init__(self, image, owner):
+        self.image = image
+        self.owner = owner
+
+    def remap(self, warp, *, out, backend, interp, border):
+        self.owner.remap_calls += 1
+        result = cv2.remap(
+            self.image,
+            warp.values[:, :, 0],
+            warp.values[:, :, 1],
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+        if out is None:
+            return FakeVpiImage(result, self.owner)
+        out.image = result
+        return out
+
+    def rlock_cpu(self):
+        return nullcontext(self.image)
+
+
+class FakeVpi:
+    Backend = SimpleNamespace(CUDA="cuda")
+    Interp = SimpleNamespace(LINEAR="linear")
+    Border = SimpleNamespace(ZERO="zero")
+
+    def __init__(self):
+        self.remap_calls = 0
+
+    def WarpMap(self, frame_size):
+        return FakeVpiWarpMap(frame_size)
+
+    def asimage(self, image):
+        return FakeVpiImage(image, self)
 
 
 def write_calibration(tmp_path, name="camera_calibration.json", image_size=(FRAME_W, FRAME_H), K=None, D=None):
@@ -118,12 +168,53 @@ def test_remap_straightens_a_fisheye_projected_line(tmp_path):
     )
     source.open()
 
-    out = bright_pixels(source.capture().image)
+    frame = source.capture()
+    out = bright_pixels(frame.image)
 
     assert len(out) > 50
     # 보정 후 점들이 원래의 직선 y=90 위로 돌아와야 한다.
     assert out[:, 1].mean() == pytest.approx(LINE_Y, abs=0.5)
     assert line_residual(out) < 2.5
+    assert frame.performance_timing.duration_ms("remap") is not None
+
+
+def test_vpi_backend_remaps_and_reuses_output(tmp_path, monkeypatch):
+    from src.camera import frame_source as frame_source_module
+
+    fake_vpi = FakeVpi()
+    monkeypatch.setattr(frame_source_module, "_import_vpi", lambda: fake_vpi)
+    image, _ = make_curved_line_image(
+        (FRAME_W, FRAME_H),
+        (FRAME_W, FRAME_H),
+    )
+    source = RemapFrameSource(
+        inner=FakeFrameSource(image),
+        calibration_path=str(write_calibration(tmp_path)),
+        balance=BALANCE,
+        backend="vpi",
+    )
+    source.open()
+
+    first = source.capture()
+    first_output = source._vpi_output
+    second = source.capture()
+
+    assert line_residual(bright_pixels(first.image)) < 2.5
+    assert second.image.shape == image.shape
+    assert source._vpi_output is first_output
+    assert fake_vpi.remap_calls == 2
+    assert second.performance_timing.duration_ms("remap") is not None
+
+
+def test_rejects_unknown_remap_backend(tmp_path):
+    with pytest.raises(ValueError, match="remap backend"):
+        RemapFrameSource(
+            inner=FakeFrameSource(
+                np.full((FRAME_H, FRAME_W, 3), 200, np.uint8)
+            ),
+            calibration_path=str(write_calibration(tmp_path)),
+            backend="cuda",
+        )
 
 
 def test_remap_straightens_line_when_frame_is_larger_than_calibration(tmp_path):

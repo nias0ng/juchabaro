@@ -57,6 +57,7 @@ export const Palette = {
   purple700: '#7a0395',
 
   // 주차 도면 전체 보기(J-01) - 칸/구분선 배경
+  lilac25: '#f7f6fb',
   lilac50: '#eeecf8',
   lilac100: '#e7e5f3',
   lilac200: '#c9c2f0',

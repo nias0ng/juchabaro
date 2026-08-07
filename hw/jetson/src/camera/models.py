@@ -6,11 +6,12 @@ frame을 생성하며 evidence로 명시적으로 예약된 정지 이미지만 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from src.domain.models import require_aware, require_non_negative, require_positive
+from src.performance_timing import FramePerformanceTiming
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,12 @@ class CapturedFrame:
     width: int
     height: int
     calibration_id: str | None
+    # 비영속 성능 진단값이며 frame의 의미·동등성에는 관여하지 않는다.
+    performance_timing: FramePerformanceTiming | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         require_aware(self.captured_at, "captured_at")

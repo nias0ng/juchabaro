@@ -5,12 +5,6 @@ import type {
   ParkingZoneType,
 } from '../api/types';
 
-const CONGESTION_LEVEL_LABEL: Record<CongestionLevel, string> = {
-  LOW: '여유',
-  MEDIUM: '보통',
-  HIGH: '혼잡',
-};
-
 export type SpotCellKind = 'empty' | 'occupied' | 'mine';
 
 export type SpotCell = {
@@ -35,7 +29,7 @@ export type ParkingFloorLayout = {
 
 export type ParkingStatusDisplay = {
   congestionLevel: CongestionLevel;
-  congestionValueLabel: string;
+  congestionRateLabel: string;
   occupiedLabel: string;
   availableLabel: string;
   violationLabel: string;
@@ -95,7 +89,7 @@ export function toParkingStatusDisplay(
 
   return {
     congestionLevel,
-    congestionValueLabel: `${CONGESTION_LEVEL_LABEL[congestionLevel]} · ${congestionRate}%`,
+    congestionRateLabel: `${congestionRate}%`,
     occupiedLabel: `주차 중 ${occupiedSpots}`,
     availableLabel: `비어 있음 ${availableSpots}`,
     violationLabel: `위반 ${violationCount}`,

@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+import logging
 import sqlite3
+from time import perf_counter
 
 from src.actuators.ports import ActuatorCommandPlanner, ActuatorPort
 from src.application.frame_observation_workflow import (
@@ -35,6 +37,7 @@ from src.tracking.pipeline import TrackingPipeline
 from src.tracking.protocols import TrackingError
 
 FrameObserver = Callable[[CapturedFrame, TrackingBatch, FrameObservationResult], None]
+LOGGER = logging.getLogger(__name__)
 
 
 class MonitoringPipeline:
@@ -51,6 +54,7 @@ class MonitoringPipeline:
         actuator_command_planner: ActuatorCommandPlanner | None = None,
         actuator_port: ActuatorPort | None = None,
         evidence_capture_sink: EvidenceCaptureSink | None = None,
+        warm_up_on_open: bool = False,
     ) -> None:
         if not calibration_reference:
             raise ValueError("calibration_reference must not be empty")
@@ -58,6 +62,8 @@ class MonitoringPipeline:
             raise ValueError(
                 "actuator_command_planner and actuator_port must be provided together"
             )
+        if not isinstance(warm_up_on_open, bool):
+            raise TypeError("warm_up_on_open must be bool")
         self._frame_source = frame_source
         self._tracking_pipeline = tracking_pipeline
         self._frame_workflow = frame_workflow
@@ -66,6 +72,7 @@ class MonitoringPipeline:
         self._actuator_command_planner = actuator_command_planner
         self._actuator_port = actuator_port
         self._evidence_capture_sink = evidence_capture_sink
+        self._warm_up_on_open = warm_up_on_open
 
     @property
     def has_evidence_capture_sink(self) -> bool:
@@ -81,7 +88,7 @@ class MonitoringPipeline:
         self._evidence_capture_sink = sink
 
     def open(self) -> None:
-        """durable runtime을 복원한 뒤 프레임 소스와 추적을 연다."""
+        """durable runtime을 복원하고 운영 자원과 선택적 warm-up을 완료한다."""
 
         connection = self._connection_factory()
         try:
@@ -108,6 +115,15 @@ class MonitoringPipeline:
             raise
         try:
             self._tracking_pipeline.open()
+            if self._warm_up_on_open:
+                self._warm_up_runtime()
+        except FrameSourceError as error:
+            self._commit_interruption(
+                observed_at=error.observed_at,
+                observation=error.observation,
+            )
+            self._close_startup_resources_best_effort()
+            raise
         except TrackingError:
             self._commit_interruption(
                 observed_at=datetime.now(timezone.utc),
@@ -116,13 +132,44 @@ class MonitoringPipeline:
                     reason=ObservationReason.PIPELINE_STALLED,
                 ),
             )
-            self._frame_source.close()
+            self._close_startup_resources_best_effort()
             raise
         except Exception:
-            # frame source를 먼저 연 뒤 model 로드가 실패해도
-            # camera handle을 남기지 않는다. 원래 기동 예외는 유지한다.
-            self._frame_source.close()
+            # frame source를 먼저 연 뒤 model load·warm-up이 실패해도
+            # 자원을 남기지 않고 원래 기동 예외를 유지한다.
+            self._close_startup_resources_best_effort()
             raise
+
+    def _warm_up_runtime(self) -> None:
+        """실제 frame을 한 장 소비해 camera/remap과 detector를 준비한다.
+
+        warm-up frame은 tracking resolver나 durable workflow에 전달하지 않는다.
+        따라서 frame ID 하나만 소비하며 차량 ID·부재·주차 상태에는 관여하지 않는다.
+        """
+
+        started_at = perf_counter()
+        frame = self._frame_source.capture()
+        self._tracking_pipeline.warm_up(frame)
+        LOGGER.info(
+            "Jetson monitoring pipeline warm-up이 완료됐습니다. "
+            "frameId=%s frame=%sx%s elapsedMs=%.1f",
+            frame.frame_id,
+            frame.width,
+            frame.height,
+            (perf_counter() - started_at) * 1000.0,
+        )
+
+    def _close_startup_resources_best_effort(self) -> None:
+        """startup 원인 예외를 보존하면서 부분 초기화 자원을 역순으로 닫는다."""
+
+        for name, resource in (
+            ("tracking pipeline", self._tracking_pipeline),
+            ("frame source", self._frame_source),
+        ):
+            try:
+                resource.close()
+            except Exception:
+                LOGGER.exception("Startup 실패 후 %s 정리에 실패했습니다.", name)
 
     def process_next_frame(
         self, *, frame_observer: FrameObserver | None = None
@@ -140,6 +187,7 @@ class MonitoringPipeline:
         frame/tracking_batch가 없으므로 호출하지 않는다.
         """
 
+        capture_started_at = perf_counter()
         try:
             frame = self._frame_source.capture()
         except EndOfVideo:
@@ -150,7 +198,14 @@ class MonitoringPipeline:
                 observation=error.observation,
             )
             raise
+        timing = getattr(frame, "performance_timing", None)
+        if timing is not None:
+            timing.record_seconds(
+                "captureTotal",
+                perf_counter() - capture_started_at,
+            )
 
+        tracking_started_at = perf_counter()
         try:
             tracking_batch = self._tracking_pipeline.process(
                 frame,
@@ -170,13 +225,32 @@ class MonitoringPipeline:
                 ),
             )
             raise
+        if timing is not None:
+            tracking_seconds = perf_counter() - tracking_started_at
+            detector_ms = timing.duration_ms("detector") or 0.0
+            timing.record_seconds(
+                "trackingPostprocess",
+                max(tracking_seconds - detector_ms / 1_000.0, 0.0),
+            )
 
+        commit_started_at = perf_counter()
         result = self._commit_batch(tracking_batch)
+        if timing is not None:
+            timing.record_seconds(
+                "commit",
+                perf_counter() - commit_started_at,
+            )
+        evidence_started_at = perf_counter()
         if self._evidence_capture_sink is not None:
             self._evidence_capture_sink.capture(
                 frame,
                 tracking_batch,
                 result.evidence_capture_intents,
+            )
+        if timing is not None:
+            timing.record_seconds(
+                "evidence",
+                perf_counter() - evidence_started_at,
             )
         if frame_observer is not None:
             frame_observer(frame, tracking_batch, result)
@@ -272,6 +346,6 @@ class MonitoringPipeline:
         """프레임 소스와 추적 모델 자원을 해제한다."""
 
         try:
-            self._frame_source.close()
-        finally:
             self._tracking_pipeline.close()
+        finally:
+            self._frame_source.close()

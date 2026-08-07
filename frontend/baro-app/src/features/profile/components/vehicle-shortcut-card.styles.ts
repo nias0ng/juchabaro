@@ -5,7 +5,7 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   pressable: {
     width: '100%',
-    borderRadius: Radius.xl,
+    borderRadius: Radius.lg,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.05,
@@ -21,9 +21,9 @@ export const styles = StyleSheet.create({
     gap: Spacing.base,
     width: '100%',
     minHeight: 76,
-    borderRadius: Radius.xl,
+    borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
-    backgroundColor: Palette.violet300,
+    backgroundColor: Palette.white,
   },
   iconBadge: {
     width: 38,
@@ -31,7 +31,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.md,
-    backgroundColor: Palette.white,
+    backgroundColor: Palette.violet100,
   },
   textGroup: {
     flex: 1,

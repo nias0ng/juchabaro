@@ -91,6 +91,8 @@ def _settings(
         camera_index=2,
         camera_width=1920,
         camera_height=1080,
+        camera_fourcc="MJPG",
+        camera_fps=30.0,
         calibration_path=calibration_path,
         remap_balance=0.5,
         vehicle_model_path=model_path,
@@ -318,6 +320,8 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         "camera_index": 2,
         "width": 1920,
         "height": 1080,
+        "fourcc": "MJPG",
+        "fps": 30.0,
     }
 
     remap_args, remap = calls["remap"]
@@ -325,6 +329,7 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         "inner": webcam,
         "calibration_path": str(calibration_path),
         "balance": 0.5,
+        "backend": "opencv",
     }
 
     tracker_args, tracker = calls["tracker"]
@@ -368,6 +373,7 @@ def test_runtime_factory_builds_camera_tracker_and_dependency_graph(
         passed["dependencies"].diagnostics_sink,
         main.LoggingDiagnosticsAdapter,
     )
+    assert passed["dependencies"].startup_warm_up is True
 
 
 def test_monitoring_policy_maps_all_settings_without_interpretation(

@@ -101,7 +101,7 @@ export default function ParkingFloorOverviewScreen() {
               <View style={styles.congestionRow}>
                 <ParkingCongestionBadge
                   level={parkingStatus.congestionLevel}
-                  valueLabel={parkingStatus.congestionValueLabel}
+                  rateLabel={parkingStatus.congestionRateLabel}
                 />
               </View>
             ) : null}

@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Spacing } from '@/styles';
+import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
   row: {
@@ -12,7 +12,7 @@ export const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.xs,
     backgroundColor: Palette.white,
-    borderRadius: 22,
+    borderRadius: Radius.lg,
     padding: Spacing.md,
     shadowColor: Palette.gray975,
     shadowOffset: { width: 0, height: 8 },

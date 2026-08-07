@@ -5,17 +5,19 @@ import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   card: {
     width: '100%',
-    minHeight: Spacing.xxxl * 2 + Spacing.xl,
     marginBottom: Spacing.base,
-    backgroundColor: Palette.white,
+    backgroundColor: Palette.white80,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
-    gap: Spacing.base,
+    gap: Spacing.sm,
     ...Shadows.card,
   },
   emptyCard: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  topGroup: {
+    gap: Spacing.xs,
   },
   headerGroup: {
     gap: Spacing.none,
@@ -29,7 +31,7 @@ export const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 3.5,
-    backgroundColor: Palette.emerald500,
+    backgroundColor: Palette.blue500,
   },
   statusDotViolation: {
     backgroundColor: Palette.red500,
@@ -37,7 +39,7 @@ export const styles = StyleSheet.create({
   statusLabel: {
     fontSize: 12,
     fontWeight: FontWeight.bold,
-    color: Palette.emerald500,
+    color: Palette.blue500,
   },
   statusLabelViolation: {
     color: Palette.red500,
@@ -72,28 +74,7 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Palette.gray975,
   },
-  evTimeBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: Radius.md,
-    backgroundColor: Palette.violet50,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-  },
-  evTimeBoxWarning: {
-    backgroundColor: Palette.orange50,
-  },
-  evTimeLabel: {
-    fontSize: 11.5,
-    color: Palette.gray600,
-  },
-  evTimeValue: {
-    fontSize: 12.5,
-    fontWeight: FontWeight.bold,
-    color: Palette.violet600,
-  },
-  evTimeValueWarning: {
+  fieldValueWarning: {
     color: Palette.red500,
   },
   emptyText: {
@@ -101,14 +82,24 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
-  additionalCountBadge: {
-    alignSelf: 'flex-start',
-    borderRadius: Radius.full,
-    backgroundColor: Palette.violet50,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    fontSize: 11,
-    fontWeight: FontWeight.bold,
-    color: Palette.violet600,
+  valueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  additionalCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xxs,
+  },
+  additionalCountText: {
+    fontSize: 12.5,
+    fontWeight: FontWeight.semibold,
+    color: Palette.violet500,
+  },
+  additionalCountChevron: {
+    fontSize: 14,
+    fontWeight: FontWeight.semibold,
+    color: Palette.violet500,
   },
 });
