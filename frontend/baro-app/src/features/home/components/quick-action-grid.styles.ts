@@ -3,13 +3,16 @@ import { StyleSheet } from 'react-native';
 import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 
 export const styles = StyleSheet.create({
+  container: {
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
   scroll: {
     marginRight: -Spacing.lg,
   },
   row: {
     flexDirection: 'row',
     gap: Spacing.sm,
-    marginBottom: Spacing.sm,
     paddingRight: Spacing.lg,
   },
   action: {
@@ -43,5 +46,18 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.sm,
+  },
+  progressTrack: {
+    width: 96,
+    height: 3,
+    alignSelf: 'center',
+    overflow: 'hidden',
+    borderRadius: Radius.full,
+    backgroundColor: Palette.gray200,
+  },
+  progressThumb: {
+    height: '100%',
+    borderRadius: Radius.full,
+    backgroundColor: Palette.violet500,
   },
 });
