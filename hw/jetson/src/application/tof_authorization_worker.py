@@ -1,8 +1,8 @@
 """ToF 권한 재평가 요청을 병합하고 별도 worker thread에서 처리한다.
 
-이 모듈은 sensor transition과 monitoring commit 신호의 병합, zone별 자동
-재평가 backoff, shutdown ingress 차단 및 coordinator 실행을 담당한다. 센서
-polling, monitoring 처리, authorization business rule, 액추에이터 제어,
+이 모듈은 sensor transition과 monitoring context/frame 신호의 병합, zone별
+자동 재평가 backoff, shutdown ingress 차단 및 coordinator 실행을 담당한다.
+센서 polling, monitoring 처리, authorization business rule, 액추에이터 제어,
 Incident·outbox·Backend 연동, runtime composition과 lifespan 관리는 담당하지
 않는다.
 """
@@ -10,7 +10,7 @@ Incident·outbox·Backend 연동, runtime composition과 lifespan 관리는 담�
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import logging
 import math
@@ -42,6 +42,7 @@ class _TofAuthorizationRequestBatch:
 
     zone_revisions: tuple[tuple[ZoneId, int], ...]
     monitoring_commit_requested: bool
+    monitoring_frame_commit_requested: bool = False
 
 
 class _TofAuthorizationMailboxWakeReason(str, Enum):
@@ -203,6 +204,7 @@ class _ZoneReevaluationState:
     backoff_seconds: float
     minimum_occupancy_revision: int | None
     kind: _ZoneReevaluationKind
+    next_frame_armed: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -225,6 +227,7 @@ class TofAuthorizationRequestMailbox:
         self._condition = Condition()
         self._pending_revisions: dict[ZoneId, int] = {}
         self._monitoring_commit_pending = False
+        self._monitoring_frame_commit_pending = False
         self._closed = False
 
     def request_transitions(
@@ -268,6 +271,30 @@ class TofAuthorizationRequestMailbox:
             self._monitoring_commit_pending = True
             self._condition.notify()
 
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        """정상 frame heartbeat와 선택적 context 변경을 원자적으로 병합한다.
+
+        ``context_changed=True``는 같은 frame의 heartbeat와 semantic
+        context 신호를 하나의 mailbox batch로 보존한다. 이를 통해 worker가
+        두 producer 호출 사이에 끼어들어 같은 frame을 두 번 평가하는 것을
+        방지한다.
+        """
+
+        with self._condition:
+            if self._closed:
+                return
+            if not isinstance(context_changed, bool):
+                raise ValueError("context_changed는 bool이어야 합니다.")
+
+            self._monitoring_frame_commit_pending = True
+            if context_changed:
+                self._monitoring_commit_pending = True
+            self._condition.notify()
+
     def close(self) -> None:
         """신규 ingress를 차단하고 pending 요청을 폐기한 뒤 소비자를 깨운다."""
 
@@ -278,6 +305,7 @@ class TofAuthorizationRequestMailbox:
             self._closed = True
             self._pending_revisions.clear()
             self._monitoring_commit_pending = False
+            self._monitoring_frame_commit_pending = False
             self._condition.notify_all()
 
     def _wait_and_take(
@@ -293,6 +321,7 @@ class TofAuthorizationRequestMailbox:
                     self._closed
                     or bool(self._pending_revisions)
                     or self._monitoring_commit_pending
+                    or self._monitoring_frame_commit_pending
                 ),
                 timeout=normalized_timeout,
             )
@@ -300,6 +329,7 @@ class TofAuthorizationRequestMailbox:
             if self._closed:
                 self._pending_revisions.clear()
                 self._monitoring_commit_pending = False
+                self._monitoring_frame_commit_pending = False
                 return _TofAuthorizationMailboxWake(
                     reason=_TofAuthorizationMailboxWakeReason.CLOSED,
                 )
@@ -307,6 +337,7 @@ class TofAuthorizationRequestMailbox:
             if (
                 self._pending_revisions
                 or self._monitoring_commit_pending
+                or self._monitoring_frame_commit_pending
             ):
                 batch = _TofAuthorizationRequestBatch(
                     zone_revisions=tuple(
@@ -315,9 +346,13 @@ class TofAuthorizationRequestMailbox:
                     monitoring_commit_requested=(
                         self._monitoring_commit_pending
                     ),
+                    monitoring_frame_commit_requested=(
+                        self._monitoring_frame_commit_pending
+                    ),
                 )
                 self._pending_revisions = {}
                 self._monitoring_commit_pending = False
+                self._monitoring_frame_commit_pending = False
                 return _TofAuthorizationMailboxWake(
                     reason=_TofAuthorizationMailboxWakeReason.REQUEST,
                     batch=batch,
@@ -465,27 +500,56 @@ class TofAuthorizationWorker:
         self,
         batch: _TofAuthorizationRequestBatch,
     ) -> None:
+        # 같은 batch의 context 처리로 새로 arm된 zone이 동일 frame heartbeat에
+        # 다시 평가되지 않도록 batch 시작 시점의 상태만 고정한다.
+        frame_armed_zone_ids = frozenset(
+            zone_id
+            for zone_id, state in self._reevaluation_states.items()
+            if state.next_frame_armed
+        )
+        arm_next_frame = bool(
+            batch.zone_revisions
+            or batch.monitoring_commit_requested
+        )
         requested_revisions: dict[ZoneId, int | None] = {}
 
         for zone_id, revision in batch.zone_revisions:
-            if self._stop_requested.is_set():
-                return
-
-            self._coordinator.request_zone(
-                zone_id,
-                minimum_occupancy_revision=revision,
-            )
             requested_revisions[zone_id] = _merge_minimum_revision(
                 requested_revisions.get(zone_id),
                 revision,
             )
 
-        if batch.monitoring_commit_requested:
-            if self._stop_requested.is_set():
-                return
-            self._coordinator.request_occupied_zones()
+        if (
+            batch.monitoring_commit_requested
+            or (
+                batch.monitoring_frame_commit_requested
+                and frame_armed_zone_ids
+            )
+        ):
+            self._merge_monitoring_triggered_requests(
+                frame_armed_zone_ids=frame_armed_zone_ids,
+                context_requested=batch.monitoring_commit_requested,
+                frame_requested=(
+                    batch.monitoring_frame_commit_requested
+                ),
+                requested_revisions=requested_revisions,
+            )
 
         if self._stop_requested.is_set():
+            return
+
+        for zone_id, minimum_revision in sorted(
+            requested_revisions.items()
+        ):
+            if self._stop_requested.is_set():
+                return
+
+            self._coordinator.request_zone(
+                zone_id,
+                minimum_occupancy_revision=minimum_revision,
+            )
+
+        if not requested_revisions or self._stop_requested.is_set():
             return
 
         run = self._coordinator.drain_pending()
@@ -493,7 +557,94 @@ class TofAuthorizationWorker:
         self._update_reevaluation_states(
             run,
             requested_revisions=requested_revisions,
+            arm_next_frame=arm_next_frame,
         )
+
+    def _merge_monitoring_triggered_requests(
+        self,
+        *,
+        frame_armed_zone_ids: frozenset[ZoneId],
+        context_requested: bool,
+        frame_requested: bool,
+        requested_revisions: dict[ZoneId, int | None],
+    ) -> None:
+        """Context/frame 대상과 보존된 causal minimum을 병합한다.
+
+        Context는 현재 OCCUPIED zone 전체를, frame은 batch 시작 전에 arm된
+        OCCUPIED zone만 선택한다. 두 신호가 같은 batch에 있으면 snapshot을
+        한 번만 읽고 zone별 요청도 한 번만 등록한다.
+        """
+
+        snapshot_states = {
+            zone_id: (revision, state)
+            for zone_id, revision, state
+            in self._coordinator.zone_occupancy_revisions()
+        }
+        candidate_zone_ids: set[ZoneId] = set()
+
+        if context_requested:
+            candidate_zone_ids.update(
+                zone_id
+                for zone_id, (_revision, state)
+                in snapshot_states.items()
+                if state is OccupancyState.OCCUPIED
+            )
+
+        if frame_requested:
+            for zone_id in frame_armed_zone_ids:
+                schedule = self._reevaluation_states.get(zone_id)
+                if schedule is None:
+                    continue
+
+                current = snapshot_states.get(zone_id)
+                if (
+                    current is not None
+                    and current[1] is OccupancyState.OCCUPIED
+                ):
+                    candidate_zone_ids.add(zone_id)
+                    continue
+
+                if (
+                    schedule.kind
+                    is _ZoneReevaluationKind.COMPLETION_RETRY
+                ):
+                    # VACANT completion retry는 timeout deadline을 유지하되
+                    # 이후의 연속 frame에서 반복 검사하지 않는다.
+                    self._reevaluation_states[zone_id] = replace(
+                        schedule,
+                        next_frame_armed=False,
+                    )
+                else:
+                    self._reevaluation_states.pop(zone_id, None)
+
+        for zone_id in sorted(candidate_zone_ids):
+            current = snapshot_states.get(zone_id)
+            if current is None:
+                continue
+
+            revision, occupancy_state = current
+            if occupancy_state is not OccupancyState.OCCUPIED:
+                continue
+
+            schedule = self._reevaluation_states.get(zone_id)
+            preserved_minimum = (
+                schedule.minimum_occupancy_revision
+                if (
+                    schedule is not None
+                    and schedule.kind
+                    is _ZoneReevaluationKind.COMPLETION_RETRY
+                )
+                else None
+            )
+            minimum_revision = _merge_minimum_revision(
+                revision,
+                preserved_minimum,
+            )
+
+            requested_revisions[zone_id] = _merge_minimum_revision(
+                requested_revisions.get(zone_id),
+                minimum_revision,
+            )
 
     def _monotonic_now(self) -> float:
         value = self._monotonic_clock()
@@ -571,6 +722,7 @@ class TofAuthorizationWorker:
                         minimum_occupancy_revision=(
                             schedule.minimum_occupancy_revision
                         ),
+                        next_frame_armed=True,
                     )
                 else:
                     self._reevaluation_states.pop(zone_id, None)
@@ -606,6 +758,7 @@ class TofAuthorizationWorker:
         self._update_reevaluation_states(
             run,
             requested_revisions=requested_revisions,
+            arm_next_frame=True,
         )
 
     def _update_reevaluation_states(
@@ -613,6 +766,7 @@ class TofAuthorizationWorker:
         run: TofAuthorizationCoordinatorRun,
         *,
         requested_revisions: dict[ZoneId, int | None],
+        arm_next_frame: bool,
     ) -> None:
         now = self._monotonic_now()
         retry_by_zone = {
@@ -658,6 +812,7 @@ class TofAuthorizationWorker:
                 minimum_occupancy_revision=(
                     requested_revisions.get(zone_id)
                 ),
+                next_frame_armed=arm_next_frame,
             )
 
         for zone_id, retry in sorted(retry_by_zone.items()):
@@ -669,6 +824,7 @@ class TofAuthorizationWorker:
                 minimum_occupancy_revision=(
                     retry.minimum_occupancy_revision
                 ),
+                next_frame_armed=arm_next_frame,
             )
 
         successful_zone_ids = (
@@ -689,6 +845,7 @@ class TofAuthorizationWorker:
                     minimum_occupancy_revision=(
                         requested_revisions.get(zone_id)
                     ),
+                    next_frame_armed=arm_next_frame,
                 )
                 continue
 
@@ -700,6 +857,7 @@ class TofAuthorizationWorker:
                 self._schedule_occupied_unresolved(
                     zone_id,
                     now=now,
+                    next_frame_armed=arm_next_frame,
                 )
                 continue
 
@@ -724,6 +882,7 @@ class TofAuthorizationWorker:
         *,
         now: float,
         minimum_occupancy_revision: int | None,
+        next_frame_armed: bool,
     ) -> None:
         current = self._reevaluation_states.get(zone_id)
         if current is not None and current.kind in {
@@ -753,6 +912,7 @@ class TofAuthorizationWorker:
             backoff_seconds=backoff,
             minimum_occupancy_revision=effective_minimum,
             kind=_ZoneReevaluationKind.COMPLETION_RETRY,
+            next_frame_armed=next_frame_armed,
         )
 
     def _schedule_occupied_unresolved(
@@ -760,6 +920,7 @@ class TofAuthorizationWorker:
         zone_id: ZoneId,
         *,
         now: float,
+        next_frame_armed: bool,
     ) -> None:
         current = self._reevaluation_states.get(zone_id)
         if current is not None and current.kind in {
@@ -779,6 +940,7 @@ class TofAuthorizationWorker:
             backoff_seconds=backoff,
             minimum_occupancy_revision=None,
             kind=_ZoneReevaluationKind.OCCUPIED_UNRESOLVED,
+            next_frame_armed=next_frame_armed,
         )
 
     def _schedule_occupied_resolved(
@@ -792,6 +954,7 @@ class TofAuthorizationWorker:
             backoff_seconds=self._policy.max_backoff_seconds,
             minimum_occupancy_revision=None,
             kind=_ZoneReevaluationKind.OCCUPIED_RESOLVED,
+            next_frame_armed=False,
         )
 
     def _schedule_without_outcome(
@@ -800,6 +963,7 @@ class TofAuthorizationWorker:
         *,
         now: float,
         minimum_occupancy_revision: int | None,
+        next_frame_armed: bool,
     ) -> None:
         current = self._reevaluation_states.get(zone_id)
         backoff = (
@@ -820,6 +984,7 @@ class TofAuthorizationWorker:
             backoff_seconds=backoff,
             minimum_occupancy_revision=effective_minimum,
             kind=_ZoneReevaluationKind.COMPLETION_RETRY,
+            next_frame_armed=next_frame_armed,
         )
 
     def _log_failures(

@@ -90,6 +90,21 @@ class TofWarningRuntime:
 
         self._mailbox.request_after_monitoring_commit()
 
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        """정상 monitoring frame의 one-shot 재평가 신호를 등록한다.
+
+        semantic context 변경이 같은 frame에서 감지된 경우 두 mailbox
+        flag를 원자적으로 등록해 동일 frame 중복 평가를 방지한다.
+        """
+
+        self._mailbox.request_after_monitoring_frame_commit(
+            context_changed=context_changed,
+        )
+
 
 def build_tof_warning_runtime(
     *,

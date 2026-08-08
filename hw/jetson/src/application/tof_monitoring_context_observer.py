@@ -1,7 +1,8 @@
 """Monitoring commit 결과에서 ToF 권한 문맥 변경 신호를 생성한다.
 
-이 모듈은 commit된 FrameObservationResult의 의미 있는 변경만 추적하고
-ToF authorization mailbox에 가벼운 재평가 신호를 전달한다.
+이 모듈은 commit된 FrameObservationResult의 의미 있는 변경을 추적하고,
+정상 frame heartbeat와 함께 ToF authorization mailbox에 가벼운 재평가
+신호를 전달한다.
 
 DB 조회, authorization 평가, actuator 명령, Worker lifecycle 및 monitoring
 transaction은 이 모듈의 책임이 아니다. Observer 상태는 MonitoringWorker의
@@ -45,6 +46,15 @@ class TofMonitoringContextReevaluationRequester(Protocol):
 
     def request_after_monitoring_context_change(self) -> None:
         """Commit된 monitoring 문맥 변경에 대한 재평가를 요청한다."""
+
+        ...
+
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        """정상 frame heartbeat와 선택적 context 변경을 요청한다."""
 
         ...
 
@@ -123,7 +133,7 @@ class _ObservationPlan:
 
 
 class TofMonitoringContextObserver:
-    """Commit된 monitoring 결과에서 의미 있는 ToF 재평가 신호만 생성한다.
+    """Commit된 monitoring 결과에서 context와 frame 재평가 신호를 생성한다.
 
     신호 전달 실패 시 변경 감지 상태와 별도로 pending 상태를 유지한다.
     따라서 다음 정상 observer 호출에서 새 변경이 없어도 신호를 재시도한다.
@@ -145,6 +155,16 @@ class TofMonitoringContextObserver:
             raise TypeError(
                 "requester must provide a callable "
                 "request_after_monitoring_context_change"
+            )
+        frame_request_method = getattr(
+            requester,
+            "request_after_monitoring_frame_commit",
+            None,
+        )
+        if not callable(frame_request_method):
+            raise TypeError(
+                "requester must provide a callable "
+                "request_after_monitoring_frame_commit"
             )
         if not isinstance(
             policy,
@@ -189,16 +209,19 @@ class TofMonitoringContextObserver:
             )
             return
 
-        if not self._request_pending:
-            return
-
         try:
-            self._requester.request_after_monitoring_context_change()
+            self._requester.request_after_monitoring_frame_commit(
+                context_changed=self._request_pending,
+            )
         except Exception:
-            # 성공적으로 반환된 경우에만 pending을 해제한다.
+            # semantic 변경은 성공적으로 전달된 경우에만 pending 해제한다.
+            # frame-only 실패는 다음 정상 frame heartbeat가 자연스럽게 재시도한다.
             _LOGGER.exception(
                 "ToF monitoring context observer failed "
-                "stage=reevaluation_signal"
+                "stage=reevaluation_signal "
+                "signalKind=monitoring_frame_commit "
+                "contextPending=%s",
+                self._request_pending,
             )
             return
 

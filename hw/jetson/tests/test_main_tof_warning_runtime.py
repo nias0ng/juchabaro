@@ -14,9 +14,17 @@ from src.parking.models import ZoneId
 class _RuntimeRequester:
     def __init__(self) -> None:
         self.request_count = 0
+        self.frame_requests: list[bool] = []
 
     def request_after_monitoring_context_change(self) -> None:
         self.request_count += 1
+
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        self.frame_requests.append(context_changed)
 
 
 class _TofOwner:
