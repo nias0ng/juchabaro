@@ -173,7 +173,7 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_create_runtime_app_binds_concrete_monitoring_factory(
+def test_create_runtime_app_binds_concrete_runtime_factories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.main as main
@@ -187,10 +187,16 @@ def test_create_runtime_app_binds_concrete_monitoring_factory(
         monitoring_pipeline_factory: (
             main.MonitoringPipelineFactory | None
         ) = None,
+        tof_warning_runtime_factory: (
+            main.TofWarningRuntimeFactory | None
+        ) = None,
     ) -> FastAPI:
         received["settings"] = settings
         received["monitoring_pipeline_factory"] = (
             monitoring_pipeline_factory
+        )
+        received["tof_warning_runtime_factory"] = (
+            tof_warning_runtime_factory
         )
         return expected_app
 
@@ -203,6 +209,9 @@ def test_create_runtime_app_binds_concrete_monitoring_factory(
         "settings": None,
         "monitoring_pipeline_factory": (
             main.build_runtime_monitoring_pipeline
+        ),
+        "tof_warning_runtime_factory": (
+            main.build_jetson_tof_warning_runtime
         ),
     }
 

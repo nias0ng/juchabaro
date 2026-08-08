@@ -1,9 +1,7 @@
 """테스트 전역 설정.
 
-Settings에 기본값 없는 필수 필드가 있어 .env 없이 get_settings()를 부르면
-ValidationError가 난다. 순수 로직 테스트가 환경 파일 존재에 의존하지 않도록
-여기서 값을 주입한다. 실제 임계값과 하드웨어 설정은 .env로 주며 이 값은
-테스트용이다.
+필수 Monitoring 설정을 .env와 독립적으로 주입한다. Optional ToF runtime은
+기본적으로 비활성화하며, ToF 설정값은 관련 계약 테스트가 개별 주입한다.
 
 (436 병합) 이 파일에 있던 sys.path 조작은 제거했다. 420이 추가했을 당시에는
 `src.` 임포트를 해결할 유일한 수단이었으나, 421의 pyproject.toml이
@@ -11,6 +9,31 @@ ValidationError가 난다. 순수 로직 테스트가 환경 파일 존재에 �
 """
 
 import pytest
+
+OPTIONAL_TOF_ENV_NAMES = (
+    "TOF_I2C_BUS",
+    "TOF_SHUTDOWN_SETTLE_SECONDS",
+    "TOF_BOOT_SETTLE_SECONDS",
+    "TOF_IO_TIMEOUT_SECONDS",
+    "TOF_DISABLED_ZONE_ID",
+    "TOF_EV_CHARGING_ZONE_ID",
+    "TOF_POLL_INTERVAL_SECONDS",
+    "TOF_ENTER_DISTANCE_MM",
+    "TOF_EXIT_DISTANCE_MM",
+    "TOF_ENTER_CONFIRM_SECONDS",
+    "TOF_EXIT_CONFIRM_SECONDS",
+    "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS",
+    "TOF_STALE_AFTER_SECONDS",
+    "TOF_OCCUPANCY_FRESHNESS_SECONDS",
+    "TOF_MONITORING_FRESHNESS_SECONDS",
+    "TOF_MAX_PRE_OCCUPANCY_OBSERVATION_SECONDS",
+    "TOF_REEVALUATION_INITIAL_BACKOFF_SECONDS",
+    "TOF_REEVALUATION_MAX_BACKOFF_SECONDS",
+    "TOF_REEVALUATION_BACKOFF_MULTIPLIER",
+    "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
+    "TOF_EV_ZONE_WARNING_WAV_PATH",
+    "TOF_WARNING_AUDIO_DEVICE",
+)
 
 REQUIRED_ENV = {
     "DATABASE_PATH": ":memory:",
@@ -67,24 +90,14 @@ REQUIRED_ENV = {
     "MOTION_MIN_TREND_CONSISTENCY": "0.60",
     "PARKING_CONFIRM_SECONDS": "600.0",
     "PARKING_MOVE_CONFIRM_SECONDS": "3.0",
-    "TOF_I2C_BUS": "7",
-    "TOF_SHUTDOWN_SETTLE_SECONDS": "0.01",
-    "TOF_BOOT_SETTLE_SECONDS": "0.02",
-    "TOF_IO_TIMEOUT_SECONDS": "1.0",
-    "TOF_DISABLED_ZONE_ID": "4",
-    "TOF_EV_CHARGING_ZONE_ID": "5",
-    "TOF_POLL_INTERVAL_SECONDS": "0.05",
-    "TOF_ENTER_DISTANCE_MM": "150.0",
-    "TOF_EXIT_DISTANCE_MM": "220.0",
-    "TOF_ENTER_CONFIRM_SECONDS": "0.0",
-    "TOF_EXIT_CONFIRM_SECONDS": "0.0",
-    "TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS": "1.0",
-    "TOF_STALE_AFTER_SECONDS": "2.0",
+    "TOF_ENABLED": "false",
 }
 
 
 @pytest.fixture(autouse=True)
 def _required_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for environment_name in OPTIONAL_TOF_ENV_NAMES:
+        monkeypatch.delenv(environment_name, raising=False)
     for key, value in REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)
     # get_settings가 lru_cache라 앞선 테스트의 캐시가 남으면 주입이 무시된다.
