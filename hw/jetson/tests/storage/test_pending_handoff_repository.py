@@ -290,6 +290,40 @@ def test_expiry_can_only_extend_and_expiration_is_cas_guarded(
         connection.close()
 
 
+def test_known_ineligible_marker_can_be_excluded_before_retention(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "excluded.db")
+    repository = PendingHandoffRepository(connection)
+    marker = _waiting("handoff-excluded", expires_at_us=10_000)
+    try:
+        with UnitOfWork(connection):
+            repository.ensure_waiting(marker)
+            excluded = repository.mark_excluded(
+                marker.handoff_id,
+                expected_record_version=1,
+                disposition_reason="PRE_ENTRY_SCOPE_EXCLUDED",
+                updated_at_us=300,
+            )
+
+        assert excluded.workflow_state is PendingHandoffState.EXPIRED
+        assert excluded.disposition_reason == "PRE_ENTRY_SCOPE_EXCLUDED"
+        assert excluded.materialized_delivery_id is None
+        assert excluded.record_version == 2
+        assert repository.list_waiting() == ()
+
+        with pytest.raises(PendingHandoffStateError, match="requires WAITING"):
+            with UnitOfWork(connection):
+                repository.mark_excluded(
+                    marker.handoff_id,
+                    expected_record_version=2,
+                    disposition_reason="PRE_ENTRY_SCOPE_EXCLUDED",
+                    updated_at_us=301,
+                )
+    finally:
+        connection.close()
+
+
 def test_read_rejects_nullable_state_combination_not_covered_by_schema(
     tmp_path: Path,
 ) -> None:

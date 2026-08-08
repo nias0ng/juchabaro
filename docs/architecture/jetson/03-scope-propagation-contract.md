@@ -100,7 +100,12 @@ Access decision과 EntryMatchOutcome은 독립적으로 전파한다.
 | REVIEW가 DENY·EXPIRED | match 결과는 보존 | 생성하지 않음 | local 관측 유지; Incident는 entryAttemptId+physicalVehicleId 의미로 handoff |
 | 자격 context 변경 | 변화 없음 | 같은 binding의 context update | restricted-zone 규칙 REEVALUATE |
 
-binding 전에 PARKED와 후속 UNPARKED가 모두 발생했더라도 retention 안에 binding되면 원래 `occurredAt`과 aggregate revision 순서로 publication한다. binding되지 않은 session-scoped 사실은 Backend 사실로 가장하지 않는다.
+binding 전에 PARKED와 후속 UNPARKED가 모두 발생했더라도 PARKED `occurredAt`이
+authoritative `entryTime` 이상이고 retention 안에 binding되면 원래 `occurredAt`과
+aggregate revision 순서로 publication한다. PARKED 또는 Incident OPEN이
+`entryTime`보다 이른 lifecycle은 후속 UNPARKED·RESOLVE까지 함께
+`PRE_ENTRY_SCOPE_EXCLUDED`로 종결한다. binding되지 않은 session-scoped 사실과
+입차 scope 이전 사실은 Backend 사실로 가장하지 않는다.
 
 ## 5. ZoneDefinition과 ZoneVisit
 

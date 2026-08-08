@@ -219,6 +219,22 @@ def _matched_deny_attempt() -> EntryMatchAttempt:
     )
 
 
+def _attempt_with_entry_time(
+    entry_time: datetime,
+    *,
+    allow: bool,
+) -> EntryMatchAttempt:
+    attempt = _matched_allow_attempt() if allow else _matched_deny_attempt()
+    matched_at = entry_time + timedelta(seconds=1)
+    return replace(
+        attempt,
+        match_terminated_at=matched_at,
+        match_deadline_at=entry_time + timedelta(seconds=10),
+        created_at=entry_time,
+        updated_at=matched_at,
+    )
+
+
 def _inside_mirror(
     *,
     administrative_state: SessionAdministrativeState = (
@@ -350,6 +366,85 @@ def test_terminal_parking_fact_materializes_in_original_revision_order(
             marker.workflow_state is PendingHandoffState.WAITING_CORRELATION
             for marker in PendingHandoffRepository(connection).list_waiting()
         )
+    finally:
+        connection.close()
+
+
+def test_pre_entry_parking_lifecycle_is_excluded_as_a_whole(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "pre-entry-parking.db")
+    workflow = PendingHandoffWorkflow()
+    episode = _terminal_episode()
+    attempt = _attempt_with_entry_time(T1 + timedelta(seconds=1), allow=True)
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            EntryMatchAttemptRepository(connection).add(attempt)
+            ParkingEpisodeRepository(connection).add(episode)
+            workflow.capture(_result(episode), connection=connection)
+
+        with UnitOfWork(connection):
+            materialized = workflow.materialize(
+                SessionObservationResult(
+                    session_contexts={VEHICLE_ID: _context()},
+                    entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+                ),
+                HistoricalCorrelationResult({}, {}, ()),
+                materialized_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert materialized.parking_result.parking_transitions == ()
+        assert ParkingEpisodeRepository(connection).get(EPISODE_ID) == episode
+        markers = connection.execute(
+            """
+            SELECT transition_type, workflow_state, disposition_reason
+            FROM pending_handoffs
+            ORDER BY original_occurred_at_us
+            """
+        ).fetchall()
+        assert [tuple(marker) for marker in markers] == [
+            ("PARKED", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+            ("UNPARKED", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+        ]
+    finally:
+        connection.close()
+
+
+def test_parking_fact_at_entry_time_is_included(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "entry-boundary-parking.db")
+    workflow = PendingHandoffWorkflow()
+    episode = _terminal_episode()
+    attempt = _attempt_with_entry_time(T1, allow=True)
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            EntryMatchAttemptRepository(connection).add(attempt)
+            ParkingEpisodeRepository(connection).add(episode)
+            workflow.capture(_result(episode), connection=connection)
+
+        with UnitOfWork(connection):
+            materialized = workflow.materialize(
+                SessionObservationResult(
+                    session_contexts={VEHICLE_ID: _context()},
+                    entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+                ),
+                HistoricalCorrelationResult({}, {}, ()),
+                materialized_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert [
+            transition.transition_type
+            for transition in materialized.parking_result.parking_transitions
+        ] == [ParkingTransitionType.PARKED, ParkingTransitionType.UNPARKED]
+        persisted = ParkingEpisodeRepository(connection).get(EPISODE_ID)
+        assert persisted is not None
+        assert persisted.parking_session_id == SESSION_ID
+        assert persisted.publication_revision == 2
     finally:
         connection.close()
 
@@ -664,6 +759,118 @@ def test_terminal_incident_materializes_open_then_resolve_by_entry_attempt(
         assert persisted is not None
         assert persisted.entry_attempt_id == ATTEMPT_ID
         assert persisted.publication_revision == 2
+    finally:
+        connection.close()
+
+
+def test_pre_entry_incident_lifecycle_is_excluded_as_a_whole(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "pre-entry-incident.db")
+    workflow = PendingHandoffWorkflow()
+    incident = _terminal_incident()
+    attempt = _attempt_with_entry_time(T1 + timedelta(seconds=1), allow=False)
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            EntryMatchAttemptRepository(connection).add(attempt)
+            IncidentRepository(connection).add(incident)
+            workflow.capture(_incident_result(incident), connection=connection)
+
+        with UnitOfWork(connection):
+            materialized = workflow.materialize(
+                SessionObservationResult(
+                    session_contexts={},
+                    entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+                ),
+                HistoricalCorrelationResult({}, {}, ()),
+                materialized_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert materialized.parking_result.incident_transitions == ()
+        assert IncidentRepository(connection).get(INCIDENT_ID) == incident
+        markers = connection.execute(
+            """
+            SELECT transition_type, workflow_state, disposition_reason
+            FROM pending_handoffs
+            ORDER BY original_occurred_at_us
+            """
+        ).fetchall()
+        assert [tuple(marker) for marker in markers] == [
+            ("OPEN", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+            ("RESOLVE", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+        ]
+    finally:
+        connection.close()
+
+
+def test_pre_entry_incident_resolve_created_later_stays_excluded(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "pre-entry-incident-later-resolve.db")
+    workflow = PendingHandoffWorkflow()
+    terminal = _terminal_incident()
+    active = replace(
+        terminal,
+        state=IncidentState.OPEN,
+        clear_trusted_seconds=0.0,
+        resolved_at=None,
+        terminated_at=None,
+        termination_reason=None,
+        record_version=2,
+        updated_at=T1,
+    )
+    attempt = _attempt_with_entry_time(T1 + timedelta(seconds=1), allow=False)
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            EntryMatchAttemptRepository(connection).add(attempt)
+            IncidentRepository(connection).add(active)
+            workflow.capture(_incident_result(active), connection=connection)
+
+        with UnitOfWork(connection):
+            first = workflow.materialize(
+                SessionObservationResult(
+                    session_contexts={},
+                    entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+                ),
+                HistoricalCorrelationResult({}, {}, ()),
+                materialized_at=T1 + timedelta(seconds=2),
+                connection=connection,
+            )
+        assert first.parking_result.incident_transitions == ()
+
+        with UnitOfWork(connection):
+            IncidentRepository(connection).save(
+                terminal,
+                expected_record_version=active.record_version,
+            )
+            workflow.capture(_incident_result(terminal), connection=connection)
+            second = workflow.materialize(
+                SessionObservationResult(
+                    session_contexts={},
+                    entry_attempt_ids={VEHICLE_ID: ATTEMPT_ID},
+                ),
+                HistoricalCorrelationResult({}, {}, ()),
+                materialized_at=T2 + timedelta(seconds=1),
+                connection=connection,
+            )
+
+        assert second.parking_result.incident_transitions == ()
+        persisted = IncidentRepository(connection).get(INCIDENT_ID)
+        assert persisted == terminal
+        markers = connection.execute(
+            """
+            SELECT transition_type, workflow_state, disposition_reason
+            FROM pending_handoffs
+            ORDER BY original_occurred_at_us
+            """
+        ).fetchall()
+        assert [tuple(marker) for marker in markers] == [
+            ("OPEN", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+            ("RESOLVE", "EXPIRED", "PRE_ENTRY_SCOPE_EXCLUDED"),
+        ]
     finally:
         connection.close()
 

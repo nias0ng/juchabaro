@@ -542,6 +542,12 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `MoveVerificationResult` | Jetson → Backend · Jetson | 전체·incident별 RESOLVED·STILL_ACTIVE·UNKNOWN | command identity + incident별 판단 revision | 업무 상태 mapping과 후속 행동 결정 |
 | `PublicationApplicationConfirmation` | Backend → Jetson · Backend | APPLIED·ALREADY_APPLIED·CONFLICT | aggregate ID + publicationRevision + payload hash + correlation | ACK 유실 시 적용 여부를 안전하게 재확인; 구체 방식은 후속 계약 |
 
+`EntryDecision.entryTime`은 해당 입차 업무 scope의 시간 하한이다. correlation 전에
+확정한 ParkingEpisode·Incident라도 aggregate의 `PARKED`·`OPEN` 시각이
+`entryTime`보다 이르면 해당 session 또는 entryAttempt의 handoff로 공개하지 않는다.
+시작 전이만 제외하고 후속 `UNPARKED`·`RESOLVE`를 공개해서도 안 된다. 경계와 같은
+시각은 입차 scope에 포함한다.
+
 Backend→Jetson handoff는 identity와 revision으로 중복·stale·conflict를 구분할 수 있어야 한다. retry, reconnect와 durable acceptance의 구체적인 transport 방식은 `[후속 계약]`이며 full state snapshot protocol은 현재 범위에 넣지 않는다.
 
 EV_OVERSTAY의 시간 판정과 Incident OPEN은 Jetson 책임이다. Backend는 PARKED

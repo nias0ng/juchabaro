@@ -1247,6 +1247,41 @@ class PendingHandoffRepository:
             },
         )
 
+    def mark_excluded(
+        self,
+        handoff_id: str,
+        *,
+        expected_record_version: int,
+        disposition_reason: str,
+        updated_at_us: int,
+    ) -> PendingHandoffRecord:
+        """확정된 publication 범위 밖 marker를 retention 전에 종결한다.
+
+        ``mark_expired``는 상관관계를 끝내 확인하지 못한 marker의 retention
+        만료만 처리한다. 이 메서드는 authoritative correlation을 얻은 뒤
+        entryTime 같은 업무 경계로 publication 부적격이 확정된 경우에만
+        사용한다. 두 경로 모두 같은 terminal state를 쓰되 disposition으로
+        원인을 구분한다.
+        """
+
+        require_write_transaction(self._connection)
+        if not disposition_reason:
+            raise ValueError("disposition_reason must not be empty")
+        record = self._require_waiting(
+            handoff_id,
+            expected_record_version=expected_record_version,
+        )
+        self._require_monotonic_update_time(record, updated_at_us)
+        return self._update_waiting(
+            record,
+            changes={
+                "workflow_state": PendingHandoffState.EXPIRED.value,
+                "disposition_reason": disposition_reason,
+                "materialized_delivery_id": None,
+                "updated_at_us": updated_at_us,
+            },
+        )
+
     def _validate_new_waiting(self, record: PendingHandoffRecord) -> None:
         for name in (
             "handoff_id",

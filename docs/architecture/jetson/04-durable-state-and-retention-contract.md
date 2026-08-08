@@ -127,9 +127,14 @@ domain snapshot
 + pending handoff marker
 ```
 
-authoritative active binding 또는 late historical correlation receipt가 생기면 누락된 전이를 시간·aggregate 순서대로 immutable outbox로 만드는 transaction을 실행한다. publication을 만들기 전에 임의 sessionId를 채우지 않는다.
+authoritative active binding 또는 late historical correlation receipt가 생기면
+aggregate 시작 시각과 authoritative `entryTime`을 먼저 비교한다. 시작 시각이
+`entryTime` 이상인 누락 전이만 시간·aggregate 순서대로 immutable outbox로 만드는
+transaction을 실행한다. publication을 만들기 전에 임의 sessionId를 채우지 않는다.
+`entryTime`보다 이른 aggregate는 시작·종료 marker를 함께
+`EXPIRED / PRE_ENTRY_SCOPE_EXCLUDED`로 즉시 종결한다.
 
-pending handoff marker는 domain scope가 아니라 publication eligibility workflow다. 상태는 `WAITING_CORRELATION → MATERIALIZED | EXPIRED`로 충분하다. `EXPIRED / UNBOUND_CONTEXT_EXPIRED`는 ParkingEpisode나 Incident를 다시 종료하는 reason이 아니라 외부 publication을 만들 수 없었다는 disposition이다.
+pending handoff marker는 domain scope가 아니라 publication eligibility workflow다. 상태는 `WAITING_CORRELATION → MATERIALIZED | EXPIRED`로 충분하다. `EXPIRED / UNBOUND_CONTEXT_EXPIRED`와 `EXPIRED / PRE_ENTRY_SCOPE_EXCLUDED`는 ParkingEpisode나 Incident를 다시 종료하는 reason이 아니라 각각 상관관계 retention 만료와 입차 이전 scope 제외를 나타내는 publication disposition이다.
 
 ### 4.3 Incident Candidate와 evidence
 

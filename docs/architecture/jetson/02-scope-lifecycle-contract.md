@@ -227,7 +227,7 @@ BOUND → ENDED
 
 REVIEW 중 번호판·자격은 hint이며 `UNKNOWN`이다. 자격값 변경은 같은 binding의 context update로 처리하고 restricted-zone 규칙을 재평가한다. 이미 확정한 binding의 sessionId나 PhysicalVehicle을 다른 identity로 바꾸는 correction은 현재 범위에서 지원하지 않으며 conflict로 거부한다.
 
-ALLOW 또는 REVIEW_ALLOW가 physical departure·RETIRED 뒤 늦게 도착하면 active binding을 만들지 않는다. authoritative correlation receipt만 남기고 retention 안의 pending historical handoff를 원래 occurredAt 순서로 materialize한다. 이미 PARKED였던 episode가 PHYSICAL_EXIT로 끝났다면 PARKED와 SessionExit을 만들되 UNPARKED는 만들지 않으며, ParkingSessionMirror는 곧바로 EXITED historical 상태로 기록한다. 이미 entryAttemptId로 공개한 Incident를 sessionId 추가만을 위해 재발행하지 않는다.
+ALLOW 또는 REVIEW_ALLOW가 physical departure·RETIRED 뒤 늦게 도착하면 active binding을 만들지 않는다. authoritative correlation receipt만 남기고 retention 안의 pending historical handoff 중 aggregate 시작 시각이 `entryTime` 이상인 것만 원래 occurredAt 순서로 materialize한다. `entryTime` 전에 시작한 lifecycle은 시작·종료 전이 전체를 `PRE_ENTRY_SCOPE_EXCLUDED`로 제외한다. 이미 PARKED였던 episode가 PHYSICAL_EXIT로 끝났다면 PARKED와 SessionExit을 만들되 UNPARKED는 만들지 않으며, ParkingSessionMirror는 곧바로 EXITED historical 상태로 기록한다. 이미 entryAttemptId로 공개한 Incident를 sessionId 추가만을 위해 재발행하지 않는다.
 
 `sessionId`당 active ContextBinding과 `physicalVehicleId`당 active authoritative ContextBinding은 각각 최대 하나다. 한 physicalVehicleId에 출차를 발행할 수 있는 session-mirror correlation도 최대 하나다. 이 cardinality를 깨는 입력은 conflict로 거부한다.
 
