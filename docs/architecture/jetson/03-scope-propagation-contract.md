@@ -73,7 +73,8 @@ motion 신뢰도는 이 frame 전체 신뢰 조건과 별도의 하위 dependenc
 최소 sample·관측 span 미충족, 허용 gap 초과와 stationary/moving threshold 사이
 dead band에서는 motion만 UNKNOWN이다. PhysicalVehicle bbox·ZoneVisit·assignment
 geometry는 계속 정상 처리하지만 ParkingEpisode와 PARKED를 필수 입력으로 쓰는
-`BAD_PARKING`·`OUT_OF_ZONE`·`AISLE_BLOCK`은 `UNKNOWN`으로 timer를 멈춘다.
+`DISABLED_ZONE_UNAUTHORIZED`·`EV_ZONE_UNAUTHORIZED`·`BAD_PARKING`·
+`OUT_OF_ZONE`·`AISLE_BLOCK`은 `UNKNOWN`으로 timer를 멈춘다.
 partial frame, identity unresolved와 process restart는 모든 motion history chain을
 끊는다. 개별 차량의 일시 미관측 frame은 ParkingEpisode trusted chain만 즉시
 끊고 estimator history는 보존하며, 재관측 sample 간격이
@@ -126,9 +127,9 @@ frame의 주차 판정 실패가 아니라 ZoneDefinition snapshot 적용 실패
 
 | 변화 | ParkingEpisode·assignment | BlockingRelation | Incident | 외부 출력 |
 |---|---|---|---|---|
-| 정지 후보 | STOP_PENDING | 필요하면 후보 geometry 계산 | parking rule 후보는 `confirmable=false` | 없음 |
-| PARKED 확정 | PARKED + 안정된 assignment·`PARKED_SNAPSHOT` PlacementEvidence | 차단 후보 평가 가능 | parking rule 평가 | PARKED eligibility 생성 |
-| movement 후보 | MOVE_PENDING | 현재 관계 유지 | 기존 상태 유지 | 없음 |
+| 정지 후보 | STOP_PENDING | 후보 생성 안 함 | parking rule 후보는 `confirmable=false` | 없음 |
+| PARKED 확정 | PARKED + 안정된 assignment·`PARKED_SNAPSHOT` PlacementEvidence | 상대 차량도 PARKED이면 차단 후보 평가 가능 | parking rule 평가, EV_OVERSTAY clock 시작 | PARKED eligibility 생성 |
+| movement 후보 | MOVE_PENDING | 신뢰 가능한 양쪽 관측이면 ABSENT로 clear 시작 | 기존 PARKED 기반 Incident는 UNKNOWN으로 유지 | 없음 |
 | motion 판단 불가 | 현재 lifecycle 유지, observation UNKNOWN·timer 정지 | geometry 관측은 유지하되 motion 의존 전이 금지 | PARKED 의존 규칙은 UNKNOWN, clear 금지 | 없음 |
 | movement 취소 | PARKED 복귀 | 필요하면 재평가 | 필요하면 재평가 | 없음 |
 | movement 확정 | ENDED, assignment 종료 | REEVALUATE | REEVALUATE | UNPARKED |
@@ -145,7 +146,7 @@ ParkingEpisode ENDED와 UNPARKED publication 계획
 → 현재 시점에 확정된 domain 변경과 outbox를 한 local transaction으로 commit
 ```
 
-parking rule이 PARKED를 OPEN 조건으로 삼더라도 movement 자체나 episode 공백을 `NOT_MATCHED`로 해석하지 않는다. 한 신뢰 가능한 sample에서 규칙별 필수 geometry·assignment가 유효하고 위반 술어가 false이면 `NOT_MATCHED`다. IncidentReducer가 이후 clear 시간을 누적하며, 필수 입력이 불확실하면 `UNKNOWN / confirmable=false`다.
+PARKED를 OPEN 조건으로 삼는 규칙은 MOVE_PENDING 동안 `UNKNOWN`으로 기존 Incident를 유지한다. MOVEMENT_CONFIRMED 뒤 전용구역 무자격 주차와 EV_OVERSTAY는 `NOT_MATCHED`가 되고, placement 규칙은 최신 geometry·assignment로 재평가한다. IncidentReducer가 이후 clear 시간을 누적하며, 필수 입력이 불확실하면 `UNKNOWN / confirmable=false`다.
 
 placement 재평가의 source 선택은 다음 순서를 따른다.
 
@@ -171,9 +172,9 @@ Assignment 해석과 BAD_PARKING·OUT_OF_ZONE 해석은 동일 PlacementEvidence
 
 | 변화 | relation | DOUBLE_PARKING Incident |
 |---|---|---|
-| 차단 후보 생성 | CANDIDATE | 후보 평가 가능 |
-| 두 overlap 중 하나라도 임계값 이상으로 geometry confirm | BLOCKING | MATCHED·OPEN 가능 |
-| subject/victim 이동 | REEVALUATE | 직접 RESOLVE하지 않음 |
+| subject·victim 모두 PARKED + 차단 후보 생성 | CANDIDATE | 후보 평가 가능 |
+| 양쪽 PARKED에서 두 overlap 중 하나라도 임계값 이상으로 geometry confirm | BLOCKING | MATCHED·OPEN 가능 |
+| subject/victim 중 하나가 PARKED를 벗어남 | ABSENT → CLEAR_PENDING/RESOLVED | relation 해소로 RESOLVE |
 | Candidate에서 정상 관측으로 차단 비성립 | CANCELED | Incident Candidate가 있으면 취소 |
 | BLOCKING·CLEAR_PENDING에서 차단 불성립 | CLEAR_PENDING → RESOLVED | relation 기반 Incident에 직접 종료 입력 전달 |
 | 한쪽 관측 UNKNOWN | lifecycle 유지 | OPEN 유지 또는 후보 timer 정지 |

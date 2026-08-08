@@ -150,6 +150,22 @@ INCIDENT_DOUBLE_PARKING_CONFIRM_SECONDS=0.0
 INCIDENT_DOUBLE_PARKING_CLEAR_SECONDS=0.0
 ```
 
+`DISABLED_ZONE_UNAUTHORIZED`와 `EV_ZONE_UNAUTHORIZED`는 confirmed ZoneVisit만으로
+OPEN하지 않는다. 차량이 같은 전용 주차면에 `PARKED`되고 고정된
+`ParkingAssignment.zoneId`가 방문 zone과 일치한 뒤에만 무자격 Incident를
+확정한다. `MOVE_PENDING`은 기존 사건을 유지하고, 이동이 확정되면 재평가해
+해소한다.
+
+`EV_OVERSTAY`도 같은 EV zone의 `PARKED`를 요구하며, ZoneVisit 진입 시각이
+아니라 `ParkingEpisode.parkedAt`부터 wall-clock 경과 시간을 계산한다. Backend는
+PARKED 전이 시 같은 시각을 `ParkingSession.parkedAt`으로 저장하고 `dueAt`을
+표시하지만 초과 Incident의 생성과 증거 수집은 Jetson이 담당한다.
+
+`DOUBLE_PARKING`의 `BlockingRelation`은 피해 차량과 방해 차량이 모두
+`PARKED`일 때만 생성·유지한다. 신뢰 가능한 관측에서 한쪽이 PARKED를 벗어나면
+relation clear timer를 시작하며, 통로에 남은 차량 자체의 위반은
+`AISLE_BLOCK`이 독립적으로 평가한다.
+
 현재 시연값은 `VEHICLE_TRACKING_CONFIDENCE=0.25`,
 `PARKING_CONFIRM_SECONDS=5.0`, `PARKING_MOVE_CONFIRM_SECONDS=0.5`다.
 `PARKING_CONFIRM_SECONDS=600.0`은 운영 요구값이며 실영상 검증을 마친 운영

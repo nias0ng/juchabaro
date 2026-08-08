@@ -363,7 +363,7 @@ frame의 `EPHEMERAL_FRAME` evidence를 사용한다. MOVE_PENDING·motion
 UNKNOWN에서는 snapshot을 보존하되 PARKED에 의존하는 RuleEvaluator signal은
 `UNKNOWN / confirmable=false`로 멈춰 Incident clear를 시작하지 않는다.
 
-ParkingEpisode가 `MOVEMENT_CONFIRMED`로 종료되면 assignment를 끝내고 관련 BlockingRelation·Incident에 `REEVALUATE`를 전달한다. 계속 위반이면 기존 Incident를 유지한다. `PHYSICAL_EXIT` 종료는 departure의 직접 종료 경로를 사용한다.
+ParkingEpisode가 `MOVEMENT_CONFIRMED`로 종료되면 assignment를 끝내고 관련 BlockingRelation·Incident에 `REEVALUATE`를 전달한다. BlockingRelation은 subject·victim 중 하나라도 PARKED가 아니면 `ABSENT`로 clear하고, 다른 주차 규칙은 최신 근거로 재평가한다. `PHYSICAL_EXIT` 종료는 departure의 직접 종료 경로를 사용한다.
 
 PhysicalVehicle당 non-terminal ParkingEpisode는 하나만 허용한다.
 
@@ -383,7 +383,8 @@ EgressAisleDefinition snapshot이 부여한 식별자이며, 호환 필드명만
 - Candidate에서 정상 geometry가 비성립하면 CANCELED
 - 정상 geometry에서 차단 조건이 confirm되면 BLOCKING
 - 이동·assignment·zone 변화는 `REEVALUATE` trigger
-- 계속 차단하면 BLOCKING 유지
+- subject·victim 모두 PARKED이고 계속 차단하면 BLOCKING 유지
+- 신뢰 가능한 관측에서 둘 중 하나가 PARKED를 벗어나면 ABSENT로 clear
 - 정상 전체 관측에서 불성립하면 CLEAR_PENDING
 - clear confirmation 뒤 RESOLVED
 - UNKNOWN이면 현재 state를 유지하고 timer를 멈춤
@@ -391,7 +392,7 @@ EgressAisleDefinition snapshot이 부여한 식별자이며, 호환 필드명만
 관련 차량의 실제 physical exit가 먼저 확인되면 CANDIDATE는 `CANCELED / PHYSICAL_EXIT`, BLOCKING과 CLEAR_PENDING은 `RESOLVED / PHYSICAL_EXIT`가 된다.
 
 후보는 PARKED victim의 안정된 `ASSIGNED` 주차면에 매핑된 egress
-영역과 다른 active subject 차량의 현재 footprint으로만 생성한다.
+영역과 PARKED subject 차량의 현재 footprint으로만 생성한다.
 정상 관측에서 `subjectOverlap >= θsubject OR egressCoverage >= θegress`를
 차단 geometry 성립으로 본다. 둘 다 미만이어야 비성립이며, 필수
 관측이 불신뢰면 `UNKNOWN`이다. 이 비율과 임계값은 Assignment·
@@ -419,11 +420,11 @@ RuleEvaluator는 상태 없는 삼상태 signal만 만든다.
 
 Signal은 IncidentKey, 관측 시각, confirmable 여부와 근거 참조를 가진다.
 ParkingEpisode, ParkingAssignment와 PlacementEvidence는 parking rule의 평가
-근거이지 Incident 수명이 아니다. RuleEvaluator는 PlacementEvidence에서
-BAD_PARKING·OUT_OF_ZONE 술어를 계산하지만 signal 이전의 상태를
-기억하지 않는다.
+근거이지 Incident 수명이 아니다. RuleEvaluator는 전용구역 무자격 규칙에서
+PARKED·동일 zone assignment를, PlacementEvidence에서 BAD_PARKING·OUT_OF_ZONE
+술어를 계산하지만 signal 이전의 상태를 기억하지 않는다.
 
-PARKED가 OPEN 조건인 규칙에서 movement와 ParkingEpisode의 MOVEMENT_CONFIRMED 종료만으로 `NOT_MATCHED`를 만들지 않는다. 한 신뢰 가능한 sample에서 규칙별 필수 geometry·assignment가 유효하고 위반 술어가 false이면 `NOT_MATCHED`를 만들며 IncidentReducer만 clear 시간을 누적한다. 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 기존 OPEN Incident를 유지한다.
+PARKED가 OPEN 조건인 규칙은 `MOVE_PENDING` 동안 `UNKNOWN / confirmable=false`로 기존 OPEN Incident를 유지한다. `MOVEMENT_CONFIRMED` 뒤 전용구역 무자격 주차는 `NOT_MATCHED`가 되며, BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK은 유효한 geometry·assignment로 위반 술어를 재평가한다. IncidentReducer만 clear 시간을 누적하고, 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 lifecycle과 timer를 유지한다.
 
 ### 12.2 상태
 
@@ -471,7 +472,8 @@ DOUBLE_PARKING                      = blockingRelationId + ruleCode
 
 | 규칙 그룹 | 직접 종료 입력 | 재평가 trigger |
 |---|---|---|
-| 전용구역·EV 초과 | 해당 ZoneVisit ENDED, `PHYSICAL_VEHICLE_LEFT` | context 변경 |
+| 전용구역 무자격 주차 | 해당 ZoneVisit ENDED, `PHYSICAL_VEHICLE_LEFT` | ParkingEpisode movement·MOVEMENT_CONFIRMED 종료, assignment·context 변경 |
+| EV 초과 | 해당 ZoneVisit ENDED, `PHYSICAL_VEHICLE_LEFT` | ParkingEpisode movement·MOVEMENT_CONFIRMED 종료, assignment 변경 |
 | 불량 주차·구역 외·통행로 | `PHYSICAL_VEHICLE_LEFT` | ParkingEpisode movement·MOVEMENT_CONFIRMED 종료, assignment·geometry 변경 |
 | 이중주차 | BlockingRelation RESOLVED, 관련 `PHYSICAL_VEHICLE_LEFT` | subject/victim 이동·assignment 변경 |
 
@@ -494,9 +496,10 @@ reducer가 선택한 값을 조회해 실제 `IncidentSignal`과 함께 내보�
 
 | 규칙 그룹 | confirm의 의미 | clear의 의미 |
 |---|---|---|
-| 전용구역 무자격·EV 초과 | 이미 확인된 ZoneVisit과 authoritative context에서 위반 술어가 연속으로 신뢰됨 | 같은 visit이 유지되는 동안 자격·초과 술어가 연속으로 false임 |
+| 전용구역 무자격 주차 | 이미 확인된 ZoneVisit, 같은 zone의 PARKED assignment와 authoritative context에서 무자격 술어가 연속으로 신뢰됨 | MOVEMENT_CONFIRMED 또는 같은 visit에서 자격·동일 zone 주차 술어가 연속으로 false임 |
+| EV 초과 | 같은 EV zone에 PARKED이고 `observedAt - parkedAt`이 허용 시간 이상인 술어가 신뢰됨 | MOVEMENT_CONFIRMED 또는 같은 visit에서 PARKED·동일 zone 술어가 false임 |
 | BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK | PARKED 의존성과 유효한 placement 입력을 만족한 위반 술어가 연속으로 신뢰됨 | 유효한 재평가 sample에서 위반 술어가 연속으로 false임 |
-| DOUBLE_PARKING | BlockingRelation owner가 confirm한 관계 신호가 연속으로 신뢰됨 | 관계가 nonterminal인 동안 해소 신호가 연속으로 신뢰됨 |
+| DOUBLE_PARKING | subject·victim 모두 PARKED인 상태에서 BlockingRelation owner가 confirm한 관계 신호가 연속으로 신뢰됨 | 한쪽이 PARKED를 벗어나거나 geometry가 비성립인 신호가 연속으로 신뢰됨 |
 
 ZoneVisit ENDED, BlockingRelation RESOLVED, `PHYSICAL_VEHICLE_LEFT`처럼 상위
 owner가 이미 확정한 직접 종료 입력은 rule의 clear debounce를 다시 적용하지
@@ -558,7 +561,7 @@ UNKNOWN
 | `outOfZoneMinSpotOverlap` | `[제안값] TBD` | 전체 주차면 합집합 안에 있음을 인정할 최소 overlap |
 | rule별 incident confirm/clear duration | `[제안값] 아래 표` | 새 Incident에 snapshot하는 OPEN·RESOLVE debounce; 직접 종료 입력에는 미적용 |
 | entry match deadline | `[후속 계약] TBD` | 입차 문맥과 차량 매칭 제한 시간 |
-| EV allowed duration·clock | `[후속 계약] 법령 근거 필요` | EV_OVERSTAY 값과 UNKNOWN 중 wall-clock 처리 |
+| EV allowed duration·clock | `[결정] parkedAt 기준 wall-clock, 값의 법령 근거는 후속 계약` | 같은 EV zone의 `ParkingEpisode.parkedAt`부터 계산; UNKNOWN 중 확정은 멈추되 복구 뒤 실제 경과 반영 |
 
 ### 실영상 replay 기반 Incident timing 제안
 
@@ -570,9 +573,9 @@ UNKNOWN
 
 | 규칙 | confirm | clear | 근거 |
 |---|---:|---:|---|
-| `DISABLED_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | ZoneVisit owner가 entry `1.0s`, exit `5.0s`를 이미 확인하고 terminal visit은 직접 종료한다. |
-| `EV_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | 제한구역 점유는 확인된 ZoneVisit을 소비하므로 Incident에서 같은 debounce를 반복하지 않는다. |
-| `EV_OVERSTAY` | `0.0s` | `0.0s` | allowed-duration 임계 통과 자체가 누적 사실이고 ZoneVisit 종료가 직접 전파된다. |
+| `DISABLED_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | ZoneVisit entry와 PARKED `5.0s`가 이미 진입·정차를 확인하고 같은 zone assignment까지 요구하므로 Incident에서 같은 debounce를 반복하지 않는다. |
+| `EV_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | 장애인 전용구역과 같은 PARKED·동일 zone assignment 경계를 사용한다. |
+| `EV_OVERSTAY` | `0.0s` | `0.0s` | PARKED 확정 뒤 allowed-duration 임계 통과 자체가 누적 사실이고 movement·ZoneVisit 종료가 재평가 또는 직접 종료를 만든다. |
 | `BAD_PARKING` | `0.5s` | `0.5s` | PARKED `5.0s` 뒤의 placement 신호를 한 번 더 짧게 안정화하되 실제 위반 신호 `4.833s/5.533s`는 보존한다. |
 | `OUT_OF_ZONE` | `0.5s` | `0.5s` | 복도 주차의 최초 confirmable 신호가 `10.501s` 유지되어 `0.5s` debounce로 실제 사건을 보존한다. |
 | `AISLE_BLOCK` | `0.5s` | `0.5s` | OUT_OF_ZONE과 같은 PARKED/placement 경계를 사용하고 단일 frame geometry 전이를 걸러낸다. |

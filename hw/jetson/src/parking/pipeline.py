@@ -604,12 +604,12 @@ class ParkingPipeline:
         tuple[BlockingRelation, ...],
         Mapping[BlockingRelationId, EgressBlockingEvidence],
     ]:
-        """PARKED 차량의 egress 후보와 기존 non-terminal 관계를 함께 갱신한다.
+        """양쪽 PARKED 차량의 egress 후보와 기존 관계를 함께 갱신한다.
 
-        이미 열린 관계는 victim이 더 이상 이번 frame의 새 후보 조건(PARKED +
-        egress 설정)을 만족하지 않아도 계속 재평가한다. 그러지 않으면
-        이동만으로 관계가 조용히 멈춰 있는 채로 남는, 이전에 잡았던
-        STOP_PENDING 누수와 같은 종류의 결함이 생긴다.
+        새 관계는 subject와 victim 모두 PARKED일 때만 만들고, 이미 열린
+        관계도 한쪽이 신뢰 가능한 frame에서 PARKED를 벗어나면 ABSENT로
+        재평가한다. 이렇게 해야 이동한 차량의 관계가 tracker에 남지 않고
+        clear timer를 거쳐 정상적으로 종료된다.
         """
 
         existing_keys: set[_BlockingCandidateKey] = {
@@ -633,8 +633,14 @@ class ParkingPipeline:
             for egress_aisle in self._egress_aisles.for_parking_zone(
                 victim_frame.assignment.zone_id
             ):
-                for subject_id in frames:
+                for subject_id, subject_frame in frames.items():
                     if subject_id == victim_id:
+                        continue
+                    if (
+                        subject_frame.episode is None
+                        or subject_frame.episode.state
+                        is not ParkingState.PARKED
+                    ):
                         continue
                     candidate_keys.add(
                         (subject_id, victim_id, egress_aisle.egress_zone_id)
@@ -665,6 +671,13 @@ class ParkingPipeline:
                 )
                 if observation.state is not ObservationState.OBSERVED:
                     signal = PresenceSignal.UNKNOWN
+                elif (
+                    subject_frame.episode is None
+                    or subject_frame.episode.state is not ParkingState.PARKED
+                    or victim_frame.episode is None
+                    or victim_frame.episode.state is not ParkingState.PARKED
+                ):
+                    signal = PresenceSignal.ABSENT
                 else:
                     egress_aisle = self._egress_aisles.get(egress_zone_id)
                     evidence = egress_blocking_resolver.analyze(
