@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     tof_monitoring_freshness_seconds: float | None = None
     tof_max_pre_occupancy_observation_seconds: float | None = None
 
+    # OCCUPIED 구역 권한 재평가 backoff의 시연용 초기값.
+    # 실제 Jetson의 camera·SQLite 부하를 확인한 뒤 재조정한다.
+    tof_reevaluation_initial_backoff_seconds: float = 0.25
+    tof_reevaluation_max_backoff_seconds: float = 2.0
+    tof_reevaluation_backoff_multiplier: float = 2.0
+
     # Optional local speaker 설정. Settings는 부분 설정도 보존하며 완전성 판단은
     # 후속 composition에 위임한다. 누락·부분 설정·open 실패는 speaker에만
     # 격리하고 sensor와 LED를 유지한다.

@@ -273,6 +273,9 @@ def _settings(**overrides):
         "tof_occupancy_freshness_seconds": 5.0,
         "tof_monitoring_freshness_seconds": 6.0,
         "tof_max_pre_occupancy_observation_seconds": 2.0,
+        "tof_reevaluation_initial_backoff_seconds": 0.4,
+        "tof_reevaluation_max_backoff_seconds": 3.0,
+        "tof_reevaluation_backoff_multiplier": 1.5,
         "tof_disabled_zone_warning_wav_path": Path(
             "unverified/disabled.wav"
         ),
@@ -385,6 +388,9 @@ def test_complete_settings_are_mapped_without_io(
         policy.authorization.max_pre_occupancy_observation_seconds
         == 2.0
     )
+    assert policy.reevaluation.initial_backoff_seconds == 0.4
+    assert policy.reevaluation.max_backoff_seconds == 3.0
+    assert policy.reevaluation.backoff_multiplier == 1.5
 
     dependencies = build_arguments["dependencies"]
     assert isinstance(dependencies, TofWarningRuntimeDependencies)
@@ -431,6 +437,41 @@ def test_missing_core_fields_are_reported_in_deterministic_order(
     assert hardware.sensor_factory_calls == []
     assert hardware.led_factory_calls == 0
     assert builder.calls == []
+
+
+def test_invalid_reevaluation_policy_stops_before_hardware_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hardware = _HardwareCapture()
+    builder = _RuntimeBuilder(hardware.events)
+    monkeypatch.setattr(
+        runtime_module,
+        "build_tof_warning_runtime",
+        builder,
+    )
+    connection_factory = _ConnectionFactory()
+
+    with caplog.at_level(logging.ERROR):
+        result = build_jetson_tof_warning_runtime(
+            settings=_settings(
+                tof_reevaluation_initial_backoff_seconds=2.0,
+                tof_reevaluation_max_backoff_seconds=1.0,
+            ),
+            zones=_zones(),
+            connection_factory=connection_factory,
+            factories=hardware.factories(),
+        )
+
+    assert result is None
+    assert hardware.sensor_factory_calls == []
+    assert hardware.led_factory_calls == 0
+    assert hardware.audio_factory_calls == []
+    assert hardware.speaker_factory_calls == []
+    assert builder.calls == []
+    assert connection_factory.calls == 0
+    assert "component=tof_authorization_reevaluation" in caplog.text
+    assert "stage=settings_validation" in caplog.text
 
 
 def test_sensor_array_factory_failure_stops_before_actuator_creation(

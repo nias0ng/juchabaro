@@ -49,12 +49,29 @@ TOF_OPTIONAL_ENV_FIELDS = (
     ("TOF_WARNING_AUDIO_DEVICE", "tof_warning_audio_device"),
 )
 
+TOF_REEVALUATION_ENV_FIELDS = (
+    (
+        "TOF_REEVALUATION_INITIAL_BACKOFF_SECONDS",
+        "tof_reevaluation_initial_backoff_seconds",
+    ),
+    (
+        "TOF_REEVALUATION_MAX_BACKOFF_SECONDS",
+        "tof_reevaluation_max_backoff_seconds",
+    ),
+    (
+        "TOF_REEVALUATION_BACKOFF_MULTIPLIER",
+        "tof_reevaluation_backoff_multiplier",
+    ),
+)
+
 
 def test_tof_is_disabled_and_optional_settings_are_absent_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("TOF_ENABLED", raising=False)
     for environment_name, _field_name in TOF_OPTIONAL_ENV_FIELDS:
+        monkeypatch.delenv(environment_name, raising=False)
+    for environment_name, _field_name in TOF_REEVALUATION_ENV_FIELDS:
         monkeypatch.delenv(environment_name, raising=False)
 
     settings = Settings(_env_file=None)
@@ -64,6 +81,9 @@ def test_tof_is_disabled_and_optional_settings_are_absent_by_default(
         getattr(settings, field_name) is None
         for _environment_name, field_name in TOF_OPTIONAL_ENV_FIELDS
     )
+    assert settings.tof_reevaluation_initial_backoff_seconds == 0.25
+    assert settings.tof_reevaluation_max_backoff_seconds == 2.0
+    assert settings.tof_reevaluation_backoff_multiplier == 2.0
 
 
 @pytest.mark.parametrize(
@@ -118,6 +138,18 @@ def test_tof_settings_parse_environment_variable_types(
         "2",
     )
     monkeypatch.setenv(
+        "TOF_REEVALUATION_INITIAL_BACKOFF_SECONDS",
+        "0.4",
+    )
+    monkeypatch.setenv(
+        "TOF_REEVALUATION_MAX_BACKOFF_SECONDS",
+        "3",
+    )
+    monkeypatch.setenv(
+        "TOF_REEVALUATION_BACKOFF_MULTIPLIER",
+        "1.5",
+    )
+    monkeypatch.setenv(
         "TOF_DISABLED_ZONE_WARNING_WAV_PATH",
         "unverified/disabled.wav",
     )
@@ -153,6 +185,9 @@ def test_tof_settings_parse_environment_variable_types(
         "tof_occupancy_freshness_seconds",
         "tof_monitoring_freshness_seconds",
         "tof_max_pre_occupancy_observation_seconds",
+        "tof_reevaluation_initial_backoff_seconds",
+        "tof_reevaluation_max_backoff_seconds",
+        "tof_reevaluation_backoff_multiplier",
     )
     assert all(
         isinstance(getattr(settings, field_name), float)
@@ -168,6 +203,9 @@ def test_tof_settings_parse_environment_variable_types(
     assert settings.tof_occupancy_freshness_seconds == 5.0
     assert settings.tof_monitoring_freshness_seconds == 6.0
     assert settings.tof_max_pre_occupancy_observation_seconds == 2.0
+    assert settings.tof_reevaluation_initial_backoff_seconds == 0.4
+    assert settings.tof_reevaluation_max_backoff_seconds == 3.0
+    assert settings.tof_reevaluation_backoff_multiplier == 1.5
     assert settings.tof_disabled_zone_warning_wav_path == Path(
         "unverified/disabled.wav"
     )

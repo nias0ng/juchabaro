@@ -444,6 +444,13 @@ def test_factory_wires_components_in_required_order(
     worker_arguments = captured["authorization_worker"]
     assert worker_arguments["coordinator"] is runtime.authorization_coordinator
     assert worker_arguments["mailbox"] is mailbox
+    assert worker_arguments["policy"] is policy.reevaluation
+    assert (
+        worker_arguments["policy"].initial_backoff_seconds
+        == 0.25
+    )
+    assert worker_arguments["policy"].max_backoff_seconds == 2.0
+    assert worker_arguments["policy"].backoff_multiplier == 2.0
 
     calls_before_signal = construction_order.copy()
     assert runtime.request_after_monitoring_context_change() is None

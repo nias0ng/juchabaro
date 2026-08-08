@@ -32,6 +32,7 @@ from src.application.sensor_factory import (
 from src.application.sensor_worker import SensorWorker
 from src.application.tof_authorization_worker import (
     TofAuthorizationRequestMailbox,
+    TofAuthorizationReevaluationPolicy,
     TofAuthorizationWorker,
 )
 from src.application.tof_zone_authorization import (
@@ -54,6 +55,9 @@ class TofWarningRuntimePolicy:
 
     sensor: TofSensorRuntimePolicy
     authorization: TofAuthorizationPolicy
+    reevaluation: TofAuthorizationReevaluationPolicy = field(
+        default_factory=TofAuthorizationReevaluationPolicy,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -174,6 +178,7 @@ def build_tof_warning_runtime(
     authorization_worker = TofAuthorizationWorker(
         coordinator=authorization_coordinator,
         mailbox=mailbox,
+        policy=policy.reevaluation,
     )
 
     return TofWarningRuntime(
