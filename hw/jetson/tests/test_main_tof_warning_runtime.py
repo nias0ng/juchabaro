@@ -737,7 +737,7 @@ def test_tof_cleanup_error_propagates_after_lock_release(
         with TestClient(application):
             pass
     assert application.state.publication_runtime_lock.is_acquired is False
-    assert events[-3:] == ["tof.stop.1", "tof.stop.2", "tof.close"]
+    assert events[-4:] == ["tof.stop.1", "move.stop", "tof.stop.2", "tof.close"]
 
 
 def test_initial_tof_stop_error_does_not_block_cleanup_and_is_retried(
