@@ -53,6 +53,7 @@ from src.session.models import (
     SessionAdministrativeState,
     SessionContext,
 )
+from src.session.scope_policy import is_pre_entry_scope
 from src.storage.aggregate_repositories import (
     IncidentRepository,
     ParkingEpisodeRepository,
@@ -995,7 +996,10 @@ class PendingHandoffWorkflow:
         종결한다. 경계 시각과 같은 사실은 해당 입차 범위에 포함한다.
         """
 
-        if aggregate_started_at >= entry_time:
+        if not is_pre_entry_scope(
+            aggregate_started_at=aggregate_started_at,
+            entry_time=entry_time,
+        ):
             return False
         repository = PendingHandoffRepository(connection)
         excluded_at_us = datetime_to_epoch_microseconds(excluded_at)

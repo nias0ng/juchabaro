@@ -39,6 +39,7 @@ from src.parking.models import (
 )
 from src.parking.time_guard import ensure_forward_observation
 from src.session.models import EntryAttemptId
+from src.session.scope_policy import is_pre_entry_scope
 from src.tracking.models import ParkingSessionId, PhysicalVehicleId
 
 
@@ -60,6 +61,7 @@ class IncidentReducer(Protocol):
         physical_vehicle_id: PhysicalVehicleId,
         observation: ObservationStatus,
         entry_attempt_id: EntryAttemptId | None = None,
+        entry_time: datetime | None = None,
         parking_session_id: ParkingSessionId | None = None,
         zone_id: ZoneId | None = None,
         victim_physical_vehicle_id: PhysicalVehicleId | None = None,
@@ -254,6 +256,7 @@ class InMemoryIncidentReducer:
         physical_vehicle_id: PhysicalVehicleId,
         observation: ObservationStatus,
         entry_attempt_id: EntryAttemptId | None = None,
+        entry_time: datetime | None = None,
         parking_session_id: ParkingSessionId | None = None,
         zone_id: ZoneId | None = None,
         victim_physical_vehicle_id: PhysicalVehicleId | None = None,
@@ -317,7 +320,7 @@ class InMemoryIncidentReducer:
             is_new = False
 
         materialized_open: IncidentTransition | None = None
-        if self._can_materialize(current):
+        if self._can_materialize(current, entry_time=entry_time):
             current = replace(current, publication_revision=1)
             open_snapshot = replace(
                 current,
@@ -351,6 +354,7 @@ class InMemoryIncidentReducer:
                 signal,
                 observation=observation,
                 is_new=is_new,
+                entry_time=entry_time,
             )
         elif current.state is IncidentState.OPEN:
             reduction = self._reduce_open(
@@ -481,6 +485,7 @@ class InMemoryIncidentReducer:
         *,
         observation: ObservationStatus,
         is_new: bool,
+        entry_time: datetime | None,
     ) -> IncidentReduction:
         if signal.value is IncidentSignalValue.NOT_MATCHED:
             canceled = replace(
@@ -515,7 +520,15 @@ class InMemoryIncidentReducer:
                 confirm_trusted_seconds=trusted_seconds,
                 clear_trusted_seconds=0.0,
                 record_version=current.record_version + (0 if is_new else 1),
-                publication_revision=(1 if self._has_correlation(current) else 0),
+                publication_revision=(
+                    1
+                    if self._can_publish_open(
+                        current,
+                        confirmed_at=signal.observed_at,
+                        entry_time=entry_time,
+                    )
+                    else 0
+                ),
                 confirmed_at=signal.observed_at,
                 updated_at=signal.observed_at,
             )
@@ -810,11 +823,38 @@ class InMemoryIncidentReducer:
             or incident.parking_session_id is not None
         )
 
-    def _can_materialize(self, incident: Incident) -> bool:
+    def _can_materialize(
+        self,
+        incident: Incident,
+        *,
+        entry_time: datetime | None,
+    ) -> bool:
         return (
             incident.state in {IncidentState.OPEN, IncidentState.CLEAR_PENDING}
             and incident.publication_revision == 0
-            and self._has_correlation(incident)
+            and incident.confirmed_at is not None
+            and self._can_publish_open(
+                incident,
+                confirmed_at=incident.confirmed_at,
+                entry_time=entry_time,
+            )
+        )
+
+    @classmethod
+    def _can_publish_open(
+        cls,
+        incident: Incident,
+        *,
+        confirmed_at: datetime,
+        entry_time: datetime | None,
+    ) -> bool:
+        if not cls._has_correlation(incident):
+            return False
+        if entry_time is None:
+            return True
+        return not is_pre_entry_scope(
+            aggregate_started_at=confirmed_at,
+            entry_time=entry_time,
         )
 
     @staticmethod

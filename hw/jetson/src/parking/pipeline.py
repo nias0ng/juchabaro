@@ -114,6 +114,7 @@ class _VehicleFrame:
     vehicle: PhysicalVehicleSnapshot
     context: SessionContext | None
     entry_attempt_id: EntryAttemptId | None
+    entry_time: datetime | None
     observation: ObservationStatus
     parking_motion_observation: ObservationStatus
     parking_eligibility: ParkingEligibilityDecision
@@ -308,6 +309,7 @@ class ParkingPipeline:
         *,
         session_contexts: Mapping[PhysicalVehicleId, SessionContext] | None = None,
         entry_attempt_ids: Mapping[PhysicalVehicleId, EntryAttemptId] | None = None,
+        entry_times: Mapping[PhysicalVehicleId, datetime] | None = None,
         skip_unobserved_vehicle_ids: Collection[PhysicalVehicleId] = (),
     ) -> ParkingPipelineResult:
         """한 TrackingBatch를 nonterminal 주차 상태 변경 계획으로 변환한다.
@@ -315,6 +317,9 @@ class ParkingPipeline:
         ``session_contexts``는 active ContextBinding에서 조회한 authoritative
         projection이어야 한다. ``entry_attempt_ids``는 session이 없는 REVIEW/DENY
         차량도 local Incident를 공개할 수 있게 하는 authoritative correlation이다.
+        ``entry_times``는 같은 correlation의 wire entryTime이며, 그보다 먼저
+        확정된 Incident가 뒤늦게 OPEN으로 승격되지 않도록 publication 범위를
+        제한한다.
         ``not_present_confirmed_vehicle_ids``가 포함돼도
         이 메서드는 scope를 끝내지 않는다. 실제 출차 transaction을 소유한
         상위 workflow가 commit 계획을 만들 때 ``physical_exit()``을 호출한다.
@@ -322,6 +327,7 @@ class ParkingPipeline:
 
         contexts = {} if session_contexts is None else session_contexts
         attempts = {} if entry_attempt_ids is None else entry_attempt_ids
+        correlation_entry_times = {} if entry_times is None else entry_times
         zone_visit_updates: list[ZoneVisit] = []
         parking_episode_updates: list[ParkingEpisode] = []
         parking_transitions: list[ParkingTransition] = []
@@ -337,6 +343,7 @@ class ParkingPipeline:
         for vehicle in batch.vehicles:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
+            entry_time = correlation_entry_times.get(vehicle.physical_vehicle_id)
             observation = _effective_observation(batch, vehicle)
             ephemeral_evidence = assignment_resolver.analyze(
                 vehicle,
@@ -465,6 +472,7 @@ class ParkingPipeline:
                 vehicle=vehicle,
                 context=context,
                 entry_attempt_id=entry_attempt_id,
+                entry_time=entry_time,
                 observation=observation,
                 parking_motion_observation=motion_observation,
                 parking_eligibility=parking_eligibility,
@@ -521,6 +529,7 @@ class ParkingPipeline:
                 rule_context,
                 observation=frame.observation,
                 entry_attempt_id=frame.entry_attempt_id,
+                entry_time=frame.entry_time,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
                 incident_signal_diagnostics=incident_signal_diagnostics,
@@ -866,6 +875,7 @@ class ParkingPipeline:
         *,
         observation: ObservationStatus,
         entry_attempt_id: EntryAttemptId | None,
+        entry_time: datetime | None,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
         incident_signal_diagnostics: list[IncidentSignalDiagnostic],
@@ -918,6 +928,7 @@ class ParkingPipeline:
                     physical_vehicle_id=context.vehicle.physical_vehicle_id,
                     observation=observation,
                     entry_attempt_id=entry_attempt_id,
+                    entry_time=entry_time,
                     parking_session_id=parking_session_id,
                     zone_id=zone_id,
                     victim_physical_vehicle_id=victim_physical_vehicle_id,

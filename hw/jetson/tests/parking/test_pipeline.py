@@ -673,10 +673,41 @@ def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
     with_context = pipeline.process(
         batch(1, snapshot(1)),
         session_contexts={CAR: UNAUTHORIZED},
+        entry_times={CAR: at(0)},
     )
     opened = transitions_for(with_context, DISABLED_ZONE_UNAUTHORIZED)
     assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
     assert opened[0].incident.parking_session_id == SESSION
+
+
+def test_pre_entry_incident_is_not_opened_when_context_arrives_late() -> None:
+    pipeline, _, _, reducer, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+
+    pipeline.process(batch(0, snapshot(0, bbox=OUTSIDE)))
+    local = pipeline.process(batch(1, snapshot(1, bbox=OUTSIDE)))
+    assert transitions_for(local, OUT_OF_ZONE) == ()
+    local_incident = updates_for(local, OUT_OF_ZONE)[-1]
+    assert local_incident.state is IncidentState.OPEN
+    assert local_incident.publication_revision == 0
+
+    correlated = pipeline.process(
+        batch(2, snapshot(2, bbox=OUTSIDE)),
+        session_contexts={CAR: UNAUTHORIZED},
+        entry_times={CAR: at(1.5)},
+    )
+
+    assert transitions_for(correlated, OUT_OF_ZONE) == ()
+    incident = next(
+        item
+        for item in reducer.active_snapshot()
+        if item.key.rule_code == OUT_OF_ZONE
+    )
+    assert incident.confirmed_at == at(1)
+    assert incident.parking_session_id == SESSION
+    assert incident.publication_revision == 0
 
 
 def test_entry_attempt_can_correlate_incident_without_session_context() -> None:

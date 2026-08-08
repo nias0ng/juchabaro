@@ -88,6 +88,7 @@ def reduce(
     physical_vehicle_id: PhysicalVehicleId = CAR,
     observation: ObservationStatus | None = None,
     entry_attempt_id: EntryAttemptId | None = ATTEMPT,
+    entry_time: datetime | None = None,
     parking_session_id: ParkingSessionId | None = None,
     zone_id: ZoneId | None = None,
     victim_physical_vehicle_id: PhysicalVehicleId | None = None,
@@ -97,6 +98,7 @@ def reduce(
         physical_vehicle_id=physical_vehicle_id,
         observation=observation or observed(seconds),
         entry_attempt_id=entry_attempt_id,
+        entry_time=entry_time,
         parking_session_id=parking_session_id,
         zone_id=zone_id,
         victim_physical_vehicle_id=victim_physical_vehicle_id,
@@ -383,6 +385,7 @@ def test_local_only_open_materializes_when_late_correlation_arrives() -> None:
         1,
         confirmable=True,
         entry_attempt_id=None,
+        entry_time=at(0),
         parking_session_id=SESSION,
     )
 
@@ -393,6 +396,36 @@ def test_local_only_open_materializes_when_late_correlation_arrives() -> None:
     assert published.incident.publication_revision == 1
     assert published.incident.parking_session_id == SESSION
     assert published.transitions[0].transition_type is IncidentTransitionType.OPEN
+
+
+def test_pre_entry_open_is_not_materialized_by_late_correlation() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    key = vehicle_key()
+    local = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+
+    correlated = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        entry_time=at(0.5),
+        parking_session_id=SESSION,
+    )
+
+    assert local.incident.confirmed_at == at(0)
+    assert correlated.incident.parking_session_id == SESSION
+    assert correlated.incident.publication_revision == 0
+    assert correlated.transitions == ()
 
 
 def test_late_correlation_does_not_drop_same_sample_clear_result() -> None:
