@@ -181,7 +181,7 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 - **사용 목적**: 입주민이 본인 계정과 차량 정보를 등록해 서비스를 이용할 수 있도록 합니다.
 - **주요 이용 흐름**: 회원가입 → 로그인(JWT 발급) → 본인 차량/방문 차량 등록(차량 번호, 장애인차·전기차 여부 포함) → 필요 시 차량 정보 삭제 가능
-- **시스템 처리 방식**: `AuthController`(`/auth/signup`, `/auth/login`)가 계정을 생성·인증하고, `VehicleController`가 차량 CRUD를 담당합니다. 관리자 계정은 회원가입이 아닌 DB에 직접 생성하여 등록 후 사용합니다.
+- **시스템 처리 방식**: `AuthController`(`/auth/signup`, `/auth/login`)가 계정을 생성·인증하고, `VehicleController`가 차량 CRUD를 담당합니다. 일반 회원가입으로는 RESIDENT 계정만 생성되며, 관리자 계정은 별도로 신청을 통해 DB에 직접 생성하여 등록 후 사용합니다.
 - **제공되는 결과**: 로그인한 사용자는 본인 명의 차량과 방문 차량 목록을 앱에서 확인·관리할 수 있습니다.
 
 ### **3.2. 게이트 번호판 인식 기반 입차 판정**
@@ -195,16 +195,16 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 - **사용 목적**: 잘못 주차된 차량에 개인정보 노출 없이 이동을 요청합니다.
 - **주요 이용 흐름**: 입주민이 위반 차량을 발견 → 앱에서 대상 번호판·위반 유형·사유·사진을 첨부해 이동 요청 등록 → 차주가 알림을 받고 예상 이동 시간으로 응답 → 현장 재확인 결과까지 요청 상태에 반영 → 보낸/받은 이동 요청 목록·상세 조회
-- **시스템 처리 방식**: `MoveRequestController`(`POST /move-requests`, `GET /move-requests`, `GET /move-requests/{requestId}`, `POST /move-requests/{requestId}/responses`, `GET /move-requests/stats`)가 사진 첨부(멀티파트)를 포함한 이동 요청 생성, 목록·상세 조회, 차주의 이동 예정 시간 응답을 처리하며, 동일 대상에 처리 중인 요청이 있으면 중복 생성을 막습니다(409 응답). 응답 이후 백엔드는 Jetson에 재확인을 지시하고(`POST /internal/move-verifications`), Jetson은 현장 관측 결과를 `POST /hw/move-requests/{requestId}/verification`(`HwMoveVerificationController`)으로 회신해 실제 이동 여부를 확정합니다.
+- **시스템 처리 방식**: `MoveRequestController`(`POST /move-requests`, `GET /move-requests`, `GET /move-requests/{requestId}`, `POST /move-requests/{requestId}/responses`, `GET /move-requests/stats`)가 사진 첨부(멀티파트)를 포함한 이동 요청 생성, 목록·상세 조회, 차주의 이동 예정 시간 응답을 처리하며, 동일 대상에 처리 중인 요청이 있으면 중복 생성을 막습니다(409 응답). Jetson이 자동 감지한 사건은 요청 후 1시간 동안 응답이 없거나 차주가 답한 예상 이동 시각이 지나 재알림 대상이 되면, 백엔드가 Jetson에 재확인을 지시하고 (`POST /internal/move-verifications`), Jetson은 현장 관측 결과를 `POST /hw/move-requests/{requestId}/verification`(`HwMoveVerificationController`)으로 회신해 실제 이동 여부를 확정합니다.
 - **제공되는 결과**: 차량 소유자에게 개인정보 없이 이동 요청이 전달되고, 요청자는 응답과 실제 이동 확인까지의 처리 상태를 목록에서 확인할 수 있습니다.
 - **관리자 처리**: `AdminEventController`(`/admin/parking-events`)가 사건 목록·이력·상세 조회와 완료(`/complete`)·반려(`/dismiss`)·확인(`/acknowledge`)·재알림(`/reminders`)을 제공하며, 관리자 웹의 `ParkingEventListView`·`ParkingEventDetailView`·`HistoryView` 화면에서 사용합니다.
 
 ### **3.4. 알림 조회 및 푸시 발송**
 
 - **사용 목적**: 이동 요청, 재알림, 전기차 구역 초과, 사건 종료 등 본인에게 필요한 알림을 확인합니다.
-- **주요 이용 흐름**: 앱 기기 토큰 등록 → 이벤트 발생 시 푸시 수신 → 알림 목록 조회 → 알림 상세 확인
+- **주요 이용 흐름**: 앱 기기 토큰 등록 → 이벤트 발생 시 푸시 수신 → 알림 목록 조회 → 관련 이동 요청 상세 확인
 - **시스템 처리 방식**: `NotificationController`(`GET /notifications`, `GET /notifications/{id}`)가 페이지 단위로 알림을 조회하고, `DeviceTokenController`가 앱의 푸시 토큰을 등록·해제합니다. 실시간 푸시는 `PushSender` 추상화를 통해 발송하며, 운영 프로필(`application-prod.yml`)은 `app.push.provider=expo`로 Expo Push(`ExpoPushSender`)를 사용하고 로컬 기본값은 로그 출력(`LoggingPushSender`)입니다. 알림 수신 여부는 `NotificationSettingController`로 설정합니다.
-- **제공되는 결과**: 사용자는 앱에서 푸시로 즉시 알림을 받고, 알림 이력을 목록에서 다시 확인할 수 있습니다.
+- **제공되는 결과**: 사용자는 알림 설정이 허용된 경우 앱에서 푸시 알림을 받고, 알림 이력을 목록에서 다시 확인할 수 있습니다.
 
 ### **3.5. AI 기반 불편 주차 자동 감지**
 
