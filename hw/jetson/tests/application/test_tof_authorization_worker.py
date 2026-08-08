@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 import logging
 from threading import (
@@ -21,6 +22,8 @@ from src.application.sensor_occupancy import (
     OccupancyTransition,
 )
 from src.application.tof_authorization_worker import (
+    _TofAuthorizationMailboxWake,
+    _TofAuthorizationMailboxWakeReason,
     _TofAuthorizationRequestBatch,
     TofAuthorizationRequestMailbox,
     TofAuthorizationWorker,
@@ -79,6 +82,24 @@ def _run_with_failure(
     )
 
 
+class _WaitObservedCondition(Condition):
+    """Consumer가 Condition wait에 진입한 시점을 테스트에 공개한다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_entered = Event()
+
+    def wait_for(
+        self,
+        predicate: Callable[[], bool],
+        timeout: float | None = None,
+    ) -> bool:
+        # Condition lock을 보유한 상태에서 Event를 설정한다. producer는
+        # super().wait_for()가 lock을 놓고 대기하기 전까지 진입할 수 없다.
+        self.wait_entered.set()
+        return super().wait_for(predicate, timeout)
+
+
 class _ObservedMailbox(TofAuthorizationRequestMailbox):
     """Worker의 대기 및 close 완료 시점을 테스트에 공개한다."""
 
@@ -86,17 +107,22 @@ class _ObservedMailbox(TofAuthorizationRequestMailbox):
         super().__init__()
         self._wait_count_lock = Lock()
         self._wait_count = 0
+        self.wait_timeouts: list[float | None] = []
         self.second_wait_entered = Event()
         self.close_completed = Event()
 
     def _wait_and_take(
         self,
-    ) -> _TofAuthorizationRequestBatch | None:
+        timeout_seconds: float | None = None,
+    ) -> _TofAuthorizationMailboxWake:
         with self._wait_count_lock:
             self._wait_count += 1
+            self.wait_timeouts.append(timeout_seconds)
             if self._wait_count == 2:
                 self.second_wait_entered.set()
-        return super()._wait_and_take()
+        return super()._wait_and_take(
+            timeout_seconds=timeout_seconds,
+        )
 
     def close(self) -> None:
         super().close()
@@ -219,14 +245,169 @@ def test_mailbox_preserves_maximum_revision_and_merges_monitoring_signal(
     assert mailbox.request_after_monitoring_commit() is None
     assert mailbox.request_after_monitoring_commit() is None
 
-    batch = mailbox._wait_and_take()
+    wake = mailbox._wait_and_take(timeout_seconds=0)
 
-    assert batch is not None
-    assert batch.zone_revisions == (
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.REQUEST
+    assert wake.batch is not None
+    assert wake.batch.zone_revisions == (
         (ZONE_1, 2),
         (ZONE_2, 3),
     )
-    assert batch.monitoring_commit_requested is True
+    assert wake.batch.monitoring_commit_requested is True
+
+
+def test_mailbox_zero_timeout_preserves_open_ingress() -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+
+    timed_out = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert (
+        timed_out.reason
+        is _TofAuthorizationMailboxWakeReason.TIMEOUT
+    )
+    assert timed_out.batch is None
+
+    mailbox.request_transitions((_transition(ZONE_1, revision=2),))
+    requested = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert (
+        requested.reason
+        is _TofAuthorizationMailboxWakeReason.REQUEST
+    )
+    assert requested.batch == _TofAuthorizationRequestBatch(
+        zone_revisions=((ZONE_1, 2),),
+        monitoring_commit_requested=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "batch"),
+    (
+        (_TofAuthorizationMailboxWakeReason.REQUEST, None),
+        (
+            _TofAuthorizationMailboxWakeReason.TIMEOUT,
+            _TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+        ),
+        (
+            _TofAuthorizationMailboxWakeReason.CLOSED,
+            _TofAuthorizationRequestBatch(
+                zone_revisions=((ZONE_1, 1),),
+                monitoring_commit_requested=False,
+            ),
+        ),
+    ),
+)
+def test_mailbox_wake_rejects_invalid_reason_batch_combination(
+    reason: _TofAuthorizationMailboxWakeReason,
+    batch: _TofAuthorizationRequestBatch | None,
+) -> None:
+    with pytest.raises(ValueError):
+        _TofAuthorizationMailboxWake(
+            reason=reason,
+            batch=batch,
+        )
+
+
+def test_mailbox_wake_rejects_invalid_reason() -> None:
+    with pytest.raises(ValueError, match="reason"):
+        _TofAuthorizationMailboxWake(
+            reason="REQUEST",
+            batch=_TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    (
+        -0.001,
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "1",
+        object(),
+    ),
+)
+def test_mailbox_rejects_invalid_timeout(
+    timeout_seconds: object,
+) -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        mailbox._wait_and_take(
+            timeout_seconds=timeout_seconds,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("signal_kind", "expected_batch"),
+    (
+        pytest.param(
+            "transition",
+            _TofAuthorizationRequestBatch(
+                zone_revisions=((ZONE_1, 1),),
+                monitoring_commit_requested=False,
+            ),
+            id="transition",
+        ),
+        pytest.param(
+            "monitoring",
+            _TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+            id="monitoring",
+        ),
+    ),
+)
+def test_mailbox_signal_wakes_timed_waiting_consumer(
+    signal_kind: str,
+    expected_batch: _TofAuthorizationRequestBatch,
+) -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+    observed_condition = _WaitObservedCondition()
+    mailbox._condition = observed_condition
+
+    consumer_finished = Event()
+    results: list[_TofAuthorizationMailboxWake] = []
+
+    def consume() -> None:
+        results.append(
+            mailbox._wait_and_take(timeout_seconds=60.0)
+        )
+        consumer_finished.set()
+
+    consumer = Thread(target=consume, daemon=True)
+    consumer.start()
+    try:
+        assert observed_condition.wait_entered.wait(timeout=1.0)
+
+        if signal_kind == "transition":
+            mailbox.request_transitions(
+                (_transition(ZONE_1, revision=1),)
+            )
+        else:
+            mailbox.request_after_monitoring_commit()
+
+        assert consumer_finished.wait(timeout=1.0)
+    finally:
+        mailbox.close()
+        consumer.join(timeout=1.0)
+
+    assert consumer.is_alive() is False
+    assert len(results) == 1
+    assert (
+        results[0].reason
+        is _TofAuthorizationMailboxWakeReason.REQUEST
+    )
+    assert results[0].batch == expected_batch
 
 
 def test_mailbox_rejects_invalid_input_while_open() -> None:
@@ -246,11 +427,13 @@ def test_mailbox_close_wakes_waiting_consumer() -> None:
     mailbox = TofAuthorizationRequestMailbox()
     consumer_started = Event()
     consumer_finished = Event()
-    results = []
+    results: list[_TofAuthorizationMailboxWake] = []
 
     def consume() -> None:
         consumer_started.set()
-        results.append(mailbox._wait_and_take())
+        results.append(
+            mailbox._wait_and_take(timeout_seconds=60.0)
+        )
         consumer_finished.set()
 
     consumer = Thread(target=consume, daemon=True)
@@ -264,7 +447,12 @@ def test_mailbox_close_wakes_waiting_consumer() -> None:
         consumer.join(timeout=1.0)
 
     assert consumer.is_alive() is False
-    assert results == [None]
+    assert len(results) == 1
+    assert (
+        results[0].reason
+        is _TofAuthorizationMailboxWakeReason.CLOSED
+    )
+    assert results[0].batch is None
 
 
 def test_mailbox_close_discards_pending_and_is_idempotent() -> None:
@@ -275,7 +463,10 @@ def test_mailbox_close_discards_pending_and_is_idempotent() -> None:
     mailbox.close()
     mailbox.close()
 
-    assert mailbox._wait_and_take() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
+    assert wake.batch is None
 
 
 def test_mailbox_requests_are_noop_after_close_before_validation() -> None:
@@ -285,7 +476,9 @@ def test_mailbox_requests_are_noop_after_close_before_validation() -> None:
     assert mailbox.request_transitions([]) is None
     assert mailbox.request_transitions((object(),)) is None
     assert mailbox.request_after_monitoring_commit() is None
-    assert mailbox._wait_and_take() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
+    assert wake.batch is None
 
 
 def test_worker_processes_prestart_combined_batch_on_dedicated_thread(
@@ -411,6 +604,7 @@ def test_recoverable_failure_is_logged_and_waits_for_external_signal(
         worker.start()
         try:
             assert mailbox.second_wait_entered.wait(timeout=1.0)
+            assert mailbox.wait_timeouts[:2] == [None, None]
             assert coordinator.call_count("drain_pending") == 1
             assert worker.failure is None
             assert worker.is_running is True
@@ -494,7 +688,8 @@ def test_thread_start_failure_rolls_back_worker_and_mailbox(
         (_transition(ZONE_1, revision=1),)
     ) is None
     assert mailbox.request_after_monitoring_commit() is None
-    assert mailbox._wait_and_take() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
 
     with pytest.raises(RuntimeError, match="only be started once"):
         worker.start()

@@ -9,7 +9,9 @@ runtime composition과 lifespan 관리는 담당하지 않는다.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import logging
+import math
 from threading import Condition, Event, Lock, Thread, current_thread
 
 from src.application.sensor_occupancy import OccupancyTransition
@@ -29,6 +31,78 @@ class _TofAuthorizationRequestBatch:
 
     zone_revisions: tuple[tuple[ZoneId, int], ...]
     monitoring_commit_requested: bool
+
+
+class _TofAuthorizationMailboxWakeReason(str, Enum):
+    """Mailbox consumer가 깨어난 원인."""
+
+    REQUEST = "REQUEST"
+    TIMEOUT = "TIMEOUT"
+    CLOSED = "CLOSED"
+
+
+@dataclass(frozen=True, kw_only=True)
+class _TofAuthorizationMailboxWake:
+    """Mailbox 대기의 요청, timeout 및 종료 결과."""
+
+    reason: _TofAuthorizationMailboxWakeReason
+    batch: _TofAuthorizationRequestBatch | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.reason,
+            _TofAuthorizationMailboxWakeReason,
+        ):
+            raise ValueError(
+                "reason은 _TofAuthorizationMailboxWakeReason이어야 합니다."
+            )
+
+        if self.reason is _TofAuthorizationMailboxWakeReason.REQUEST:
+            if not isinstance(
+                self.batch,
+                _TofAuthorizationRequestBatch,
+            ):
+                raise ValueError(
+                    "REQUEST wake에는 request batch가 필요합니다."
+                )
+            return
+
+        if self.batch is not None:
+            raise ValueError(
+                "TIMEOUT 또는 CLOSED wake에는 batch가 없어야 합니다."
+            )
+
+
+def _normalize_timeout_seconds(
+    timeout_seconds: float | None,
+) -> float | None:
+    if timeout_seconds is None:
+        return None
+
+    if isinstance(timeout_seconds, bool) or not isinstance(
+        timeout_seconds,
+        (int, float),
+    ):
+        raise ValueError(
+            "timeout_seconds는 None 또는 finite 숫자여야 합니다."
+        )
+
+    try:
+        normalized = float(timeout_seconds)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(
+            "timeout_seconds는 finite 숫자여야 합니다."
+        ) from error
+
+    if not math.isfinite(normalized):
+        raise ValueError(
+            "timeout_seconds는 finite 숫자여야 합니다."
+        )
+    if normalized < 0:
+        raise ValueError(
+            "timeout_seconds는 0 이상이어야 합니다."
+        )
+    return normalized
 
 
 class TofAuthorizationRequestMailbox:
@@ -93,34 +167,52 @@ class TofAuthorizationRequestMailbox:
             self._monitoring_commit_pending = False
             self._condition.notify_all()
 
-    def _wait_and_take(self) -> _TofAuthorizationRequestBatch | None:
-        """worker가 다음 병합 batch를 기다리고 atomic하게 가져간다."""
+    def _wait_and_take(
+        self,
+        timeout_seconds: float | None = None,
+    ) -> _TofAuthorizationMailboxWake:
+        """다음 batch, timeout 또는 mailbox 종료를 구분해 반환한다."""
 
+        normalized_timeout = _normalize_timeout_seconds(timeout_seconds)
         with self._condition:
             self._condition.wait_for(
                 lambda: (
                     self._closed
                     or bool(self._pending_revisions)
                     or self._monitoring_commit_pending
-                )
+                ),
+                timeout=normalized_timeout,
             )
 
             if self._closed:
                 self._pending_revisions.clear()
                 self._monitoring_commit_pending = False
-                return None
+                return _TofAuthorizationMailboxWake(
+                    reason=_TofAuthorizationMailboxWakeReason.CLOSED,
+                )
 
-            batch = _TofAuthorizationRequestBatch(
-                zone_revisions=tuple(
-                    sorted(self._pending_revisions.items())
-                ),
-                monitoring_commit_requested=(
-                    self._monitoring_commit_pending
-                ),
+            if (
+                self._pending_revisions
+                or self._monitoring_commit_pending
+            ):
+                batch = _TofAuthorizationRequestBatch(
+                    zone_revisions=tuple(
+                        sorted(self._pending_revisions.items())
+                    ),
+                    monitoring_commit_requested=(
+                        self._monitoring_commit_pending
+                    ),
+                )
+                self._pending_revisions = {}
+                self._monitoring_commit_pending = False
+                return _TofAuthorizationMailboxWake(
+                    reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+                    batch=batch,
+                )
+
+            return _TofAuthorizationMailboxWake(
+                reason=_TofAuthorizationMailboxWakeReason.TIMEOUT,
             )
-            self._pending_revisions = {}
-            self._monitoring_commit_pending = False
-            return batch
 
 
 class TofAuthorizationWorker:
@@ -203,10 +295,26 @@ class TofAuthorizationWorker:
     def _run(self) -> None:
         try:
             while True:
-                batch = self._mailbox._wait_and_take()
-                if batch is None:
+                wake = self._mailbox._wait_and_take(
+                    timeout_seconds=None,
+                )
+                if (
+                    wake.reason
+                    is _TofAuthorizationMailboxWakeReason.CLOSED
+                ):
                     return
 
+                if (
+                    wake.reason
+                    is _TofAuthorizationMailboxWakeReason.TIMEOUT
+                ):
+                    continue
+
+                batch = wake.batch
+                if batch is None:
+                    raise RuntimeError(
+                        "REQUEST mailbox wake에 batch가 없습니다."
+                    )
                 self._process_batch(batch)
         except Exception as error:
             self._record_failure(error)
