@@ -1,20 +1,29 @@
 """ToF 권한 재평가 요청을 병합하고 별도 worker thread에서 처리한다.
 
-이 모듈은 sensor transition과 monitoring commit 신호의 병합, shutdown ingress
-차단 및 coordinator 실행을 담당한다. 센서 polling, monitoring 처리,
-authorization business rule, 액추에이터 제어, Incident·outbox·Backend 연동,
-runtime composition과 lifespan 관리는 담당하지 않는다.
+이 모듈은 sensor transition과 monitoring commit 신호의 병합, zone별 자동
+재평가 backoff, shutdown ingress 차단 및 coordinator 실행을 담당한다. 센서
+polling, monitoring 처리, authorization business rule, 액추에이터 제어,
+Incident·outbox·Backend 연동, runtime composition과 lifespan 관리는 담당하지
+않는다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 import logging
 import math
 from threading import Condition, Event, Lock, Thread, current_thread
+from time import monotonic
 
-from src.application.sensor_occupancy import OccupancyTransition
+from src.application.sensor_occupancy import (
+    OccupancyState,
+    OccupancyTransition,
+)
+from src.application.tof_zone_authorization import (
+    TofAuthorizationDecision,
+)
 from src.application.tof_zone_authorization_coordinator import (
     TofAuthorizationCoordinatorRun,
     TofZoneAuthorizationCoordinator,
@@ -23,6 +32,8 @@ from src.parking.models import ZoneId
 
 
 logger = logging.getLogger(__name__)
+
+MonotonicClock = Callable[[], float]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -103,6 +114,108 @@ def _normalize_timeout_seconds(
             "timeout_seconds는 0 이상이어야 합니다."
         )
     return normalized
+
+
+def _finite_policy_number(
+    value: object,
+    *,
+    field_name: str,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name}은 finite 숫자여야 합니다.")
+
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(
+            f"{field_name}은 finite 숫자여야 합니다."
+        ) from error
+
+    if not math.isfinite(normalized):
+        raise ValueError(f"{field_name}은 finite 숫자여야 합니다.")
+    return normalized
+
+
+def _merge_minimum_revision(
+    current: int | None,
+    incoming: int | None,
+) -> int | None:
+    if current is None:
+        return incoming
+    if incoming is None:
+        return current
+    return max(current, incoming)
+
+
+@dataclass(frozen=True, kw_only=True)
+class TofAuthorizationReevaluationPolicy:
+    """OCCUPIED zone 자동 재평가의 잠정 backoff 정책.
+
+    기본값은 production 측정으로 확정된 운영값이 아니며 후속 Settings
+    wiring과 현장 검증에서 재조정해야 한다.
+    """
+
+    initial_backoff_seconds: float = 0.25
+    max_backoff_seconds: float = 2.0
+    backoff_multiplier: float = 2.0
+
+    def __post_init__(self) -> None:
+        initial = _finite_policy_number(
+            self.initial_backoff_seconds,
+            field_name="initial_backoff_seconds",
+        )
+        maximum = _finite_policy_number(
+            self.max_backoff_seconds,
+            field_name="max_backoff_seconds",
+        )
+        multiplier = _finite_policy_number(
+            self.backoff_multiplier,
+            field_name="backoff_multiplier",
+        )
+
+        if initial <= 0:
+            raise ValueError(
+                "initial_backoff_seconds는 0보다 커야 합니다."
+            )
+        if maximum < initial:
+            raise ValueError(
+                "max_backoff_seconds는 initial 이상이어야 합니다."
+            )
+        if multiplier < 1:
+            raise ValueError(
+                "backoff_multiplier는 1 이상이어야 합니다."
+            )
+
+        object.__setattr__(self, "initial_backoff_seconds", initial)
+        object.__setattr__(self, "max_backoff_seconds", maximum)
+        object.__setattr__(self, "backoff_multiplier", multiplier)
+
+
+class _ZoneReevaluationKind(str, Enum):
+    OCCUPIED_UNRESOLVED = "OCCUPIED_UNRESOLVED"
+    OCCUPIED_RESOLVED = "OCCUPIED_RESOLVED"
+    COMPLETION_RETRY = "COMPLETION_RETRY"
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ZoneReevaluationState:
+    next_due_at: float
+    backoff_seconds: float
+    minimum_occupancy_revision: int | None
+    kind: _ZoneReevaluationKind
+
+    def __post_init__(self) -> None:
+        if (
+            self.kind is not _ZoneReevaluationKind.COMPLETION_RETRY
+            and self.minimum_occupancy_revision is not None
+        ):
+            raise ValueError(
+                "OCCUPIED periodic schedule에는 retry minimum을 "
+                "보존할 수 없습니다."
+            )
+
+
+_DEFAULT_REEVALUATION_POLICY = TofAuthorizationReevaluationPolicy()
 
 
 class TofAuthorizationRequestMailbox:
@@ -216,16 +329,37 @@ class TofAuthorizationRequestMailbox:
 
 
 class TofAuthorizationWorker:
-    """Mailbox 요청을 전용 thread에서 ToF authorization으로 처리한다."""
+    """Mailbox 요청과 due 재평가를 전용 thread에서 처리한다.
+
+    Snapshot supplier의 정상 sensor read failure는 snapshot 상태로 표현돼야
+    한다. supplier 예외나 malformed snapshot은 terminal contract 위반이다.
+    """
 
     def __init__(
         self,
         *,
         coordinator: TofZoneAuthorizationCoordinator,
         mailbox: TofAuthorizationRequestMailbox,
+        policy: TofAuthorizationReevaluationPolicy = (
+            _DEFAULT_REEVALUATION_POLICY
+        ),
+        monotonic_clock: MonotonicClock = monotonic,
     ) -> None:
+        if not isinstance(policy, TofAuthorizationReevaluationPolicy):
+            raise ValueError(
+                "policy는 TofAuthorizationReevaluationPolicy여야 합니다."
+            )
+        if not callable(monotonic_clock):
+            raise ValueError("monotonic_clock은 callable이어야 합니다.")
+
         self._coordinator = coordinator
         self._mailbox = mailbox
+        self._policy = policy
+        self._monotonic_clock = monotonic_clock
+        self._reevaluation_states: dict[
+            ZoneId,
+            _ZoneReevaluationState,
+        ] = {}
 
         self._state_lock = Lock()
         self._stop_requested = Event()
@@ -296,7 +430,7 @@ class TofAuthorizationWorker:
         try:
             while True:
                 wake = self._mailbox._wait_and_take(
-                    timeout_seconds=None,
+                    timeout_seconds=self._next_wait_timeout_seconds(),
                 )
                 if (
                     wake.reason
@@ -308,6 +442,7 @@ class TofAuthorizationWorker:
                     wake.reason
                     is _TofAuthorizationMailboxWakeReason.TIMEOUT
                 ):
+                    self._process_due_reevaluations()
                     continue
 
                 batch = wake.batch
@@ -330,6 +465,8 @@ class TofAuthorizationWorker:
         self,
         batch: _TofAuthorizationRequestBatch,
     ) -> None:
+        requested_revisions: dict[ZoneId, int | None] = {}
+
         for zone_id, revision in batch.zone_revisions:
             if self._stop_requested.is_set():
                 return
@@ -337,6 +474,10 @@ class TofAuthorizationWorker:
             self._coordinator.request_zone(
                 zone_id,
                 minimum_occupancy_revision=revision,
+            )
+            requested_revisions[zone_id] = _merge_minimum_revision(
+                requested_revisions.get(zone_id),
+                revision,
             )
 
         if batch.monitoring_commit_requested:
@@ -349,6 +490,337 @@ class TofAuthorizationWorker:
 
         run = self._coordinator.drain_pending()
         self._log_failures(run)
+        self._update_reevaluation_states(
+            run,
+            requested_revisions=requested_revisions,
+        )
+
+    def _monotonic_now(self) -> float:
+        value = self._monotonic_clock()
+        if isinstance(value, bool) or not isinstance(
+            value,
+            (int, float),
+        ):
+            raise ValueError(
+                "monotonic_clock은 finite 숫자를 반환해야 합니다."
+            )
+
+        try:
+            normalized = float(value)
+        except (OverflowError, ValueError) as error:
+            raise ValueError(
+                "monotonic_clock은 finite 숫자를 반환해야 합니다."
+            ) from error
+
+        if not math.isfinite(normalized):
+            raise ValueError(
+                "monotonic_clock은 finite 숫자를 반환해야 합니다."
+            )
+        return normalized
+
+    def _next_wait_timeout_seconds(self) -> float | None:
+        if not self._reevaluation_states:
+            return None
+
+        now = self._monotonic_now()
+        next_due_at = min(
+            state.next_due_at
+            for state in self._reevaluation_states.values()
+        )
+        return max(0.0, next_due_at - now)
+
+    def _process_due_reevaluations(self) -> None:
+        if self._stop_requested.is_set():
+            return
+
+        snapshot_states = {
+            zone_id: (revision, state)
+            for zone_id, revision, state
+            in self._coordinator.zone_occupancy_revisions()
+        }
+        now = self._monotonic_now()
+        due_states = tuple(
+            sorted(
+                (
+                    (zone_id, schedule)
+                    for zone_id, schedule
+                    in self._reevaluation_states.items()
+                    if schedule.next_due_at <= now
+                ),
+                key=lambda item: item[0],
+            )
+        )
+
+        requested_revisions: dict[ZoneId, int | None] = {}
+        for zone_id, schedule in due_states:
+            current = snapshot_states.get(zone_id)
+            if current is None:
+                if (
+                    schedule.kind
+                    is _ZoneReevaluationKind.COMPLETION_RETRY
+                ):
+                    logger.error(
+                        "Completion retry 대상 zone snapshot이 없어 "
+                        "미래 deadline으로 재예약합니다. "
+                        "zoneId=%d stage=snapshot_lookup",
+                        int(zone_id),
+                    )
+                    self._schedule_without_outcome(
+                        zone_id,
+                        now=now,
+                        minimum_occupancy_revision=(
+                            schedule.minimum_occupancy_revision
+                        ),
+                    )
+                else:
+                    self._reevaluation_states.pop(zone_id, None)
+                continue
+
+            current_revision, current_state = current
+            if (
+                schedule.kind
+                is not _ZoneReevaluationKind.COMPLETION_RETRY
+                and current_state is not OccupancyState.OCCUPIED
+            ):
+                self._reevaluation_states.pop(zone_id, None)
+                continue
+
+            if self._stop_requested.is_set():
+                return
+
+            minimum_revision = _merge_minimum_revision(
+                current_revision,
+                schedule.minimum_occupancy_revision,
+            )
+            self._coordinator.request_zone(
+                zone_id,
+                minimum_occupancy_revision=minimum_revision,
+            )
+            requested_revisions[zone_id] = minimum_revision
+
+        if not requested_revisions or self._stop_requested.is_set():
+            return
+
+        run = self._coordinator.drain_pending()
+        self._log_failures(run)
+        self._update_reevaluation_states(
+            run,
+            requested_revisions=requested_revisions,
+        )
+
+    def _update_reevaluation_states(
+        self,
+        run: TofAuthorizationCoordinatorRun,
+        *,
+        requested_revisions: dict[ZoneId, int | None],
+    ) -> None:
+        now = self._monotonic_now()
+        retry_by_zone = {
+            request.zone_id: request
+            for request in run.retry_requests
+        }
+        published_zone_ids = {
+            assessment.zone_id
+            for assessment in run.published_assessments
+        }
+        failure_zone_ids = {
+            failure.zone_id
+            for failure in run.failures
+        }
+        deferred_zone_ids = set(run.deferred_zone_ids)
+        reported_zone_ids = (
+            published_zone_ids
+            | set(run.unchanged_zone_ids)
+            | failure_zone_ids
+            | deferred_zone_ids
+            | set(retry_by_zone)
+        )
+        missing_retry_zone_ids = (
+            failure_zone_ids | deferred_zone_ids
+        ) - set(retry_by_zone)
+        missing_outcome_zone_ids = (
+            set(requested_revisions) - reported_zone_ids
+        )
+        fallback_zone_ids = (
+            missing_retry_zone_ids | missing_outcome_zone_ids
+        )
+
+        for zone_id in sorted(fallback_zone_ids):
+            logger.error(
+                "ToF authorization coordinator 결과가 완전하지 않아 "
+                "completion retry로 재예약합니다. "
+                "zoneId=%d stage=schedule_update",
+                int(zone_id),
+            )
+            self._schedule_without_outcome(
+                zone_id,
+                now=now,
+                minimum_occupancy_revision=(
+                    requested_revisions.get(zone_id)
+                ),
+            )
+
+        for zone_id, retry in sorted(retry_by_zone.items()):
+            if zone_id in fallback_zone_ids:
+                continue
+            self._schedule_completion_retry(
+                zone_id,
+                now=now,
+                minimum_occupancy_revision=(
+                    retry.minimum_occupancy_revision
+                ),
+            )
+
+        successful_zone_ids = (
+            published_zone_ids | set(run.unchanged_zone_ids)
+        ) - set(retry_by_zone) - fallback_zone_ids
+        for zone_id in sorted(successful_zone_ids):
+            assessment = self._coordinator.latest_assessment(zone_id)
+            if assessment is None:
+                logger.error(
+                    "성공 outcome의 최신 assessment가 없어 completion "
+                    "retry로 재예약합니다. "
+                    "zoneId=%d stage=schedule_update",
+                    int(zone_id),
+                )
+                self._schedule_without_outcome(
+                    zone_id,
+                    now=now,
+                    minimum_occupancy_revision=(
+                        requested_revisions.get(zone_id)
+                    ),
+                )
+                continue
+
+            if assessment.occupancy_state is not OccupancyState.OCCUPIED:
+                self._reevaluation_states.pop(zone_id, None)
+                continue
+
+            if assessment.decision is TofAuthorizationDecision.UNKNOWN:
+                self._schedule_occupied_unresolved(
+                    zone_id,
+                    now=now,
+                )
+                continue
+
+            if assessment.decision in {
+                TofAuthorizationDecision.AUTHORIZED,
+                TofAuthorizationDecision.UNAUTHORIZED,
+            }:
+                self._schedule_occupied_resolved(
+                    zone_id,
+                    now=now,
+                )
+                continue
+
+            raise RuntimeError(
+                "OCCUPIED assessment에 지원하지 않는 decision이 있습니다: "
+                f"zone_id={zone_id!r}, decision={assessment.decision!r}"
+            )
+
+    def _schedule_completion_retry(
+        self,
+        zone_id: ZoneId,
+        *,
+        now: float,
+        minimum_occupancy_revision: int | None,
+    ) -> None:
+        current = self._reevaluation_states.get(zone_id)
+        if current is not None and current.kind in {
+            _ZoneReevaluationKind.OCCUPIED_UNRESOLVED,
+            _ZoneReevaluationKind.COMPLETION_RETRY,
+        }:
+            backoff = min(
+                current.backoff_seconds
+                * self._policy.backoff_multiplier,
+                self._policy.max_backoff_seconds,
+            )
+        else:
+            backoff = self._policy.initial_backoff_seconds
+
+        effective_minimum = _merge_minimum_revision(
+            (
+                current.minimum_occupancy_revision
+                if current is not None
+                and current.kind
+                is _ZoneReevaluationKind.COMPLETION_RETRY
+                else None
+            ),
+            minimum_occupancy_revision,
+        )
+        self._reevaluation_states[zone_id] = _ZoneReevaluationState(
+            next_due_at=now + backoff,
+            backoff_seconds=backoff,
+            minimum_occupancy_revision=effective_minimum,
+            kind=_ZoneReevaluationKind.COMPLETION_RETRY,
+        )
+
+    def _schedule_occupied_unresolved(
+        self,
+        zone_id: ZoneId,
+        *,
+        now: float,
+    ) -> None:
+        current = self._reevaluation_states.get(zone_id)
+        if current is not None and current.kind in {
+            _ZoneReevaluationKind.OCCUPIED_UNRESOLVED,
+            _ZoneReevaluationKind.COMPLETION_RETRY,
+        }:
+            backoff = min(
+                current.backoff_seconds
+                * self._policy.backoff_multiplier,
+                self._policy.max_backoff_seconds,
+            )
+        else:
+            backoff = self._policy.initial_backoff_seconds
+
+        self._reevaluation_states[zone_id] = _ZoneReevaluationState(
+            next_due_at=now + backoff,
+            backoff_seconds=backoff,
+            minimum_occupancy_revision=None,
+            kind=_ZoneReevaluationKind.OCCUPIED_UNRESOLVED,
+        )
+
+    def _schedule_occupied_resolved(
+        self,
+        zone_id: ZoneId,
+        *,
+        now: float,
+    ) -> None:
+        self._reevaluation_states[zone_id] = _ZoneReevaluationState(
+            next_due_at=now + self._policy.max_backoff_seconds,
+            backoff_seconds=self._policy.max_backoff_seconds,
+            minimum_occupancy_revision=None,
+            kind=_ZoneReevaluationKind.OCCUPIED_RESOLVED,
+        )
+
+    def _schedule_without_outcome(
+        self,
+        zone_id: ZoneId,
+        *,
+        now: float,
+        minimum_occupancy_revision: int | None,
+    ) -> None:
+        current = self._reevaluation_states.get(zone_id)
+        backoff = (
+            self._policy.initial_backoff_seconds
+            if current is None
+            else current.backoff_seconds
+        )
+        effective_minimum = _merge_minimum_revision(
+            (
+                None
+                if current is None
+                else current.minimum_occupancy_revision
+            ),
+            minimum_occupancy_revision,
+        )
+        self._reevaluation_states[zone_id] = _ZoneReevaluationState(
+            next_due_at=now + backoff,
+            backoff_seconds=backoff,
+            minimum_occupancy_revision=effective_minimum,
+            kind=_ZoneReevaluationKind.COMPLETION_RETRY,
+        )
 
     def _log_failures(
         self,
