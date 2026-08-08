@@ -13,7 +13,6 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    // 알림 목록의 스와이프 삭제(Swipeable)가 정상 동작하려면 gesture-handler가 트리 최상단을 감싸야 한다.
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         <QueryProvider>
