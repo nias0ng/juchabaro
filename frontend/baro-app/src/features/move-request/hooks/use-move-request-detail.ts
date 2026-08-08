@@ -10,6 +10,10 @@ import { queryKeys } from '@/services/query-keys';
 // 이 화면에 머무는 동안만 이 주기로 다시 조회해서 백엔드가 상태를 바꿨는지 스스로 확인한다.
 const POLL_INTERVAL_MS = 10_000;
 
+/**
+ * 이동 요청 상세를 조회하고, 대기 상태(RESPONDED/REMINDER_SENT)인 동안엔 주기적으로 재조회한다.
+ * API: GET /api/move-requests/{requestId}
+ */
 export function useMoveRequestDetail(requestId: number | null) {
   const { accessToken, status } = useAuth();
   const isFocused = useIsFocused();

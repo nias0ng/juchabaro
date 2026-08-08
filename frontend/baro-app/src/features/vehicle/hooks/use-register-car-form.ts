@@ -36,9 +36,10 @@ const INITIAL_VISITOR_VALUES: VisitorCarFormValues = {
 };
 
 /**
- * 차량 등록 화면(G-01~G-03)의 입력값과 단계 이동, 등록 완료 처리(G-04)를 함께 관리한다.
+ * 차량 등록 화면의 입력값과 단계 이동, 등록 완료 처리를 함께 관리한다.
  * 화면 이동(성공 시 어디로 갈지)은 onRegistered로 주입받아 화면 쪽에서 결정한다.
  * initialCarType을 주면 그 성격으로 화면이 처음부터 열린다(예: 홈 화면 "방문 등록"에서 바로 진입).
+ * API: POST /api/vehicles
  */
 export function useRegisterCarForm(onRegistered: () => void, initialCarType: RegisterCarType = 'household') {
   const { accessToken } = useAuth();

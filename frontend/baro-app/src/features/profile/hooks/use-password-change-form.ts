@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { isConfirmPasswordValid, isPasswordValid } from '@/features/auth/validation/signup';
 
+/** 내 정보 수정 화면의 비밀번호 변경 입력값과 검증 상태를 관리한다. 입력이 없으면 변경하지 않는 것으로 취급한다. */
 export function usePasswordChangeForm() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
