@@ -6,7 +6,9 @@
 
 ## 1. 목적
 
-Jetson은 camera·tracker·입차 문맥의 불완전한 입력을 시간에 걸쳐 해석하여 Backend가 사용할 수 있는 안정적이고 설명 가능한 도메인 전이로 만든다.
+Jetson은 camera·tracker·ToF 센서·입차 문맥의 불완전한 입력을 시간에 걸쳐
+해석하여 Backend가 사용할 수 있는 안정적이고 설명 가능한 도메인 전이와
+장치 내 현장 경고를 만든다.
 
 한 frame의 bbox나 tracker ID는 다음을 직접 증명하지 못한다.
 
@@ -16,6 +18,8 @@ Jetson은 camera·tracker·입차 문맥의 불완전한 입력을 시간에 걸
 - 한 frame에서 보이지 않는 것인지 실제로 떠났는지
 - 이동한 뒤 기존 위반 원인도 사라졌는지
 - 새 사건인지 이미 공개한 사건의 연속인지
+- ToF 거리만으로 점유한 객체가 어느 PhysicalVehicle인지 또는 장애인·EV
+  자격이 있는지
 
 Jetson의 `Incident.OPEN`은 edge 규칙의 확정 조건이 충족됐다는 뜻이다. 법적 판단이나 관리자 최종 확정을 의미하지 않는다.
 
@@ -24,10 +28,13 @@ Jetson의 `Incident.OPEN`은 edge 규칙의 확정 조건이 충족됐다는 뜻
 ```mermaid
 flowchart LR
     OBS["Camera·tracker 관측"] --> ID["PhysicalVehicle 동일성"]
+    TOF["ToF 구역 점유"] --> LOCAL["ToF 현장 경고 판정"]
     ENTRY["입차 문맥"] --> FACT["시간적 도메인 사실"]
     ID --> FACT
     ZONE["ZoneDefinition"] --> FACT
     EGRESS["EgressAisleDefinition"] --> FACT
+    FACT --> LOCAL
+    LOCAL --> ACT["LED·speaker"]
     FACT --> RULE["삼상태 규칙 평가"]
     RULE --> INCIDENT["Incident lifecycle"]
     FACT --> OUTPUT["Domain handoff"]
@@ -38,10 +45,12 @@ flowchart LR
 | 계층 | 결과 | 책임 |
 |---|---|---|
 | 관측 | detection, track, frame health, `MotionEstimate` | 보이는 것과 시간적 bbox evidence를 보고하며 scope 수명이나 종료를 추정하지 않음 |
+| ToF 점유 | `ZoneOccupancySnapshot` | 한 구역의 안정된 `OCCUPIED / VACANT`와 관측 신뢰도를 분리하며 차량 identity·자격을 추정하지 않음 |
 | 동일성 | `PhysicalVehicle` | `EntityResolver`가 한 frame 전체의 시공간 geometry를 전역 1:1로 비교해 여러 track segment의 물리적 연속성을 결정 |
 | 시간적 사실 | `ZoneVisit`, `ParkingEpisode`, `BlockingRelation` | 공간·정지·관계의 confirmation |
 | 규칙 평가 | `MATCHED / NOT_MATCHED / UNKNOWN` | 현재 규칙 술어만 계산하며 상태를 소유하지 않음 |
 | 사건 | `Incident` | 후보·OPEN·clear·RESOLVED와 중복 억제 |
+| 현장 경고 | `TofZoneAuthorizationAssessment`, local warning projection | 활성 ToF 점유와 최신 차량 문맥으로 장치 내 LED·speaker 상태를 계산하며 Incident를 생성·해소하지 않음 |
 | 전달 | immutable handoff와 outbox | Backend 적용 여부와 retry |
 | 업무 | event, 이동 요청, 알림, 관리자 처리 | Backend 책임 |
 
@@ -155,6 +164,8 @@ OPEN.delivery        = DELIVERED
 | `EgressBlockingEvidence` | subject footprint과 egress polygon의 두 정규화 overlap을 담은 immutable ephemeral 계산값 | scope·timer·Incident lifecycle |
 | `BlockingRelation` | subject·victim·egress 영역의 차단 관계 | 모든 공간 관계의 범용 graph |
 | `Incident` | 동일 규칙 위반의 후보·OPEN·해소 수명 | Backend 업무 완료 상태 소유 |
+| `ZoneOccupancySnapshot` | ToF 센서가 확인한 한 구역의 안정 점유와 관측 신뢰도 | PhysicalVehicle identity·차량 자격·Incident lifecycle |
+| `TofZoneAuthorizationAssessment` | 활성 ToF 점유와 현재 차량 문맥을 결합한 삼상태 권한 판정 | 점유 수명·차량 문맥·Incident lifecycle 소유 |
 | `MoveVerificationAttempt` | 이동 요청 뒤 현장 규칙을 다시 확인하는 한 번의 시도 | Backend 재알림·관리자 전환 결정 |
 
 ## 5. ZoneDefinition
@@ -414,6 +425,25 @@ UNKNOWN
 
 Incident가 `CLEAR_PENDING`이면 아직 RESOLVED가 아니므로 해당 대상 결과는 clear confirmation이 끝날 때까지 `UNKNOWN`이다. pilot은 target을 한 개만 보낼 수 있지만 identity를 1:1로 고정하지 않기 위해 의미 계약은 하나 이상의 목록을 허용한다. 한 command의 모든 target은 같은 이동 대상 `subjectPhysicalVehicleId`를 가져야 한다.
 
+### 8.7 ToF 현장 경고
+
+`[결정]` ToF 현장 경고는 장애인·EV 전용구역의 안정된 점유와 현재 차량
+문맥을 결합해 LED·speaker에 적용하는 장치 내 ephemeral output이다. Backend
+handoff나 Incident projection이 아니며 그 자체가 위반 기록 또는 법적 판단을
+뜻하지 않는다.
+
+- 안정된 ToF `OCCUPIED`로 시작한 활성 점유 구간은 경고 활성화의 필수
+  조건이다. 차량 문맥·자격 정보 또는 Incident만으로 현장 경고를 새로
+  활성화할 수 없다.
+- `ContextBinding`, 차량 자격과 신뢰 가능한 monitoring 관측은 활성 점유
+  구간의 권한을 판정하는 입력이다. 입력 누락이나 불신뢰를 일반 차량으로
+  추정하지 않고 `UNKNOWN`으로 유지한다.
+- Incident OPEN·RESOLVE는 현장 경고를 직접 활성화·유지·해제하지 않는다.
+  전용구역 Incident의 `confirmed INSIDE` 조건과 publication lifecycle은
+  기존 계약을 그대로 따른다.
+- 구체적인 점유·경고 수명주기는 `02`, 입력 변화의 재평가 전파와 actuator
+  소유권은 `03`, 재시작 복구는 `04`에서 정의한다.
+
 ## 9. 규칙과 Incident 동일성
 
 ### 9.1 PlacementEvidence와 판정 알고리즘
@@ -540,6 +570,9 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `MoveVerificationCommand` | Backend → Jetson · Backend | 하나 이상 Incident의 현장 재확인 요구 | `requestId + verificationAttempt + targetIncidentIds` | 동일 command 중복 실행 금지 |
 | `MoveVerificationResult` | Jetson → Backend · Jetson | 전체·incident별 RESOLVED·STILL_ACTIVE·UNKNOWN | command identity + incident별 판단 revision | 업무 상태 mapping과 후속 행동 결정 |
 | `PublicationApplicationConfirmation` | Backend → Jetson · Backend | APPLIED·ALREADY_APPLIED·CONFLICT | aggregate ID + publicationRevision + payload hash + correlation | ACK 유실 시 적용 여부를 안전하게 재확인; 구체 방식은 후속 계약 |
+
+ToF 현장 경고 projection은 cross-system handoff가 아니므로 이 표,
+transactional outbox와 publication revision의 대상이 아니다.
 
 Backend→Jetson handoff는 identity와 revision으로 중복·stale·conflict를 구분할 수 있어야 한다. retry, reconnect와 durable acceptance의 구체적인 transport 방식은 `[후속 계약]`이며 full state snapshot protocol은 현재 범위에 넣지 않는다.
 
