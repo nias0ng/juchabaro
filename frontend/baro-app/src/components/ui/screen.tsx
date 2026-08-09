@@ -1,10 +1,12 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
   ScrollView,
+  TextInput,
   View,
   type ColorValue,
   type ScrollViewProps,
@@ -14,8 +16,11 @@ import {
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/hooks/use-theme';
+import { Spacing } from '@/styles';
 
 import { styles } from './screen.styles';
+
+const KEYBOARD_EXTRA_SPACE = Spacing.xxxl;
 
 type ScreenProps = {
   children: ReactNode;
@@ -56,6 +61,45 @@ export function Screen({
   onRefresh,
 }: ScreenProps) {
   const theme = useTheme();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    if (!avoidKeyboard || Platform.OS !== 'android') return;
+
+    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [avoidKeyboard]);
+
+  // KeyboardAvoidingView/패딩은 화면 전체만 밀어 올릴 뿐, 포커스된 입력창이 실제로
+  // 보이는 위치까지 스크롤해 주지는 않는다. 폼이 길면 입력창이 키보드 뒤에 가려진 채로
+  // 남아 입력해도 안 보이는 문제가 생겨서, 포커스된 입력창까지 직접 스크롤시킨다.
+  useEffect(() => {
+    if (!avoidKeyboard || !scroll) return;
+
+    const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
+      const focusedInput = TextInput.State.currentlyFocusedInput();
+      if (focusedInput) {
+        scrollViewRef.current?.scrollResponderScrollNativeHandleToKeyboard(
+          focusedInput,
+          KEYBOARD_EXTRA_SPACE,
+          true,
+        );
+      }
+    });
+
+    return () => showSubscription.remove();
+  }, [avoidKeyboard, scroll]);
+
   const screenStyle = [
     styles.safeArea,
     { backgroundColor: backgroundGradient ? 'transparent' : backgroundColor ?? theme.background },
@@ -67,9 +111,17 @@ export function Screen({
       {header}
       {scroll ? (
         <ScrollView
+          ref={scrollViewRef}
           style={styles.scroll}
-          contentContainerStyle={[styles.content, contentContainerStyle]}
+          contentContainerStyle={[
+            styles.content,
+            contentContainerStyle,
+            keyboardHeight > 0 && { paddingBottom: keyboardHeight + KEYBOARD_EXTRA_SPACE },
+          ]}
           keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+          keyboardDismissMode={
+            avoidKeyboard ? (Platform.OS === 'ios' ? 'interactive' : 'on-drag') : undefined
+          }
           showsVerticalScrollIndicator={false}
           refreshControl={
             onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> : undefined
@@ -92,15 +144,12 @@ export function Screen({
     body
   );
 
-  if (!avoidKeyboard) {
+  if (!avoidKeyboard || Platform.OS !== 'ios') {
     return background;
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.fill}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <KeyboardAvoidingView style={styles.fill} behavior="padding">
       {background}
     </KeyboardAvoidingView>
   );

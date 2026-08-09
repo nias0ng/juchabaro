@@ -19,6 +19,9 @@ export function RequestComposeReasonField({ value, onChangeText, placeholder }: 
       placeholderTextColor={Palette.gray400}
       multiline
       textAlignVertical="top"
+      autoComplete="off"
+      importantForAutofill="no"
+      underlineColorAndroid="transparent"
       style={styles.field}
     />
   );

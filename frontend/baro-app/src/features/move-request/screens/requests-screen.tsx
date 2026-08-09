@@ -20,6 +20,7 @@ export type RequestsScope = 'SENT' | 'RECEIVED';
 
 export default function RequestsScreen() {
   const [scope, setScope] = useState<RequestsScope>('SENT');
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const sentQuery = useMoveRequests('SENT');
   const receivedQuery = useMoveRequests('RECEIVED');
   const currentQuery = scope === 'SENT' ? sentQuery : receivedQuery;
@@ -48,13 +49,18 @@ export default function RequestsScreen() {
   };
 
   const refreshAll = async () => {
-    await Promise.all([sentQuery.refetch(), receivedQuery.refetch()]);
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([sentQuery.refetch(), receivedQuery.refetch()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
   };
 
   return (
     <GradientScreenBackground
       contentContainerStyle={styles.content}
-      refreshing={sentQuery.isRefreshing || receivedQuery.isRefreshing}
+      refreshing={isPullRefreshing}
       onRefresh={() => void refreshAll()}
     >
       <ResponsiveContainer style={styles.container}>

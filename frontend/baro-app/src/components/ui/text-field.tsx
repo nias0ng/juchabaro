@@ -73,11 +73,14 @@ export function TextField({
         secureTextEntry={secureTextEntry}
         autoCapitalize={autoCapitalize}
         keyboardType={keyboardType}
-        autoComplete={autoComplete}
         // autoComplete를 지정하지 않은 필드는 안드로이드가 자체 판단으로 자동완성 대상인지 추측해
-        // 입력창 둘레에 강조 박스를 계속 그린다. 아이디/비밀번호처럼 자동완성을 의도한 필드만
-        // autoComplete를 명시하므로, 그 외에는 여기서 명시적으로 꺼서 그 박스가 안 뜨게 한다.
-        importantForAutofill={autoComplete ? 'yes' : 'no'}
+        // 값을 입력하는 순간 입력창 둘레에 강조 박스를 그린다. 아이디/비밀번호처럼 자동완성을
+        // 의도한 필드만 autoComplete를 구체적인 값("username" 등)으로 명시하므로, 그 외(미지정
+        // 또는 "off")에는 "off"를 명시적으로 내려보내고 importantForAutofill도 꺼서 그 박스가
+        // 안 뜨게 한다. autoComplete="off"를 그냥 진리값으로만 봐서 "yes"로 잘못 넘기던 버그도 같이 고쳤다.
+        autoComplete={autoComplete ?? 'off'}
+        importantForAutofill={autoComplete && autoComplete !== 'off' ? 'yes' : 'no'}
+        underlineColorAndroid="transparent"
         maxLength={maxLength}
         editable={editable}
         style={styles.input}

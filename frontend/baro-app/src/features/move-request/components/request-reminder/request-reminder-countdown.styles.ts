@@ -6,9 +6,11 @@ export const styles = StyleSheet.create({
   outer: {
     width: 150,
     height: 150,
-    borderRadius: 75,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  svg: {
+    position: 'absolute',
   },
   inner: {
     width: 124,
