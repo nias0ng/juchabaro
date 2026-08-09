@@ -6,6 +6,10 @@ import { queryKeys } from '@/services/query-keys';
 
 import { getViolationStats } from '../api/violation-api';
 
+/**
+ * 이동 요청 기반 위반 통계를 조회한다.
+ * API: GET /api/move-requests/stats
+ */
 export function useViolationStats() {
   const { accessToken, status } = useAuth();
 

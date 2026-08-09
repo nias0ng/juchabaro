@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 
+/** 이동 요청(다른 차량에 이동 요청 보내기/받기) API 래퍼. */
 import { getJson, postForm, postJson } from '@/services/http-client';
 
 import type {
@@ -12,14 +13,17 @@ import type {
   MoveResponseResult,
 } from './types';
 
+/** GET /api/move-requests/{requestId} — 이동 요청 한 건의 상세를 조회한다. */
 export function getMoveRequestDetail(requestId: number, accessToken: string): Promise<MoveRequestDetail> {
   return getJson<MoveRequestDetail>(`/api/move-requests/${requestId}`, accessToken);
 }
 
+/** GET /api/move-requests — 보낸/받은 이동 요청 목록을 scope 기준으로 조회한다(최대 50건). */
 export function getMoveRequests(scope: MoveRequestScope, accessToken: string): Promise<MoveRequestListResult> {
   return getJson<MoveRequestListResult>(`/api/move-requests?scope=${scope}&size=50`, accessToken);
 }
 
+/** POST /api/move-requests/{requestId}/responses — 이동 요청에 응답(이동 예정/불가)한다. */
 export function postMoveRequestResponse(
   requestId: number,
   request: MoveResponseRequest,
@@ -49,6 +53,7 @@ async function appendImage(formData: FormData, uri: string, index: number): Prom
   );
 }
 
+/** POST /api/move-requests — 사진과 사유를 첨부해 상대 차량에 이동 요청을 생성한다. */
 export async function postMoveRequest(
   params: MoveRequestCreateParams,
   accessToken: string,

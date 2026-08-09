@@ -12,15 +12,14 @@ import { queryClient } from '@/services/query-client';
 import { clearSession, getSession, saveSession } from '@/services/session-storage';
 import { setUnauthorizedHandler } from '@/services/unauthorized-handler';
 
-/* 
-  AuthProvider :  앱 전반에서 로그인 상태를 관리하는 컴포넌트
-*/ 
+/**
+ * 앱 전반의 로그인 상태(loading/guest/authenticated), 세션 복원, 로그인/로그아웃을 관리하는 Provider.
+ * API: POST /api/auth/login, GET /api/users/me
+ */
 
-// 로그인 여부 : loading -> guest/authenticated 순으로 바뀌도록 함. 
-// 앱을 키면,SecureStore에서 세션을 읽어오는 동안(비동기)에는 로그인을 한지 안한지 몰라서. 
+// SecureStore에서 세션을 읽어오는 동안(비동기)엔 로그인 여부를 알 수 없어 loading을 거쳐 guest/authenticated로 바뀐다.
 type AuthStatus = 'loading' | 'guest' | 'authenticated';
 
-// AuthUser의 타입 정의 : 로그인한 사용자 정보
 // buildingNumber/unitNumber는 GET /api/users/me 명세 기준 관리자는 null일 수 있다.
 type AuthUser = {
   userId: number;
@@ -32,7 +31,6 @@ type AuthUser = {
   phoneNumber: string;
 };
 
-// AuthContextValue의 타입 정의 : 로그인 상태, 사용자 정보, 로그인/로그아웃 함수
 type AuthContextValue = {
   status: AuthStatus;
   user: AuthUser | null;
@@ -55,8 +53,6 @@ function toAuthUser(profile: UserProfile): AuthUser {
   };
 }
 
-// Context는 "이 컴포넌트 트리 어디서든 꺼내 쓸 수 있는 공용 상자"라고 생각하면 된다.
-// 로그인 상태를 props로 화면마다 일일이 전달하지 않고, 트리 아무 곳에서나 useAuth()로 꺼낸다.
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 // _layout.tsx에서 앱 전체를 이 컴포넌트로 감싸뒀다 (children = 그 안의 모든 화면).
@@ -82,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 앱이 처음 켜질 때 기기에 저장된 세션이 있는지 확인해서 로그인 상태를 복원
   // "로그인 유지"를 체크 안 하고 로그인했으면 애초에 기기에 저장이 안 됐을 것이므로,
-  // 여기서 세션이 없으면 자연스럽게 guest로 시작한다 — 이게 "로그인 유지"의 실제 동작 지점이다.
+  // 여기서 세션이 없으면 자연스럽게 guest로 시작한다 
   useEffect(() => {
     getSession().then(async (session) => {
       if (!session) { // 세션 가져왔는데, 없으면 guest 상태
@@ -107,11 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  //화면에서 사용할 longin() 함수 -> 여기서 API 호출/토큰 저장/상태 변경을 처리
   const login = useCallback(async (loginId: string, password: string, keepSignedIn: boolean) => {
     // 로그인 과정의 인증 실패는 "세션 만료" 안내 대상이 아니다.
     sessionEndedRef.current = true;
-    const result = await loginRequest({ loginId, password }); // 로그인 API 호출.
+    const result = await loginRequest({ loginId, password });
 
     // 로그인 API는 accessToken만 발급하므로 로그인 유지가 필요할 때 accessToken만 저장한다.
     // 로그인 응답에는 동/호수 같은 상세 프로필이 없어서, 성공 직후 한 번 더 조회해서 채운다.
@@ -166,7 +161,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// 다른 파일에서는 이 useAuth()만 부르면 status/user/login/logout을 꺼내 쓸 수 있다.
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) {

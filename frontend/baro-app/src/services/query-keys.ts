@@ -1,3 +1,4 @@
+/** React Query 캐시 키를 기능별로 모아둔 곳. 화면/훅에서 문자열 배열을 직접 쓰지 않고 이걸 통해서만 쓴다. */
 import type { MoveRequestScope } from '@/features/move-request/api/types';
 
 export const queryKeys = {

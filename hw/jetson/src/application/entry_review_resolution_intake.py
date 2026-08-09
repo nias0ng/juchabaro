@@ -7,7 +7,9 @@ session observation workflow가 이 durable 상태를 이어서 처리한다.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,6 +43,10 @@ from src.tracking.models import ParkingSessionId, VehicleId
 
 
 _ACCEPTED_INPUT_TYPE = "EntryReviewResolution"
+_LOGGER = logging.getLogger(__name__)
+
+AfterAppliedCallback = Callable[[], None]
+
 _DECISION_STATE_BY_RESOLUTION = {
     EntryReviewResolution.REVIEW_ALLOW: EntryDecisionState.REVIEW_ALLOW,
     EntryReviewResolution.REVIEW_DENY: EntryDecisionState.REVIEW_DENY,
@@ -65,10 +71,26 @@ class EntryReviewResolutionAcceptance:
 
 
 class EntryReviewResolutionIntake:
-    """REVIEW_PENDING attempt의 revisioned 후속 결정을 접수한다."""
+    """REVIEW_PENDING attempt의 revisioned 후속 결정을 접수한다.
 
-    def __init__(self, coordinator: EntryMatchCoordinator) -> None:
+    ``after_applied``는 새 입력의 durable transaction이 commit된 뒤
+    ``APPLIED`` 결과에서만 호출되는 best-effort 신호다. callback은
+    가볍고 non-blocking이어야 하며 DB 조회나 후속 business logic을
+    직접 실행하지 않아야 한다. callback 실패는 로깅하되 이미 확정된
+    durable acceptance에는 전파하지 않는다.
+    """
+
+    def __init__(
+        self,
+        coordinator: EntryMatchCoordinator,
+        *,
+        after_applied: AfterAppliedCallback | None = None,
+    ) -> None:
+        if after_applied is not None and not callable(after_applied):
+            raise TypeError("after_applied must be callable or None")
+
         self._coordinator = coordinator
+        self._after_applied = after_applied
 
     def receive(
         self,
@@ -134,7 +156,7 @@ class EntryReviewResolutionIntake:
                         )
                     )
 
-        return EntryReviewResolutionAcceptance(
+        result = EntryReviewResolutionAcceptance(
             entry_attempt_id=entry_attempt_id,
             decision_revision=resolution.decision_revision,
             application_result=_application_result(acceptance),
@@ -144,6 +166,30 @@ class EntryReviewResolutionIntake:
             match_state=attempt.match_state,
             match_deadline_at=attempt.match_deadline_at,
         )
+
+        if result.application_result is InboundApplicationResult.APPLIED:
+            self._notify_after_applied(entry_attempt_id)
+
+        return result
+
+    def _notify_after_applied(
+        self,
+        entry_attempt_id: EntryAttemptId,
+    ) -> None:
+        callback = self._after_applied
+        if callback is None:
+            return
+
+        try:
+            callback()
+        except Exception:
+            _LOGGER.exception(
+                "EntryReviewResolution post-commit callback failed "
+                "stage=post_commit_reevaluation_signal "
+                "applicationResult=APPLIED "
+                "entryAttemptId=%s",
+                entry_attempt_id,
+            )
 
 
 def _authoritative_context(

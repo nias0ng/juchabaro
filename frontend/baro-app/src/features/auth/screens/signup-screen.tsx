@@ -16,6 +16,7 @@ import { useSignupForm } from '../hooks/use-signup-form';
 
 const COMPLETE_BACKGROUND_GRADIENT = ['#eae7fb', '#f7f6fb'] as const;
 
+/** 회원가입 4단계(계정/세대/확인/완료)를 useSignupForm 상태에 맞춰 렌더링하는 화면. */
 export default function SignupScreen() {
   const signup = useSignupForm();
   const isCompleteStep = signup.step === 4;

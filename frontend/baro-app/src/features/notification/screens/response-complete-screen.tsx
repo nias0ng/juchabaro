@@ -15,6 +15,7 @@ import { styles } from './response-complete-screen.styles';
 
 const DEFAULT_LOCATION_LABEL = '위치 정보 없음';
 
+/** 이동 요청에 응답한 직후 보여주는 완료 안내 화면. 카운트다운이 끝나면 자동으로 요청 상세로 돌아간다. */
 export default function ResponseCompleteScreen() {
   const { requestId: requestIdParam } = useLocalSearchParams<{ requestId?: string }>();
   const requestId = requestIdParam ? Number(requestIdParam) : null;
@@ -26,7 +27,7 @@ export default function ResponseCompleteScreen() {
 
   useEffect(() => {
     if (secondsLeft > 0 || normalizedRequestId === null) return;
-    // E-12(이동 예정/약속 대기)는 별도 화면이 아니라 request-detail-screen이 requestStatus=RESPONDED일 때
+    // 이동 예정/약속 대기는 별도 화면이 아니라 request-detail-screen이 requestStatus=RESPONDED일 때
     // 그 자리에서 그려주는 뷰라서, 카운트다운이 끝나면 그 라우트로 되돌아가면 된다.
     router.replace({
       pathname: '/resident/request-detail',

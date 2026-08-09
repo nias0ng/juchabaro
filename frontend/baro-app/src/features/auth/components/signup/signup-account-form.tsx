@@ -42,7 +42,6 @@ export function SignupAccountForm({ values, onChange }: SignupAccountFormProps) 
           placeholder="이름을 입력해 주세요"
         />
 
-        {/* TODO(#291): 아이디 중복 확인 API가 연동되면 features/auth/api + 훅으로 분리해 붙인다. */}
         <TextField
           label="아이디"
           value={values.username}

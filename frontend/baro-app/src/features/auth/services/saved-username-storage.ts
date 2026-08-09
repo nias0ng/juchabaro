@@ -1,12 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-/*
-  아이디 저장소를 관리하는 서비스.
-  async-storage : 브라우저의 localStorage와 비슷한 역할을 하는 저장소. 앱이 종료되어도 값이 유지 key-value 형태
-*/
-const SAVED_USERNAME_KEY = 'auth.savedUsername'; // 저장소에 아이디를 저장할 때 사용할 key 이름!
+/** 로그인 화면의 "아이디 저장" 체크박스에 쓰는 아이디를 AsyncStorage에 저장/조회/삭제한다. */
+const SAVED_USERNAME_KEY = 'auth.savedUsername';
 
-export async function getSavedUsername(): Promise<string | null> { // 저장소 접근은 시간이 걸릴 수 있기에 Promise를 반환하도록 async 함수로 만든다.
+export async function getSavedUsername(): Promise<string | null> {
   return AsyncStorage.getItem(SAVED_USERNAME_KEY);
 }
 

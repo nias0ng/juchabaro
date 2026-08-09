@@ -1,6 +1,6 @@
-"""Speaker projection을 단일 USB 경고 speaker의 순차 재생으로 유지한다.
+"""Speaker projection을 단일 USB 경고 speaker에서 한 번씩 재생한다.
 
-이 모듈은 speaker 전용 projection 검증, 고정 round-robin과 단일 worker의
+이 모듈은 speaker 전용 projection 검증, 구역별 1회 순차 재생과 단일 worker의
 재생 생명주기만 소유한다. Incident 판단, ALSA subprocess 구현, WAV 선택이나
 runtime 조립은 소유하지 않는다. 모든 backend 호출은 하나의 non-daemon worker가
 직렬로 수행한다.
@@ -194,32 +194,16 @@ def _decode_projection(
 
 
 def _next_playback_id(
-    active_ids: frozenset[str],
-    last_completed_id: str | None,
+    pending_ids: frozenset[str],
 ) -> str | None:
-    if not active_ids:
-        return None
-
-    if last_completed_id is None:
-        return next(
+    return next(
+        (
             speaker_id
             for speaker_id in _SPEAKER_IDS
-            if speaker_id in active_ids
-        )
-
-    try:
-        start_index = _SPEAKER_IDS.index(last_completed_id) + 1
-    except ValueError:
-        start_index = 0
-
-    for offset in range(len(_SPEAKER_IDS)):
-        candidate = _SPEAKER_IDS[
-            (start_index + offset) % len(_SPEAKER_IDS)
-        ]
-        if candidate in active_ids:
-            return candidate
-
-    return None
+            if speaker_id in pending_ids
+        ),
+        None,
+    )
 
 
 def _cleanup_report(context: _WorkerContext) -> _CleanupReport:
@@ -264,7 +248,7 @@ def _make_cleanup_error(
 
 
 class JetsonUsbSpeakerAdapter:
-    """검증한 speaker projection을 고정 round-robin 재생으로 유지한다."""
+    """각 projection 활성 구간의 WAV를 한 번씩 순차 재생한다."""
 
     def __init__(
         self,
@@ -302,8 +286,10 @@ class JetsonUsbSpeakerAdapter:
         self._condition = Condition()
         self._state = _LifecycleState.NEW
         self._desired_play_ids: frozenset[str] = frozenset()
+        self._activation_generation_by_id = {
+            speaker_id: 0 for speaker_id in _SPEAKER_IDS
+        }
         self._projection_generation = 0
-        self._cycle_reset_requested = False
         self._stop_requested = False
 
         self._wav_path_by_speaker_id: dict[str, Path] = {}
@@ -411,9 +397,10 @@ class JetsonUsbSpeakerAdapter:
             if desired_play_ids == self._desired_play_ids:
                 return
 
+            added_ids = desired_play_ids - self._desired_play_ids
+            for speaker_id in added_ids:
+                self._activation_generation_by_id[speaker_id] += 1
             self._desired_play_ids = desired_play_ids
-            if not desired_play_ids:
-                self._cycle_reset_requested = True
             self._projection_generation += 1
             self._condition.notify_all()
 
@@ -439,7 +426,6 @@ class JetsonUsbSpeakerAdapter:
                 self._state = _LifecycleState.CLOSING
                 self._stop_requested = True
                 self._desired_play_ids = frozenset()
-                self._cycle_reset_requested = True
                 self._projection_generation += 1
                 self._condition.notify_all()
             elif state is _LifecycleState.CLOSING:
@@ -549,8 +535,8 @@ class JetsonUsbSpeakerAdapter:
             self._condition.notify_all()
 
     def _playback_loop(self) -> None:
-        playing_id: str | None = None
-        last_completed_id: str | None = None
+        playing_activation: tuple[str, int] | None = None
+        completed_activations: set[tuple[str, int]] = set()
         applied_generation = 0
 
         while True:
@@ -558,57 +544,65 @@ class JetsonUsbSpeakerAdapter:
                 if self._stop_requested:
                     return
                 desired_ids = self._desired_play_ids
+                desired_activations = {
+                    (
+                        speaker_id,
+                        self._activation_generation_by_id[speaker_id],
+                    )
+                    for speaker_id in desired_ids
+                }
                 desired_generation = self._projection_generation
-                reset_requested = self._cycle_reset_requested
-                if reset_requested:
-                    self._cycle_reset_requested = False
-
-            if reset_requested:
-                if playing_id is not None:
-                    self._backend.stop()
-                    playing_id = None
-                last_completed_id = None
-                applied_generation = desired_generation
-                continue
 
             if applied_generation != desired_generation:
-                if playing_id is not None and playing_id not in desired_ids:
+                if (
+                    playing_activation is not None
+                    and playing_activation not in desired_activations
+                ):
                     self._backend.stop()
-                    playing_id = None
+                    playing_activation = None
+                completed_activations.intersection_update(
+                    desired_activations
+                )
                 applied_generation = desired_generation
                 continue
 
-            if playing_id is None:
+            if playing_activation is None:
+                pending_ids = frozenset(
+                    speaker_id
+                    for speaker_id, activation_generation
+                    in desired_activations
+                    if (speaker_id, activation_generation)
+                    not in completed_activations
+                )
                 next_id = _next_playback_id(
-                    desired_ids,
-                    last_completed_id,
+                    pending_ids,
                 )
                 if next_id is None:
                     with self._condition:
                         if self._stop_requested:
                             return
                         if (
-                            self._cycle_reset_requested
-                            or applied_generation
-                            != self._projection_generation
+                            applied_generation != self._projection_generation
                         ):
                             continue
                         self._scheduler.wait(self._condition, None)
                     continue
 
+                next_activation = next(
+                    activation
+                    for activation in desired_activations
+                    if activation[0] == next_id
+                )
                 self._backend.start(
                     self._wav_path_by_speaker_id[next_id]
                 )
-                playing_id = next_id
+                playing_activation = next_activation
                 continue
 
             with self._condition:
                 if self._stop_requested:
                     return
-                if (
-                    self._cycle_reset_requested
-                    or applied_generation != self._projection_generation
-                ):
+                if applied_generation != self._projection_generation:
                     continue
                 self._scheduler.wait(
                     self._condition,
@@ -616,15 +610,12 @@ class JetsonUsbSpeakerAdapter:
                 )
                 if self._stop_requested:
                     return
-                if (
-                    self._cycle_reset_requested
-                    or applied_generation != self._projection_generation
-                ):
+                if applied_generation != self._projection_generation:
                     continue
 
             if self._backend.poll():
-                last_completed_id = playing_id
-                playing_id = None
+                completed_activations.add(playing_activation)
+                playing_activation = None
 
     def _record_cleanup_failure(
         self,

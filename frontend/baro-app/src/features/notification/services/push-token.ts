@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 
 import type { DevicePlatform } from '../api/device-token-api';
 
+/** 알림 권한을 요청하고 이 기기의 Expo 푸시 토큰을 발급받는다(웹/시뮬레이터는 null). */
 export type PushTokenRegistration = {
   token: string;
   platform: DevicePlatform;

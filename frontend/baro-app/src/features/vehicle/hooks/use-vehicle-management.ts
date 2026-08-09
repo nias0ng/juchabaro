@@ -47,6 +47,7 @@ async function fetchVehiclesWithDetails(accessToken: string): Promise<VehicleRes
 /**
  * 차량 목록 조회와 삭제 상태를 함께 관리한다.
  * 차량 등록 후 이 화면으로 돌아왔을 때도 최신 목록이 보이도록 focus될 때(캐시가 stale이면) 다시 조회한다.
+ * API: GET /api/vehicles, GET /api/vehicles/{id}, DELETE /api/vehicles/{id}, GET /api/parking-sessions/me
  */
 export function useVehicleManagement() {
   const { accessToken, status: authStatus } = useAuth();
