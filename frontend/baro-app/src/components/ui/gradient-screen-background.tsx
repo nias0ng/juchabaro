@@ -14,6 +14,7 @@ type GradientScreenBackgroundProps = {
   edges?: Edge[];
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
+  avoidKeyboard?: boolean;
   refreshing?: boolean;
   onRefresh?: () => void;
 };
@@ -25,6 +26,7 @@ export function GradientScreenBackground({
   edges = ['top', 'right', 'left'],
   style,
   contentContainerStyle,
+  avoidKeyboard = false,
   refreshing,
   onRefresh,
 }: GradientScreenBackgroundProps) {
@@ -36,6 +38,7 @@ export function GradientScreenBackground({
       backgroundGradientLocations={GRADIENT_LOCATIONS}
       style={style}
       contentContainerStyle={contentContainerStyle}
+      avoidKeyboard={avoidKeyboard}
       refreshing={refreshing}
       onRefresh={onRefresh}
     >

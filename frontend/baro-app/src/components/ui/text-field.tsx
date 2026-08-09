@@ -78,6 +78,7 @@ export function TextField({
         // 입력창 둘레에 강조 박스를 계속 그린다. 아이디/비밀번호처럼 자동완성을 의도한 필드만
         // autoComplete를 명시하므로, 그 외에는 여기서 명시적으로 꺼서 그 박스가 안 뜨게 한다.
         importantForAutofill={autoComplete ? 'yes' : 'no'}
+        underlineColorAndroid="transparent"
         maxLength={maxLength}
         editable={editable}
         style={styles.input}

@@ -1,4 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/ui';
@@ -28,6 +29,16 @@ export default function RequestDetailScreen() {
   const normalizedRequestId = requestId !== null && !Number.isNaN(requestId) ? requestId : null;
   const viewMode = viewModeParam === 'requester' ? 'requester' : 'recipient';
   const vm = useRequestDetailViewModel(normalizedRequestId, viewMode);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await vm.refetch();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   const statusMessage = vm.isLoading
     ? '이동 요청 정보를 불러오는 중입니다'
@@ -54,8 +65,8 @@ export default function RequestDetailScreen() {
       backgroundColor={background ? undefined : Palette.gray50}
       backgroundGradient={background?.gradient}
       backgroundGradientLocations={background?.locations}
-      refreshing={vm.isRefreshing}
-      onRefresh={() => void vm.refetch()}
+      refreshing={isPullRefreshing}
+      onRefresh={() => void handleRefresh()}
     >
       <View style={styles.content}>
         <ScreenHeader

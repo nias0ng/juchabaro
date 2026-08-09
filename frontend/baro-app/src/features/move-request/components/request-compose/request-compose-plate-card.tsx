@@ -23,6 +23,11 @@ export function RequestComposePlateCard({ plateNumber, onChangeText }: RequestCo
           onChangeText={(text) => onChangeText(formatPlateNumberInput(text))}
           placeholder={PLATE_NUMBER_PLACEHOLDER}
           placeholderTextColor="#b6bac7"
+          autoComplete="off"
+          importantForAutofill="no"
+          autoCorrect={false}
+          spellCheck={false}
+          underlineColorAndroid="transparent"
           style={styles.plateText}
         />
       </View>

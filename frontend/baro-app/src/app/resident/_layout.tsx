@@ -73,6 +73,7 @@ export default function ResidentLayout() {
       backBehavior="history"
       screenOptions={{
         headerShown: false,
+        tabBarHideOnKeyboard: true,
       }}
     >
       <Tabs.Screen

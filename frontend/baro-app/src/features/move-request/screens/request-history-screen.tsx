@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import { useState } from 'react';
 
 import { AsyncStateView, GradientScreenBackground, ResponsiveContainer, ScreenHeader, Stack } from '@/components/ui';
 import { RequestHistoryCard } from '@/features/move-request/components/history/request-history-card';
@@ -11,7 +12,17 @@ import { styles } from './request-history-screen.styles';
 
 export default function RequestHistoryScreen() {
   const { user } = useAuth();
-  const { moveRequests, isLoading, isRefreshing, error, refetch } = useMoveRequests('ALL');
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const { moveRequests, isLoading, error, refetch } = useMoveRequests('ALL');
+
+  const handleRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refetch();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   const statusMessage = isLoading
     ? '요청 내역을 불러오는 중입니다'
@@ -24,8 +35,8 @@ export default function RequestHistoryScreen() {
   return (
     <GradientScreenBackground
       edges={['top', 'right', 'left']}
-      refreshing={isRefreshing}
-      onRefresh={() => void refetch()}
+      refreshing={isPullRefreshing}
+      onRefresh={() => void handleRefresh()}
     >
       <ResponsiveContainer>
         <ScreenHeader title="요청 내역" style={styles.header} />

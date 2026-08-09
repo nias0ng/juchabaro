@@ -1,4 +1,12 @@
-import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from 'react-native';
 
 import { TextField } from '@/components/ui';
 import { Palette } from '@/styles';
@@ -33,7 +41,10 @@ export function AccountWithdrawalModal({
       animationType="fade"
       onRequestClose={isSubmitting ? undefined : onCancel}
     >
-      <View style={styles.overlay}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.overlay}
+      >
         <View style={styles.sheet}>
           <View style={styles.iconCircle}>
             <Text style={styles.iconText}>!</Text>
@@ -89,7 +100,7 @@ export function AccountWithdrawalModal({
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
