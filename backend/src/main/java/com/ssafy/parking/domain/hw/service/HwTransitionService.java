@@ -6,6 +6,7 @@ import com.ssafy.parking.domain.hw.dto.HwExitRequest;
 import com.ssafy.parking.domain.hw.dto.HwPublicationAck;
 import com.ssafy.parking.domain.hw.dto.HwTransitionRequest;
 import com.ssafy.parking.domain.hw.outbox.SessionContextNotifier;
+import com.ssafy.parking.domain.move.service.ManualMoveRequestResolutionService;
 import com.ssafy.parking.domain.parking.entity.ParkingSession;
 import com.ssafy.parking.domain.parking.entity.ParkingZone;
 import com.ssafy.parking.domain.parking.repository.ParkingSessionRepository;
@@ -29,6 +30,7 @@ public class HwTransitionService {
     private final ParkingZoneRepository parkingZoneRepository;
     private final InboundIdempotencyService inboundIdempotencyService;
     private final SessionContextNotifier sessionContextNotifier;
+    private final ManualMoveRequestResolutionService manualMoveRequestResolutionService;
 
     @Transactional
     public HwPublicationAck handleTransition(String idempotencyKey, HwTransitionRequest req) {
@@ -51,12 +53,18 @@ public class HwTransitionService {
             }
             boolean already = session.getParkedAt() != null && sameZone(session.getZone(), zone);
             session.assignZone(zone, occurred);
+            if (a != null && "ASSIGNED".equals(a.state())) {
+                manualMoveRequestResolutionService.resolveAfterParkingStateChanged(
+                        session.getId(), occurred);
+            }
             if (zone != null) corr.put("zoneNumber", zone.getZoneNumber());
             result = already ? "ALREADY_APPLIED" : "APPLIED";
 
         } else if ("UNPARKED".equals(req.transitionType())) {
             boolean already = session.getZone() == null && session.getParkedAt() == null;
             session.unassign();
+            manualMoveRequestResolutionService.resolveAfterParkingStateChanged(
+                    session.getId(), occurred);
             result = already ? "ALREADY_APPLIED" : "APPLIED";
 
         } else {
