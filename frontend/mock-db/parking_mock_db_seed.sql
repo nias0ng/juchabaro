@@ -192,7 +192,7 @@ FROM (
     UNION ALL SELECT 37, '65마2005', 'B2-16',       75
     UNION ALL SELECT 38, '72거3001', 'B1-21',      130
     UNION ALL SELECT 39, '73너3002', 'B1-10',       70
-    UNION ALL SELECT 40, '74더3003', 'D1-01',      240
+    UNION ALL SELECT 40, '74더3003', 'B1-04',      240
 ) p
 JOIN vehicles v ON v.plate_number = p.plate_number AND v.status = 'ACTIVE'
 JOIN parking_zones z ON TRIM(z.zone_number) = p.zone_number AND z.status = 'ACTIVE';
@@ -544,7 +544,7 @@ SELECT COUNT(*) AS forbidden_b1_occupied_count
 FROM parking_sessions ps
 JOIN parking_zones z ON z.zone_id = ps.zone_id
 WHERE ps.exit_time IS NULL
-  AND TRIM(z.zone_number) IN ('EV1-01', 'B1-02', 'B1-03', 'B1-04', 'B1-05', 'B1-06');
+  AND TRIM(z.zone_number) IN ('EV1-01', 'B1-02', 'B1-03', 'B1-05', 'B1-01', 'D1-01');
 
 -- 차량 소유/특성 요약
 SELECT
@@ -572,4 +572,3 @@ FROM parking_events pe
 WHERE pe.event_id BETWEEN 6 AND 19
 GROUP BY pe.event_status
 ORDER BY pe.event_status;
-

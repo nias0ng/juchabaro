@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -83,11 +83,8 @@ export default function ParkingFloorOverviewScreen() {
   const floorScrollRef = useRef<ScrollView>(null);
   const [activeFloor, setActiveFloor] = useState<ParkingFloorKey>('B1');
   const [pageWidth, setPageWidth] = useState(0);
-  const {
-    sessions,
-    isRefreshing: isSessionsRefreshing,
-    refetch: refetchSessions,
-  } = useParkingSessions();
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const { sessions, refetch: refetchSessions } = useParkingSessions();
   const myVehicleLocation = sessions
     .map((session) => toParkingFloorKey(session.floor))
     .find((floor): floor is ParkingFloorKey => floor !== null) ?? null;
@@ -97,7 +94,6 @@ export default function ParkingFloorOverviewScreen() {
   const {
     summary,
     isLoading,
-    isRefreshing: isSummaryRefreshing,
     error,
     refetch: refetchSummary,
   } = useParkingZoneSummary();
@@ -107,6 +103,15 @@ export default function ParkingFloorOverviewScreen() {
     B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
   };
   const parkingStatus = parkingStatuses[activeFloor];
+
+  const handleRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([refetchSessions(), refetchSummary()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refetchSessions, refetchSummary]);
 
   const selectFloor = (floor: ParkingFloorKey) => {
     const floorIndex = PARKING_FLOORS.indexOf(floor);
@@ -127,8 +132,8 @@ export default function ParkingFloorOverviewScreen() {
 
   return (
     <GradientScreenBackground
-      refreshing={isSessionsRefreshing || isSummaryRefreshing}
-      onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
+      refreshing={isPullRefreshing}
+      onRefresh={() => void handleRefresh()}
     >
       <ResponsiveContainer style={styles.content}>
         <ScreenHeader
