@@ -96,31 +96,17 @@ src/
 
 **작성 / 목록**
 
-| 요청 작성 | 구역 선택 | 요청 목록 (보낸 요청) | 요청 목록 (받은 요청) |
+| 요청 작성 | 구역 선택 | 요청 목록 (보낸 요청 없음) | 요청 목록 (받은 요청) |
 | --- | --- | --- | --- |
-| ![이동 요청 작성](docs/screenshots/15-request-compose.png) | ![구역 선택 모달](docs/screenshots/28-request-compose-zone-picker.png) | ![보낸 요청 목록](docs/screenshots/08-requests-sent.png) | ![받은 요청 목록](docs/screenshots/22-requests-received.png) |
+| ![이동 요청 작성](docs/screenshots/15-request-compose.png) | ![구역 선택 모달](docs/screenshots/28-request-compose-zone-picker.png) | ![보낸 요청 없음](docs/screenshots/08-requests-sent-empty.png) | ![받은 요청 목록](docs/screenshots/22-requests-received.png) |
 
-**요청 상세 — 상태별**
+**요청 상세 / 전송 완료**
 
-요청 상태(대기/초과/이관/완료)와 보는 사람(요청자/받는 사람)에 따라 다른 화면을 보여줍니다.
-
-| 상태 | 받는 사람(recipient) 화면 |
+| 완료된 요청 상세 (받는 사람) | 요청 전송 완료 |
 | --- | --- |
-| 약속 시간 경과(미이동 확인) | ![미이동 확인](docs/screenshots/16-request-detail-overdue.png) |
-| AI 자동 감지 위반(장애인 구역 등) | ![AI 자동 이관](docs/screenshots/17-request-detail-auto-escalation.png) |
-| 관리사무소 처리 중(수동 이관) | ![관리사무소 이관](docs/screenshots/18-request-detail-admin-escalation.png) |
-| 완료 | ![완료(받는 사람)](docs/screenshots/19-request-detail-completed-recipient.png) |
+| ![완료된 요청 상세](docs/screenshots/19-request-detail-completed.png) | ![이동 요청 전송 완료](docs/screenshots/33-request-sent.png) |
 
-| 상태 | 요청자(requester) 화면 |
-| --- | --- |
-| 재알림 발송(관리사무소 이관 대기) | ![재알림(보낸 사람)](docs/screenshots/20-request-detail-reminder-requester.png) |
-| 완료 | ![완료(보낸 사람)](docs/screenshots/21-request-detail-completed-requester.png) |
-
-**전송 직후 / 응답 직후**
-
-| 요청 전송 완료 | 응답 전달 완료 |
-| --- | --- |
-| ![이동 요청 전송 완료](docs/screenshots/33-request-sent.png) | ![응답 전달 완료](docs/screenshots/34-response-complete.png) |
+> 요청 상태는 대기 → 약속 시간 경과 → 재알림 → 관리사무소 이관 → 완료 순으로 진행되고, AI가 자동으로 감지하는 위반(장애인 구역 위반, 전기차 충전구역 장기 점유)은 요청자 없이 자동으로 생성됩니다. 이 상태들은 실제로 시간이 지나거나 위반이 발생해야 나타나서, 정리된 데모 계정에서는 재현하지 않았습니다.
 
 **요청 내역**
 
@@ -142,8 +128,8 @@ src/
 
 ### 8. 다른 계정으로 본 화면
 
-같은 화면이라도 로그인한 세대에 따라 데이터가 다르게 보입니다. (`test2` 계정 예시)
+같은 화면이라도 로그인한 세대에 따라 데이터가 다르게 보입니다. (`resident2` 계정 예시)
 
 | 홈 | 차량 목록 | 요청 목록 | 마이페이지 |
 | --- | --- | --- | --- |
-| ![test2 홈](docs/screenshots/29-test2-home.png) | ![test2 차량 목록](docs/screenshots/30-test2-vehicles.png) | ![test2 요청 목록](docs/screenshots/31-test2-requests.png) | ![test2 마이페이지](docs/screenshots/32-test2-my-page.png) |
+| ![resident2 홈](docs/screenshots/29-test2-home.png) | ![resident2 차량 목록](docs/screenshots/30-test2-vehicles.png) | ![resident2 요청 목록](docs/screenshots/31-test2-requests.png) | ![resident2 마이페이지](docs/screenshots/32-test2-my-page.png) |
