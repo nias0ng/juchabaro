@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 
 import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
@@ -7,17 +8,23 @@ import { queryKeys } from '@/services/query-keys';
 import { getMyParkingSessions } from '../api/parking-api';
 import { getLatestSessionsByVehicle } from '../utils/parking-session';
 
+// 시연용 폴링 주기: 1초 / 기존 폴링 주기: 20초
+const ACTIVE_SCREEN_REFETCH_INTERVAL_MS = 1_000;
+
 /**
  * 내 차량들의 현재 주차 세션을 조회하고, 차량별 최신 세션만 남긴다.
  * API: GET /api/parking-sessions/me
  */
 export function useParkingSessions() {
   const { accessToken, status } = useAuth();
+  const isFocused = useIsFocused();
 
   const query = useQuery({
     queryKey: queryKeys.parking.sessions(),
     queryFn: () => getMyParkingSessions(accessToken!),
     enabled: status === 'authenticated' && !!accessToken,
+    refetchInterval: isFocused ? ACTIVE_SCREEN_REFETCH_INTERVAL_MS : false,
+    refetchIntervalInBackground: false,
   });
   useRefetchOnFocus(query.refetch, query.isStale);
   const sessions = getLatestSessionsByVehicle(query.data ?? []);

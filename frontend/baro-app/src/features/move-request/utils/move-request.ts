@@ -129,7 +129,7 @@ export function getAdminEscalationDueAt(detail: MoveRequestDetail): string | nul
 }
 
 export type RequestCompletedDisplay = {
-  endTimeLabel: string;
+  endTimeLabel: string | null;
   durationLabel: string | null;
   timeline: RequestTimelineStep[];
 };
@@ -190,7 +190,7 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
   timeline.push({ label: '완료', detail: '정상 처리되었습니다', isFinal: true });
 
   return {
-    endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : '--:--',
+    endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : null,
     durationLabel: resolvedEntry ? formatDurationLabel(detail.requestedAt, resolvedEntry.sentAt) : null,
     timeline,
   };
