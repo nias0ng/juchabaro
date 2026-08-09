@@ -177,6 +177,7 @@ class _ParkingPipeline:
         self.exit_result = exit_result or _empty_result()
         self.runtime_revision = 0
         self.exit_reasons: list[str] = []
+        self.process_correlations: list[dict] = []
         self.restored_episodes: tuple[ParkingEpisode, ...] = ()
         self.restored_relations = ()
 
@@ -209,6 +210,7 @@ class _ParkingPipeline:
 
     def process(self, _batch, **_correlations) -> ParkingPipelineResult:
         self.runtime_revision += 1
+        self.process_correlations.append(_correlations)
         return self.process_result
 
     def physical_exit(
@@ -591,15 +593,22 @@ def test_frame_result_exposes_only_committed_entry_match_updates(
             entry_match_updates=(matched,),
         ),
     )
+    parking = _ParkingPipeline(process_result=_empty_result())
     workflow = _workflow(
         session,
-        _ParkingPipeline(process_result=_empty_result()),
+        parking,
         _PublicationPreparer(),
     )
     try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_active_vehicle())
+            EntryMatchAttemptRepository(connection).add(matched)
         result = workflow.process(_batch(), connection=connection)
 
         assert result.entry_match_updates == (matched,)
+        assert parking.process_correlations[-1]["entry_times"] == {
+            VEHICLE_ID: matched.created_at
+        }
     finally:
         connection.close()
 

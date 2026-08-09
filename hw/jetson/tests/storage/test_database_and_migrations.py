@@ -37,7 +37,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "jetson.db")
     runner = MigrationRunner(connection)
     try:
-        assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8)
+        assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
         assert runner.apply() == ()
         history = connection.execute(
             "SELECT version, name FROM schema_migrations"
@@ -51,6 +51,7 @@ def test_migrations_are_fresh_then_safe_to_rerun(tmp_path: Path) -> None:
             (6, "0006_exit_traversal_checkpoint"),
             (7, "0007_evidence_parent_ack_ordering"),
             (8, "0008_evidence_publication_kind"),
+            (9, "0009_incident_related_zones"),
         ]
     finally:
         connection.close()
@@ -551,6 +552,81 @@ def test_evidence_publication_kind_migration_backfills_active_delivery_mode(
                 )
             finally:
                 connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_incident_related_zones_migration_backfills_legacy_incidents(
+    tmp_path: Path,
+) -> None:
+    source = default_migrations_directory()
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    for version in (
+        "0001_initial.sql",
+        "0002_tracking_session_lifecycle.sql",
+        "0003_parking_timer_policy_snapshots.sql",
+        "0004_inbound_idempotency_keys.sql",
+        "0005_evidence_delivery_state.sql",
+        "0006_exit_traversal_checkpoint.sql",
+        "0007_evidence_parent_ack_ordering.sql",
+        "0008_evidence_publication_kind.sql",
+    ):
+        (migrations / version).write_text(
+            (source / version).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    connection = connect_database(tmp_path / "jetson.db")
+    try:
+        assert MigrationRunner(connection, migrations).apply() == tuple(
+            range(1, 9)
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO physical_vehicles(
+                physical_vehicle_id, domain_state, observation_state,
+                last_reliable_observed_at_us, absence_trusted_duration_us,
+                absence_confirmation_duration_us,
+                trusted_sample_max_gap_duration_us,
+                record_version, created_at_us, updated_at_us
+            ) VALUES ('legacy-related-zone-vehicle', 'ACTIVE', 'OBSERVED',
+                      1, 0, 1, 1, 1, 1, 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO incidents(
+                incident_id, rule_code, key_scope_type, key_scope_id,
+                subject_physical_vehicle_id, domain_state, observation_state,
+                last_reliable_observed_at_us,
+                confirm_trusted_duration_us, clear_trusted_duration_us,
+                confirm_duration_us, clear_duration_us,
+                trusted_sample_max_gap_duration_us,
+                first_observed_at_us, record_version,
+                publication_revision, created_at_us, updated_at_us
+            ) VALUES (
+                'legacy-related-zone-incident', 'BAD_PARKING',
+                'PHYSICAL_VEHICLE', 'legacy-related-zone-vehicle',
+                'legacy-related-zone-vehicle', 'CANDIDATE', 'OBSERVED',
+                1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1
+            )
+            """
+        )
+        connection.commit()
+
+        migration = "0009_incident_related_zones.sql"
+        (migrations / migration).write_text(
+            (source / migration).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        assert MigrationRunner(connection, migrations).apply() == (9,)
+        row = connection.execute(
+            "SELECT related_zone_ids_payload, record_version FROM incidents "
+            "WHERE incident_id = 'legacy-related-zone-incident'"
+        ).fetchone()
+        assert tuple(row) == ("[]", 1)
     finally:
         connection.close()
 

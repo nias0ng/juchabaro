@@ -283,7 +283,7 @@ viewer 마스크와 `AISLE_BLOCK`에는 사용하지 않고
 
 주차 확정에는 [Scope 수명주기 계약의 직접 설정값](./02-scope-lifecycle-contract.md#14-직접-설정값)을 사용한다. ParkingEpisode는 생성 시 실제 적용된 scalar 값을 snapshot으로 보존하므로 실행 중 설정 변경이 진행 중 episode를 소급 변경하지 않는다.
 
-EV 장기 주차 허용 시간은 `parkingConfirmationDurationSeconds`와 다른 정책값이다. 실제 법령 값·출처와 UNKNOWN 구간에 wall-clock을 계속 셀지 여부는 `[후속 계약]`으로 확정한다.
+EV 장기 주차 허용 시간은 `parkingConfirmationDurationSeconds`와 다른 정책값이다. `[결정]` 초과 시간은 같은 EV 구역에 확정된 `ParkingEpisode.parkedAt`부터 현재 관측 시각까지의 wall-clock으로 계산한다. UNKNOWN 중에는 Incident를 새로 확정하지 않지만 복구 뒤에는 경과 시간이 반영된다. 허용 시간의 실제 법령 값·출처는 `[후속 계약]`이다.
 
 ### 6.3 후보 취소와 사건 해소
 
@@ -293,7 +293,7 @@ EV 장기 주차 허용 시간은 `parkingConfirmationDurationSeconds`와 다른
 
 ### 6.4 이동과 Incident 재평가
 
-`[결정]` 신뢰 가능한 이동은 ParkingEpisode를 끝내고 필요한 경우 `UNPARKED`를 만든다. 그러나 어떤 Incident도 이동만으로 RESOLVE하지 않는다.
+`[결정]` 신뢰 가능한 이동은 ParkingEpisode를 끝내고 필요한 경우 `UNPARKED`를 만든다. 이동 후보인 `MOVE_PENDING`만으로 Incident를 RESOLVE하지 않으며, `MOVEMENT_CONFIRMED` 뒤에는 규칙 술어를 다시 평가한다.
 
 ```text
 ParkingEpisode ENDED / MOVEMENT_CONFIRMED
@@ -305,7 +305,7 @@ ParkingEpisode ENDED / MOVEMENT_CONFIRMED
 
 `REEVALUATE`는 영속 domain state가 아니라 최신 geometry·context·관측으로 규칙을 다시 계산하라는 trigger다.
 
-BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK처럼 PARKED가 OPEN 조건인 규칙에서는 movement 뒤 아직 새 ParkingEpisode가 PARKED되지 않았다는 이유만으로 `NOT_MATCHED`를 만들지 않는다. 다만 한 신뢰 가능한 평가 sample에서 규칙에 필요한 geometry·assignment가 모두 유효하고 위반 술어가 false이면 `NOT_MATCHED`다. clear 시간은 RuleEvaluator가 아니라 IncidentReducer가 누적한다. 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 기존 Incident를 유지한다.
+PARKED가 OPEN 조건인 규칙은 `MOVE_PENDING` 동안 `UNKNOWN / confirmable=false`로 기존 Incident를 유지한다. `MOVEMENT_CONFIRMED` 뒤 전용구역 무자격 주차와 EV_OVERSTAY는 PARKED 의존성이 사라졌으므로 `NOT_MATCHED`가 되고, BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK은 유효한 geometry·assignment로 위반 술어를 다시 계산한다. DOUBLE_PARKING 관계는 subject 또는 victim이 신뢰 가능한 관측에서 PARKED를 벗어나면 `ABSENT`로 clear한다. clear 시간은 각 relation tracker와 IncidentReducer가 누적한다. 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 기존 lifecycle을 유지한다.
 
 ### 6.5 장기 UNKNOWN
 
@@ -470,6 +470,19 @@ OUT_OF_ZONE을 먼저 분류하여 두 rule은 한 신뢰 sample에서 동시
 임계값 사이의 대소 관계를 강제하지 않는다. 따라서 `AMBIGUOUS`나
 `UNASSIGNED` 자체가 BAD_PARKING·OUT_OF_ZONE의 근거가 아니다.
 
+`BAD_PARKING` Incident가 최초 OPEN될 때 해당 `PARKED_SNAPSHOT`의
+1순위 candidate를 대표 `zoneId`로 고정한다. 2·3순위 candidate 중
+`r(z) >= θbadSecondary`인 구역은 overlap 내림차순·동률 zoneId 오름차순의
+`relatedZoneIds` 내부 snapshot으로 함께 고정하며 RESOLVE까지 변경하지
+않는다. Candidate에는 이 구역 문맥을 고정하지 않는다. 현재 Backend
+`IncidentTransition` 계약에는 대표 `zoneId`만 포함하고 `relatedZoneIds`는
+Jetson domain·durable storage에만 보존한다. 외부 필드 추가는 별도 계약이다.
+
+`AISLE_BLOCK` Incident가 최초 OPEN될 때 그 프레임에서 confirmed INSIDE인
+AISLE 중 작은 `zoneId`를 대표 구역으로 고정하고 RESOLVE까지 변경하지 않는다.
+Candidate에는 구역 문맥을 고정하지 않는다. 현재 Backend enum 호환을 위해
+wire `ruleCode=ETC`로 축약하더라도 이 대표 AISLE `zoneId`는 함께 전송한다.
+
 ### 9.2 EgressBlockingEvidence와 이중주차 geometry
 
 `EgressBlockingResolver`는 subject 차량 footprint `F`와 victim이
@@ -491,9 +504,10 @@ subjectOverlap >= blockingMinSubjectOverlap
 OR egressCoverage >= blockingMinEgressCoverage
 ```
 
-두 비율 중 하나라도 임계값 이상이면 relation tracker에 `PRESENT`,
-둘 다 미만이면 `ABSENT`를 제공한다. 필수 관측이 신뢰할 수
-없으면 `UNKNOWN`으로 timer를 멈춘다. 이 술어는 Assignment·BAD_PARKING과
+subject와 victim이 모두 `ParkingEpisode.PARKED`일 때만 새 관계 후보를
+만든다. 두 비율 중 하나라도 임계값 이상이면 relation tracker에 `PRESENT`,
+둘 다 미만이거나 신뢰 가능한 관측에서 한쪽이 PARKED를 벗어나면 `ABSENT`를
+제공한다. 필수 관측이 신뢰할 수 없으면 `UNKNOWN`으로 timer를 멈춘다. 이 술어는 Assignment·BAD_PARKING과
 같은 convex geometry 기초를 재사용하지만 PlacementEvidence나 그
 임계값을 재사용하지 않는다.
 
@@ -511,15 +525,15 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 
 | Rule code | continuity key | OPEN 핵심 조건 | 주요 해소 조건 |
 |---|---|---|---|
-| `DISABLED_ZONE_UNAUTHORIZED` | `zoneVisitId` | confirmed INSIDE + 자격 `false` | ZoneVisit ENDED 또는 자격 정정 뒤 NOT_MATCHED |
-| `EV_ZONE_UNAUTHORIZED` | `zoneVisitId` | confirmed INSIDE + EV 자격 `false` | ZoneVisit ENDED 또는 자격 정정 뒤 NOT_MATCHED |
-| `EV_OVERSTAY` | `zoneVisitId` | 계약된 visit duration이 허용 시간 초과 | ZoneVisit ENDED |
+| `DISABLED_ZONE_UNAUTHORIZED` | `zoneVisitId` | confirmed INSIDE + 같은 zone에 PARKED + 자격 `false` | MOVEMENT_CONFIRMED, ZoneVisit ENDED 또는 자격 정정 뒤 NOT_MATCHED |
+| `EV_ZONE_UNAUTHORIZED` | `zoneVisitId` | confirmed INSIDE + 같은 zone에 PARKED + EV 자격 `false` | MOVEMENT_CONFIRMED, ZoneVisit ENDED 또는 자격 정정 뒤 NOT_MATCHED |
+| `EV_OVERSTAY` | `zoneVisitId` | confirmed INSIDE + 같은 zone에 PARKED + `observedAt - parkedAt`이 허용 시간 이상 | MOVEMENT_CONFIRMED 또는 ZoneVisit ENDED |
 | `BAD_PARKING` | `physicalVehicleId` | PARKED + 안정된 PlacementEvidence의 primary 미달 또는 secondary 침범 | 이동 후 confirmed NOT_MATCHED 또는 confirmed vehicle departure |
 | `OUT_OF_ZONE` | `physicalVehicleId` | PARKED + 안정된 PlacementEvidence의 spot union overlap 미달 | 충분한 spot union overlap 또는 confirmed vehicle departure |
 | `AISLE_BLOCK` | `physicalVehicleId` | PARKED + 통행로 침범 술어 성립 | 침범 불성립 또는 confirmed vehicle departure |
-| `DOUBLE_PARKING` | `blockingRelationId` | confirmed BlockingRelation | BlockingRelation RESOLVED 또는 관련 차량의 confirmed departure |
+| `DOUBLE_PARKING` | `blockingRelationId` | subject·victim 모두 PARKED + confirmed BlockingRelation | 둘 중 하나가 PARKED를 벗어나 관계가 RESOLVED되거나 관련 차량이 confirmed departure |
 
-자격이나 필수 정책이 없으면 무자격으로 추정하지 않고 `UNKNOWN`이다. 불량 주차 계열은 PARKED 전에도 후보를 계산할 수 있지만 `confirmable=false`이며 OPEN하지 않는다.
+자격이나 필수 정책이 없으면 무자격으로 추정하지 않고 `UNKNOWN`이다. 전용구역 무자격 규칙과 EV_OVERSTAY는 같은 zone의 확정 ParkingAssignment가 생기기 전에는 `NOT_MATCHED`이며 Incident를 만들지 않는다. BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK은 PARKED 전에도 geometry 후보를 계산할 수 있지만 `confirmable=false`이며 OPEN하지 않는다. DOUBLE_PARKING은 양쪽 PARKED가 아니면 후보 관계 자체를 만들지 않는다.
 
 ## 10. Cross-system handoff 정본
 
@@ -532,8 +546,8 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `EntryMatchOutcome` | Jetson → Backend/RPi · Jetson | 입차 시도와 PhysicalVehicle의 매칭·만료 결과 | `entryAttemptId + physicalVehicleId? + outcome` | 동일 결과 멱등 처리 |
 | `SessionContextUpdate` | Backend → Jetson · Backend | session 행정 상태와 같은 binding의 차량 자격 갱신 | `sessionId 또는 entryAttemptId + contextRevision` | same revision conflict 거부, 관련 규칙 재평가 |
 | `ZoneDefinitionSnapshot` | 설정 권위 → Jetson · 배포 설정 | 전체 polygon과 zone별 직접 scalar 필드 | `zoneDefinitionVersion`; 모든 zoneId와 relation 포함 | active scope 없는 기동에서 원자 적용 |
-| `ParkingTransition` | Jetson → Backend · Jetson | PARKED 또는 UNPARKED | `parkingEpisodeId + publicationRevision`; sessionId·occurredAt와 assignment zoneId 또는 unassigned reason 필수 | aggregate revision 순서로 적용 |
-| `IncidentTransition` | Jetson → Backend · Jetson | OPEN 또는 RESOLVE | `incidentId + publicationRevision`; physicalVehicleId·ruleCode·occurredAt, rule별 zone·relation·victim context, sessionId 또는 entryAttemptId 중 하나 이상 필수 | session 없는 사건도 수용하고 revision 멱등 처리 |
+| `ParkingTransition` | Jetson → Backend · Jetson | PARKED 또는 UNPARKED | `parkingEpisodeId + publicationRevision`; sessionId·occurredAt와 assignment zoneId 또는 unassigned reason 필수 | aggregate revision 순서로 적용하고 PARKED occurredAt을 Backend `parkedAt`으로 보존 |
+| `IncidentTransition` | Jetson → Backend · Jetson | OPEN 또는 RESOLVE | `incidentId + publicationRevision`; physicalVehicleId·ruleCode·occurredAt, rule별 대표 zone·relation·victim context, sessionId 또는 entryAttemptId 중 하나 이상 필수. BAD_PARKING의 내부 `relatedZoneIds`는 현재 payload에서 제외 | session 없는 사건도 수용하고 revision 멱등 처리 |
 | `EvidenceArtifact` | Jetson → Backend · Jetson | 특정 Incident revision의 정지 이미지 | `evidenceId + incidentId + publicationRevision + checksum` | checksum 검증과 적용 결과 반환 |
 | `EvidenceUnavailable` | Jetson → Backend · Jetson storage | artifact가 resource limit·retention·손상으로 제공 불가 | `evidenceId + incidentId + publicationRevision + reason + unavailableAt`; checksum·byteSize는 생성됐으면 포함 | 성공 upload와 구분해 적용 확인 |
 | `SessionExit` | Jetson → Backend · Jetson observation | Jetson이 확인한 실제 출차 | `sessionId + publicationRevision + occurredAt`; origin=JETSON_EXIT_CONFIRMED | 행정 종료와 구분해 적용 |
@@ -541,7 +555,18 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `MoveVerificationResult` | Jetson → Backend · Jetson | 전체·incident별 RESOLVED·STILL_ACTIVE·UNKNOWN | command identity + incident별 판단 revision | 업무 상태 mapping과 후속 행동 결정 |
 | `PublicationApplicationConfirmation` | Backend → Jetson · Backend | APPLIED·ALREADY_APPLIED·CONFLICT | aggregate ID + publicationRevision + payload hash + correlation | ACK 유실 시 적용 여부를 안전하게 재확인; 구체 방식은 후속 계약 |
 
+`EntryDecision.entryTime`은 해당 입차 업무 scope의 시간 하한이다. correlation 전에
+확정한 ParkingEpisode·Incident라도 aggregate의 `PARKED`·`OPEN` 시각이
+`entryTime`보다 이르면 해당 session 또는 entryAttempt의 handoff로 공개하지 않는다.
+시작 전이만 제외하고 후속 `UNPARKED`·`RESOLVE`를 공개해서도 안 된다. 경계와 같은
+시각은 입차 scope에 포함한다.
+
 Backend→Jetson handoff는 identity와 revision으로 중복·stale·conflict를 구분할 수 있어야 한다. retry, reconnect와 durable acceptance의 구체적인 transport 방식은 `[후속 계약]`이며 full state snapshot protocol은 현재 범위에 넣지 않는다.
+
+EV_OVERSTAY의 시간 판정과 Incident OPEN은 Jetson 책임이다. Backend는 PARKED
+`occurredAt`을 `ParkingSession.parkedAt`으로 저장하고 read model의 `dueAt`을
+계산하지만, 별도 초과 주차 timer로 Incident를 생성하거나 Jetson에 만료 command를
+보내지 않는다.
 
 ## 11. 책임 경계와 후속 결정
 

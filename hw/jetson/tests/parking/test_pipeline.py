@@ -39,7 +39,7 @@ from src.parking.parking_episode_tracker import (
     InMemoryParkingEpisodeTracker,
 )
 from src.parking.pipeline import ParkingPipeline
-from src.parking.rules.bad_parking import BAD_PARKING, OUT_OF_ZONE
+from src.parking.rules.bad_parking import AISLE_BLOCK, BAD_PARKING, OUT_OF_ZONE
 from src.parking.rules.double_parking import DOUBLE_PARKING
 from src.parking.rules.ev_overstay import EV_OVERSTAY
 from src.parking.rules.restricted_zone import (
@@ -429,6 +429,8 @@ def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None
     candidate = updates_for(result, BAD_PARKING)[-1]
     assert candidate.confirm_duration_seconds == 2.0
     assert candidate.clear_duration_seconds == 3.0
+    assert candidate.zone_id is None
+    assert candidate.related_zone_ids == ()
 
 
 def transitions_for(result, rule_code: str):
@@ -451,11 +453,16 @@ def test_runtime_checkpoint_restores_all_parking_owners() -> None:
     pipeline, visit_tracker, episode_tracker, reducer, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
+        parking_seconds=1.0,
     )
     checkpoint = pipeline.checkpoint_state()
 
     pipeline.process(
         batch(0, snapshot(0)),
+        session_contexts={CAR: UNAUTHORIZED},
+    )
+    pipeline.process(
+        batch(1, snapshot(1)),
         session_contexts={CAR: UNAUTHORIZED},
     )
     assert visit_tracker.active_visits(CAR)
@@ -526,8 +533,11 @@ def test_restore_active_rejects_assigned_episode_when_zone_is_missing(
     assert new_episode_tracker.active_episode(CAR) is None
 
 
-def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident() -> None:
-    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,))
+def test_restricted_incident_opens_after_parking_and_resolves_on_zone_exit() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (DISABLED_ZONE,),
+        parking_seconds=1.0,
+    )
     contexts = {CAR: UNAUTHORIZED}
 
     entering = pipeline.process(batch(0, snapshot(0)), session_contexts=contexts)
@@ -560,6 +570,37 @@ def test_authoritative_context_opens_and_zone_exit_resolves_restricted_incident(
     )
 
 
+def test_restricted_incident_waits_for_confirmed_movement_before_resolving() -> None:
+    pipeline, visit_tracker, episode_tracker, _, _ = make_pipeline(
+        (DISABLED_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        movement_seconds=1.0,
+    )
+    contexts = {CAR: UNAUTHORIZED}
+    pipeline.process(batch(0, snapshot(0)), session_contexts=contexts)
+    opened = pipeline.process(batch(1, snapshot(1)), session_contexts=contexts)
+    assert transitions_for(opened, DISABLED_ZONE_UNAUTHORIZED)
+
+    move_pending = pipeline.process(
+        batch(2, snapshot(2, motion=MotionSignal.MOVING)),
+        session_contexts=contexts,
+    )
+    assert transitions_for(move_pending, DISABLED_ZONE_UNAUTHORIZED) == ()
+    assert episode_tracker.active_episode(CAR).state is ParkingState.MOVE_PENDING
+
+    moved = pipeline.process(
+        batch(3, snapshot(3, motion=MotionSignal.MOVING)),
+        session_contexts=contexts,
+    )
+    resolved = transitions_for(moved, DISABLED_ZONE_UNAUTHORIZED)
+    assert [item.transition_type for item in resolved] == [
+        IncidentTransitionType.RESOLVE
+    ]
+    assert visit_tracker.active_visits(CAR)[0].state is ZoneVisitState.INSIDE
+    assert episode_tracker.active_episode(CAR) is None
+
+
 def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
     """종료된 visit은 한 번만 해소되고 재진입은 새 continuity를 만든다."""
 
@@ -567,16 +608,26 @@ def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
         (DISABLED_ZONE,),
         entry_seconds=0.0,
         exit_seconds=0.0,
+        parking_seconds=1.0,
+        movement_seconds=1.0,
     )
     contexts = {CAR: UNAUTHORIZED}
 
+    first_candidate = pipeline.process(
+        batch(0, snapshot(0)),
+        session_contexts=contexts,
+    )
+    assert transitions_for(
+        first_candidate,
+        DISABLED_ZONE_UNAUTHORIZED,
+    ) == ()
     first_open = transitions_for(
-        pipeline.process(batch(0, snapshot(0)), session_contexts=contexts),
+        pipeline.process(batch(1, snapshot(1)), session_contexts=contexts),
         DISABLED_ZONE_UNAUTHORIZED,
     )[0]
     first_resolve = transitions_for(
         pipeline.process(
-            batch(1, snapshot(1, bbox=OUTSIDE)),
+            batch(2, snapshot(2, bbox=OUTSIDE, motion=MotionSignal.MOVING)),
             session_contexts=contexts,
         ),
         DISABLED_ZONE_UNAUTHORIZED,
@@ -584,13 +635,21 @@ def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
     assert first_resolve.incident.incident_id == first_open.incident.incident_id
 
     still_outside = pipeline.process(
-        batch(2, snapshot(2, bbox=OUTSIDE)),
+        batch(3, snapshot(3, bbox=OUTSIDE, motion=MotionSignal.MOVING)),
         session_contexts=contexts,
     )
     assert transitions_for(still_outside, DISABLED_ZONE_UNAUTHORIZED) == ()
 
+    second_candidate = pipeline.process(
+        batch(4, snapshot(4)),
+        session_contexts=contexts,
+    )
+    assert transitions_for(
+        second_candidate,
+        DISABLED_ZONE_UNAUTHORIZED,
+    ) == ()
     second_open = transitions_for(
-        pipeline.process(batch(3, snapshot(3)), session_contexts=contexts),
+        pipeline.process(batch(5, snapshot(5)), session_contexts=contexts),
         DISABLED_ZONE_UNAUTHORIZED,
     )[0]
     assert second_open.incident.incident_id != first_open.incident.incident_id
@@ -603,7 +662,11 @@ def test_resolve_is_not_repeated_and_reentry_gets_a_new_incident() -> None:
 
 
 def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
-    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline(
+        (DISABLED_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
 
     without_context = pipeline.process(batch(0, snapshot(0)))
     assert transitions_for(without_context, DISABLED_ZONE_UNAUTHORIZED) == ()
@@ -612,10 +675,66 @@ def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
     with_context = pipeline.process(
         batch(1, snapshot(1)),
         session_contexts={CAR: UNAUTHORIZED},
+        entry_times={CAR: at(0)},
     )
     opened = transitions_for(with_context, DISABLED_ZONE_UNAUTHORIZED)
     assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
     assert opened[0].incident.parking_session_id == SESSION
+
+
+def test_aisle_block_open_latches_aisle_zone_id() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (AISLE_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
+    aisle_bbox = BoundingBox(0.40, 0.60, 0.50, 0.70)
+    attempts = {CAR: ATTEMPT}
+
+    pipeline.process(
+        batch(0, snapshot(0, bbox=aisle_bbox)),
+        entry_attempt_ids=attempts,
+    )
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=aisle_bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    opened = transitions_for(result, AISLE_BLOCK)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    assert opened[0].incident.zone_id == AISLE_ZONE.zone_id
+
+
+def test_pre_entry_incident_is_not_opened_when_context_arrives_late() -> None:
+    pipeline, _, _, reducer, _ = make_pipeline(
+        (GENERAL_A,),
+        parking_seconds=1.0,
+    )
+
+    pipeline.process(batch(0, snapshot(0, bbox=OUTSIDE)))
+    local = pipeline.process(batch(1, snapshot(1, bbox=OUTSIDE)))
+    assert transitions_for(local, OUT_OF_ZONE) == ()
+    local_incident = updates_for(local, OUT_OF_ZONE)[-1]
+    assert local_incident.state is IncidentState.OPEN
+    assert local_incident.publication_revision == 0
+
+    correlated = pipeline.process(
+        batch(2, snapshot(2, bbox=OUTSIDE)),
+        session_contexts={CAR: UNAUTHORIZED},
+        entry_times={CAR: at(1.5)},
+    )
+
+    assert transitions_for(correlated, OUT_OF_ZONE) == ()
+    incident = next(
+        item
+        for item in reducer.active_snapshot()
+        if item.key.rule_code == OUT_OF_ZONE
+    )
+    assert incident.confirmed_at == at(1)
+    assert incident.parking_session_id == SESSION
+    assert incident.publication_revision == 0
 
 
 def test_entry_attempt_can_correlate_incident_without_session_context() -> None:
@@ -678,9 +797,12 @@ def test_two_spot_placement_opens_bad_parking_independent_of_assignment(
     assert diagnostic.evidence.secondary_overlap_ratio == pytest.approx(secondary)
     assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(1.0)
     assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
-    assert [
-        item.transition_type for item in transitions_for(result, BAD_PARKING)
-    ] == [IncidentTransitionType.OPEN]
+    opened = transitions_for(result, BAD_PARKING)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    assert opened[0].incident.zone_id == GENERAL_A.zone_id
+    assert opened[0].incident.related_zone_ids == (GENERAL_B.zone_id,)
 
 
 def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
@@ -707,6 +829,8 @@ def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     assert [item.transition_type for item in opened] == [
         IncidentTransitionType.OPEN
     ]
+    assert opened[0].incident.zone_id == GENERAL_A.zone_id
+    assert opened[0].incident.related_zone_ids == ()
     diagnostic = result.placement_diagnostics[0]
     assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
     assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(0.60)
@@ -823,7 +947,11 @@ def test_unknown_motion_freezes_bad_parking_clear_but_keeps_geometry_observed() 
 
 
 def test_qualified_vehicle_does_not_open_restricted_incident() -> None:
-    pipeline, _, _, _, _ = make_pipeline((DISABLED_ZONE,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline(
+        (DISABLED_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
 
     for second in (0.0, 1.0):
         result = pipeline.process(
@@ -834,9 +962,18 @@ def test_qualified_vehicle_does_not_open_restricted_incident() -> None:
 
 
 def test_ev_charging_restricted_and_overstay_rules_are_both_wired() -> None:
-    unauthorized_pipeline, _, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
-    unauthorized = unauthorized_pipeline.process(
+    unauthorized_pipeline, _, _, _, _ = make_pipeline(
+        (EV_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
+    before_parking = unauthorized_pipeline.process(
         batch(0, snapshot(0)),
+        session_contexts={CAR: UNAUTHORIZED},
+    )
+    assert transitions_for(before_parking, EV_ZONE_UNAUTHORIZED) == ()
+    unauthorized = unauthorized_pipeline.process(
+        batch(1, snapshot(1)),
         session_contexts={CAR: UNAUTHORIZED},
     )
     assert [
@@ -844,16 +981,21 @@ def test_ev_charging_restricted_and_overstay_rules_are_both_wired() -> None:
         for item in transitions_for(unauthorized, EV_ZONE_UNAUTHORIZED)
     ] == [IncidentTransitionType.OPEN]
 
-    electric_pipeline, _, _, _, _ = make_pipeline((EV_ZONE,), entry_seconds=0.0)
+    electric_pipeline, _, _, _, _ = make_pipeline(
+        (EV_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
     electric_pipeline.process(batch(0, snapshot(0)), session_contexts={CAR: ELECTRIC})
+    electric_pipeline.process(batch(1, snapshot(1)), session_contexts={CAR: ELECTRIC})
     before_limit = electric_pipeline.process(
-        batch(59, snapshot(59)),
+        batch(60, snapshot(60)),
         session_contexts={CAR: ELECTRIC},
     )
     assert transitions_for(before_limit, EV_OVERSTAY) == ()
 
     at_limit = electric_pipeline.process(
-        batch(60, snapshot(60)),
+        batch(61, snapshot(61)),
         session_contexts={CAR: ELECTRIC},
     )
     assert [item.transition_type for item in transitions_for(at_limit, EV_OVERSTAY)] == [
@@ -866,9 +1008,14 @@ def test_ended_track_segment_and_track_loss_pause_without_terminal_transition() 
     pipeline, visit_tracker, episode_tracker, _, _ = make_pipeline(
         (DISABLED_ZONE,),
         entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
+    pipeline.process(
+        batch(0, snapshot(0)),
+        session_contexts={CAR: UNAUTHORIZED},
     )
     opened_result = pipeline.process(
-        batch(0, snapshot(0)),
+        batch(1, snapshot(1)),
         session_contexts={CAR: UNAUTHORIZED},
     )
     assert transitions_for(opened_result, DISABLED_ZONE_UNAUTHORIZED)
@@ -886,20 +1033,20 @@ def test_ended_track_segment_and_track_loss_pause_without_terminal_transition() 
         ZoneVisitState.INSIDE
     ]
     assert [episode.state for episode in paused.parking_episode_updates] == [
-        ParkingState.STOP_PENDING
+        ParkingState.PARKED
     ]
     restricted_updates = updates_for(paused, DISABLED_ZONE_UNAUTHORIZED)
     assert [incident.state for incident in restricted_updates] == [IncidentState.OPEN]
     assert restricted_updates[0].observation.state is ObservationState.UNKNOWN
-    assert restricted_updates[0].observation.last_reliable_observed_at == at(0)
+    assert restricted_updates[0].observation.last_reliable_observed_at == at(1)
     assert visit_tracker.active_visits(CAR)[0].state is ZoneVisitState.INSIDE
     assert (
         visit_tracker.active_visits(CAR)[0].observation.last_reliable_observed_at
-        == at(0)
+        == at(1)
     )
     active_episode = episode_tracker.active_episode(CAR)
-    assert active_episode.state is ParkingState.STOP_PENDING
-    assert active_episode.observation.last_reliable_observed_at == at(0)
+    assert active_episode.state is ParkingState.PARKED
+    assert active_episode.observation.last_reliable_observed_at == at(1)
 
 
 def test_unobserved_vehicle_preserves_unreliable_batch_observation_reason() -> None:
@@ -912,15 +1059,20 @@ def test_unobserved_vehicle_preserves_unreliable_batch_observation_reason() -> N
         pipeline, _, _, _, _ = make_pipeline(
             (DISABLED_ZONE,),
             entry_seconds=0.0,
+            parking_seconds=1.0,
         )
         pipeline.process(
             batch(0, snapshot(0)),
             session_contexts={CAR: UNAUTHORIZED},
         )
+        pipeline.process(
+            batch(1, snapshot(1)),
+            session_contexts={CAR: UNAUTHORIZED},
+        )
         upstream_observation = ObservationStatus(
             state=state,
             reason=reason,
-            last_reliable_observed_at=at(0),
+            last_reliable_observed_at=at(1),
         )
 
         paused = pipeline.process(
@@ -1161,17 +1313,22 @@ def test_local_only_incident_update_is_returned_without_publication() -> None:
         ZoneType.EV_CHARGING,
         allowed_duration_seconds=10.0,
     )
-    pipeline, _, _, _, _ = make_pipeline((local_ev,), entry_seconds=0.0)
+    pipeline, _, _, _, _ = make_pipeline(
+        (local_ev,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
     pipeline.process(batch(0, snapshot(0)))
+    pipeline.process(batch(1, snapshot(1)))
 
-    local_open = pipeline.process(batch(10, snapshot(10)))
+    local_open = pipeline.process(batch(11, snapshot(11)))
     assert transitions_for(local_open, EV_OVERSTAY) == ()
     updates = updates_for(local_open, EV_OVERSTAY)
     assert [incident.state for incident in updates] == [IncidentState.OPEN]
     assert updates[0].publication_revision == 0
 
     materialized = pipeline.process(
-        batch(11, snapshot(11)),
+        batch(12, snapshot(12)),
         session_contexts={CAR: ELECTRIC},
     )
     published = transitions_for(materialized, EV_OVERSTAY)
@@ -1232,8 +1389,44 @@ def test_small_egress_uses_coverage_ratio_for_blocking() -> None:
     ] == [BlockingRelationState.BLOCKING]
 
 
+def test_moving_subject_does_not_create_double_parking_relation() -> None:
+    """피해 차량만 PARKED이면 geometry가 겹쳐도 관계를 만들지 않는다."""
+
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    pipeline, _, _, _, _ = make_pipeline(
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        blocking_confirm_seconds=0.0,
+    )
+
+    def two_car_batch(seconds: float) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(seconds, vehicle=CAR, bbox=ASSIGNED_FIRST),
+            snapshot(
+                seconds,
+                vehicle=OTHER_CAR,
+                bbox=AISLE_BLOCKING_BBOX,
+                motion=MotionSignal.MOVING,
+            ),
+        )
+
+    pipeline.process(two_car_batch(0))
+    victim_parked = pipeline.process(two_car_batch(1))
+
+    assert any(
+        episode.physical_vehicle_id == CAR
+        and episode.state is ParkingState.PARKED
+        for episode in victim_parked.parking_episode_updates
+    )
+    assert victim_parked.blocking_relation_updates == ()
+    assert transitions_for(victim_parked, DOUBLE_PARKING) == ()
+
+
 def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
-    """victim이 PARKED되고 subject가 egress aisle을 막으면 BlockingRelation이
+    """양쪽이 PARKED되고 subject가 egress aisle을 막으면 BlockingRelation이
     실제로 만들어지고, double_parking 규칙이 그 신호로 Incident를 열고 닫는다."""
 
     spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
@@ -1297,6 +1490,86 @@ def test_double_parking_rule_receives_real_blocking_relation_signals() -> None:
     assert len(resolved_relations) == 1
     assert resolved_relations[0].blocking_relation_id == relation.blocking_relation_id
     resolved = transitions_for(cleared, DOUBLE_PARKING)
+    assert [item.transition_type for item in resolved] == [
+        IncidentTransitionType.RESOLVE
+    ]
+    assert resolved[0].incident.incident_id == opened[0].incident.incident_id
+    assert relation_tracker.active_relations(OTHER_CAR) == ()
+
+
+@pytest.mark.parametrize(
+    "moving_vehicle",
+    [CAR, OTHER_CAR],
+    ids=["victim", "subject"],
+)
+def test_double_parking_resolves_when_either_vehicle_leaves_parked_state(
+    moving_vehicle: PhysicalVehicleId,
+) -> None:
+    """피해·방해 차량 중 하나가 MOVE_PENDING이면 관계를 해소한다."""
+
+    spot_with_egress = zone(5, ZoneType.GENERAL, FIRST_SPOT)
+    pipeline, _, _, _, relation_tracker = make_pipeline(
+        (spot_with_egress,),
+        egress_areas=(egress(9, 5, AISLE_POLYGON),),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+        movement_seconds=5.0,
+        blocking_confirm_seconds=0.0,
+        blocking_clear_seconds=0.0,
+    )
+
+    def two_car_batch(
+        seconds: float,
+        *,
+        moving: PhysicalVehicleId | None = None,
+    ) -> TrackingBatch:
+        return batch(
+            seconds,
+            snapshot(
+                seconds,
+                vehicle=CAR,
+                bbox=ASSIGNED_FIRST,
+                motion=(
+                    MotionSignal.MOVING
+                    if moving == CAR
+                    else MotionSignal.STATIONARY
+                ),
+            ),
+            snapshot(
+                seconds,
+                vehicle=OTHER_CAR,
+                bbox=AISLE_BLOCKING_BBOX,
+                motion=(
+                    MotionSignal.MOVING
+                    if moving == OTHER_CAR
+                    else MotionSignal.STATIONARY
+                ),
+            ),
+        )
+
+    subject_attempts = {OTHER_CAR: ATTEMPT}
+    pipeline.process(two_car_batch(0), entry_attempt_ids=subject_attempts)
+    parked = pipeline.process(
+        two_car_batch(1),
+        entry_attempt_ids=subject_attempts,
+    )
+    opened = transitions_for(parked, DOUBLE_PARKING)
+    assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
+
+    moved = pipeline.process(
+        two_car_batch(2, moving=moving_vehicle),
+        entry_attempt_ids=subject_attempts,
+    )
+
+    assert any(
+        episode.physical_vehicle_id == moving_vehicle
+        and episode.state is ParkingState.MOVE_PENDING
+        for episode in moved.parking_episode_updates
+    )
+    assert [
+        relation.state for relation in moved.blocking_relation_updates
+    ] == [BlockingRelationState.RESOLVED]
+    resolved = transitions_for(moved, DOUBLE_PARKING)
     assert [item.transition_type for item in resolved] == [
         IncidentTransitionType.RESOLVE
     ]

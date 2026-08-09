@@ -13,6 +13,8 @@
 *.ico binary
 *.pdf binary
 *.zip binary
+*.wav binary
 *.pt binary
 *.pth binary
 *.onnx binary
+*.engine binary

@@ -3,7 +3,8 @@
 ParkingEpisode·Incident의 domain snapshot은 session correlation이 없어도
 먼저 확정될 수 있다. 이 workflow는 그 fact의 original occurredAt을
 ``pending_handoffs``에 남겨 두었다가 authoritative correlation이 생기면
-aggregate revision 순서로 publication projection을 재구성한다.
+entryTime 이후에 시작한 aggregate만 revision 순서로 publication projection을
+재구성한다.
 
 wire endpoint·DTO·serializer는 결정하지 않는다. 반환한 transition은
 ``FrameObservationWorkflow``의 ``PublicationPreparer``가 exact bytes로 바꾸며,
@@ -52,6 +53,7 @@ from src.session.models import (
     SessionAdministrativeState,
     SessionContext,
 )
+from src.session.scope_policy import is_pre_entry_scope
 from src.storage.aggregate_repositories import (
     IncidentRepository,
     ParkingEpisodeRepository,
@@ -75,6 +77,7 @@ from src.tracking.models import (
 
 _HANDOFF_RETENTION = timedelta(days=7)
 _UNBOUND_CONTEXT_EXPIRED = "UNBOUND_CONTEXT_EXPIRED"
+_PRE_ENTRY_SCOPE_EXCLUDED = "PRE_ENTRY_SCOPE_EXCLUDED"
 _CORRELATION_CONFLICT = "CORRELATION_CONFLICT"
 _BINDABLE_DECISIONS = frozenset(
     {EntryDecisionState.ALLOW, EntryDecisionState.REVIEW_ALLOW}
@@ -771,6 +774,28 @@ class PendingHandoffWorkflow:
         if episode.assignment is None or episode.parked_at is None:
             raise RuntimeError("PARKED handoff lost its assignment snapshot")
 
+        attempt = PendingHandoffWorkflow._authoritative_attempt_for_vehicle(
+            episode.physical_vehicle_id,
+            connection=connection,
+        )
+        if attempt is not None:
+            if attempt.matched_physical_vehicle_id != episode.physical_vehicle_id:
+                raise RuntimeError(
+                    "ParkingEpisode correlation references another PhysicalVehicle"
+                )
+            if attempt.authoritative_session_id != context.parking_session_id:
+                raise RuntimeError(
+                    "ParkingEpisode correlation references another session"
+                )
+            if PendingHandoffWorkflow._exclude_pre_entry_scope(
+                markers,
+                aggregate_started_at=episode.parked_at,
+                entry_time=attempt.created_at,
+                excluded_at=materialized_at,
+                connection=connection,
+            ):
+                return None, ()
+
         marker_types = {marker.transition_type for marker in markers}
         allowed = {
             ParkingTransitionType.PARKED.value,
@@ -870,6 +895,32 @@ class PendingHandoffWorkflow:
                     context = attempt.authoritative_context
         if entry_attempt_id is None and context is None:
             return None, ()
+        if incident.confirmed_at is None:
+            raise RuntimeError("OPEN marker lost confirmed_at")
+
+        attempt = (
+            None
+            if entry_attempt_id is None
+            else EntryMatchAttemptRepository(connection).get(entry_attempt_id)
+        )
+        if attempt is None:
+            attempt = PendingHandoffWorkflow._authoritative_attempt_for_vehicle(
+                incident.physical_vehicle_id,
+                connection=connection,
+            )
+        if attempt is not None:
+            if attempt.matched_physical_vehicle_id != incident.physical_vehicle_id:
+                raise RuntimeError(
+                    "Incident correlation references another PhysicalVehicle"
+                )
+            if PendingHandoffWorkflow._exclude_pre_entry_scope(
+                markers,
+                aggregate_started_at=incident.confirmed_at,
+                entry_time=attempt.created_at,
+                excluded_at=materialized_at,
+                connection=connection,
+            ):
+                return None, ()
 
         marker_types = {marker.transition_type for marker in markers}
         allowed = {
@@ -878,8 +929,6 @@ class PendingHandoffWorkflow:
         }
         if not marker_types.issubset(allowed):
             raise RuntimeError("invalid Incident pending transition")
-        if incident.confirmed_at is None:
-            raise RuntimeError("OPEN marker lost confirmed_at")
         has_resolve = IncidentTransitionType.RESOLVE.value in marker_types
         if has_resolve and (
             incident.state is not IncidentState.RESOLVED
@@ -929,6 +978,39 @@ class PendingHandoffWorkflow:
                 )
             )
         return updated, tuple(transitions)
+
+    @staticmethod
+    def _exclude_pre_entry_scope(
+        markers: list[PendingHandoffRecord],
+        *,
+        aggregate_started_at: datetime,
+        entry_time: datetime,
+        excluded_at: datetime,
+        connection: sqlite3.Connection,
+    ) -> bool:
+        """entryTime 전에 시작한 aggregate의 모든 pending fact를 제외한다.
+
+        수명주기의 OPEN/PARKED만 제외하고 뒤의 RESOLVE/UNPARKED를 공개하면
+        Backend에 시작점 없는 이력이 생긴다. 따라서 aggregate 시작 시각이
+        entryTime보다 이른 경우 현재 waiting marker 전체를 같은 disposition으로
+        종결한다. 경계 시각과 같은 사실은 해당 입차 범위에 포함한다.
+        """
+
+        if not is_pre_entry_scope(
+            aggregate_started_at=aggregate_started_at,
+            entry_time=entry_time,
+        ):
+            return False
+        repository = PendingHandoffRepository(connection)
+        excluded_at_us = datetime_to_epoch_microseconds(excluded_at)
+        for marker in markers:
+            repository.mark_excluded(
+                marker.handoff_id,
+                expected_record_version=marker.record_version,
+                disposition_reason=_PRE_ENTRY_SCOPE_EXCLUDED,
+                updated_at_us=max(excluded_at_us, marker.updated_at_us),
+            )
+        return True
 
     @staticmethod
     def _durable_active_correlation(

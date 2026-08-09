@@ -45,7 +45,7 @@ from src.parking.models import (
 )
 from src.parking.pipeline import ParkingPipeline
 from src.session.context_binding_coordinator import ContextBindingCoordinator
-from src.session.models import EntryMatchAttempt
+from src.session.models import EntryAttemptId, EntryMatchAttempt
 from src.storage.aggregate_repositories import (
     BlockingRelationRepository,
     IncidentRepository,
@@ -54,6 +54,7 @@ from src.storage.aggregate_repositories import (
 )
 from src.storage.evidence_repository import EvidenceArtifactRepository
 from src.storage.repositories import (
+    EntryMatchAttemptRepository,
     OutboxRepository,
     ParkingSessionMirrorRepository,
     PhysicalVehicleRepository,
@@ -364,16 +365,22 @@ class FrameObservationWorkflow:
                         connection=connection,
                     )
                 )
+                session_contexts = {
+                    **session_result.session_contexts,
+                    **historical_result.session_contexts,
+                }
+                entry_attempt_ids = {
+                    **session_result.entry_attempt_ids,
+                    **historical_result.entry_attempt_ids,
+                }
                 parking_result = self._parking_pipeline.process(
                     batch,
-                    session_contexts={
-                        **session_result.session_contexts,
-                        **historical_result.session_contexts,
-                    },
-                    entry_attempt_ids={
-                        **session_result.entry_attempt_ids,
-                        **historical_result.entry_attempt_ids,
-                    },
+                    session_contexts=session_contexts,
+                    entry_attempt_ids=entry_attempt_ids,
+                    entry_times=_entry_times_for_correlations(
+                        entry_attempt_ids,
+                        connection=connection,
+                    ),
                     skip_unobserved_vehicle_ids=(
                         batch.not_present_confirmed_vehicle_ids
                     ),
@@ -626,6 +633,25 @@ class FrameObservationWorkflow:
                 transition_type="SESSION_EXIT",
             )
             writer.enqueue(prepared)
+
+
+def _entry_times_for_correlations(
+    entry_attempt_ids: Mapping[PhysicalVehicleId, EntryAttemptId],
+    *,
+    connection: sqlite3.Connection,
+) -> dict[PhysicalVehicleId, datetime]:
+    """authoritative entryAttempt의 wire entryTime을 publication 경계로 투영한다."""
+
+    repository = EntryMatchAttemptRepository(connection)
+    entry_times: dict[PhysicalVehicleId, datetime] = {}
+    for physical_vehicle_id, entry_attempt_id in entry_attempt_ids.items():
+        attempt = repository.get(entry_attempt_id)
+        if attempt is None:
+            raise RuntimeError(
+                "Incident correlation references a missing EntryMatchAttempt"
+            )
+        entry_times[physical_vehicle_id] = attempt.created_at
+    return entry_times
 
 
 class _ParkingAggregateWriter:

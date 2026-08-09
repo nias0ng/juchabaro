@@ -15,6 +15,10 @@
 
 - Python 3.10.12
 - JetPack 6.2.1
+- Jetson Linux R36.4.7
+- TensorRT 10.3.0
+- VPI 3.2.4
+- PyTorch 2.8.0 (CUDA 12.6 build)
 - Ubuntu 22.04.5
 - FastAPI
 
@@ -59,6 +63,30 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+`requirements.txt`는 애플리케이션의 pip 의존성만 복원한다. CUDA, TensorRT,
+VPI는 JetPack 시스템 runtime이며 pip requirements로 대체하지 않는다. 현장에서
+검증한 시스템 패키지는 다음과 같이 확인한다.
+
+```bash
+head -n 1 /etc/nv_tegra_release
+dpkg-query -W \
+  tensorrt \
+  python3-libnvinfer \
+  libnvvpi3 \
+  python3.10-vpi3
+```
+
+패키지가 없다면 NVIDIA JetPack apt repository가 설정된 상태에서 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y \
+  tensorrt \
+  python3-libnvinfer \
+  libnvvpi3 \
+  python3.10-vpi3
+```
+
 `REMAP_BACKEND=vpi`는 PyPI 패키지가 아니라 JetPack의
 `python3.10-vpi3` binding을 사용한다. 시스템 Python에서는 VPI가 보이지만
 격리된 venv에서는 보이지 않으므로, Jetson에서 binding 파일 하나만 venv에
@@ -71,6 +99,44 @@ VENV_SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])')
 ln -sf "$VPI_BINDING_PATH" "$VENV_SITE_PACKAGES/"
 python -c 'import vpi; print(vpi.__file__, vpi.Backend.CUDA)'
 ```
+
+TensorRT Python binding도 JetPack 시스템 패키지를 사용한다. 시스템 Python이
+로드한 TensorRT site directory만 venv에 추가하고, pip OpenCV·NumPy·PyTorch는
+venv의 버전을 유지한다.
+
+```bash
+TENSORRT_SYSTEM_SITE=$(
+  /usr/bin/python3 -c \
+    'from pathlib import Path; import tensorrt; print(Path(tensorrt.__file__).resolve().parent.parent)'
+)
+printf '%s\n' "$TENSORRT_SYSTEM_SITE" \
+  > "$VENV_SITE_PACKAGES/jetpack-tensorrt.pth"
+```
+
+아래 preflight가 모두 통과해야 현재 현장 runtime과 같은 추론 경로를 사용할 수
+있다.
+
+```bash
+python - <<'PY'
+import cv2
+import numpy
+import tensorrt
+import torch
+import vpi
+
+print("TensorRT:", tensorrt.__version__, tensorrt.__file__)
+print("VPI:", vpi.__version__, vpi.__file__)
+print("torch:", torch.__version__, "CUDA build:", torch.version.cuda)
+print("numpy:", numpy.__version__, numpy.__file__)
+print("OpenCV:", cv2.__version__, cv2.__file__)
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("CUDA device:", torch.cuda.get_device_name(0))
+PY
+```
+
+기존 TensorRT engine을 실행할 때 ONNX는 필요하지 않다. 원본 `.pt`에서 engine을
+다시 생성할 때만 현장에서 검증한 `onnx==1.22.0`을 별도로 설치한다.
 
 ## 테스트 실행
 
@@ -107,15 +173,33 @@ calibration·차량 tracking·`EGRESS_AISLE_PATH` 및 MonitoringPolicy 필수값
 중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
 배포 환경에 맞게 명시한다.
 
-단일 USB 카메라를 사용하는 Jetson 운영 배치는 다음 asset 경로를 사용한다.
+단일 USB 카메라를 사용하는 Jetson 운영 배치는 `hw/jetson`을 하나의 배포
+단위로 사용한다. 모델 binary를 제외한 calibration·manifest·WAV는 저장소에서
+관리하고, Git에서 제외한 `.pt`와 `.engine`은 검증된 배포 bundle에서 복원한다.
+
+```text
+hw/jetson/
+├─ config/camera_calibration.json
+├─ model/yolov8s.pt
+├─ model/yolov8s-fp16-384x640.engine
+├─ model/yolov8s-fp16-384x640-manifest.json
+└─ assets/audio/
+   ├─ disabled_zone_warning.wav
+   └─ ev_zone_warning.wav
+```
+
+상대경로는 현재 working directory를 기준으로 해석되므로 Jetson에서도 반드시
+`/home/e202/jetson`으로 이동한 뒤 실행한다.
 
 ```dotenv
 CAMERA_ID=PARKING-CAMERA-01
 CAMERA_INDEX=0
-CALIBRATION_PATH=/home/e202/config/camera_calibration.json
+CALIBRATION_PATH=config/camera_calibration.json
 REMAP_BALANCE=0.5
-VEHICLE_MODEL_PATH=/home/e202/model/yolov8s.pt
-VEHICLE_MODEL_MANIFEST_PATH=/home/e202/model/vehicle_model_manifest.json
+VEHICLE_MODEL_PATH=model/yolov8s-fp16-384x640.engine
+VEHICLE_MODEL_MANIFEST_PATH=model/yolov8s-fp16-384x640-manifest.json
+TOF_DISABLED_ZONE_WARNING_WAV_PATH=assets/audio/disabled_zone_warning.wav
+TOF_EV_ZONE_WARNING_WAV_PATH=assets/audio/ev_zone_warning.wav
 ```
 
 차량 모델 binary와 manifest는 항상 같은 release를 배치한다. 기동
@@ -149,6 +233,22 @@ INCIDENT_AISLE_BLOCK_CLEAR_SECONDS=0.5
 INCIDENT_DOUBLE_PARKING_CONFIRM_SECONDS=0.0
 INCIDENT_DOUBLE_PARKING_CLEAR_SECONDS=0.0
 ```
+
+`DISABLED_ZONE_UNAUTHORIZED`와 `EV_ZONE_UNAUTHORIZED`는 confirmed ZoneVisit만으로
+OPEN하지 않는다. 차량이 같은 전용 주차면에 `PARKED`되고 고정된
+`ParkingAssignment.zoneId`가 방문 zone과 일치한 뒤에만 무자격 Incident를
+확정한다. `MOVE_PENDING`은 기존 사건을 유지하고, 이동이 확정되면 재평가해
+해소한다.
+
+`EV_OVERSTAY`도 같은 EV zone의 `PARKED`를 요구하며, ZoneVisit 진입 시각이
+아니라 `ParkingEpisode.parkedAt`부터 wall-clock 경과 시간을 계산한다. Backend는
+PARKED 전이 시 같은 시각을 `ParkingSession.parkedAt`으로 저장하고 `dueAt`을
+표시하지만 초과 Incident의 생성과 증거 수집은 Jetson이 담당한다.
+
+`DOUBLE_PARKING`의 `BlockingRelation`은 피해 차량과 방해 차량이 모두
+`PARKED`일 때만 생성·유지한다. 신뢰 가능한 관측에서 한쪽이 PARKED를 벗어나면
+relation clear timer를 시작하며, 통로에 남은 차량 자체의 위반은
+`AISLE_BLOCK`이 독립적으로 평가한다.
 
 현재 시연값은 `VEHICLE_TRACKING_CONFIDENCE=0.25`,
 `PARKING_CONFIRM_SECONDS=5.0`, `PARKING_MOVE_CONFIRM_SECONDS=0.5`다.
@@ -201,6 +301,7 @@ API 7(Incident OPEN·RESOLVE), API 10(SessionExit)의 exact JSON과
 Idempotency-Key를 outbox 저장 전에 한 번만 확정한다. Incident 전송 시
 `EV_ZONE_UNAUTHORIZED`와 `AISLE_BLOCK`은 현재 Backend enum 계약에 맞춰
 wire `ruleCode=ETC`로 축약하되 local Incident의 ruleCode는 바꾸지 않는다.
+`AISLE_BLOCK`은 OPEN 시 고정한 대표 AISLE의 `zoneId`를 함께 전송한다.
 
 `src.main:app`은 운영 `MonitoringPipelineFactory`를 명시적으로 주입해
 camera·model owner를 하나만 기동한다. 테스트나 API-only 실행에서

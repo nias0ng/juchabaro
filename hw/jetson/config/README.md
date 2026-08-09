@@ -34,6 +34,11 @@ full-frame 폴리곤을 그대로 복원한다.
 | 8 | 왼쪽 위 입구 | `ENTRY_EXIT` | `ENTRY` |
 | 9 | 오른쪽 위 출구 | `ENTRY_EXIT` | `EXIT` |
 
+zone 5의 `allowedDurationSeconds=70`은 EV_OVERSTAY OPEN·증거·RESOLVE를
+현장 시연 시간 안에 검증하기 위한 provisional 값이다. 법령 또는 운영 정책으로
+확정한 허용시간이 아니며, 실제 운영 배포 전 Backend 정책과 합의한 값으로
+교체하고 `zoneDefinitionVersion` 변경 여부를 함께 검토한다.
+
 입구와 출구는 같은 `ENTRY_EXIT` ZoneType을 유지하고 `entryExitRole` 값으로
 구분한다. `ENTRY_EXIT`에는 `ENTRY` 또는 `EXIT`가 반드시 필요하며, 다른
 ZoneType에는 이 필드를 두지 않는다. 입차 attempt는 `ENTRY` 구역에서만 물리
