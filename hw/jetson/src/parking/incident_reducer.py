@@ -513,6 +513,18 @@ class InMemoryIncidentReducer:
             signal.confirmable
             and trusted_seconds >= current.confirm_duration_seconds
         ):
+            zone_id = current.zone_id
+            related_zone_ids = current.related_zone_ids
+            if signal.open_zone_context is not None:
+                if (
+                    zone_id is not None
+                    and zone_id != signal.open_zone_context.zone_id
+                ):
+                    raise ValueError(
+                        "Incident OPEN zone context conflicts with fixed zone_id"
+                    )
+                zone_id = signal.open_zone_context.zone_id
+                related_zone_ids = signal.open_zone_context.related_zone_ids
             opened = replace(
                 current,
                 state=IncidentState.OPEN,
@@ -531,6 +543,8 @@ class InMemoryIncidentReducer:
                 ),
                 confirmed_at=signal.observed_at,
                 updated_at=signal.observed_at,
+                zone_id=zone_id,
+                related_zone_ids=related_zone_ids,
             )
             self._save_active(opened)
             self._remember_sample(opened, signal.value, signal.confirmable)

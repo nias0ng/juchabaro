@@ -470,6 +470,14 @@ OUT_OF_ZONE을 먼저 분류하여 두 rule은 한 신뢰 sample에서 동시
 임계값 사이의 대소 관계를 강제하지 않는다. 따라서 `AMBIGUOUS`나
 `UNASSIGNED` 자체가 BAD_PARKING·OUT_OF_ZONE의 근거가 아니다.
 
+`BAD_PARKING` Incident가 최초 OPEN될 때 해당 `PARKED_SNAPSHOT`의
+1순위 candidate를 대표 `zoneId`로 고정한다. 2·3순위 candidate 중
+`r(z) >= θbadSecondary`인 구역은 overlap 내림차순·동률 zoneId 오름차순의
+`relatedZoneIds` 내부 snapshot으로 함께 고정하며 RESOLVE까지 변경하지
+않는다. Candidate에는 이 구역 문맥을 고정하지 않는다. 현재 Backend
+`IncidentTransition` 계약에는 대표 `zoneId`만 포함하고 `relatedZoneIds`는
+Jetson domain·durable storage에만 보존한다. 외부 필드 추가는 별도 계약이다.
+
 ### 9.2 EgressBlockingEvidence와 이중주차 geometry
 
 `EgressBlockingResolver`는 subject 차량 footprint `F`와 victim이
@@ -534,7 +542,7 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `SessionContextUpdate` | Backend → Jetson · Backend | session 행정 상태와 같은 binding의 차량 자격 갱신 | `sessionId 또는 entryAttemptId + contextRevision` | same revision conflict 거부, 관련 규칙 재평가 |
 | `ZoneDefinitionSnapshot` | 설정 권위 → Jetson · 배포 설정 | 전체 polygon과 zone별 직접 scalar 필드 | `zoneDefinitionVersion`; 모든 zoneId와 relation 포함 | active scope 없는 기동에서 원자 적용 |
 | `ParkingTransition` | Jetson → Backend · Jetson | PARKED 또는 UNPARKED | `parkingEpisodeId + publicationRevision`; sessionId·occurredAt와 assignment zoneId 또는 unassigned reason 필수 | aggregate revision 순서로 적용하고 PARKED occurredAt을 Backend `parkedAt`으로 보존 |
-| `IncidentTransition` | Jetson → Backend · Jetson | OPEN 또는 RESOLVE | `incidentId + publicationRevision`; physicalVehicleId·ruleCode·occurredAt, rule별 zone·relation·victim context, sessionId 또는 entryAttemptId 중 하나 이상 필수 | session 없는 사건도 수용하고 revision 멱등 처리 |
+| `IncidentTransition` | Jetson → Backend · Jetson | OPEN 또는 RESOLVE | `incidentId + publicationRevision`; physicalVehicleId·ruleCode·occurredAt, rule별 대표 zone·relation·victim context, sessionId 또는 entryAttemptId 중 하나 이상 필수. BAD_PARKING의 내부 `relatedZoneIds`는 현재 payload에서 제외 | session 없는 사건도 수용하고 revision 멱등 처리 |
 | `EvidenceArtifact` | Jetson → Backend · Jetson | 특정 Incident revision의 정지 이미지 | `evidenceId + incidentId + publicationRevision + checksum` | checksum 검증과 적용 결과 반환 |
 | `EvidenceUnavailable` | Jetson → Backend · Jetson storage | artifact가 resource limit·retention·손상으로 제공 불가 | `evidenceId + incidentId + publicationRevision + reason + unavailableAt`; checksum·byteSize는 생성됐으면 포함 | 성공 upload와 구분해 적용 확인 |
 | `SessionExit` | Jetson → Backend · Jetson observation | Jetson이 확인한 실제 출차 | `sessionId + publicationRevision + occurredAt`; origin=JETSON_EXIT_CONFIRMED | 행정 종료와 구분해 적용 |

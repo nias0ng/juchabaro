@@ -632,6 +632,7 @@ def test_incident_queries_and_fill_only_correlation(tmp_path: Path) -> None:
             entry_attempt_id=ENTRY_ATTEMPT_ID,
             parking_session_id=ParkingSessionId(55),
             zone_id=ZoneId(7),
+            related_zone_ids=(ZoneId(8), ZoneId(9)),
             confirm_trusted_seconds=2.0,
             confirmed_at=opened_at,
             record_version=2,
@@ -641,6 +642,19 @@ def test_incident_queries_and_fill_only_correlation(tmp_path: Path) -> None:
         with UnitOfWork(connection):
             repository.save(opened, expected_record_version=1)
         assert repository.get(INCIDENT_ID) == opened
+
+        changed_related_zones = replace(
+            opened,
+            related_zone_ids=(ZoneId(8),),
+            record_version=3,
+            updated_at=opened_at + timedelta(seconds=1),
+        )
+        with pytest.raises(IncidentConflictError, match="immutable after OPEN"):
+            with UnitOfWork(connection):
+                repository.save(
+                    changed_related_zones,
+                    expected_record_version=2,
+                )
 
         changed_session = replace(
             opened,

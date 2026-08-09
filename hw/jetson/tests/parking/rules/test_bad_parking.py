@@ -14,6 +14,7 @@ from src.parking.models import (
     AssignmentState,
     IncidentKey,
     IncidentSignalValue,
+    IncidentZoneContext,
     ParkingAssignment,
     ParkingEpisode,
     ParkingEpisodeId,
@@ -86,29 +87,36 @@ def make_evidence(
     *,
     primary: float = 0.8,
     secondary: float = 0.1,
+    tertiary: float | None = None,
     union: float = 0.9,
 ) -> PlacementEvidence:
-    candidates = (
+    candidates = [
         ZoneOverlapEvidence(zone_id=ZoneId(1), overlap_ratio=primary),
         ZoneOverlapEvidence(zone_id=ZoneId(2), overlap_ratio=secondary),
-    )
-    if secondary > primary:
-        candidates = tuple(
-            sorted(
-                candidates,
-                key=lambda item: (-item.overlap_ratio, int(item.zone_id)),
-            )
+    ]
+    if tertiary is not None:
+        candidates.append(
+            ZoneOverlapEvidence(zone_id=ZoneId(3), overlap_ratio=tertiary)
         )
+    ranked_candidates = tuple(
+        sorted(
+            candidates,
+            key=lambda item: (-item.overlap_ratio, int(item.zone_id)),
+        )
+    )
     return PlacementEvidence(
         representative_footprint=FOOTPRINT,
         zone_definition_version=VERSION,
         observed_at=T0,
-        candidate_overlaps=candidates,
-        primary_zone_id=candidates[0].zone_id,
-        primary_overlap_ratio=candidates[0].overlap_ratio,
-        secondary_zone_id=candidates[1].zone_id,
-        secondary_overlap_ratio=candidates[1].overlap_ratio,
-        dominance_gap=candidates[0].overlap_ratio - candidates[1].overlap_ratio,
+        candidate_overlaps=ranked_candidates,
+        primary_zone_id=ranked_candidates[0].zone_id,
+        primary_overlap_ratio=ranked_candidates[0].overlap_ratio,
+        secondary_zone_id=ranked_candidates[1].zone_id,
+        secondary_overlap_ratio=ranked_candidates[1].overlap_ratio,
+        dominance_gap=(
+            ranked_candidates[0].overlap_ratio
+            - ranked_candidates[1].overlap_ratio
+        ),
         spot_union_overlap_ratio=union,
         outside_spot_overlap_ratio=1.0 - union,
     )
@@ -382,6 +390,41 @@ def test_matching_predicate_is_not_confirmable_before_parked() -> None:
 
     assert signals["BAD_PARKING"].value is IncidentSignalValue.MATCHED
     assert signals["BAD_PARKING"].confirmable is False
+    assert signals["BAD_PARKING"].open_zone_context is None
+
+
+def test_bad_parking_open_zone_context_filters_and_ranks_related_zones() -> None:
+    signals = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(
+                primary=0.40,
+                secondary=0.35,
+                tertiary=0.25,
+                union=1.0,
+            ),
+            parking_assignment=make_assignment(AssignmentState.AMBIGUOUS),
+        )
+    )
+
+    assert signals["BAD_PARKING"].open_zone_context == IncidentZoneContext(
+        zone_id=ZoneId(1),
+        related_zone_ids=(ZoneId(2), ZoneId(3)),
+    )
+
+    below_threshold = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(
+                primary=0.60,
+                secondary=0.24,
+                tertiary=0.16,
+                union=1.0,
+            ),
+            parking_assignment=make_assignment(),
+        )
+    )
+    assert below_threshold["BAD_PARKING"].open_zone_context == (
+        IncidentZoneContext(zone_id=ZoneId(1))
+    )
 
 
 def test_move_pending_pauses_all_three_predicates_as_unknown() -> None:

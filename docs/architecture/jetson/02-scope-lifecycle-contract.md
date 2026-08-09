@@ -424,6 +424,12 @@ ParkingEpisode, ParkingAssignment와 PlacementEvidence는 parking rule의 평가
 PARKED·동일 zone assignment를, PlacementEvidence에서 BAD_PARKING·OUT_OF_ZONE
 술어를 계산하지만 signal 이전의 상태를 기억하지 않는다.
 
+BAD_PARKING의 confirmable MATCHED signal은 현재 `PARKED_SNAPSHOT`에서 계산한
+대표 zone과 임계값 이상인 최대 두 추가 zone을 OPEN 후보 문맥으로 전달한다.
+IncidentReducer는 Candidate 동안 이를 저장하지 않고 `CANDIDATE → OPEN`
+경계에서만 고정한다. OPEN·CLEAR_PENDING·RESOLVED에서는 이후 signal의
+순위 변화로 이 문맥을 덮어쓰지 않는다.
+
 PARKED가 OPEN 조건인 규칙은 `MOVE_PENDING` 동안 `UNKNOWN / confirmable=false`로 기존 OPEN Incident를 유지한다. `MOVEMENT_CONFIRMED` 뒤 전용구역 무자격 주차는 `NOT_MATCHED`가 되며, BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK은 유효한 geometry·assignment로 위반 술어를 재평가한다. IncidentReducer만 clear 시간을 누적하고, 필수 입력을 아직 판단할 수 없으면 `UNKNOWN / confirmable=false`로 lifecycle과 timer를 유지한다.
 
 ### 12.2 상태

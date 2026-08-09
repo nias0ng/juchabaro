@@ -429,6 +429,8 @@ def test_pipeline_exports_rule_specific_timing_with_actual_rule_signal() -> None
     candidate = updates_for(result, BAD_PARKING)[-1]
     assert candidate.confirm_duration_seconds == 2.0
     assert candidate.clear_duration_seconds == 3.0
+    assert candidate.zone_id is None
+    assert candidate.related_zone_ids == ()
 
 
 def transitions_for(result, rule_code: str):
@@ -770,9 +772,12 @@ def test_two_spot_placement_opens_bad_parking_independent_of_assignment(
     assert diagnostic.evidence.secondary_overlap_ratio == pytest.approx(secondary)
     assert diagnostic.evidence.spot_union_overlap_ratio == pytest.approx(1.0)
     assert diagnostic.bad_parking_signal.value is IncidentSignalValue.MATCHED
-    assert [
-        item.transition_type for item in transitions_for(result, BAD_PARKING)
-    ] == [IncidentTransitionType.OPEN]
+    opened = transitions_for(result, BAD_PARKING)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    assert opened[0].incident.zone_id == GENERAL_A.zone_id
+    assert opened[0].incident.related_zone_ids == (GENERAL_B.zone_id,)
 
 
 def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
@@ -799,6 +804,8 @@ def test_assigned_vehicle_protruding_from_spot_opens_bad_parking() -> None:
     assert [item.transition_type for item in opened] == [
         IncidentTransitionType.OPEN
     ]
+    assert opened[0].incident.zone_id == GENERAL_A.zone_id
+    assert opened[0].incident.related_zone_ids == ()
     diagnostic = result.placement_diagnostics[0]
     assert diagnostic.source is PlacementEvidenceSource.PARKED_SNAPSHOT
     assert diagnostic.evidence.primary_overlap_ratio == pytest.approx(0.60)

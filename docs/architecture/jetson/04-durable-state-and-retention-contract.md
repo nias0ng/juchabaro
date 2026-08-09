@@ -36,6 +36,11 @@ durable domain·workflow state, dedup, outbox와 evidence metadata는 SQLite에
 | Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer | 마지막 안전한 하한부터 재개 |
 | Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, BlockingRelation Candidate·BLOCKING·RESOLVED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
 
+BAD_PARKING OPEN에 고정한 대표 `zoneId`와 순서가 있는 내부
+`relatedZoneIds`도 Incident snapshot의 일부로 즉시 저장한다. 기존 row는
+빈 related 목록으로 migration하며, OPEN 뒤에는 빈 목록을 포함해 변경하지
+않는다. `relatedZoneIds`의 영속 여부가 Backend payload 노출을 뜻하지는 않는다.
+
 `[제안값]` dirty checkpoint는 최대 10초마다 하나의 batch transaction으로 기록한다. crash로 잃은 최대 10초의 trusted time은 추정 보충하지 않는다. 확정이 조금 늦어질 수는 있지만 거짓 확정을 만들지 않는다.
 
 초기 schema의 `physical_vehicles.motion_anchor_payload`는 domain model과

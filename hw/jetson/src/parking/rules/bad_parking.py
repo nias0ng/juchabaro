@@ -12,6 +12,7 @@ from src.parking.models import (
     IncidentKey,
     IncidentSignal,
     IncidentSignalValue,
+    IncidentZoneContext,
     ParkingState,
     ZoneType,
     ZoneVisitState,
@@ -183,15 +184,40 @@ def _signal(
     *,
     reasons: tuple[str, ...] = (),
 ) -> IncidentSignal:
+    confirmable = value is IncidentSignalValue.MATCHED and parked
     return IncidentSignal(
         key=IncidentKey.for_physical_vehicle(
             context.vehicle.physical_vehicle_id,
             rule_code,
         ),
         value=value,
-        confirmable=value is IncidentSignalValue.MATCHED and parked,
+        confirmable=confirmable,
         observed_at=context.observed_at,
         evidence=_signal_evidence(context, reasons=reasons),
+        open_zone_context=(
+            _bad_parking_zone_context(context)
+            if rule_code == BAD_PARKING and confirmable
+            else None
+        ),
+    )
+
+
+def _bad_parking_zone_context(
+    context: RuleContext,
+) -> IncidentZoneContext | None:
+    """PARKED snapshot에서 대표 구역과 유효한 추가 침범 구역을 뽑는다."""
+
+    placement = context.placement_evidence
+    if placement is None or not placement.candidate_overlaps:
+        return None
+    return IncidentZoneContext(
+        zone_id=placement.candidate_overlaps[0].zone_id,
+        related_zone_ids=tuple(
+            candidate.zone_id
+            for candidate in placement.candidate_overlaps[1:3]
+            if candidate.overlap_ratio
+            >= context.bad_parking_min_secondary_overlap_ratio
+        ),
     )
 
 

@@ -164,6 +164,24 @@ def test_prepare_double_parking_open_requires_victim_parking_zone() -> None:
         BackendPublicationPreparer().prepare_incident(without_zone)
 
 
+def test_prepare_bad_parking_keeps_related_zones_internal() -> None:
+    transition = _open_incident("BAD_PARKING")
+    transition = replace(
+        transition,
+        incident=replace(
+            transition.incident,
+            related_zone_ids=(ZoneId(2), ZoneId(3)),
+        ),
+    )
+
+    payload = json.loads(
+        BackendPublicationPreparer().prepare_incident(transition).payload
+    )
+
+    assert payload["zoneId"] == 1
+    assert "relatedZoneIds" not in payload
+
+
 def test_prepare_incident_resolve_uses_resolution_fact() -> None:
     opened = _open_incident("EV_OVERSTAY").incident
     resolved = replace(

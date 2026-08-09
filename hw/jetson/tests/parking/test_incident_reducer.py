@@ -15,6 +15,7 @@ from src.parking.models import (
     IncidentSignalValue,
     IncidentState,
     IncidentTransitionType,
+    IncidentZoneContext,
     ZoneId,
     ZoneVisitId,
 )
@@ -69,12 +70,14 @@ def signal(
     seconds: float,
     *,
     confirmable: bool = False,
+    open_zone_context: IncidentZoneContext | None = None,
 ) -> IncidentSignal:
     return IncidentSignal(
         key=key,
         value=value,
         confirmable=confirmable,
         observed_at=at(seconds),
+        open_zone_context=open_zone_context,
     )
 
 
@@ -92,9 +95,16 @@ def reduce(
     parking_session_id: ParkingSessionId | None = None,
     zone_id: ZoneId | None = None,
     victim_physical_vehicle_id: PhysicalVehicleId | None = None,
+    open_zone_context: IncidentZoneContext | None = None,
 ):
     return reducer.reduce(
-        signal(key, value, seconds, confirmable=confirmable),
+        signal(
+            key,
+            value,
+            seconds,
+            confirmable=confirmable,
+            open_zone_context=open_zone_context,
+        ),
         physical_vehicle_id=physical_vehicle_id,
         observation=observation or observed(seconds),
         entry_attempt_id=entry_attempt_id,
@@ -109,6 +119,65 @@ def test_trusted_sample_max_gap_must_be_positive() -> None:
     for invalid_gap in (0, 0.0000001, 0.0000006):
         with pytest.raises(ValueError, match="trusted_sample_max_gap_seconds"):
             InMemoryIncidentReducer(trusted_sample_max_gap_seconds=invalid_gap)
+
+
+def test_bad_parking_zone_context_latches_only_on_open_and_stays_immutable() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=2.0,
+    )
+    first_context = IncidentZoneContext(
+        zone_id=ZoneId(10),
+        related_zone_ids=(ZoneId(11),),
+    )
+    open_context = IncidentZoneContext(
+        zone_id=ZoneId(20),
+        related_zone_ids=(ZoneId(21), ZoneId(22)),
+    )
+
+    candidate = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        open_zone_context=first_context,
+    ).incident
+    assert candidate.state is IncidentState.CANDIDATE
+    assert candidate.zone_id is None
+    assert candidate.related_zone_ids == ()
+
+    reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        open_zone_context=open_context,
+    )
+    opened_reduction = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        2,
+        confirmable=True,
+        open_zone_context=open_context,
+    )
+    opened = opened_reduction.incident
+    assert opened.state is IncidentState.OPEN
+    assert opened.zone_id == ZoneId(20)
+    assert opened.related_zone_ids == (ZoneId(21), ZoneId(22))
+
+    changed_after_open = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        3,
+        confirmable=True,
+        open_zone_context=first_context,
+    ).incident
+    assert changed_after_open.zone_id == ZoneId(20)
+    assert changed_after_open.related_zone_ids == (ZoneId(21), ZoneId(22))
 
 
 def test_rule_timing_overrides_default_only_for_new_matching_rule() -> None:
