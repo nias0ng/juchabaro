@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "modelVersion": "yolov8s-fp16-384x640-6b91fea3c111",
+  "sha256": "6b91fea3c111dfaafba85a2a1a2c1edb1a687c8ae6f7abe983809b62aaa1ebf7",
+  "task": "detect",
+  "classNames": {
+    "0": "vehicle"
+  }
+}

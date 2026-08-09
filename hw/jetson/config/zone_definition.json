@@ -30,7 +30,7 @@
       "zoneId": 5,
       "zoneType": "EV_CHARGING",
       "polygon": [[0.615, 0.605], [0.753, 0.608], [0.760, 0.769], [0.617, 0.769]],
-      "allowedDurationSeconds": 7200,
+      "allowedDurationSeconds": 70,
       "chargerClass": "SLOW",
       "egressZoneIds": [7]
     },

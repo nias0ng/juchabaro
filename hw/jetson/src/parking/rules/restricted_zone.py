@@ -1,9 +1,10 @@
-"""장애인·전기차 전용구역의 차량 자격 의미와 무자격 점유 술어를 평가한다.
+"""장애인·전기차 전용구역의 차량 자격 의미와 무자격 주차 술어를 평가한다.
 
 구역 종류별 자격 속성 선택은 ``qualification_for_zone``이 소유하며,
-``evaluate``는 이를 camera 기반 ZoneVisit의 IncidentSignal로 변환한다.
-이 모듈은 상태를 소유하지 않는다. 방문 수명과 확인·해소 timer는 각각
-``ZoneVisitTracker``와 ``IncidentReducer``가 소유한다.
+``evaluate``는 confirmed ZoneVisit과 같은 구역에 확정된 ParkingEpisode를
+결합해 IncidentSignal로 변환한다. 이 모듈은 상태를 소유하지 않는다. 방문·주차
+수명과 확인·해소 timer는 각각 ``ZoneVisitTracker``, ``ParkingEpisodeTracker``,
+``IncidentReducer``가 소유한다.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from src.parking.models import (
     IncidentKey,
     IncidentSignal,
     IncidentSignalValue,
+    ParkingState,
     ZoneType,
     ZoneVisit,
     ZoneVisitState,
@@ -83,13 +85,31 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
             zone.zone_type,
             context.session_context,
         )
+        episode = context.parking_episode
+        assignment = None if episode is None else episode.assignment
+        parking_evidence = {
+            "parkingState": None if episode is None else episode.state.value,
+            "parkingAssignmentState": (
+                None if assignment is None else assignment.state.value
+            ),
+            "parkingAssignmentZoneId": (
+                None if assignment is None else assignment.zone_id
+            ),
+        }
+        rule_evidence = {
+            evidence_key: qualified,
+            "zoneId": visit.zone_id,
+            "zoneType": zone.zone_type.value,
+            **parking_evidence,
+        }
 
         if (
             context.observation.state is not ObservationState.OBSERVED
             or context.vehicle.observation.state is not ObservationState.OBSERVED
             or visit.observation.state is not ObservationState.OBSERVED
             or visit.state is not ZoneVisitState.INSIDE
-            or qualified is None
+            or context.parking_motion_observation.state
+            is not ObservationState.OBSERVED
         ):
             signals.append(
                 _unknown_signal(
@@ -97,7 +117,81 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
                     visit,
                     rule_code,
                     reason="REQUIRED_INPUT_UNAVAILABLE",
-                    extra_evidence={evidence_key: qualified},
+                    extra_evidence=rule_evidence,
+                )
+            )
+            continue
+
+        if qualified is True:
+            signals.append(
+                IncidentSignal(
+                    key=IncidentKey.for_zone_visit(visit.visit_id, rule_code),
+                    value=IncidentSignalValue.NOT_MATCHED,
+                    confirmable=False,
+                    observed_at=context.observed_at,
+                    evidence=rule_evidence,
+                )
+            )
+            continue
+
+        if (
+            episode is not None
+            and episode.state
+            in {ParkingState.PARKED, ParkingState.MOVE_PENDING}
+            and episode.observation.state is not ObservationState.OBSERVED
+        ):
+            signals.append(
+                _unknown_signal(
+                    context,
+                    visit,
+                    rule_code,
+                    reason="PARKING_EPISODE_OBSERVATION_UNAVAILABLE",
+                    extra_evidence=rule_evidence,
+                )
+            )
+            continue
+
+        if episode is not None and episode.state is ParkingState.MOVE_PENDING:
+            signals.append(
+                _unknown_signal(
+                    context,
+                    visit,
+                    rule_code,
+                    reason="MOVEMENT_CONFIRMATION_PENDING",
+                    extra_evidence=rule_evidence,
+                )
+            )
+            continue
+
+        parked_in_visited_zone = (
+            episode is not None
+            and episode.state is ParkingState.PARKED
+            and assignment is not None
+            and assignment.zone_id == visit.zone_id
+        )
+        if not parked_in_visited_zone:
+            signals.append(
+                IncidentSignal(
+                    key=IncidentKey.for_zone_visit(visit.visit_id, rule_code),
+                    value=IncidentSignalValue.NOT_MATCHED,
+                    confirmable=False,
+                    observed_at=context.observed_at,
+                    evidence={
+                        **rule_evidence,
+                        "reason": "PARKING_NOT_CONFIRMED_IN_VISITED_ZONE",
+                    },
+                )
+            )
+            continue
+
+        if qualified is None:
+            signals.append(
+                _unknown_signal(
+                    context,
+                    visit,
+                    rule_code,
+                    reason="QUALIFICATION_UNAVAILABLE",
+                    extra_evidence=rule_evidence,
                 )
             )
             continue
@@ -113,11 +207,7 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
                 value=value,
                 confirmable=value is IncidentSignalValue.MATCHED,
                 observed_at=context.observed_at,
-                evidence={
-                    evidence_key: qualified,
-                    "zoneId": visit.zone_id,
-                    "zoneType": zone.zone_type.value,
-                },
+                evidence=rule_evidence,
             )
         )
 

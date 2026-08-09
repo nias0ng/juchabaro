@@ -12,6 +12,7 @@ from src.parking.models import (
     IncidentKey,
     IncidentSignal,
     IncidentSignalValue,
+    IncidentZoneContext,
     ParkingState,
     ZoneType,
     ZoneVisitState,
@@ -72,7 +73,7 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
     bad_value, out_value, bad_reasons, out_reasons = _placement_predicates(
         context
     )
-    aisle_value = _aisle_predicate(context)
+    aisle_value, aisle_zone_context = _aisle_predicate(context)
     return (
         _signal(
             context,
@@ -88,7 +89,13 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
             parked,
             reasons=out_reasons,
         ),
-        _signal(context, AISLE_BLOCK, aisle_value, parked),
+        _signal(
+            context,
+            AISLE_BLOCK,
+            aisle_value,
+            parked,
+            open_zone_context=aisle_zone_context,
+        ),
     )
 
 
@@ -149,8 +156,13 @@ def _placement_predicates(
     )
 
 
-def _aisle_predicate(context: RuleContext) -> IncidentSignalValue:
+def _aisle_predicate(
+    context: RuleContext,
+) -> tuple[IncidentSignalValue, IncidentZoneContext | None]:
+    """복도 점유 술어와 OPEN에 고정할 대표 AISLE 문맥을 반환한다."""
+
     uncertain = False
+    matched_zone_ids = []
     vehicle_id = context.vehicle.physical_vehicle_id
     for visit in context.active_zone_visits:
         if visit.physical_vehicle_id != vehicle_id:
@@ -167,11 +179,19 @@ def _aisle_predicate(context: RuleContext) -> IncidentSignalValue:
         ):
             uncertain = True
             continue
-        return IncidentSignalValue.MATCHED
+        matched_zone_ids.append(visit.zone_id)
+    if matched_zone_ids:
+        return (
+            IncidentSignalValue.MATCHED,
+            IncidentZoneContext(zone_id=min(matched_zone_ids, key=int)),
+        )
     return (
-        IncidentSignalValue.UNKNOWN
-        if uncertain
-        else IncidentSignalValue.NOT_MATCHED
+        (
+            IncidentSignalValue.UNKNOWN
+            if uncertain
+            else IncidentSignalValue.NOT_MATCHED
+        ),
+        None,
     )
 
 
@@ -182,16 +202,42 @@ def _signal(
     parked: bool,
     *,
     reasons: tuple[str, ...] = (),
+    open_zone_context: IncidentZoneContext | None = None,
 ) -> IncidentSignal:
+    confirmable = value is IncidentSignalValue.MATCHED and parked
+    if rule_code == BAD_PARKING and confirmable:
+        open_zone_context = _bad_parking_zone_context(context)
+    elif not confirmable:
+        open_zone_context = None
     return IncidentSignal(
         key=IncidentKey.for_physical_vehicle(
             context.vehicle.physical_vehicle_id,
             rule_code,
         ),
         value=value,
-        confirmable=value is IncidentSignalValue.MATCHED and parked,
+        confirmable=confirmable,
         observed_at=context.observed_at,
         evidence=_signal_evidence(context, reasons=reasons),
+        open_zone_context=open_zone_context,
+    )
+
+
+def _bad_parking_zone_context(
+    context: RuleContext,
+) -> IncidentZoneContext | None:
+    """PARKED snapshot에서 대표 구역과 유효한 추가 침범 구역을 뽑는다."""
+
+    placement = context.placement_evidence
+    if placement is None or not placement.candidate_overlaps:
+        return None
+    return IncidentZoneContext(
+        zone_id=placement.candidate_overlaps[0].zone_id,
+        related_zone_ids=tuple(
+            candidate.zone_id
+            for candidate in placement.candidate_overlaps[1:3]
+            if candidate.overlap_ratio
+            >= context.bad_parking_min_secondary_overlap_ratio
+        ),
     )
 
 

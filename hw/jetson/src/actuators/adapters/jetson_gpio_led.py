@@ -1,11 +1,12 @@
-"""전체 actuator projection을 두 active-high 경고 LED 출력으로 유지한다.
+"""전체 actuator projection을 두 active-high 로컬 경고 LED로 실행한다.
 
 장애인 전용 구역은 BOARD Pin 31, 전기차 충전 구역은 BOARD Pin 33을 사용한다.
 단일 worker thread가 모든 GPIO 작업을 소유하며 ``apply_projection()``은 목표
 projection만 교체하고 즉시 반환한다.
 
+각 ID는 하나의 연속된 projection 활성 구간에서 최대 5초 동안만 점멸한다.
 이 모듈은 zone, ToF 관측 또는 Incident 판단을 소유하지 않는다. 기본 점멸
-시간은 실제 장치 검증 후 재조정해야 하는 provisional 값이다. lifecycle owner는
+주기는 실제 장치 검증 후 재조정해야 하는 provisional 값이다. lifecycle owner는
 ``open()``과 ``close()``를 직렬로 호출해야 한다.
 """
 
@@ -46,6 +47,7 @@ BLINK_ACTION = "BLINK"
 # 실제 LED와 설치 환경에서 시인성을 검증한 뒤 재조정해야 하는 provisional 값이다.
 DEFAULT_BLINK_ON_SECONDS = 0.3
 DEFAULT_BLINK_OFF_SECONDS = 0.3
+DEFAULT_WARNING_DURATION_SECONDS = 5.0
 
 _PIN_BY_ACTUATOR_ID = {
     DISABLED_ZONE_WARNING_LED_ID: DISABLED_ZONE_WARNING_LED_PIN,
@@ -141,6 +143,13 @@ class _LifecycleState(Enum):
 class _CleanupIssue:
     description: str
     error: Exception
+
+
+@dataclass
+class _ActiveBlink:
+    phase_high: bool
+    next_toggle_at: float
+    expires_at: float
 
 
 def _positive_finite_number(
@@ -240,7 +249,7 @@ def _make_cleanup_error(
 
 
 class JetsonGpioLedAdapter:
-    """전체 projection을 두 경고 LED의 점멸 상태로 유지한다."""
+    """각 projection 활성 구간의 경고 LED를 제한 시간 동안 점멸한다."""
 
     def __init__(
         self,
@@ -248,6 +257,7 @@ class JetsonGpioLedAdapter:
         backend: GpioBackend | None = None,
         blink_on_seconds: float = DEFAULT_BLINK_ON_SECONDS,
         blink_off_seconds: float = DEFAULT_BLINK_OFF_SECONDS,
+        warning_duration_seconds: float = DEFAULT_WARNING_DURATION_SECONDS,
         scheduler: BlinkScheduler | None = None,
     ) -> None:
         self._blink_on_seconds = _positive_finite_number(
@@ -257,6 +267,10 @@ class JetsonGpioLedAdapter:
         self._blink_off_seconds = _positive_finite_number(
             blink_off_seconds,
             field_name="blink_off_seconds",
+        )
+        self._warning_duration_seconds = _positive_finite_number(
+            warning_duration_seconds,
+            field_name="warning_duration_seconds",
         )
 
         self._backend = (
@@ -287,6 +301,9 @@ class JetsonGpioLedAdapter:
         self._state = _LifecycleState.NEW
 
         self._desired_blink_ids: frozenset[str] = frozenset()
+        self._activation_generation_by_id = {
+            actuator_id: 0 for actuator_id in _LED_IDS
+        }
         self._projection_generation = 0
 
         self._thread: Thread | None = None
@@ -382,6 +399,9 @@ class JetsonGpioLedAdapter:
             if desired_blink_ids == self._desired_blink_ids:
                 return
 
+            added_ids = desired_blink_ids - self._desired_blink_ids
+            for actuator_id in added_ids:
+                self._activation_generation_by_id[actuator_id] += 1
             self._desired_blink_ids = desired_blink_ids
             self._projection_generation += 1
             self._condition.notify_all()
@@ -530,9 +550,8 @@ class JetsonGpioLedAdapter:
 
     def _blink_loop(self) -> None:
         applied_generation = 0
-        applied_blink_ids: frozenset[str] = frozenset()
-        phase_high = False
-        next_deadline: float | None = None
+        applied_activation_by_id: dict[str, int] = {}
+        active_blinks: dict[str, _ActiveBlink] = {}
 
         while True:
             with self._condition:
@@ -547,11 +566,15 @@ class JetsonGpioLedAdapter:
                         operation = "reconcile"
                         break
 
+                    next_deadline = min(
+                        (
+                            min(blink.next_toggle_at, blink.expires_at)
+                            for blink in active_blinks.values()
+                        ),
+                        default=None,
+                    )
                     now = self._scheduler.monotonic()
-                    if (
-                        next_deadline is not None
-                        and now >= next_deadline
-                    ):
+                    if next_deadline is not None and now >= next_deadline:
                         operation = "tick"
                         break
 
@@ -566,17 +589,29 @@ class JetsonGpioLedAdapter:
                     )
 
                 desired_blink_ids = self._desired_blink_ids
+                desired_activation_by_id = {
+                    actuator_id: self._activation_generation_by_id[actuator_id]
+                    for actuator_id in desired_blink_ids
+                }
                 desired_generation = self._projection_generation
 
             if operation == "reconcile":
                 if self._stop_is_requested():
                     return
 
-                removed_ids = (
-                    applied_blink_ids - desired_blink_ids
+                removed_ids = frozenset(
+                    actuator_id
+                    for actuator_id, activation_generation
+                    in applied_activation_by_id.items()
+                    if desired_activation_by_id.get(actuator_id)
+                    != activation_generation
                 )
-                added_ids = (
-                    desired_blink_ids - applied_blink_ids
+                added_ids = frozenset(
+                    actuator_id
+                    for actuator_id, activation_generation
+                    in desired_activation_by_id.items()
+                    if applied_activation_by_id.get(actuator_id)
+                    != activation_generation
                 )
 
                 for actuator_id in _ordered_led_ids(removed_ids):
@@ -584,33 +619,23 @@ class JetsonGpioLedAdapter:
                         _PIN_BY_ACTUATOR_ID[actuator_id],
                         high=False,
                     )
+                    active_blinks.pop(actuator_id, None)
 
-                if not desired_blink_ids:
-                    phase_high = False
-                    next_deadline = None
-                elif not applied_blink_ids:
-                    phase_high = True
-                    now = self._scheduler.monotonic()
-                    for actuator_id in _ordered_led_ids(added_ids):
-                        if self._stop_is_requested():
-                            return
-                        self._backend.write(
-                            _PIN_BY_ACTUATOR_ID[actuator_id],
-                            high=True,
-                        )
-                    next_deadline = (
-                        now + self._blink_on_seconds
+                now = self._scheduler.monotonic()
+                for actuator_id in _ordered_led_ids(added_ids):
+                    if self._stop_is_requested():
+                        return
+                    self._backend.write(
+                        _PIN_BY_ACTUATOR_ID[actuator_id],
+                        high=True,
                     )
-                else:
-                    for actuator_id in _ordered_led_ids(added_ids):
-                        if phase_high and self._stop_is_requested():
-                            return
-                        self._backend.write(
-                            _PIN_BY_ACTUATOR_ID[actuator_id],
-                            high=phase_high,
-                        )
+                    active_blinks[actuator_id] = _ActiveBlink(
+                        phase_high=True,
+                        next_toggle_at=now + self._blink_on_seconds,
+                        expires_at=now + self._warning_duration_seconds,
+                    )
 
-                applied_blink_ids = desired_blink_ids
+                applied_activation_by_id = desired_activation_by_id
                 applied_generation = desired_generation
                 continue
 
@@ -623,27 +648,34 @@ class JetsonGpioLedAdapter:
                 ):
                     continue
 
-            next_phase_high = not phase_high
             now = self._scheduler.monotonic()
             for actuator_id in _ordered_led_ids(
-                applied_blink_ids
+                frozenset(active_blinks)
             ):
-                if (
-                    next_phase_high
-                    and self._stop_is_requested()
-                ):
+                blink = active_blinks[actuator_id]
+                if now >= blink.expires_at:
+                    self._backend.write(
+                        _PIN_BY_ACTUATOR_ID[actuator_id],
+                        high=False,
+                    )
+                    del active_blinks[actuator_id]
+                    continue
+                if now < blink.next_toggle_at:
+                    continue
+
+                next_phase_high = not blink.phase_high
+                if next_phase_high and self._stop_is_requested():
                     return
                 self._backend.write(
                     _PIN_BY_ACTUATOR_ID[actuator_id],
                     high=next_phase_high,
                 )
-
-            phase_high = next_phase_high
-            next_deadline = now + (
-                self._blink_on_seconds
-                if phase_high
-                else self._blink_off_seconds
-            )
+                blink.phase_high = next_phase_high
+                blink.next_toggle_at = now + (
+                    self._blink_on_seconds
+                    if next_phase_high
+                    else self._blink_off_seconds
+                )
 
     def _stop_is_requested(self) -> bool:
         with self._condition:

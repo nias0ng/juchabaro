@@ -92,9 +92,10 @@ _BBOX_BY_FRAME_ID = {
     4: INSIDE_BBOX,
     5: INSIDE_BBOX,
     6: INSIDE_BBOX,
-    7: OUTSIDE_BBOX,
+    7: INSIDE_BBOX,
     8: OUTSIDE_BBOX,
     9: OUTSIDE_BBOX,
+    10: OUTSIDE_BBOX,
 }
 FRAME_COUNT = len(_BBOX_BY_FRAME_ID)
 
@@ -124,9 +125,11 @@ def _policy() -> MonitoringPolicy:
         blocking_relation_clear_seconds=1.0,
         blocking_min_subject_overlap_ratio=0.40,
         blocking_min_egress_coverage_ratio=0.40,
-        motion_window_seconds=0.75,
+        # Scripted frames are one second apart. Keep enough history for the
+        # replay fixture to confirm PARKED before restricted-zone incidents.
+        motion_window_seconds=3.0,
         motion_min_observation_span_seconds=0.20,
-        motion_max_sample_gap_seconds=0.50,
+        motion_max_sample_gap_seconds=1.50,
         motion_stationary_threshold=0.03,
         motion_moving_threshold=0.10,
         motion_min_samples=3,

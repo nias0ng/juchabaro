@@ -20,6 +20,7 @@ from src.actuators.adapters.jetson_gpio_led import (
     BLINK_ACTION,
     DEFAULT_BLINK_OFF_SECONDS,
     DEFAULT_BLINK_ON_SECONDS,
+    DEFAULT_WARNING_DURATION_SECONDS,
     DISABLED_ZONE_WARNING_LED_ID,
     DISABLED_ZONE_WARNING_LED_PIN,
     EV_ZONE_WARNING_LED_ID,
@@ -253,6 +254,7 @@ def _open_adapter(
     scheduler: FakeScheduler | None = None,
     blink_on_seconds: float = 0.3,
     blink_off_seconds: float = 0.3,
+    warning_duration_seconds: float = 5.0,
 ) -> tuple[
     JetsonGpioLedAdapter,
     FakeBackend,
@@ -273,6 +275,7 @@ def _open_adapter(
         scheduler=active_scheduler,
         blink_on_seconds=blink_on_seconds,
         blink_off_seconds=blink_off_seconds,
+        warning_duration_seconds=warning_duration_seconds,
     )
     adapter.open()
     active_scheduler.wait_until_worker_waits(1)
@@ -325,6 +328,10 @@ def test_constructor_uses_provisional_default_timing() -> None:
 
     assert adapter._blink_on_seconds == DEFAULT_BLINK_ON_SECONDS
     assert adapter._blink_off_seconds == DEFAULT_BLINK_OFF_SECONDS
+    assert (
+        adapter._warning_duration_seconds
+        == DEFAULT_WARNING_DURATION_SECONDS
+    )
 
 
 @pytest.mark.parametrize(
@@ -340,6 +347,10 @@ def test_constructor_uses_provisional_default_timing() -> None:
         ("blink_off_seconds", 0),
         ("blink_off_seconds", float("-inf")),
         ("blink_off_seconds", None),
+        ("warning_duration_seconds", True),
+        ("warning_duration_seconds", 0),
+        ("warning_duration_seconds", float("nan")),
+        ("warning_duration_seconds", "5.0"),
     ],
 )
 def test_constructor_rejects_invalid_blink_timing(
@@ -760,6 +771,53 @@ def test_single_led_starts_high_and_blinks(
     adapter.close()
 
 
+def test_led_expires_low_and_same_projection_does_not_restart() -> None:
+    adapter, backend, scheduler = _open_adapter(
+        warning_duration_seconds=0.8,
+    )
+    command = _command(DISABLED_ZONE_WARNING_LED_ID)
+    _apply_and_settle(adapter, scheduler, (command,))
+    _advance_and_settle(scheduler, 0.8)
+
+    assert _event_details(backend.events)[-1] == (
+        "backend",
+        "write",
+        DISABLED_ZONE_WARNING_LED_PIN,
+        False,
+    )
+    events = list(backend.events)
+    waits = scheduler.wait_count
+
+    adapter.apply_projection((replace(command, reason="RETRY"),))
+
+    assert backend.events == events
+    assert scheduler.wait_count == waits
+    adapter.close()
+
+
+def test_removed_then_readded_led_starts_new_warning_interval() -> None:
+    adapter, backend, scheduler = _open_adapter(
+        warning_duration_seconds=0.8,
+    )
+    command = _command(DISABLED_ZONE_WARNING_LED_ID)
+    _apply_and_settle(adapter, scheduler, (command,))
+    _advance_and_settle(scheduler, 0.8)
+    _apply_and_settle(adapter, scheduler, ())
+    events_before = len(backend.events)
+
+    _apply_and_settle(adapter, scheduler, (command,))
+
+    assert _event_details(backend.events[events_before:]) == [
+        (
+            "backend",
+            "write",
+            DISABLED_ZONE_WARNING_LED_PIN,
+            True,
+        )
+    ]
+    adapter.close()
+
+
 def test_two_leds_start_and_blink_in_same_phase() -> None:
     adapter, backend, scheduler = _open_adapter()
     commands = (
@@ -874,14 +932,18 @@ def test_removed_led_is_low_without_resetting_remaining_phase() -> None:
     adapter.close()
 
 
-def test_new_led_joins_current_high_phase_and_keeps_deadline() -> None:
-    adapter, backend, scheduler = _open_adapter()
+def test_new_led_starts_its_own_warning_interval() -> None:
+    adapter, backend, scheduler = _open_adapter(
+        blink_on_seconds=0.4,
+        blink_off_seconds=0.4,
+        warning_duration_seconds=1.0,
+    )
     _apply_and_settle(
         adapter,
         scheduler,
         (_command(DISABLED_ZONE_WARNING_LED_ID),),
     )
-    timeout_before = scheduler.wait_timeouts[-1]
+    _advance_and_settle(scheduler, 0.4)
     events_before = len(backend.events)
 
     _apply_and_settle(
@@ -901,39 +963,22 @@ def test_new_led_joins_current_high_phase_and_keeps_deadline() -> None:
             True,
         )
     ]
-    assert scheduler.wait_timeouts[-1] == timeout_before
-    adapter.close()
 
-
-def test_new_led_joins_current_low_phase_and_keeps_deadline() -> None:
-    adapter, backend, scheduler = _open_adapter()
-    _apply_and_settle(
-        adapter,
-        scheduler,
-        (_command(DISABLED_ZONE_WARNING_LED_ID),),
+    expiration_events_before = len(backend.events)
+    _advance_and_settle(scheduler, 0.6)
+    assert (
+        "backend",
+        "write",
+        DISABLED_ZONE_WARNING_LED_PIN,
+        False,
+    ) in _event_details(backend.events[expiration_events_before:])
+    _advance_and_settle(scheduler, 0.4)
+    assert _event_details(backend.events)[-1] == (
+        "backend",
+        "write",
+        EV_ZONE_WARNING_LED_PIN,
+        False,
     )
-    _advance_and_settle(scheduler, 0.3)
-    timeout_before = scheduler.wait_timeouts[-1]
-    events_before = len(backend.events)
-
-    _apply_and_settle(
-        adapter,
-        scheduler,
-        (
-            _command(DISABLED_ZONE_WARNING_LED_ID),
-            _command(EV_ZONE_WARNING_LED_ID),
-        ),
-    )
-
-    assert _event_details(backend.events[events_before:]) == [
-        (
-            "backend",
-            "write",
-            EV_ZONE_WARNING_LED_PIN,
-            False,
-        )
-    ]
-    assert scheduler.wait_timeouts[-1] == timeout_before
     adapter.close()
 
 
