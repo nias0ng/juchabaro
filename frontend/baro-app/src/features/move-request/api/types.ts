@@ -47,6 +47,7 @@ export type MoveRequestDetail = {
   requestStatus: MoveRequestStatus;
   requestedAt: string;
   dueAt: string | null; // 응답 전에는 null
+  resolvedAt: string | null; // 사건이 종료되지 않았으면 null
   targetVehicle: {
     vehicleId: number;
     plateNumber: string;
