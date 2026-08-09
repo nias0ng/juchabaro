@@ -153,6 +153,21 @@ def test_prepare_incident_maps_local_rule_code_for_api_7(
     assert payload["terminationReason"] is None
 
 
+def test_prepare_aisle_block_keeps_aisle_zone_id_with_etc_rule() -> None:
+    transition = _open_incident("AISLE_BLOCK")
+    transition = replace(
+        transition,
+        incident=replace(transition.incident, zone_id=ZoneId(7)),
+    )
+
+    payload = json.loads(
+        BackendPublicationPreparer().prepare_incident(transition).payload
+    )
+
+    assert payload["ruleCode"] == "ETC"
+    assert payload["zoneId"] == 7
+
+
 def test_prepare_double_parking_open_requires_victim_parking_zone() -> None:
     transition = _open_incident("DOUBLE_PARKING")
     without_zone = replace(

@@ -376,6 +376,9 @@ def test_bad_parking_and_aisle_block_can_match_independently_together() -> None:
 
     assert signals["BAD_PARKING"].value is IncidentSignalValue.MATCHED
     assert signals["AISLE_BLOCK"].value is IncidentSignalValue.MATCHED
+    assert signals["AISLE_BLOCK"].open_zone_context == IncidentZoneContext(
+        zone_id=ZoneId(3)
+    )
     assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.NOT_MATCHED
 
 
@@ -391,6 +394,21 @@ def test_matching_predicate_is_not_confirmable_before_parked() -> None:
     assert signals["BAD_PARKING"].value is IncidentSignalValue.MATCHED
     assert signals["BAD_PARKING"].confirmable is False
     assert signals["BAD_PARKING"].open_zone_context is None
+
+
+def test_aisle_context_is_not_exposed_before_parked() -> None:
+    signals = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(),
+            parking_assignment=make_assignment(),
+            episode_state=None,
+            aisle_visit=make_aisle_visit(),
+        )
+    )
+
+    assert signals["AISLE_BLOCK"].value is IncidentSignalValue.MATCHED
+    assert signals["AISLE_BLOCK"].confirmable is False
+    assert signals["AISLE_BLOCK"].open_zone_context is None
 
 
 def test_bad_parking_open_zone_context_filters_and_ranks_related_zones() -> None:

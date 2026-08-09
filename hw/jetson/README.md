@@ -301,6 +301,7 @@ API 7(Incident OPEN·RESOLVE), API 10(SessionExit)의 exact JSON과
 Idempotency-Key를 outbox 저장 전에 한 번만 확정한다. Incident 전송 시
 `EV_ZONE_UNAUTHORIZED`와 `AISLE_BLOCK`은 현재 Backend enum 계약에 맞춰
 wire `ruleCode=ETC`로 축약하되 local Incident의 ruleCode는 바꾸지 않는다.
+`AISLE_BLOCK`은 OPEN 시 고정한 대표 AISLE의 `zoneId`를 함께 전송한다.
 
 `src.main:app`은 운영 `MonitoringPipelineFactory`를 명시적으로 주입해
 camera·model owner를 하나만 기동한다. 테스트나 API-only 실행에서

@@ -478,6 +478,11 @@ OUT_OF_ZONE을 먼저 분류하여 두 rule은 한 신뢰 sample에서 동시
 `IncidentTransition` 계약에는 대표 `zoneId`만 포함하고 `relatedZoneIds`는
 Jetson domain·durable storage에만 보존한다. 외부 필드 추가는 별도 계약이다.
 
+`AISLE_BLOCK` Incident가 최초 OPEN될 때 그 프레임에서 confirmed INSIDE인
+AISLE 중 작은 `zoneId`를 대표 구역으로 고정하고 RESOLVE까지 변경하지 않는다.
+Candidate에는 구역 문맥을 고정하지 않는다. 현재 Backend enum 호환을 위해
+wire `ruleCode=ETC`로 축약하더라도 이 대표 AISLE `zoneId`는 함께 전송한다.
+
 ### 9.2 EgressBlockingEvidence와 이중주차 geometry
 
 `EgressBlockingResolver`는 subject 차량 footprint `F`와 victim이

@@ -39,7 +39,7 @@ from src.parking.parking_episode_tracker import (
     InMemoryParkingEpisodeTracker,
 )
 from src.parking.pipeline import ParkingPipeline
-from src.parking.rules.bad_parking import BAD_PARKING, OUT_OF_ZONE
+from src.parking.rules.bad_parking import AISLE_BLOCK, BAD_PARKING, OUT_OF_ZONE
 from src.parking.rules.double_parking import DOUBLE_PARKING
 from src.parking.rules.ev_overstay import EV_OVERSTAY
 from src.parking.rules.restricted_zone import (
@@ -680,6 +680,31 @@ def test_context_is_supplied_outside_snapshot_and_may_arrive_late() -> None:
     opened = transitions_for(with_context, DISABLED_ZONE_UNAUTHORIZED)
     assert [item.transition_type for item in opened] == [IncidentTransitionType.OPEN]
     assert opened[0].incident.parking_session_id == SESSION
+
+
+def test_aisle_block_open_latches_aisle_zone_id() -> None:
+    pipeline, _, _, _, _ = make_pipeline(
+        (AISLE_ZONE,),
+        entry_seconds=0.0,
+        parking_seconds=1.0,
+    )
+    aisle_bbox = BoundingBox(0.40, 0.60, 0.50, 0.70)
+    attempts = {CAR: ATTEMPT}
+
+    pipeline.process(
+        batch(0, snapshot(0, bbox=aisle_bbox)),
+        entry_attempt_ids=attempts,
+    )
+    result = pipeline.process(
+        batch(1, snapshot(1, bbox=aisle_bbox)),
+        entry_attempt_ids=attempts,
+    )
+
+    opened = transitions_for(result, AISLE_BLOCK)
+    assert [item.transition_type for item in opened] == [
+        IncidentTransitionType.OPEN
+    ]
+    assert opened[0].incident.zone_id == AISLE_ZONE.zone_id
 
 
 def test_pre_entry_incident_is_not_opened_when_context_arrives_late() -> None:
