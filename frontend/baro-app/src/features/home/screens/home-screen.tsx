@@ -1,5 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Text } from 'react-native';
 
 import { ResponsiveContainer, Screen } from '@/components/ui';
@@ -48,6 +49,7 @@ const quickActions: QuickAction[] = [
 
 export default function HomeScreen() {
   const { user } = useAuth();
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const avatarInitial = user?.name?.trim().charAt(0) || DEFAULT_AVATAR_INITIAL;
   // 관리자 계정 등 동/호수가 없는 경우(buildingNumber/unitNumber가 null) 대비.
   const unitLabel =
@@ -58,7 +60,6 @@ export default function HomeScreen() {
   const {
     sessions,
     isLoading: isSessionsLoading,
-    isRefreshing: isSessionsRefreshing,
     error: sessionsError,
     refetch: refetchSessions,
   } = useParkingSessions();
@@ -69,7 +70,6 @@ export default function HomeScreen() {
   const {
     summary,
     isLoading: isSummaryLoading,
-    isRefreshing: isSummaryRefreshing,
     error: summaryError,
     refetch: refetchSummary,
   } = useParkingZoneSummary();
@@ -78,6 +78,15 @@ export default function HomeScreen() {
     B2: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B2') : null,
     B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
   };
+
+  const handleRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([refetchSessions(), refetchSummary()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refetchSessions, refetchSummary]);
 
   return (
     <LinearGradient
@@ -89,8 +98,8 @@ export default function HomeScreen() {
         scroll
         edges={['top', 'right', 'left']}
         backgroundColor="transparent"
-        refreshing={isSessionsRefreshing || isSummaryRefreshing}
-        onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
+        refreshing={isPullRefreshing}
+        onRefresh={() => void handleRefresh()}
       >
         <ResponsiveContainer style={styles.content}>
           <HomeTopBar
