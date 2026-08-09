@@ -2,6 +2,7 @@ package com.ssafy.parking.domain.move.repository;
 
 import com.ssafy.parking.domain.move.entity.MoveRequest;
 import com.ssafy.parking.domain.move.entity.MoveRequestStatus;
+import com.ssafy.parking.domain.move.entity.MoveRequestType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -76,4 +77,10 @@ public interface MoveRequestRepository extends JpaRepository<MoveRequest, Long> 
 
     Optional<MoveRequest> findByEvent_Id(Long eventId);
     List<MoveRequest> findByEvent_IdIn(Collection<Long> eventIds);
+
+    List<MoveRequest> findByEvent_Session_IdAndRequestTypeAndRequestStatusInAndRequestedAtLessThanEqual(
+            Long sessionId,
+            MoveRequestType requestType,
+            Collection<MoveRequestStatus> statuses,
+            LocalDateTime occurredAt);
 }
