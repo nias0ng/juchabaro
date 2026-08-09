@@ -4,6 +4,10 @@ import { withdrawMyAccount } from '@/features/profile/api/profile-api';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 
+/**
+ * 현재 비밀번호 확인 후 회원 탈퇴를 요청하고, 성공하면 로컬 세션도 정리한다.
+ * API: POST /api/users/me/withdrawal
+ */
 export function useAccountWithdrawal() {
   const { accessToken, logout } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);

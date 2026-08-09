@@ -6,6 +6,10 @@ import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/services/api-error';
 import { queryKeys } from '@/services/query-keys';
 
+/**
+ * 이동 요청에 "이동 예정/불가"로 응답하고, 성공 시 상세 캐시를 직접 갱신한다.
+ * API: POST /api/move-requests/{requestId}/responses
+ */
 export function useMoveRequestResponse(requestId: number | null) {
   const { accessToken } = useAuth();
   const queryClient = useQueryClient();

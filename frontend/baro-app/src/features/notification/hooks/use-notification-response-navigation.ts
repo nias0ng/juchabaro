@@ -8,6 +8,7 @@ import { useAuth } from '@/providers/auth-provider';
 
 import { invalidateForNotification } from '../utils/notification-cache';
 
+/** 사용자가 푸시 알림을 탭해서 앱을 열었을 때, 알림 데이터에 맞는 화면으로 이동시킨다. */
 export function useNotificationResponseNavigation(): void {
   const { status, user } = useAuth();
   const queryClient = useQueryClient();

@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 
 import type { PushTokenRegistration } from './push-token';
 
+/** 마지막으로 서버에 등록한 푸시 토큰을 SecureStore에 저장/조회/삭제한다(웹은 no-op). */
 const PUSH_TOKEN_REGISTRATION_KEY = 'notification.pushTokenRegistration';
 
 export async function savePushTokenRegistration(

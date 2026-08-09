@@ -1,3 +1,4 @@
+/** 로그인 세션(accessToken)을 저장/조회/삭제한다. 웹은 SecureStore를 지원하지 않아 AsyncStorage를 대신 쓴다. */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';

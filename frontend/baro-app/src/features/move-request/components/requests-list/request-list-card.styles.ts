@@ -12,7 +12,6 @@ export const styles = StyleSheet.create({
     ...Shadows.card,
     elevation: 3,
   },
-  // 응답 완료 카드만 테두리를 추가로 보여준다.
   cardResponded: {
     borderWidth: 1,
     borderColor: Palette.lavender100,

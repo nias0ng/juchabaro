@@ -1,3 +1,4 @@
+/** http-client가 React 바깥에서도 401을 AuthProvider에 전달할 수 있게 연결하는 다리 역할. */
 type UnauthorizedHandler = () => void | Promise<void>;
 
 let unauthorizedHandler: UnauthorizedHandler | null = null;

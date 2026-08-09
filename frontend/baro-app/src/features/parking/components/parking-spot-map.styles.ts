@@ -61,7 +61,6 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // 입구/출구는 실제 주차 상태 정보가 아니라 구조 안내라, 배경 박스 없이 글자만 둔다.
   accessBlock: {
     width: 40,
     height: 32,
@@ -81,7 +80,6 @@ export const styles = StyleSheet.create({
     width: 32,
     height: 41,
   },
-  // 차가 있는(사용 중) 칸은 보라색으로 표시한다.
   mapCellOther: {
     backgroundColor: Palette.violet300,
   },
@@ -97,7 +95,6 @@ export const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     textAlign: 'center',
   },
-  // 장애인/EV 구역 종류 안내. 칸이 작아서 꽉 차 보이지 않게 조금 더 작게 둔다.
   zoneTypeLabel: {
     color: Palette.gray600,
     fontSize: 8,

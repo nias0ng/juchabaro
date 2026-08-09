@@ -1,3 +1,4 @@
+/** 스와이프로 숨긴 알림 id를 기기에 기록해, 서버 삭제 API 없이도 다음 조회에서 계속 걸러낸다. */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DISMISSED_NOTIFICATION_IDS_KEY = 'notification.dismissedIds';
@@ -19,7 +20,7 @@ export async function getDismissedNotificationIds(): Promise<Set<number>> {
   return parseDismissedIds(stored);
 }
 
-/** 스와이프로 숨긴 알림 id를 기기에 기록한다. 서버에는 반영되지 않아 다른 기기/재설치 후에는 다시 보인다. */
+/** 스와이프로 숨긴 알림 id를 기기에 기록한다. */
 export async function addDismissedNotificationId(notificationId: number): Promise<void> {
   const ids = await getDismissedNotificationIds();
   ids.add(notificationId);

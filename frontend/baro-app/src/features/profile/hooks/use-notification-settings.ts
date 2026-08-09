@@ -28,6 +28,10 @@ function hasUnsavedChanges(draft: NotificationSettings, saved: NotificationSetti
   );
 }
 
+/**
+ * 알림 수신 설정을 조회하고, 저장 전 편집 값(draft)과 서버 저장 값(saved)을 분리 관리해 저장하기 전까지 화면이 서버 재조회로 덮이지 않게 한다.
+ * API: GET /api/users/me/notification-settings, PATCH /api/users/me/notification-settings
+ */
 export function useNotificationSettings() {
   const { accessToken, status } = useAuth();
   const queryClient = useQueryClient();

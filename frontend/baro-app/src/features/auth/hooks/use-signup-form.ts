@@ -35,8 +35,9 @@ const INITIAL_CONFIRM_VALUES: SignupConfirmFormValues = {
 const COMPLEX_NAME = 'SSAFY 아파트';
 
 /**
- * 회원가입 3단계 입력값과 단계 이동을 함께 관리한다.
+ * 회원가입 3단계 입력값과 단계 이동을 함께 관리하는 훅.
  * 화면은 프레임만 담당하고 단계별 상태 판단은 이 훅에서 끝낸다.
+ * API: POST /api/auth/signup
  */
 export function useSignupForm() {
   const { login } = useAuth();

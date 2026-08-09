@@ -6,6 +6,10 @@ import { queryKeys } from '@/services/query-keys';
 
 import { getParkingZoneSummary } from '../api/parking-api';
 
+/**
+ * 층별/구역별 주차 현황 요약을 조회한다.
+ * API: GET /api/parking-zones/summary
+ */
 export function useParkingZoneSummary() {
   const { accessToken, status } = useAuth();
 

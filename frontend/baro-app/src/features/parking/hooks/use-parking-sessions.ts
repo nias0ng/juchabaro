@@ -7,6 +7,10 @@ import { queryKeys } from '@/services/query-keys';
 import { getMyParkingSessions } from '../api/parking-api';
 import { getLatestSessionsByVehicle } from '../utils/parking-session';
 
+/**
+ * 내 차량들의 현재 주차 세션을 조회하고, 차량별 최신 세션만 남긴다.
+ * API: GET /api/parking-sessions/me
+ */
 export function useParkingSessions() {
   const { accessToken, status } = useAuth();
 

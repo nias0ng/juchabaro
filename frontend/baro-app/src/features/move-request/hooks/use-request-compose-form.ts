@@ -21,7 +21,10 @@ function toZoneLabel(spotCode: string): string {
   return `${ZONE_FLOOR_LABEL} · ${spotCode} 구역`;
 }
 
-/** E-02(이동 요청 작성) 폼의 입력 상태와 POST /move-requests 제출을 관리한다. */
+/**
+ * 이동 요청 작성 폼의 입력 상태와 제출을 관리한다.
+ * API: POST /api/move-requests
+ */
 export function useRequestComposeForm() {
   const { accessToken } = useAuth();
   const queryClient = useQueryClient();
