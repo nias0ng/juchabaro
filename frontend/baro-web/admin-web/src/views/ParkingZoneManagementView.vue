@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Accessibility, Car, ChevronDown, LayoutGrid, Pencil, Plug } from '@lucide/vue'
+import { Accessibility, Car, ChevronDown, ChevronLeft, ChevronRight, LayoutGrid, Pencil, Plug, RotateCcw } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
@@ -12,11 +12,11 @@ import FilterOptionList from '@/components/ui/FilterOptionList.vue'
 import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
 import ParkingSpotMap from '@/features/parking-zones/components/ParkingSpotMap.vue'
+import type { FloorKey } from '@/features/parking-zones/types'
 import {
   ZONE_TYPE_OPTIONS,
   OCCUPANCY_OPTIONS,
   allowedTimeLabel,
-  congestionLabel,
   congestionTone,
   occupancyLabel,
   occupancyTone,
@@ -26,13 +26,19 @@ import {
 } from '@/features/parking-zones/data'
 import { useZoneManagement } from '@/features/parking-zones/composables/use-zone-management'
 
-type DropdownName = 'type' | 'status'
+type DropdownName = 'floor' | 'type' | 'status'
 
 const { filterBarRef, openDropdown, toggleDropdown } = useDropdownFilter<DropdownName>()
+
+function floorLabel(floor: FloorKey): string {
+  return `${floor.slice(1)}층`
+}
 
 const {
   FLOOR_KEYS,
   selectedFloor,
+  zoneFloorFilter,
+  selectFloor,
   zonesLoading,
   zonesError,
   spots,
@@ -48,6 +54,8 @@ const {
   congestion,
   zoneStats,
   filteredRows,
+  hasActiveFilters,
+  resetFilters,
   selectedZone,
   selectZoneId,
   selectSpot,
@@ -55,6 +63,12 @@ const {
   cancelEdit,
   saveEdit,
 } = useZoneManagement()
+
+function shiftFloor(delta: number) {
+  const currentIndex = FLOOR_KEYS.indexOf(selectedFloor.value)
+  const nextIndex = (currentIndex + delta + FLOOR_KEYS.length) % FLOOR_KEYS.length
+  selectFloor(FLOOR_KEYS[nextIndex]!)
+}
 
 const STATS = computed(() => [
   { label: '전체 구역', value: zoneStats.value.total, icon: LayoutGrid, tone: 'primary' },
@@ -87,6 +101,20 @@ const STATS = computed(() => [
         <h3>구역 목록</h3>
         <div ref="filterBarRef" class="filter-bar">
           <div class="dropdown-wrap">
+            <FilterChip :active="!!zoneFloorFilter" @click="toggleDropdown('floor')">
+              {{ zoneFloorFilter ? floorLabel(zoneFloorFilter) : '전체 층' }} <ChevronDown :size="14" />
+            </FilterChip>
+            <FilterOptionList
+              v-if="openDropdown === 'floor'"
+              :options="FLOOR_KEYS"
+              :selected="zoneFloorFilter"
+              :label-for="floorLabel"
+              width="112px"
+              @select="selectFloor($event); openDropdown = null"
+            />
+          </div>
+
+          <div class="dropdown-wrap">
             <FilterChip :active="!!typeFilter" @click="toggleDropdown('type')">
               {{ typeFilter ? zoneTypeLabel(typeFilter) : '전체 유형' }} <ChevronDown :size="14" />
             </FilterChip>
@@ -115,15 +143,22 @@ const STATS = computed(() => [
           </div>
 
           <SearchBox v-model="codeQuery" placeholder="구역 번호 검색" input-width="112px" />
+
+          <div v-if="hasActiveFilters" class="filter-actions">
+            <button type="button" class="reset-filter-button" @click="resetFilters">
+              <RotateCcw :size="14" />
+              필터 초기화
+            </button>
+          </div>
         </div>
 
         <DataTable clickable-rows>
-          <thead>
+          <thead class="zone-table-header">
             <tr>
               <th v-for="h in ['구역 번호', '층', '유형', '상태', '허용 시간']" :key="h">{{ h }}</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody class="zone-table-body">
             <TableStateRow v-if="zonesLoading" :colspan="5" variant="loading" message="불러오는 중입니다…" />
             <TableStateRow v-else-if="filteredRows.length === 0" :colspan="5" variant="empty" message="조건에 맞는 구역이 없습니다." />
             <tr
@@ -136,12 +171,12 @@ const STATS = computed(() => [
             >
               <td class="strong" :class="{ 'text-primary': selectedZone?.zoneId === zone.zoneId }">{{ zone.zoneNumber }}</td>
               <td class="muted">{{ zoneFloorOf(zone.zoneNumber) ?? '-' }}</td>
-              <td><StatusTag :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
+              <td><StatusTag variant="text" :tone="zoneTypeTone(zone.zoneType)">{{ zoneTypeLabel(zone.zoneType) }}</StatusTag></td>
               <td>
-                <StatusTag v-if="occupancyOf(zone.zoneId)" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
+                <StatusTag v-if="occupancyOf(zone.zoneId)" variant="text" :tone="occupancyTone(occupancyOf(zone.zoneId)!)">
                   {{ occupancyLabel(occupancyOf(zone.zoneId)!) }}
                 </StatusTag>
-                <span v-else class="muted">정보 없음</span>
+                <span v-else class="muted">-</span>
               </td>
               <td class="muted nowrap">{{ allowedTimeLabel(zone.allowedMinutes) }}</td>
             </tr>
@@ -160,33 +195,52 @@ const STATS = computed(() => [
                 type="button"
                 class="floor-tab"
                 :class="{ active: selectedFloor === key }"
-                @click="selectedFloor = key"
+                @click="selectFloor(key)"
               >
                 {{ key }}
               </button>
             </div>
           </div>
-          <div class="legend">
-            <span class="legend-item"><span class="swatch" style="background: #e7e5f3" />사용 가능</span>
-            <span class="legend-item"><span class="swatch" style="background: #c9c2f0" />사용 중</span>
-            <span class="legend-item"><span class="swatch" style="background: #d5e6ff" />장애인 구역</span>
-            <span class="legend-item"><span class="swatch" style="background: #dff3ef" />전기차 구역</span>
-            <span class="legend-item"><span class="swatch" style="background: #ffdccd" />위반</span>
-            <span class="legend-item"><span class="swatch" style="background: #3b82f6" />출구</span>
-            <span class="legend-item"><span class="swatch" style="background: #22c55e" />입구</span>
-            <StatusTag v-if="congestion" class="congestion-tag" :tone="congestionTone(congestion.level)">
-              혼잡도 {{ congestionLabel(congestion.level) }} ({{ congestion.rate }}%)
-            </StatusTag>
-          </div>
+
           <p v-if="summaryLoading" class="empty-hint">불러오는 중입니다…</p>
           <p v-else-if="summaryError" class="empty-hint error">{{ summaryError }}</p>
-          <ParkingSpotMap
-            v-else
-            :floor="selectedFloor"
-            :spots="spots"
-            :selected-zone-id="selectedZone?.zoneId"
-            @select-spot="selectSpot"
-          />
+          <div v-else class="map-row">
+            <button
+              type="button"
+              class="floor-nav-button floor-nav-prev"
+              aria-label="이전 층"
+              @click="shiftFloor(-1)"
+            >
+              <ChevronLeft :size="26" />
+            </button>
+            <div class="map-align">
+              <div class="map-status-row">
+                <div v-if="congestion" class="congestion-banner">
+                  <span class="congestion-label">혼잡도</span>
+                  <span class="congestion-rate" :class="`tone-${congestionTone(congestion.level)}`">{{ congestion.rate }}%</span>
+                </div>
+                <div class="legend">
+                  <span class="legend-item"><span class="swatch" style="background: #e7e5f3" />사용 가능</span>
+                  <span class="legend-item"><span class="swatch" style="background: #c3bcff" />사용 중</span>
+                  <span class="legend-item"><span class="swatch" style="background: #c96a6a" />위반</span>
+                </div>
+              </div>
+              <ParkingSpotMap
+                :floor="selectedFloor"
+                :spots="spots"
+                :selected-zone-id="selectedZone?.zoneId"
+                @select-spot="selectSpot"
+              />
+            </div>
+            <button
+              type="button"
+              class="floor-nav-button floor-nav-next"
+              aria-label="다음 층"
+              @click="shiftFloor(1)"
+            >
+              <ChevronRight :size="26" />
+            </button>
+          </div>
         </section>
 
         <section class="panel selection-panel">
@@ -370,6 +424,54 @@ const STATS = computed(() => [
   padding: var(--spacing-lg);
 }
 
+/* 주차 현황 카드는 너비는 다른 카드와 같이 두되, 안의 요소(헤더/혼잡도/범례/지도)가
+   너무 붙어 보이지 않게 세로 길이만 더 넉넉하게 준다. */
+.map-panel {
+  padding-bottom: var(--spacing-xl);
+  min-height: 640px;
+}
+
+/* 지도 좌우에서 층을 순환 전환하는 버튼. 카드 경계가 아니라 지도 바로 옆(카드 안쪽)에 둔다. */
+.map-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-lg);
+}
+
+/* 범례를 지도 폭에 맞춰 그 위, 오른쪽 끝으로 정렬한다(카드 전체 폭이 아니라 지도 폭 기준). */
+.map-align {
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+}
+
+/* ParkingSpotMap 루트의 margin:0 auto가 flex item에서는 자동 여백을 먹어치워서 버튼이
+   지도가 아니라 행 양 끝으로 밀려나 버린다. 정렬은 .map-row의 justify-content로 이미
+   하고 있으니 여기서는 그 auto 여백을 꺼서 버튼이 지도 바로 옆에 붙게 한다. */
+.map-row :deep(.grid-container) {
+  margin: 0;
+}
+
+.floor-nav-button {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: none;
+  color: var(--panel-muted-foreground);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.floor-nav-button:hover {
+  color: var(--panel-foreground);
+}
+
 .list-panel h3,
 .map-panel h3,
 .selection-panel h3 {
@@ -388,8 +490,52 @@ const STATS = computed(() => [
   color: var(--panel-muted-foreground);
 }
 
+.zone-table-header th {
+  text-align: center;
+}
+
+.zone-table-body td {
+  text-align: center;
+}
+
 .dropdown-wrap {
   position: relative;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-left: auto;
+}
+
+.reset-filter-button {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  gap: 6px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 0 9px;
+  color: var(--panel-muted-foreground);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.reset-filter-button:hover {
+  background: var(--panel-muted);
+  color: var(--panel-primary);
+}
+
+.reset-filter-button:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--panel-primary) 65%, transparent);
+  outline-offset: 2px;
 }
 
 .strong.text-primary {
@@ -402,7 +548,7 @@ const STATS = computed(() => [
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-base);
+  margin-bottom: var(--spacing-lg);
 }
 
 .map-header h3 {
@@ -439,18 +585,56 @@ const STATS = computed(() => [
   font-weight: 600;
 }
 
+/* 혼잡도(왼쪽)와 범례(오른쪽)를 지도 폭에 맞춰 같은 줄에 둔다. */
+.map-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-base);
+  margin-bottom: var(--spacing-xxs);
+}
+
+/* 배경 없이 글자로만 둔다. "혼잡도" 글자는 검은색으로 두고 수치(퍼센트)만 색으로 구분한다.
+   base.css의 전역 리셋(`* { font-weight: normal }`)이 자식 span에도 직접 걸려서 상속을
+   막기 때문에, 굵기는 부모가 아니라 각 span에 직접 지정해야 한다. */
+.congestion-banner {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-xxs);
+}
+
+.congestion-label {
+  font-size: var(--font-size-md);
+  font-weight: 900;
+  color: var(--panel-foreground);
+}
+
+.congestion-rate {
+  font-size: var(--font-size-lg);
+  font-weight: 900;
+}
+
+.congestion-rate.tone-success {
+  color: var(--panel-success);
+}
+
+.congestion-rate.tone-warning {
+  color: var(--panel-warning);
+}
+
+.congestion-rate.tone-danger {
+  color: var(--panel-danger);
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--spacing-base);
-  margin-bottom: var(--spacing-base);
   font-size: 12px;
   color: var(--panel-muted-foreground);
-}
-
-.congestion-tag {
-  margin-left: auto;
 }
 
 .legend-item {

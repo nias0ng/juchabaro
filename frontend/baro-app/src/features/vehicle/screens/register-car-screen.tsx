@@ -28,6 +28,7 @@ const HEADER_TITLE: Record<RegisterCarStep, string> = {
   confirm: '등록 정보 확인',
 };
 
+/** 차량 등록 3단계(세대/방문 입력 → 확인)를 useRegisterCarForm 상태에 맞춰 렌더링하는 화면. */
 export default function RegisterCarScreen() {
   // 홈 화면 "방문 등록"에서 들어오면 ?carType=visitor로 넘어와서 방문 차량 입력부터 바로 시작한다.
   const { carType: carTypeParam } = useLocalSearchParams<{ carType?: string }>();

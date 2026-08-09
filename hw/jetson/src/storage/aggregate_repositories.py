@@ -161,6 +161,29 @@ def _footprint_from_payload(
     return tuple(points)
 
 
+def _zone_ids_to_payload(zone_ids: tuple[ZoneId, ...]) -> str:
+    """순서가 의미 있는 zone ID tuple을 canonical JSON으로 직렬화한다."""
+
+    return json.dumps(
+        [int(zone_id) for zone_id in zone_ids],
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+
+
+def _zone_ids_from_payload(payload: object) -> tuple[ZoneId, ...]:
+    try:
+        raw = json.loads(str(payload))
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ValueError("invalid Incident related zone ids payload") from error
+    if not isinstance(raw, list):
+        raise ValueError("Incident related zone ids payload must be an array")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in raw):
+        raise ValueError("Incident related zone ids must be integers")
+    return tuple(ZoneId(value) for value in raw)
+
+
 def _assignment_columns(
     assignment: ParkingAssignment | None,
 ) -> dict[str, object | None]:
@@ -436,6 +459,9 @@ def _incident_from_row(row: sqlite3.Row) -> Incident:
         ),
         zone_id=(
             ZoneId(int(row["zone_id"])) if row["zone_id"] is not None else None
+        ),
+        related_zone_ids=_zone_ids_from_payload(
+            row["related_zone_ids_payload"]
         ),
         victim_physical_vehicle_id=(
             PhysicalVehicleId(
@@ -1244,7 +1270,8 @@ class IncidentRepository:
                 INSERT INTO incidents(
                     incident_id, rule_code, key_scope_type, key_scope_id,
                     subject_physical_vehicle_id, entry_attempt_id, session_id,
-                    zone_id, victim_physical_vehicle_id, domain_state,
+                    zone_id, related_zone_ids_payload,
+                    victim_physical_vehicle_id, domain_state,
                     observation_state, observation_reason,
                     last_reliable_observed_at_us,
                     confirm_trusted_duration_us, clear_trusted_duration_us,
@@ -1256,7 +1283,8 @@ class IncidentRepository:
                 ) VALUES (
                     :incident_id, :rule_code, :key_scope_type, :key_scope_id,
                     :subject_physical_vehicle_id, :entry_attempt_id, :session_id,
-                    :zone_id, :victim_physical_vehicle_id, :domain_state,
+                    :zone_id, :related_zone_ids_payload,
+                    :victim_physical_vehicle_id, :domain_state,
                     :observation_state, :observation_reason,
                     :last_reliable_observed_at_us,
                     :confirm_trusted_duration_us, :clear_trusted_duration_us,
@@ -1287,6 +1315,9 @@ class IncidentRepository:
                     ),
                     "zone_id": (
                         int(incident.zone_id) if incident.zone_id is not None else None
+                    ),
+                    "related_zone_ids_payload": _zone_ids_to_payload(
+                        incident.related_zone_ids
                     ),
                     "victim_physical_vehicle_id": (
                         uuid_to_text(incident.victim_physical_vehicle_id)
@@ -1391,6 +1422,13 @@ class IncidentRepository:
                 incoming=getattr(incident, field_name),
                 error_type=IncidentConflictError,
             )
+        if (
+            existing.confirmed_at is not None
+            and incident.related_zone_ids != existing.related_zone_ids
+        ):
+            raise IncidentConflictError(
+                "Incident related_zone_ids are immutable after OPEN"
+            )
         if incident.publication_revision < existing.publication_revision:
             raise IncidentConflictError("Incident publication_revision cannot decrease")
 
@@ -1418,6 +1456,9 @@ class IncidentRepository:
                     ),
                     "zone_id": (
                         int(incident.zone_id) if incident.zone_id is not None else None
+                    ),
+                    "related_zone_ids_payload": _zone_ids_to_payload(
+                        incident.related_zone_ids
                     ),
                     "victim_physical_vehicle_id": (
                         uuid_to_text(incident.victim_physical_vehicle_id)

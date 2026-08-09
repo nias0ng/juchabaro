@@ -129,7 +129,7 @@ export function getAdminEscalationDueAt(detail: MoveRequestDetail): string | nul
 }
 
 export type RequestCompletedDisplay = {
-  endTimeLabel: string;
+  endTimeLabel: string | null;
   durationLabel: string | null;
   timeline: RequestTimelineStep[];
 };
@@ -152,6 +152,8 @@ export function formatDurationLabel(startIso: string, endIso: string): string | 
 export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCompletedDisplay {
   const latestResponse = detail.responses[detail.responses.length - 1];
   const resolvedEntry = [...detail.history].reverse().find((item) => item.notificationType === 'EVENT_RESOLVED');
+  // 상세 API의 실제 사건 종료 시각을 우선 사용하고, 구버전 응답은 종료 알림 시각으로 보완한다.
+  const resolvedAt = detail.resolvedAt ?? resolvedEntry?.sentAt ?? null;
 
   const timeline: RequestTimelineStep[] = [
     { label: '요청 접수', detail: formatTime24(detail.requestedAt), isFinal: false },
@@ -175,9 +177,9 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
 
   const escalationDueAt = getAdminEscalationDueAt(detail);
   if (
-    resolvedEntry &&
+    resolvedAt &&
     escalationDueAt &&
-    new Date(resolvedEntry.sentAt).getTime() >= new Date(escalationDueAt).getTime()
+    new Date(resolvedAt).getTime() >= new Date(escalationDueAt).getTime()
   ) {
     timeline.push({
       label: '관리사무소 이관',
@@ -190,8 +192,8 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
   timeline.push({ label: '완료', detail: '정상 처리되었습니다', isFinal: true });
 
   return {
-    endTimeLabel: resolvedEntry ? formatTime24(resolvedEntry.sentAt) : '--:--',
-    durationLabel: resolvedEntry ? formatDurationLabel(detail.requestedAt, resolvedEntry.sentAt) : null,
+    endTimeLabel: resolvedAt ? formatTime24(resolvedAt) : null,
+    durationLabel: resolvedAt ? formatDurationLabel(detail.requestedAt, resolvedAt) : null,
     timeline,
   };
 }

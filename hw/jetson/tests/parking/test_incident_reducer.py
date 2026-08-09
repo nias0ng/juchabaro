@@ -15,6 +15,7 @@ from src.parking.models import (
     IncidentSignalValue,
     IncidentState,
     IncidentTransitionType,
+    IncidentZoneContext,
     ZoneId,
     ZoneVisitId,
 )
@@ -69,12 +70,14 @@ def signal(
     seconds: float,
     *,
     confirmable: bool = False,
+    open_zone_context: IncidentZoneContext | None = None,
 ) -> IncidentSignal:
     return IncidentSignal(
         key=key,
         value=value,
         confirmable=confirmable,
         observed_at=at(seconds),
+        open_zone_context=open_zone_context,
     )
 
 
@@ -88,15 +91,24 @@ def reduce(
     physical_vehicle_id: PhysicalVehicleId = CAR,
     observation: ObservationStatus | None = None,
     entry_attempt_id: EntryAttemptId | None = ATTEMPT,
+    entry_time: datetime | None = None,
     parking_session_id: ParkingSessionId | None = None,
     zone_id: ZoneId | None = None,
     victim_physical_vehicle_id: PhysicalVehicleId | None = None,
+    open_zone_context: IncidentZoneContext | None = None,
 ):
     return reducer.reduce(
-        signal(key, value, seconds, confirmable=confirmable),
+        signal(
+            key,
+            value,
+            seconds,
+            confirmable=confirmable,
+            open_zone_context=open_zone_context,
+        ),
         physical_vehicle_id=physical_vehicle_id,
         observation=observation or observed(seconds),
         entry_attempt_id=entry_attempt_id,
+        entry_time=entry_time,
         parking_session_id=parking_session_id,
         zone_id=zone_id,
         victim_physical_vehicle_id=victim_physical_vehicle_id,
@@ -107,6 +119,65 @@ def test_trusted_sample_max_gap_must_be_positive() -> None:
     for invalid_gap in (0, 0.0000001, 0.0000006):
         with pytest.raises(ValueError, match="trusted_sample_max_gap_seconds"):
             InMemoryIncidentReducer(trusted_sample_max_gap_seconds=invalid_gap)
+
+
+def test_bad_parking_zone_context_latches_only_on_open_and_stays_immutable() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS,
+        confirm_duration_seconds=2.0,
+    )
+    first_context = IncidentZoneContext(
+        zone_id=ZoneId(10),
+        related_zone_ids=(ZoneId(11),),
+    )
+    open_context = IncidentZoneContext(
+        zone_id=ZoneId(20),
+        related_zone_ids=(ZoneId(21), ZoneId(22)),
+    )
+
+    candidate = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        open_zone_context=first_context,
+    ).incident
+    assert candidate.state is IncidentState.CANDIDATE
+    assert candidate.zone_id is None
+    assert candidate.related_zone_ids == ()
+
+    reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        open_zone_context=open_context,
+    )
+    opened_reduction = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        2,
+        confirmable=True,
+        open_zone_context=open_context,
+    )
+    opened = opened_reduction.incident
+    assert opened.state is IncidentState.OPEN
+    assert opened.zone_id == ZoneId(20)
+    assert opened.related_zone_ids == (ZoneId(21), ZoneId(22))
+
+    changed_after_open = reduce(
+        reducer,
+        vehicle_key(),
+        IncidentSignalValue.MATCHED,
+        3,
+        confirmable=True,
+        open_zone_context=first_context,
+    ).incident
+    assert changed_after_open.zone_id == ZoneId(20)
+    assert changed_after_open.related_zone_ids == (ZoneId(21), ZoneId(22))
 
 
 def test_rule_timing_overrides_default_only_for_new_matching_rule() -> None:
@@ -383,6 +454,7 @@ def test_local_only_open_materializes_when_late_correlation_arrives() -> None:
         1,
         confirmable=True,
         entry_attempt_id=None,
+        entry_time=at(0),
         parking_session_id=SESSION,
     )
 
@@ -393,6 +465,36 @@ def test_local_only_open_materializes_when_late_correlation_arrives() -> None:
     assert published.incident.publication_revision == 1
     assert published.incident.parking_session_id == SESSION
     assert published.transitions[0].transition_type is IncidentTransitionType.OPEN
+
+
+def test_pre_entry_open_is_not_materialized_by_late_correlation() -> None:
+    reducer = InMemoryIncidentReducer(
+        trusted_sample_max_gap_seconds=TRUSTED_SAMPLE_MAX_GAP_SECONDS
+    )
+    key = vehicle_key()
+    local = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        0,
+        confirmable=True,
+        entry_attempt_id=None,
+    )
+
+    correlated = reduce(
+        reducer,
+        key,
+        IncidentSignalValue.MATCHED,
+        1,
+        confirmable=True,
+        entry_time=at(0.5),
+        parking_session_id=SESSION,
+    )
+
+    assert local.incident.confirmed_at == at(0)
+    assert correlated.incident.parking_session_id == SESSION
+    assert correlated.incident.publication_revision == 0
+    assert correlated.transitions == ()
 
 
 def test_late_correlation_does_not_drop_same_sample_clear_result() -> None:

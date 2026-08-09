@@ -5,6 +5,10 @@ import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
 import { useAuth } from '@/providers/auth-provider';
 import { queryKeys } from '@/services/query-keys';
 
+/**
+ * 마이페이지에 보여줄 차량 요약(대수, 대표 차량)을 조회한다.
+ * API: GET /api/vehicles
+ */
 export function useVehicleSummary() {
   const { accessToken, status } = useAuth();
 

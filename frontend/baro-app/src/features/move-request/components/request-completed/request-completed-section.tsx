@@ -7,7 +7,7 @@ import { RequestCompletedBadge } from './request-completed-badge';
 import { styles } from './request-completed-section.styles';
 
 type RequestCompletedSectionProps = {
-  endTimeLabel: string;
+  endTimeLabel: string | null;
   durationLabel: string | null;
   timeline: RequestTimelineStep[];
   onPressHome: () => void;
@@ -31,7 +31,10 @@ export function RequestCompletedSection({
           </View>
         ) : null}
       </View>
-      <RequestTimelineCard header={{ label: '종료 시각', value: endTimeLabel }} timeline={timeline} />
+      <RequestTimelineCard
+        header={endTimeLabel ? { label: '종료 시각', value: endTimeLabel } : undefined}
+        timeline={timeline}
+      />
       <Pressable accessibilityRole="button" style={styles.homeButton} onPress={onPressHome}>
         <Text style={styles.homeButtonText}>홈으로 돌아가기</Text>
       </Pressable>

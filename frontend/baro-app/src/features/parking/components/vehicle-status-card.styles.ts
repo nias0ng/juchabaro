@@ -5,19 +5,23 @@ import { FontWeight, Palette, Radius, Shadows, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   card: {
     width: '100%',
-    marginBottom: Spacing.base,
-    backgroundColor: Palette.white80,
+    minHeight: 168,
+    position: 'relative',
+    justifyContent: 'center',
+    backgroundColor: Palette.gray25,
     borderRadius: Radius.xxl + 2,
     padding: Spacing.lg,
     gap: Spacing.sm,
     ...Shadows.card,
   },
+  cardContained: {
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
   emptyCard: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  topGroup: {
-    gap: Spacing.xs,
   },
   headerGroup: {
     gap: Spacing.none,
@@ -82,23 +86,20 @@ export const styles = StyleSheet.create({
     color: Palette.gray500,
     textAlign: 'center',
   },
-  valueRow: {
+  detailsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: Spacing.base,
   },
-  additionalCountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  detailColumn: {
+    flex: 1,
     gap: Spacing.xxs,
   },
-  additionalCountText: {
+  pageIndicatorText: {
+    flexShrink: 0,
+    marginLeft: 'auto',
+    paddingBottom: 1,
     fontSize: 12.5,
-    fontWeight: FontWeight.semibold,
-    color: Palette.violet500,
-  },
-  additionalCountChevron: {
-    fontSize: 14,
     fontWeight: FontWeight.semibold,
     color: Palette.violet500,
   },

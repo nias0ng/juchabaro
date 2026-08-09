@@ -20,6 +20,9 @@ const emit = defineEmits<{ pageChange: [page: number] }>()
     <div class="pagination-wrap">
       <AppPagination :page="page" :total-pages="totalPages" @page-change="emit('pageChange', $event)" />
     </div>
+    <div v-if="$slots.actions" class="footer-actions">
+      <slot name="actions" />
+    </div>
   </div>
 </template>
 
@@ -28,6 +31,7 @@ const emit = defineEmits<{ pageChange: [page: number] }>()
   position: relative;
   display: flex;
   align-items: center;
+  min-height: 34px;
   margin-top: 20px;
   font-size: var(--font-size-sm);
   color: var(--panel-muted-foreground);
@@ -37,5 +41,27 @@ const emit = defineEmits<{ pageChange: [page: number] }>()
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+@media (max-width: 900px) {
+  .footer {
+    flex-wrap: wrap;
+    gap: var(--spacing-base);
+  }
+
+  .pagination-wrap {
+    position: static;
+    display: flex;
+    order: 3;
+    width: 100%;
+    justify-content: center;
+    transform: none;
+  }
 }
 </style>

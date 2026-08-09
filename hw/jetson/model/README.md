@@ -7,6 +7,10 @@
 기동하고 COCO `car` 클래스로 어느 정도 차량을 잡기 때문에, 아래 검증
 절차 없이는 잘못 배치된 사실을 알아채기 어렵다.
 
+현재 현장 runtime은 이 가중치에서 대상 Jetson이 직접 생성한
+`384x640` TensorRT FP16 engine을 사용한다. `.pt`는 engine 재생성과 비교
+검증을 위한 원본이고 `.engine`이 운영 추론 자산이다.
+
 ## 출처 (584)
 
 운영 모델은 다음 학습 run의 산출물이다.
@@ -27,25 +31,40 @@ sha256  3ac438bb2378ded109329a4d3efd610419b695f09fa47817e34045dc09ab7b5d
 
 ## 배치 경로
 
-저장소 checkout에서는 다음 위치를 사용한다.
+`hw/jetson` checkout은 다음 구조를 사용한다.
 
 ```text
 hw/jetson/model/yolov8s.pt
 hw/jetson/model/vehicle_model_manifest.json
+hw/jetson/model/yolov8s-fp16-384x640.engine
+hw/jetson/model/yolov8s-fp16-384x640-manifest.json
 ```
 
-Jetson 배포 시에는 다음 절대경로에 같은 파일을 배치한다.
+Jetson에서는 프로젝트를 `/home/e202/jetson`에 배치하고 그 디렉터리에서
+애플리케이션을 실행한다. 운영 `.env`는 다음 상대경로를 사용한다.
+
+```dotenv
+VEHICLE_MODEL_PATH=model/yolov8s-fp16-384x640.engine
+VEHICLE_MODEL_MANIFEST_PATH=model/yolov8s-fp16-384x640-manifest.json
+```
+
+`.pt`와 `.engine`은 용량이 크고 TensorRT engine은 JetPack·TensorRT·GPU에
+종속되므로 일반 Git에 포함하지 않는다. manifest는 Git에서 버전 관리한다.
+새 checkout에는 검증된 배포 bundle에서 binary를 복원하거나 대상 Jetson에서
+engine을 다시 생성한 뒤, 같은 binary의 SHA-256을 가진 manifest를 함께 둔다.
+
+현재 검증된 FP16 engine 계약은 아래와 같다.
 
 ```text
-/home/e202/model/yolov8s.pt
-/home/e202/model/vehicle_model_manifest.json
+입력      1x3x384x640
+정밀도    FP16
+크기      25542381 bytes
+sha256    6b91fea3c111dfaafba85a2a1a2c1edb1a687c8ae6f7abe983809b62aaa1ebf7
+manifest  yolov8s-fp16-384x640-manifest.json
 ```
 
-모델 가중치는 Git에 포함하지 않지만 manifest는 Git에서 버전
-관리한다. Jetson 기동 전에 해당 환경의 경로에 위 출처의
-`yolov8s.pt`와 같은 release의 manifest를 함께 배치해야 한다.
-`.env`의 `VEHICLE_MODEL_MANIFEST_PATH`는 배치한 manifest 경로를
-가리켜야 한다.
+TensorRT engine은 다른 Jetson 모델 또는 다른 JetPack/TensorRT 환경으로
+복사해 재사용하지 않는다. 대상 장치가 달라지면 원본 `.pt`에서 다시 생성한다.
 
 ## 기동 시 자동 검증
 
@@ -71,17 +90,19 @@ Manifest SHA preflight은 운영 `src.main` composition root의 release 고정
 ### 1. sha256 대조
 
 ```bash
-sha256sum /home/e202/model/yolov8s.pt
+sha256sum \
+  model/yolov8s.pt \
+  model/yolov8s-fp16-384x640.engine
 ```
 
-결과가 위 출처의 `3ac438bb2378ded109329a4d3efd610419b695f09fa47817e34045dc09ab7b5d`와
-정확히 같아야 한다. 다르면 다른 run의 가중치이거나 스톡 모델이 잘못
-놓인 것이다.
+`.pt`는 `3ac438bb2378ded109329a4d3efd610419b695f09fa47817e34045dc09ab7b5d`,
+FP16 engine은 `6b91fea3c111dfaafba85a2a1a2c1edb1a687c8ae6f7abe983809b62aaa1ebf7`와
+정확히 같아야 한다. 다르면 다른 release이거나 불완전하게 복사된 자산이다.
 
 ### 2. 클래스 정의 대조
 
 ```bash
-python -c "from ultralytics import YOLO; print(YOLO('/home/e202/model/yolov8s.pt').names)"
+python -c "from ultralytics import YOLO; print(YOLO('model/yolov8s.pt').names)"
 ```
 
 `{0: 'vehicle'}` 하나만 나와야 한다. COCO 80개 클래스(`{0: 'person', 1:

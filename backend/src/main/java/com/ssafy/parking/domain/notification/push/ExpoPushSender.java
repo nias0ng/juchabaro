@@ -10,6 +10,8 @@ import java.util.Map;
 
 public class ExpoPushSender implements PushSender {
 
+    private static final String ANDROID_NOTIFICATION_CHANNEL_ID = "default";
+
     private final String url;
     private final RestClient client;
 
@@ -27,6 +29,9 @@ public class ExpoPushSender implements PushSender {
             m.put("to", t);
             m.put("title", title);
             m.put("body", body);
+            m.put("priority", "high");
+            m.put("sound", "default");
+            m.put("channelId", ANDROID_NOTIFICATION_CHANNEL_ID);
             if (data != null) m.put("data", data);
             messages.add(m);
         }

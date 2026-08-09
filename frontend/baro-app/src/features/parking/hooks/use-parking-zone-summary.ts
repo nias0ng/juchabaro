@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 
 import { useRefetchOnFocus } from '@/hooks/use-refetch-on-focus';
@@ -6,13 +7,23 @@ import { queryKeys } from '@/services/query-keys';
 
 import { getParkingZoneSummary } from '../api/parking-api';
 
+// 시연용 폴링 주기: 1초 / 기존 폴링 주기: 20초
+const ACTIVE_SCREEN_REFETCH_INTERVAL_MS = 1_000;
+
+/**
+ * 층별/구역별 주차 현황 요약을 조회한다.
+ * API: GET /api/parking-zones/summary
+ */
 export function useParkingZoneSummary() {
   const { accessToken, status } = useAuth();
+  const isFocused = useIsFocused();
 
   const query = useQuery({
     queryKey: queryKeys.parking.zoneSummary(),
     queryFn: () => getParkingZoneSummary(accessToken!),
     enabled: status === 'authenticated' && !!accessToken,
+    refetchInterval: isFocused ? ACTIVE_SCREEN_REFETCH_INTERVAL_MS : false,
+    refetchIntervalInBackground: false,
   });
   useRefetchOnFocus(query.refetch, query.isStale);
 

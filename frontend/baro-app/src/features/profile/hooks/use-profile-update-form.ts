@@ -6,6 +6,10 @@ import { ApiError } from '@/services/api-error';
 
 import { usePasswordChangeForm } from './use-password-change-form';
 
+/**
+ * 이름/비밀번호 중 바뀐 값만 골라 내 프로필을 수정한다.
+ * API: PATCH /api/users/me
+ */
 export function useProfileUpdateForm() {
   const { user, accessToken, updateUserProfile } = useAuth();
   const initialName = user?.name ?? '';

@@ -12,8 +12,13 @@ from src.domain.models import (
     ObservationStatus,
 )
 from src.parking.models import (
+    AssignmentState,
     IncidentKey,
     IncidentSignalValue,
+    ParkingAssignment,
+    ParkingEpisode,
+    ParkingEpisodeId,
+    ParkingState,
     ZoneDefinition,
     ZoneDefinitionVersion,
     ZoneId,
@@ -108,6 +113,50 @@ def make_session(
     )
 
 
+def make_assignment(zone_id: int = 1) -> ParkingAssignment:
+    return ParkingAssignment(
+        state=AssignmentState.ASSIGNED,
+        representative_footprint=SQUARE,
+        confidence=0.9,
+        last_stable_at=T0,
+        zone_id=ZoneId(zone_id),
+    )
+
+
+def make_episode(
+    state: ParkingState,
+    *,
+    zone_id: int = 1,
+    observation: ObservationStatus | None = None,
+) -> ParkingEpisode:
+    was_parked = state in {ParkingState.PARKED, ParkingState.MOVE_PENDING}
+    return ParkingEpisode(
+        episode_id=ParkingEpisodeId(UUID(int=10)),
+        physical_vehicle_id=CAR,
+        state=state,
+        observation=observation or observed(),
+        stationary_trusted_seconds=10.0,
+        movement_trusted_seconds=0.0,
+        parking_confirmation_seconds=5.0,
+        movement_confirmation_seconds=1.0,
+        last_signal=(
+            MotionSignal.MOVING
+            if state is ParkingState.MOVE_PENDING
+            else MotionSignal.STATIONARY
+        ),
+        record_version=1,
+        publication_revision=0,
+        created_at=T0,
+        updated_at=T0,
+        trusted_sample_max_gap_seconds=1.0,
+        assignment=make_assignment(zone_id),
+        parked_at=(T0 if was_parked else None),
+        movement_candidate_at=(
+            T0 if state is ParkingState.MOVE_PENDING else None
+        ),
+    )
+
+
 def make_context(
     *,
     zone_type: ZoneType,
@@ -115,6 +164,10 @@ def make_context(
     context_observation: ObservationStatus | None = None,
     vehicle_observation: ObservationStatus | None = None,
     visit_observation: ObservationStatus | None = None,
+    parking_motion_observation: ObservationStatus | None = None,
+    parking_state: ParkingState | None = ParkingState.PARKED,
+    parking_zone_id: int = 1,
+    parking_observation: ObservationStatus | None = None,
 ) -> RuleContext:
     vehicle_status = vehicle_observation or observed()
     vehicle = PhysicalVehicleSnapshot(
@@ -127,14 +180,23 @@ def make_context(
         camera_id="camera-1",
         observation=vehicle_status,
     )
+    episode = (
+        None
+        if parking_state is None
+        else make_episode(
+            parking_state,
+            zone_id=parking_zone_id,
+            observation=parking_observation,
+        )
+    )
     return RuleContext(
         vehicle=vehicle,
         observation=context_observation or observed(),
-        parking_motion_observation=observed(),
+        parking_motion_observation=parking_motion_observation or observed(),
         session_context=session_context,
         active_zone_visits=(make_visit(1, observation=visit_observation),),
-        parking_episode=None,
-        parking_assignment=None,
+        parking_episode=episode,
+        parking_assignment=None if episode is None else episode.assignment,
         placement_evidence=None,
         placement_evidence_source=None,
         blocking_relations=(),
@@ -223,7 +285,101 @@ def test_unqualified_disabled_zone_visit_is_matched_and_confirmable() -> None:
         "isDisabledVehicle": False,
         "zoneId": ZoneId(1),
         "zoneType": ZoneType.DISABLED.value,
+        "parkingState": ParkingState.PARKED.value,
+        "parkingAssignmentState": AssignmentState.ASSIGNED.value,
+        "parkingAssignmentZoneId": ZoneId(1),
     }
+
+
+@pytest.mark.parametrize("parking_state", [None, ParkingState.STOP_PENDING])
+def test_unqualified_visit_before_parking_is_not_matched(
+    parking_state: ParkingState | None,
+) -> None:
+    signal = only_signal(
+        make_context(
+            zone_type=ZoneType.DISABLED,
+            session_context=make_session(
+                is_disabled_vehicle=False,
+                is_electric=False,
+            ),
+            parking_state=parking_state,
+        )
+    )
+
+    assert signal.value is IncidentSignalValue.NOT_MATCHED
+    assert signal.confirmable is False
+    assert signal.evidence["reason"] == (
+        "PARKING_NOT_CONFIRMED_IN_VISITED_ZONE"
+    )
+
+
+def test_parked_assignment_must_match_the_restricted_visit_zone() -> None:
+    signal = only_signal(
+        make_context(
+            zone_type=ZoneType.DISABLED,
+            session_context=make_session(
+                is_disabled_vehicle=False,
+                is_electric=False,
+            ),
+            parking_zone_id=2,
+        )
+    )
+
+    assert signal.value is IncidentSignalValue.NOT_MATCHED
+    assert signal.confirmable is False
+    assert signal.evidence["parkingAssignmentZoneId"] == ZoneId(2)
+
+
+def test_move_pending_pauses_an_existing_restricted_incident() -> None:
+    signal = only_signal(
+        make_context(
+            zone_type=ZoneType.DISABLED,
+            session_context=make_session(
+                is_disabled_vehicle=False,
+                is_electric=False,
+            ),
+            parking_state=ParkingState.MOVE_PENDING,
+        )
+    )
+
+    assert signal.value is IncidentSignalValue.UNKNOWN
+    assert signal.confirmable is False
+    assert signal.evidence["reason"] == "MOVEMENT_CONFIRMATION_PENDING"
+
+
+def test_authoritative_qualification_clears_even_during_move_pending() -> None:
+    signal = only_signal(
+        make_context(
+            zone_type=ZoneType.DISABLED,
+            session_context=make_session(
+                is_disabled_vehicle=True,
+                is_electric=False,
+            ),
+            parking_state=ParkingState.MOVE_PENDING,
+        )
+    )
+
+    assert signal.value is IncidentSignalValue.NOT_MATCHED
+    assert signal.confirmable is False
+
+
+def test_unreliable_parked_episode_is_unknown() -> None:
+    signal = only_signal(
+        make_context(
+            zone_type=ZoneType.DISABLED,
+            session_context=make_session(
+                is_disabled_vehicle=False,
+                is_electric=False,
+            ),
+            parking_observation=unknown(),
+        )
+    )
+
+    assert signal.value is IncidentSignalValue.UNKNOWN
+    assert signal.confirmable is False
+    assert signal.evidence["reason"] == (
+        "PARKING_EPISODE_OBSERVATION_UNAVAILABLE"
+    )
 
 
 def test_entering_visit_does_not_confirm_camera_restricted_zone_incident() -> None:
@@ -252,8 +408,12 @@ def test_entering_visit_does_not_confirm_camera_restricted_zone_incident() -> No
     assert signal.evidence == {
         "reason": "REQUIRED_INPUT_UNAVAILABLE",
         "zoneId": ZoneId(1),
+        "zoneType": ZoneType.DISABLED.value,
         "zoneVisitState": ZoneVisitState.ENTERING.value,
         "isDisabledVehicle": False,
+        "parkingState": ParkingState.PARKED.value,
+        "parkingAssignmentState": AssignmentState.ASSIGNED.value,
+        "parkingAssignmentZoneId": ZoneId(1),
     }
 
 
@@ -321,17 +481,24 @@ def test_ev_qualification_uses_the_electric_flag() -> None:
 
 
 @pytest.mark.parametrize(
-    ("context_observation", "vehicle_observation", "visit_observation"),
+    (
+        "context_observation",
+        "vehicle_observation",
+        "visit_observation",
+        "parking_motion_observation",
+    ),
     [
-        (unknown(), None, None),
-        (None, unknown(), None),
-        (None, None, unknown()),
+        (unknown(), None, None, None),
+        (None, unknown(), None, None),
+        (None, None, unknown(), None),
+        (None, None, None, unknown()),
     ],
 )
 def test_unreliable_required_observation_is_unknown(
     context_observation: ObservationStatus | None,
     vehicle_observation: ObservationStatus | None,
     visit_observation: ObservationStatus | None,
+    parking_motion_observation: ObservationStatus | None,
 ) -> None:
     signal = only_signal(
         make_context(
@@ -343,6 +510,7 @@ def test_unreliable_required_observation_is_unknown(
             context_observation=context_observation,
             vehicle_observation=vehicle_observation,
             visit_observation=visit_observation,
+            parking_motion_observation=parking_motion_observation,
         )
     )
 

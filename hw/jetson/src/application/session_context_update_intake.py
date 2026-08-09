@@ -7,7 +7,9 @@ aggregate를 출차 상태로 바꾸지 않는다.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -37,6 +39,9 @@ from src.tracking.models import ParkingSessionId, VehicleId
 
 
 _ACCEPTED_INPUT_TYPE = "SessionContextUpdate"
+_LOGGER = logging.getLogger(__name__)
+
+AfterAppliedCallback = Callable[[], None]
 
 
 class SessionContextUpdateNotFoundError(LookupError):
@@ -58,10 +63,26 @@ class SessionContextUpdateAcceptance:
 
 
 class SessionContextUpdateIntake:
-    """session context revision과 active binding lifecycle을 원자적으로 갱신한다."""
+    """Session context와 active binding lifecycle을 원자적으로 갱신한다.
 
-    def __init__(self, coordinator: ContextBindingCoordinator) -> None:
+    ``after_applied``는 새 입력의 durable transaction이 commit된 뒤
+    ``APPLIED`` 결과에서만 호출되는 best-effort 신호다. callback은
+    가볍고 non-blocking이어야 하며 DB 조회나 후속 business logic을
+    직접 실행하지 않아야 한다. callback 실패는 로깅하되 이미 확정된
+    durable acceptance에는 전파하지 않는다.
+    """
+
+    def __init__(
+        self,
+        coordinator: ContextBindingCoordinator,
+        *,
+        after_applied: AfterAppliedCallback | None = None,
+    ) -> None:
+        if after_applied is not None and not callable(after_applied):
+            raise TypeError("after_applied must be callable or None")
+
         self._coordinator = coordinator
+        self._after_applied = after_applied
 
     def receive(
         self,
@@ -133,7 +154,7 @@ class SessionContextUpdateIntake:
                         expected_record_version=mirror.record_version,
                     )
 
-        return SessionContextUpdateAcceptance(
+        result = SessionContextUpdateAcceptance(
             session_id=session_id,
             context_revision=update.context_revision,
             application_result=_application_result(acceptance),
@@ -141,6 +162,30 @@ class SessionContextUpdateIntake:
                 acceptance.record.accepted_at_us
             ),
         )
+
+        if result.application_result is InboundApplicationResult.APPLIED:
+            self._notify_after_applied(session_id)
+
+        return result
+
+    def _notify_after_applied(
+        self,
+        session_id: ParkingSessionId,
+    ) -> None:
+        callback = self._after_applied
+        if callback is None:
+            return
+
+        try:
+            callback()
+        except Exception:
+            _LOGGER.exception(
+                "SessionContextUpdate post-commit callback failed "
+                "stage=post_commit_reevaluation_signal "
+                "applicationResult=APPLIED "
+                "sessionId=%s",
+                session_id,
+            )
 
     def _update_active_binding(
         self,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ChevronDown } from '@lucide/vue'
+import { ChevronDown, RotateCcw } from '@lucide/vue'
 
 import { useDropdownFilter } from '@/composables/use-dropdown-filter'
 import AppShell from '@/components/layout/AppShell.vue'
@@ -10,6 +10,7 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import SearchBox from '@/components/ui/SearchBox.vue'
 import FilterChip from '@/components/ui/FilterChip.vue'
 import FilterOptionList from '@/components/ui/FilterOptionList.vue'
+import CalendarDateFilter from '@/components/ui/CalendarDateFilter.vue'
 import ExportButton from '@/components/ui/ExportButton.vue'
 import DataTable from '@/components/ui/DataTable.vue'
 import TableStateRow from '@/components/ui/TableStateRow.vue'
@@ -18,15 +19,13 @@ import EventDetailCard from '@/features/parking-events/components/EventDetailCar
 import EventTimeline from '@/features/parking-events/components/EventTimeline.vue'
 import {
   EVENT_TYPE_OPTIONS,
-  eventStatusLabel,
   eventTypeLabel,
-  formatDate,
-  formatTime,
-  statusTone,
+  formatMonthDayTime,
+  formatZoneNumber,
   typeTone,
 } from '@/features/parking-events/data'
 import { useParkingEventStore } from '@/features/parking-events/store'
-import { EVENT_KIND_OPTIONS, eventKindLabel, useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
+import { EVENT_KIND_OPTIONS, eventKindLabel, eventKindOf, eventKindTone, useEventListFilters } from '@/features/parking-events/composables/use-event-list-filters'
 
 type DropdownName = 'status' | 'type' | 'date'
 
@@ -40,6 +39,8 @@ const {
   carQuery,
   needAdminOnly,
   toggleNeedAdminOnly,
+  hasActiveFilters,
+  resetFilters,
   filteredRows,
   page,
   totalPages,
@@ -64,7 +65,7 @@ const selectedRow = computed(
         <div ref="filterBarRef" class="panel filter-bar">
           <div class="dropdown-wrap">
             <FilterChip :active="!!statusFilter" @click="toggleDropdown('status')">
-              {{ statusFilter ? eventKindLabel(statusFilter) : '전체 상태' }} <ChevronDown :size="14" />
+              {{ statusFilter ? eventKindLabel(statusFilter) : '전체 종류' }} <ChevronDown :size="14" />
             </FilterChip>
             <FilterOptionList
               v-if="openDropdown === 'status'"
@@ -90,44 +91,45 @@ const selectedRow = computed(
             />
           </div>
 
-          <div class="dropdown-wrap">
-            <FilterChip :active="!!dateFilter" @click="toggleDropdown('date')">
-              {{ dateFilter ? formatDate(dateFilter) : '날짜' }} <ChevronDown :size="14" />
-            </FilterChip>
-            <div v-if="openDropdown === 'date'" class="dropdown-menu date-menu">
-              <button
-                type="button"
-                class="dropdown-item"
-                :class="{ selected: dateFilter === null }"
-                @click="dateFilter = null; openDropdown = null"
-              >
-                전체
-              </button>
-              <input
-                :value="dateFilter ?? ''"
-                type="date"
-                @change="dateFilter = ($event.target as HTMLInputElement).value || null; openDropdown = null"
-              >
-            </div>
+          <CalendarDateFilter
+            v-model="dateFilter"
+            :open="openDropdown === 'date'"
+            @toggle="toggleDropdown('date')"
+            @close="openDropdown = null"
+          />
+
+          <FilterChip
+            :active="needAdminOnly"
+            title="관리자 확인이 필요한 사건만 보기"
+            @click="toggleNeedAdminOnly"
+          >
+            확인 필요
+          </FilterChip>
+
+          <SearchBox
+            v-model="carQuery"
+            placeholder="차량 번호 검색"
+            input-width="clamp(160px, 16vw, 240px)"
+          />
+
+          <div v-if="hasActiveFilters" class="filter-actions">
+            <button type="button" class="reset-filter-button" @click="resetFilters">
+              <RotateCcw :size="14" />
+              필터 초기화
+            </button>
           </div>
-
-          <FilterChip :active="needAdminOnly" @click="toggleNeedAdminOnly">관리자 확인</FilterChip>
-
-          <SearchBox v-model="carQuery" placeholder="차량 번호 검색" input-width="128px" />
-
-          <ExportButton @click="exportCsv" />
         </div>
 
         <div class="panel table-panel">
           <DataTable clickable-rows>
-            <thead>
+            <thead class="event-table-header">
               <tr>
-                <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 시간', '조치']" :key="h">
+                <th v-for="h in ['ID', '차량 번호', '종류', '유형', '위치', '발생 일시', '조치']" :key="h">
                   {{ h }}
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody class="event-table-body">
               <TableStateRow
                 v-if="parkingEventStore.eventsLoading"
                 :colspan="7"
@@ -160,16 +162,27 @@ const selectedRow = computed(
                 <td class="strong">#{{ r.eventId }}</td>
                 <td class="nowrap">{{ r.plateNumber }}</td>
                 <td class="nowrap">
-                  <template v-if="r.eventStatus === 'REQUESTED' || r.eventStatus === 'RESOLVED'">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</template>
-                  <StatusTag v-else :tone="statusTone(r.eventStatus)">{{ eventStatusLabel(r.eventStatus, r.requestType) }}</StatusTag>
+                  <StatusTag variant="text" :tone="eventKindTone(eventKindOf(r))">
+                    {{ eventKindLabel(eventKindOf(r)) }}
+                  </StatusTag>
                 </td>
-                <td><StatusTag :tone="typeTone(r.eventType)">{{ eventTypeLabel(r.eventType) }}</StatusTag></td>
-                <td class="nowrap muted">{{ r.zoneNumber ?? '-' }}</td>
-                <td class="muted">{{ formatTime(r.detectedAt) }}</td>
+                <td>
+                  <StatusTag variant="text" :tone="typeTone(r.eventType)">
+                    {{ eventTypeLabel(r.eventType) }}
+                  </StatusTag>
+                </td>
+                <td class="nowrap muted">{{ formatZoneNumber(r.zoneNumber) }}</td>
+                <td class="nowrap muted">{{ formatMonthDayTime(r.detectedAt) }}</td>
                 <td>
                   <div class="row-actions">
-                    <RouterLink :to="`/events/${r.eventId}`" class="link-btn">상세 보기</RouterLink>
-                    <StatusTag v-if="r.requestStatus === 'NEED_ADMIN'" tone="info">관리자 확인 필요</StatusTag>
+                    <RouterLink
+                      :to="`/events/${r.eventId}`"
+                      class="table-pill link-btn"
+                      :class="{ 'needs-confirmation': r.requestStatus === 'NEED_ADMIN' }"
+                      :title="r.requestStatus === 'NEED_ADMIN' ? '관리자 확인 필요' : '사건 상세 보기'"
+                    >
+                      {{ r.requestStatus === 'NEED_ADMIN' ? '확인 필요' : '상세' }}
+                    </RouterLink>
                   </div>
                 </td>
               </tr>
@@ -182,7 +195,11 @@ const selectedRow = computed(
             :page="safePage"
             :total-pages="totalPages"
             @page-change="page = $event"
-          />
+          >
+            <template #actions>
+              <ExportButton @click="exportCsv" />
+            </template>
+          </TableFooter>
         </div>
       </div>
 
@@ -229,67 +246,88 @@ const selectedRow = computed(
   position: relative;
 }
 
-.dropdown-menu {
-  position: absolute;
-  left: 0;
-  top: 100%;
-  z-index: 10;
-  margin-top: var(--spacing-sm);
-  width: 144px;
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-md);
-  background: var(--panel-card);
-  padding: 6px;
-  box-shadow: var(--panel-shadow-card);
-}
-
-.dropdown-menu.date-menu {
+.filter-actions {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: auto;
-  padding: var(--spacing-base);
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-left: auto;
 }
 
-.dropdown-item {
-  display: block;
-  width: 100%;
+.reset-filter-button {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  gap: 6px;
+  flex-shrink: 0;
   border: none;
-  background: none;
-  border-radius: 6px;
-  padding: 6px var(--spacing-base);
-  text-align: left;
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 0 9px;
+  color: var(--panel-muted-foreground);
+  font-family: inherit;
   font-size: var(--font-size-sm);
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.dropdown-item:hover {
+.reset-filter-button:hover {
   background: var(--panel-muted);
+  color: var(--panel-primary);
 }
 
-.dropdown-item.selected {
-  color: var(--panel-primary);
-  font-weight: 600;
+.reset-filter-button:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--panel-primary) 65%, transparent);
+  outline-offset: 2px;
 }
 
 .table-panel {
   padding: var(--spacing-md);
 }
 
+.event-table-header th {
+  text-align: center;
+  font-weight: 700;
+  color: var(--panel-foreground);
+}
+
+.event-table-body td {
+  text-align: center;
+}
+
+.event-table-body :deep(.table-pill) {
+  display: inline-flex;
+  height: 30px;
+  min-height: 30px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  padding: 0 var(--spacing-base);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .row-actions {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  justify-content: center;
 }
 
 .link-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 80px;
+  box-sizing: border-box;
   gap: 6px;
   flex-shrink: 0;
-  border: 1px solid var(--panel-border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: none;
+  background: var(--panel-muted);
   padding: 6px var(--spacing-base);
   font-size: 12px;
   font-weight: 500;
@@ -301,7 +339,20 @@ const selectedRow = computed(
 }
 
 .link-btn:hover {
-  background: var(--panel-muted);
+  border-color: var(--panel-border);
+  background: color-mix(in oklch, var(--panel-muted) 78%, var(--panel-foreground));
+}
+
+.link-btn.needs-confirmation {
+  border-color: transparent;
+  background: var(--panel-info-soft);
+  color: var(--panel-info);
+  font-weight: 600;
+}
+
+.link-btn.needs-confirmation:hover {
+  border-color: color-mix(in oklch, var(--panel-info) 25%, transparent);
+  background: color-mix(in oklch, var(--panel-info) 16%, transparent);
 }
 
 .detail-panel {

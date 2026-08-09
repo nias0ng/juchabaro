@@ -1,6 +1,4 @@
-/* api 실패 전용 에러 
-   - 서버가 알려준 에러와 코드 버그로 터진 에러를 구분
-*/ 
+/** API 요청 실패를 나타내는 에러. status/code로 서버가 알려준 실패와 네트워크/코드 오류를 구분한다. */
 export class ApiError extends Error {
   status: number;
   code?: number;

@@ -9,6 +9,12 @@ from uuid import UUID
 
 import pytest
 
+from src.actuators.models import ActuatorCommand
+from src.application.local_warning_coordinator import (
+    LocalWarningCoordinator,
+    LocalWarningDeliveryError,
+    LocalWarningZoneBinding,
+)
 from src.application.sensor_occupancy import (
     OccupancyState,
     OccupancyTransition,
@@ -22,6 +28,7 @@ from src.application.tof_zone_authorization import (
 from src.application.tof_zone_authorization_coordinator import (
     TofAuthorizationCoordinatorRun,
     TofAuthorizationCoordinatorStage,
+    TofAuthorizationRetryRequest,
     TofZoneAuthorizationCoordinator,
 )
 from src.domain.models import (
@@ -132,6 +139,7 @@ UNAUTHORIZED_SPEC = _AssessmentSpec(
 def _assessment(
     snapshot: ZoneOccupancySnapshot,
     *,
+    zone_type: ZoneType,
     evaluated_at: datetime,
     spec: _AssessmentSpec,
 ) -> TofZoneAuthorizationAssessment:
@@ -143,7 +151,7 @@ def _assessment(
     return TofZoneAuthorizationAssessment(
         sensor_id=snapshot.sensor_id,
         zone_id=snapshot.zone_id,
-        zone_type=ZoneType.DISABLED,
+        zone_type=zone_type,
         occupancy_state=snapshot.stable_state,
         occupancy_revision=snapshot.revision,
         occupancy_stable_since=snapshot.stable_since,
@@ -181,6 +189,22 @@ class _SnapshotStore:
             self._snapshots[snapshot.zone_id] = snapshot
 
 
+class _ScriptedSnapshotSupplier:
+    def __init__(
+        self,
+        *results: tuple[ZoneOccupancySnapshot, ...] | Exception,
+    ) -> None:
+        self._results = list(results)
+
+    def __call__(self) -> tuple[ZoneOccupancySnapshot, ...]:
+        if not self._results:
+            raise AssertionError("snapshot script가 모두 소비됐습니다.")
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class _FakeConnection:
     def __init__(self) -> None:
         self.closed = False
@@ -212,6 +236,7 @@ class _ConnectionFactory:
 class _FakeService:
     def __init__(self) -> None:
         self.specs: dict[ZoneId, _AssessmentSpec] = {}
+        self.zone_types: dict[ZoneId, ZoneType] = {}
         self.failures: dict[ZoneId, Exception] = {}
         self.calls: list[tuple[ZoneId, _FakeConnection]] = []
 
@@ -244,6 +269,10 @@ class _FakeService:
 
         return _assessment(
             snapshot,
+            zone_type=self.zone_types.get(
+                snapshot.zone_id,
+                ZoneType.DISABLED,
+            ),
             evaluated_at=evaluated_at,
             spec=spec,
         )
@@ -366,6 +395,73 @@ def _coordinator(
     )
 
 
+def _assert_single_retry(
+    run: TofAuthorizationCoordinatorRun,
+    *,
+    zone_id: ZoneId,
+    minimum_revision: int | None,
+) -> None:
+    assert run.retry_requests == (
+        TofAuthorizationRetryRequest(
+            zone_id=zone_id,
+            minimum_occupancy_revision=minimum_revision,
+        ),
+    )
+
+
+@dataclass
+class _RecordingActuatorPort:
+    attempts: list[tuple[ActuatorCommand, ...]] = field(
+        default_factory=list
+    )
+    applied_projections: list[tuple[ActuatorCommand, ...]] = field(
+        default_factory=list
+    )
+    fail_first_error: Exception | None = None
+
+    def apply_projection(
+        self,
+        commands: tuple[ActuatorCommand, ...],
+    ) -> None:
+        self.attempts.append(commands)
+
+        if self.fail_first_error is not None:
+            error = self.fail_first_error
+            self.fail_first_error = None
+            raise error
+
+        self.applied_projections.append(commands)
+
+
+def _local_warning_coordinator(
+    *,
+    led_port: _RecordingActuatorPort,
+    speaker_port: _RecordingActuatorPort,
+) -> LocalWarningCoordinator:
+    return LocalWarningCoordinator(
+        bindings=(
+            LocalWarningZoneBinding(
+                zone_id=ZONE_1,
+                zone_type=ZoneType.DISABLED,
+                led_actuator_id="disabled_zone_warning_led",
+                led_action="BLINK",
+                speaker_actuator_id="disabled_zone_warning_speaker",
+                speaker_action="PLAY",
+            ),
+            LocalWarningZoneBinding(
+                zone_id=ZONE_2,
+                zone_type=ZoneType.EV_CHARGING,
+                led_actuator_id="ev_zone_warning_led",
+                led_action="BLINK",
+                speaker_actuator_id="ev_zone_warning_speaker",
+                speaker_action="PLAY",
+            ),
+        ),
+        led_port=led_port,
+        speaker_port=speaker_port,
+    )
+
+
 def test_request_transitions_only_registers_and_merges_requests() -> None:
     store = _SnapshotStore(
         _snapshot(ZONE_1, revision=5),
@@ -418,6 +514,72 @@ def test_request_occupied_zones_preserves_existing_vacant_request() -> None:
         assessment.zone_id
         for assessment in run.published_assessments
     ] == [ZONE_1, ZONE_2]
+
+
+def test_zone_occupancy_revisions_returns_every_state_without_side_effects(
+) -> None:
+    zone_3 = ZoneId(3)
+    store = _SnapshotStore(
+        _snapshot(
+            zone_3,
+            state=OccupancyState.UNKNOWN,
+            revision=7,
+        ),
+        _snapshot(
+            ZONE_2,
+            state=OccupancyState.VACANT,
+            revision=5,
+        ),
+        _snapshot(ZONE_1, revision=4),
+    )
+    connections = _ConnectionFactory()
+    coordinator = _coordinator(
+        store=store,
+        service=_FakeService(),
+        connection_factory=connections,
+    )
+    coordinator.request_zone(ZONE_1)
+
+    assert coordinator.zone_occupancy_revisions() == (
+        (ZONE_1, 4, OccupancyState.OCCUPIED),
+        (ZONE_2, 5, OccupancyState.VACANT),
+        (zone_3, 7, OccupancyState.UNKNOWN),
+    )
+    assert connections.calls == 0
+
+    run = coordinator.drain_pending()
+    assert [
+        assessment.zone_id
+        for assessment in run.published_assessments
+    ] == [ZONE_1]
+
+
+def test_request_occupied_zones_still_requests_only_occupied() -> None:
+    store = _SnapshotStore(
+        _snapshot(ZONE_1, revision=4),
+        _snapshot(
+            ZONE_2,
+            state=OccupancyState.VACANT,
+            revision=5,
+        ),
+        _snapshot(
+            ZoneId(3),
+            state=OccupancyState.UNKNOWN,
+            revision=6,
+        ),
+    )
+    coordinator = _coordinator(
+        store=store,
+        service=_FakeService(),
+    )
+
+    coordinator.request_occupied_zones()
+    run = coordinator.drain_pending()
+
+    assert [
+        assessment.zone_id
+        for assessment in run.published_assessments
+    ] == [ZONE_1]
 
 
 def test_request_all_snapshots_registers_every_snapshot() -> None:
@@ -632,7 +794,13 @@ def test_changed_causal_scope_defers_late_result(
     assert len(capture.results) == 1
     assert capture.results[0].published_assessments == ()
     assert capture.results[0].deferred_zone_ids == (ZONE_1,)
+    _assert_single_retry(
+        capture.results[0],
+        zone_id=ZONE_1,
+        minimum_revision=changed_snapshot.revision,
+    )
     assert coordinator.latest_assessment(ZONE_1) is None
+    assert coordinator.drain_pending().retry_requests == ()
 
 
 def test_same_zone_concurrent_drains_are_serialized() -> None:
@@ -672,7 +840,7 @@ def test_same_zone_concurrent_drains_are_serialized() -> None:
     assert service.max_concurrent_calls == 1
 
 
-def test_service_failure_is_requeued_and_other_zone_continues() -> None:
+def test_service_failure_returns_retry_and_other_zone_continues() -> None:
     store = _SnapshotStore(_snapshot(ZONE_1), _snapshot(ZONE_2))
     service = _FakeService()
     service.failures[ZONE_1] = RuntimeError("service unavailable")
@@ -697,9 +865,22 @@ def test_service_failure_is_requeued_and_other_zone_continues() -> None:
         assessment.zone_id
         for assessment in first_run.published_assessments
     ] == [ZONE_2]
+    _assert_single_retry(
+        first_run,
+        zone_id=ZONE_1,
+        minimum_revision=None,
+    )
     assert all(connection.closed for connection in connections.connections)
 
+    assert coordinator.drain_pending().retry_requests == ()
     del service.failures[ZONE_1]
+    retry = first_run.retry_requests[0]
+    coordinator.request_zone(
+        retry.zone_id,
+        minimum_occupancy_revision=(
+            retry.minimum_occupancy_revision
+        ),
+    )
     second_run = coordinator.drain_pending()
 
     assert [
@@ -709,7 +890,8 @@ def test_service_failure_is_requeued_and_other_zone_continues() -> None:
     assert second_run.failures == ()
 
 
-def test_snapshot_revision_failure_is_requeued_until_snapshot_catches_up() -> None:
+def test_snapshot_revision_failure_returns_retry_until_snapshot_catches_up(
+) -> None:
     store = _SnapshotStore(_snapshot(ZONE_1, revision=4))
     service = _FakeService()
     connections = _ConnectionFactory()
@@ -730,13 +912,86 @@ def test_snapshot_revision_failure_is_requeued_until_snapshot_catches_up() -> No
     )
     assert service.calls == []
     assert connections.calls == 0
+    _assert_single_retry(
+        first_run,
+        zone_id=ZONE_1,
+        minimum_revision=5,
+    )
 
+    assert coordinator.drain_pending().retry_requests == ()
     store.set(_snapshot(ZONE_1, revision=5))
+    retry = first_run.retry_requests[0]
+    coordinator.request_zone(
+        retry.zone_id,
+        minimum_occupancy_revision=(
+            retry.minimum_occupancy_revision
+        ),
+    )
     second_run = coordinator.drain_pending()
 
     assert len(second_run.published_assessments) == 1
     assert second_run.published_assessments[0].zone_id == ZONE_1
     assert second_run.failures == ()
+
+
+def test_post_evaluation_snapshot_failure_returns_matching_retry() -> None:
+    snapshot = _snapshot(ZONE_1, revision=1)
+    supplier = _ScriptedSnapshotSupplier(
+        (snapshot,),
+        RuntimeError("snapshot refresh failed"),
+    )
+    coordinator = TofZoneAuthorizationCoordinator(
+        authorization_service=_FakeService(),
+        occupancy_snapshots=supplier,
+        sensor_runtime_available=lambda: True,
+        connection_factory=_ConnectionFactory(),
+        clock=lambda: NOW,
+    )
+    coordinator.request_zone(
+        ZONE_1,
+        minimum_occupancy_revision=1,
+    )
+
+    run = coordinator.drain_pending()
+
+    assert run.failures[0].stage is (
+        TofAuthorizationCoordinatorStage.SNAPSHOT
+    )
+    _assert_single_retry(
+        run,
+        zone_id=ZONE_1,
+        minimum_revision=1,
+    )
+    assert coordinator.drain_pending().retry_requests == ()
+
+
+def test_vacant_evaluation_failure_returns_matching_retry() -> None:
+    store = _SnapshotStore(
+        _snapshot(
+            ZONE_1,
+            state=OccupancyState.VACANT,
+            revision=2,
+        )
+    )
+    service = _FakeService()
+    service.failures[ZONE_1] = RuntimeError("service unavailable")
+    coordinator = _coordinator(store=store, service=service)
+    coordinator.request_zone(
+        ZONE_1,
+        minimum_occupancy_revision=2,
+    )
+
+    run = coordinator.drain_pending()
+
+    assert run.failures[0].stage is (
+        TofAuthorizationCoordinatorStage.EVALUATION
+    )
+    _assert_single_retry(
+        run,
+        zone_id=ZONE_1,
+        minimum_revision=2,
+    )
+    assert coordinator.drain_pending().retry_requests == ()
 
 
 def test_connection_factory_failure_isolated_from_next_zone() -> None:
@@ -762,6 +1017,11 @@ def test_connection_factory_failure_isolated_from_next_zone() -> None:
         assessment.zone_id
         for assessment in run.published_assessments
     ] == [ZONE_2]
+    _assert_single_retry(
+        run,
+        zone_id=ZONE_1,
+        minimum_revision=None,
+    )
     assert [call[0] for call in service.calls] == [ZONE_2]
     assert len(connections.connections) == 1
     assert connections.connections[0].closed
@@ -803,6 +1063,19 @@ def test_consumer_failure_retries_same_revision_and_other_zone_continues() -> No
     assert pending is not None
     assert pending.assessment_revision == 1
 
+    _assert_single_retry(
+        first_run,
+        zone_id=ZONE_1,
+        minimum_revision=None,
+    )
+    assert coordinator.drain_pending().published_assessments == ()
+    retry = first_run.retry_requests[0]
+    coordinator.request_zone(
+        retry.zone_id,
+        minimum_occupancy_revision=(
+            retry.minimum_occupancy_revision
+        ),
+    )
     second_run = coordinator.drain_pending()
     retried = second_run.published_assessments[0]
 
@@ -813,6 +1086,250 @@ def test_consumer_failure_retries_same_revision_and_other_zone_continues() -> No
         for attempt in attempts
         if attempt.zone_id == ZONE_1
     ] == [1, 1]
+
+
+def test_vacant_publication_failure_preserves_pending_revision() -> None:
+    store = _SnapshotStore(
+        _snapshot(
+            ZONE_1,
+            state=OccupancyState.VACANT,
+            revision=2,
+        )
+    )
+    attempts: list[TofZoneAuthorizationAssessment] = []
+    failed_once = False
+
+    def consume(assessment: TofZoneAuthorizationAssessment) -> None:
+        nonlocal failed_once
+        attempts.append(assessment)
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("publication unavailable")
+
+    coordinator = _coordinator(
+        store=store,
+        service=_FakeService(),
+        consumer=consume,
+    )
+    coordinator.request_zone(
+        ZONE_1,
+        minimum_occupancy_revision=2,
+    )
+
+    first = coordinator.drain_pending()
+
+    assert first.failures[0].stage is (
+        TofAuthorizationCoordinatorStage.PUBLICATION
+    )
+    _assert_single_retry(
+        first,
+        zone_id=ZONE_1,
+        minimum_revision=2,
+    )
+    pending = coordinator.latest_assessment(ZONE_1)
+    assert pending is not None
+    assert pending.occupancy_state is OccupancyState.VACANT
+    assert pending.assessment_revision == 1
+
+    assert coordinator.drain_pending().published_assessments == ()
+    coordinator.request_zone(
+        ZONE_1,
+        minimum_occupancy_revision=2,
+    )
+    second = coordinator.drain_pending()
+
+    assert second.published_assessments == (pending,)
+    assert attempts == [pending, pending]
+    assert second.published_assessments[0].assessment_revision == 1
+
+
+def test_local_warning_consumer_preserves_other_zone_when_one_zone_becomes_vacant(
+) -> None:
+    store = _SnapshotStore(
+        _snapshot(ZONE_1),
+        _snapshot(ZONE_2),
+    )
+    service = _FakeService()
+    service.specs[ZONE_1] = UNAUTHORIZED_SPEC
+    service.specs[ZONE_2] = UNAUTHORIZED_SPEC
+    service.zone_types[ZONE_2] = ZoneType.EV_CHARGING
+    led_port = _RecordingActuatorPort()
+    speaker_port = _RecordingActuatorPort()
+    local_warning = _local_warning_coordinator(
+        led_port=led_port,
+        speaker_port=speaker_port,
+    )
+    coordinator = _coordinator(
+        store=store,
+        service=service,
+        consumer=local_warning.consume_assessment,
+    )
+
+    coordinator.request_zone(ZONE_1)
+    coordinator.request_zone(ZONE_2)
+    first_run = coordinator.drain_pending()
+
+    assert first_run.failures == ()
+    assert [
+        assessment.zone_id
+        for assessment in first_run.published_assessments
+    ] == [ZONE_1, ZONE_2]
+    assert [
+        assessment.zone_type
+        for assessment in first_run.published_assessments
+    ] == [ZoneType.DISABLED, ZoneType.EV_CHARGING]
+    assert [
+        assessment.assessment_revision
+        for assessment in first_run.published_assessments
+    ] == [1, 1]
+    assert all(
+        assessment.decision
+        is TofAuthorizationDecision.UNAUTHORIZED
+        for assessment in first_run.published_assessments
+    )
+    assert local_warning.active_zone_ids() == (ZONE_1, ZONE_2)
+    assert [
+        command.actuator_id
+        for command in led_port.applied_projections[-1]
+    ] == [
+        "disabled_zone_warning_led",
+        "ev_zone_warning_led",
+    ]
+    assert [
+        command.actuator_id
+        for command in speaker_port.applied_projections[-1]
+    ] == [
+        "disabled_zone_warning_speaker",
+        "ev_zone_warning_speaker",
+    ]
+
+    ev_led_requested_at = (
+        led_port.applied_projections[-1][1].requested_at
+    )
+    ev_speaker_requested_at = (
+        speaker_port.applied_projections[-1][1].requested_at
+    )
+
+    store.set(
+        _snapshot(
+            ZONE_1,
+            state=OccupancyState.VACANT,
+            stable_since=NOW + timedelta(seconds=1),
+            revision=2,
+        )
+    )
+    coordinator.request_zone(ZONE_1)
+    vacant_run = coordinator.drain_pending()
+
+    assert vacant_run.failures == ()
+    assert len(vacant_run.published_assessments) == 1
+    vacant = vacant_run.published_assessments[0]
+    assert vacant.zone_id == ZONE_1
+    assert vacant.zone_type is ZoneType.DISABLED
+    assert vacant.assessment_revision == 2
+    assert vacant.occupancy_state is OccupancyState.VACANT
+    assert vacant.decision is None
+    assert vacant.reason is TofAuthorizationReason.ZONE_VACANT
+
+    assert local_warning.active_zone_ids() == (ZONE_2,)
+    assert [
+        command.actuator_id
+        for command in led_port.applied_projections[-1]
+    ] == ["ev_zone_warning_led"]
+    assert [
+        command.actuator_id
+        for command in speaker_port.applied_projections[-1]
+    ] == ["ev_zone_warning_speaker"]
+    assert (
+        led_port.applied_projections[-1][0].requested_at
+        == ev_led_requested_at
+    )
+    assert (
+        speaker_port.applied_projections[-1][0].requested_at
+        == ev_speaker_requested_at
+    )
+
+
+def test_local_warning_delivery_failure_retries_same_publication_revision(
+) -> None:
+    store = _SnapshotStore(_snapshot(ZONE_1))
+    service = _FakeService()
+    service.specs[ZONE_1] = UNAUTHORIZED_SPEC
+    led_error = RuntimeError("LED unavailable")
+    led_port = _RecordingActuatorPort(
+        fail_first_error=led_error
+    )
+    speaker_port = _RecordingActuatorPort()
+    local_warning = _local_warning_coordinator(
+        led_port=led_port,
+        speaker_port=speaker_port,
+    )
+    coordinator = _coordinator(
+        store=store,
+        service=service,
+        consumer=local_warning.consume_assessment,
+    )
+    coordinator.request_zone(ZONE_1)
+
+    first_run = coordinator.drain_pending()
+
+    assert first_run.published_assessments == ()
+    assert len(first_run.failures) == 1
+    failure = first_run.failures[0]
+    assert failure.zone_id == ZONE_1
+    assert failure.stage is TofAuthorizationCoordinatorStage.PUBLICATION
+    assert isinstance(failure.error, LocalWarningDeliveryError)
+    assert failure.error.primary_error is led_error
+
+    pending = coordinator.latest_assessment(ZONE_1)
+    assert pending is not None
+    assert pending.assessment_revision == 1
+    assert pending.decision is TofAuthorizationDecision.UNAUTHORIZED
+    assert local_warning.active_zone_ids() == (ZONE_1,)
+    assert len(led_port.attempts) == 1
+    assert led_port.applied_projections == []
+    assert len(speaker_port.attempts) == 1
+    assert len(speaker_port.applied_projections) == 1
+
+    _assert_single_retry(
+        first_run,
+        zone_id=ZONE_1,
+        minimum_revision=None,
+    )
+    assert coordinator.drain_pending().published_assessments == ()
+    retry = first_run.retry_requests[0]
+    coordinator.request_zone(
+        retry.zone_id,
+        minimum_occupancy_revision=(
+            retry.minimum_occupancy_revision
+        ),
+    )
+    second_run = coordinator.drain_pending()
+
+    assert second_run.failures == ()
+    assert len(second_run.published_assessments) == 1
+    retried = second_run.published_assessments[0]
+    assert retried == pending
+    assert retried.assessment_revision == 1
+    assert len(led_port.attempts) == 2
+    assert len(led_port.applied_projections) == 1
+    assert led_port.attempts[1] == led_port.attempts[0]
+    assert led_port.applied_projections == [led_port.attempts[0]]
+    assert len(speaker_port.attempts) == 1
+    assert len(speaker_port.applied_projections) == 1
+
+    latest = coordinator.latest_assessment(ZONE_1)
+    assert latest == retried
+    assert latest.assessment_revision == 1
+
+    third_run = coordinator.drain_pending()
+
+    assert third_run.published_assessments == ()
+    assert third_run.unchanged_zone_ids == ()
+    assert third_run.deferred_zone_ids == ()
+    assert third_run.failures == ()
+    assert len(led_port.attempts) == 2
+    assert len(speaker_port.attempts) == 1
 
 
 def test_semantic_change_replaces_failed_pending_publication() -> None:
@@ -842,6 +1359,10 @@ def test_semantic_change_replaces_failed_pending_publication() -> None:
             stable_since=NOW + timedelta(seconds=1),
             revision=2,
         )
+    )
+    coordinator.request_zone(
+        ZONE_1,
+        minimum_occupancy_revision=2,
     )
     second_run = coordinator.drain_pending()
 
