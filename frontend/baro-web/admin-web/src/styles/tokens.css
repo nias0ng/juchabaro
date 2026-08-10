@@ -1,0 +1,175 @@
+/**
+ * 디자인 토큰 CSS 변수.
+ * 값은 colors.ts / spacing.ts / typography.ts / layout.ts와 동일하게 유지한다.
+ */
+:root {
+  /* Color */
+  --color-text: #000000;
+  --color-text-secondary: #60646c;
+  --color-placeholder: #b6bac7;
+  --color-background: #ffffff;
+  --color-background-element: #f0f0f3;
+  --color-background-selected: #e1e1e8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8f8fa;
+  --color-border: #e1e1e8;
+  --color-primary: #5144d3;
+  --color-primary-soft: #e3dfff;
+  --color-on-primary: #ffffff;
+  --color-danger: #d4553a;
+  --color-danger-border: #ff8f6b;
+  --color-danger-surface: #fff2ef;
+  --color-disabled-surface: #e3dfff;
+  --color-disabled-text: #b6bac7;
+
+  /* Spacing (4px 기반) */
+  --spacing-none: 0;
+  --spacing-xxs: 2px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-base: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-xxl: 48px;
+  --spacing-xxxl: 64px;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-xxl: 32px;
+  --radius-full: 999px;
+  --radius-input: 20px;
+
+  /* Typography */
+  --font-sans: Pretendard, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-base: 16px;
+  --font-size-lg: 20px;
+  --font-size-xl: 24px;
+  --font-size-xxl: 32px;
+  --font-size-display: 48px;
+
+  /* Layout */
+  --control-height-sm: 40px;
+  --control-height-md: 48px;
+  --control-height-lg: 56px;
+  --content-width-wide: 1120px;
+
+  /*
+   * 관리자 웹 화면(사건 목록/이력 관리 등) 전용 확장 토큰.
+   * 위 --color-* 세트는 baro-app 팔레트와 톤을 맞춘 값이라 손대지 않고,
+   * 카드형 대시보드 레이아웃에 필요한 배경/보더/상태색만 oklch로 새로 추가한다.
+   */
+  --panel-radius: 0.875rem;
+  --panel-background: oklch(0.985 0.004 270);
+  --panel-foreground: oklch(0.21 0.035 268);
+  --panel-card: oklch(1 0 0);
+  --panel-border: oklch(0.925 0.008 270);
+  --panel-muted: oklch(0.968 0.008 270);
+  --panel-muted-foreground: oklch(0.55 0.03 268);
+  --panel-primary: oklch(0.53 0.21 274);
+  --panel-primary-soft: oklch(0.53 0.21 274 / 10%);
+  --panel-on-primary: oklch(0.99 0.005 270);
+  --panel-success: oklch(0.62 0.15 155);
+  --panel-success-soft: oklch(0.62 0.15 155 / 12%);
+  --panel-danger: oklch(0.6 0.22 22);
+  --panel-danger-soft: oklch(0.6 0.22 22 / 10%);
+  --panel-warning: oklch(0.72 0.16 62);
+  --panel-warning-soft: oklch(0.72 0.16 62 / 15%);
+  --panel-warning-foreground: oklch(0.25 0.06 62);
+  --panel-info: oklch(0.58 0.16 250);
+  --panel-info-soft: oklch(0.58 0.16 250 / 10%);
+  --panel-sky: oklch(0.78 0.1 235);
+  --panel-sky-soft: oklch(0.78 0.1 235 / 18%);
+  --panel-sky-foreground: oklch(0.3 0.12 250);
+  --panel-sidebar-from: oklch(0.93 0.045 285);
+  --panel-sidebar-via: oklch(0.95 0.03 250);
+  --panel-sidebar-to: oklch(0.95 0.03 200);
+  --panel-sidebar-foreground: oklch(0.28 0.05 270);
+  --panel-sidebar-active: oklch(0.24 0.06 272);
+  --panel-sidebar-active-foreground: oklch(0.99 0.005 270);
+  --panel-sidebar-hover: oklch(0.94 0.03 278);
+  --panel-sidebar-border: oklch(0.9 0.02 275);
+  --panel-shadow-card: 0 1px 2px oklch(0.2 0.05 275 / 6%), 0 8px 24px oklch(0.2 0.05 275 / 5%);
+  --panel-shadow-pop: 0 12px 32px oklch(0.45 0.2 275 / 18%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-text: #ffffff;
+    --color-text-secondary: #b0b4ba;
+    --color-placeholder: #6b6f78;
+    --color-background: #000000;
+    --color-background-element: #212225;
+    --color-background-selected: #2e3135;
+    --color-surface: #212225;
+    --color-surface-muted: #1f2024;
+    --color-border: #3a3d43;
+    --color-primary: #c3bcff;
+    --color-primary-soft: #302d55;
+    --color-on-primary: #1b1b23;
+    --color-danger: #ff6369;
+    --color-danger-border: #a83f31;
+    --color-danger-surface: #3a1f1a;
+    --color-disabled-surface: #302d55;
+    --color-disabled-text: #6b6f78;
+
+    --panel-background: oklch(0.17 0.03 268);
+    --panel-foreground: oklch(0.97 0.005 270);
+    --panel-card: oklch(0.22 0.035 268);
+    --panel-border: oklch(1 0 0 / 12%);
+    --panel-muted: oklch(0.28 0.04 270);
+    --panel-muted-foreground: oklch(0.7 0.03 268);
+    --panel-primary: oklch(0.66 0.18 274);
+    --panel-primary-soft: oklch(0.66 0.18 274 / 14%);
+    --panel-on-primary: oklch(0.16 0.03 270);
+    --panel-success: oklch(0.68 0.14 155);
+    --panel-success-soft: oklch(0.68 0.14 155 / 16%);
+    --panel-danger: oklch(0.65 0.2 22);
+    --panel-danger-soft: oklch(0.65 0.2 22 / 14%);
+    --panel-warning: oklch(0.78 0.15 62);
+    --panel-warning-soft: oklch(0.78 0.15 62 / 18%);
+    --panel-warning-foreground: oklch(0.2 0.05 62);
+    --panel-info: oklch(0.66 0.15 250);
+    --panel-info-soft: oklch(0.66 0.15 250 / 14%);
+    --panel-sky: oklch(0.8 0.09 235);
+    --panel-sky-soft: oklch(0.8 0.09 235 / 20%);
+    --panel-sky-foreground: oklch(0.25 0.1 250);
+    --panel-sidebar-from: oklch(0.2 0.035 270);
+    --panel-sidebar-via: oklch(0.2 0.035 270);
+    --panel-sidebar-to: oklch(0.2 0.035 270);
+    --panel-sidebar-foreground: oklch(0.95 0.005 270);
+    --panel-sidebar-active: oklch(0.66 0.18 274);
+    --panel-sidebar-active-foreground: oklch(0.16 0.03 270);
+    --panel-sidebar-hover: oklch(0.28 0.05 274);
+    --panel-sidebar-border: oklch(1 0 0 / 12%);
+    --panel-shadow-card: 0 1px 2px oklch(0 0 0 / 24%), 0 8px 24px oklch(0 0 0 / 20%);
+    --panel-shadow-pop: 0 12px 32px oklch(0 0 0 / 32%);
+  }
+}
+
+/*
+ * 여러 컴포넌트가 공유하는 카드/사이드바 배경 유틸리티.
+ * Tailwind 없이 <style scoped>에서 재사용할 수 있도록 전역 클래스로 둔다.
+ */
+.panel {
+  background-color: var(--panel-card);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--panel-shadow-card);
+}
+
+.sidebar-surface {
+  background-image: linear-gradient(
+    180deg,
+    var(--panel-sidebar-from) 0%,
+    var(--panel-sidebar-via) 55%,
+    var(--panel-sidebar-to) 100%
+  );
+}

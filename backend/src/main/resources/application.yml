@@ -1,6 +1,43 @@
+app:
+  upload:
+    dir: ${UPLOAD_DIR:./uploads}
+    public-base-url: ${UPLOAD_PUBLIC_URL:http://localhost:8080/images}
+  hw:
+    api-key: ${HW_API_KEY:local-dev-hw-key-change-me}
+  plate:
+    review-distance: 1
+  push:
+    provider: log
+    expo:
+      url: https://exp.host/--/api/v2/push/send
+  jetson:
+    enabled: false
+    provider: log
+    base-url: http://100.99.37.7:8000
+    api-key: ${INTERNAL_API_KEY:}
+    timeout-ms: 5000
+    verify-window-seconds: 120
+  review:
+    expire-minutes: 30
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  forward-headers-strategy: framework
+
+jwt:
+  secret: ${JWT_SECRET:local-dev-secret-change-me-please-32byte-min!!}
+  access-token-validity-seconds: 3600
+
 spring:
   application:
     name: parking
+
+  profiles:
+    active: local
+
+  config:
+    import: "optional:file:.env[.properties]"
 
   lifecycle:
     timeout-per-shutdown-phase: 30s
@@ -15,9 +52,10 @@ spring:
         jdbc:
           time_zone: Asia/Seoul
 
-server:
-  port: ${SERVER_PORT:8080}
-  shutdown: graceful
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 30MB
 
 management:
   endpoints:

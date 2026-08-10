@@ -1,0 +1,66 @@
+{
+  "zoneDefinitionVersion": 2,
+  "calibrationReference": "a26d3085c3d4fc4f",
+  "zones": [
+    {
+      "zoneId": 1,
+      "zoneType": "GENERAL",
+      "polygon": [[0.258, 0.444], [0.399, 0.451], [0.392, 0.600], [0.246, 0.599]],
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 2,
+      "zoneType": "GENERAL",
+      "polygon": [[0.246, 0.599], [0.392, 0.600], [0.385, 0.769], [0.233, 0.768]],
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 3,
+      "zoneType": "GENERAL",
+      "polygon": [[0.233, 0.768], [0.385, 0.769], [0.378, 0.934], [0.220, 0.935]],
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 4,
+      "zoneType": "DISABLED",
+      "polygon": [[0.612, 0.412], [0.743, 0.415], [0.753, 0.608], [0.615, 0.605]],
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 5,
+      "zoneType": "EV_CHARGING",
+      "polygon": [[0.615, 0.605], [0.753, 0.608], [0.760, 0.769], [0.617, 0.769]],
+      "allowedDurationSeconds": 70,
+      "chargerClass": "SLOW",
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 6,
+      "zoneType": "GENERAL",
+      "polygon": [[0.617, 0.769], [0.760, 0.769], [0.768, 0.928], [0.619, 0.930]],
+      "egressZoneIds": [7]
+    },
+    {
+      "zoneId": 7,
+      "zoneType": "AISLE",
+      "polygon": [[0.266, 0.244], [0.399, 0.246], [0.406, 0.071], [0.596, 0.078], [0.599, 0.250], [0.737, 0.253], [0.743, 0.415], [0.612, 0.412], [0.619, 0.930], [0.378, 0.934], [0.399, 0.451], [0.258, 0.444]]
+    },
+    {
+      "zoneId": 8,
+      "zoneType": "ENTRY_EXIT",
+      "entryExitRole": "ENTRY",
+      "polygon": [[0.279, 0.065], [0.406, 0.071], [0.399, 0.246], [0.266, 0.244]]
+    },
+    {
+      "zoneId": 9,
+      "zoneType": "ENTRY_EXIT",
+      "entryExitRole": "EXIT",
+      "polygon": [[0.596, 0.078], [0.728, 0.082], [0.737, 0.253], [0.599, 0.250]],
+      "exitTraversal": {
+        "line": [[0.598701, 0.131225], [0.731193, 0.201551]],
+        "outwardPoint": [0.702454, 0.095725],
+        "hysteresis": 0.01
+      }
+    }
+  ]
+}

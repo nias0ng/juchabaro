@@ -1,0 +1,109 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        BACKEND_IMAGE = "parking-backend:${BUILD_NUMBER}"
+        MYSQL_DATABASE = 'parking'
+    }
+
+    stages {
+        stage('Backend Test') {
+            steps {
+                dir('backend') {
+                    sh 'chmod +x gradlew'
+                    sh './gradlew clean test --no-daemon'
+                }
+            }
+        }
+
+        stage('Backend Docker Build') {
+            steps {
+                dir('backend') {
+                    sh 'docker build -t ${BACKEND_IMAGE} .'
+                }
+            }
+        }
+
+        stage('Backend Deploy') {
+            steps {
+                withCredentials([
+                        usernamePassword(
+                            credentialsId: 'parking-prod-mysql-app',
+                            usernameVariable: 'DB_USERNAME',
+                            passwordVariable: 'DB_PASSWORD'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-mysql-root-password',
+                            variable: 'MYSQL_ROOT_PASSWORD'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-jwt-secret',
+                            variable: 'JWT_SECRET'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-hw-api-key',
+                            variable: 'HW_API_KEY'
+                        ),
+                        string(
+                            credentialsId: 'parking-prod-internal-api-key',
+                            variable: 'INTERNAL_API_KEY'
+                        )
+                    ]) {
+                    dir('backend') {
+                        sh '''
+                            export MYSQL_USER="$DB_USERNAME"
+                            export MYSQL_PASSWORD="$DB_PASSWORD"
+
+                            docker compose \
+                              -f compose.prod.yaml \
+                              up -d --remove-orphans
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                timeout(time: 3, unit: 'MINUTES') {
+                    script {
+                        waitUntil(initialRecurrencePeriod: 5000) {
+                            def status = sh(
+                                script: """
+                                    docker inspect \
+                                      --format='{{.State.Health.Status}}' \
+                                      parking-backend-prod-app-1 \
+                                      2>/dev/null || true
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            echo "Backend health status: ${status}"
+                            return status == 'healthy'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true,
+            testResults: 'backend/build/test-results/test/*.xml'
+        }
+
+        failure {
+            sh '''
+                docker logs \
+                  --tail=100 \
+                  parking-backend-prod-app-1 \
+                  2>/dev/null || true
+            '''
+        }
+    }
+}

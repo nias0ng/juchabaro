@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "modelVersion": "vehicle_detector-yolov8s-20260804-222535",
+  "sha256": "3ac438bb2378ded109329a4d3efd610419b695f09fa47817e34045dc09ab7b5d",
+  "task": "detect",
+  "classNames": {
+    "0": "vehicle"
+  }
+}

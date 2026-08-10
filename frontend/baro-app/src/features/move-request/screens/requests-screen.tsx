@@ -1,0 +1,89 @@
+import { router } from 'expo-router';
+import { useState } from 'react';
+
+import {
+  AsyncStateView,
+  GradientScreenBackground,
+  ResponsiveContainer,
+  ScreenHeader,
+  SegmentedControl,
+  Stack,
+} from '@/components/ui';
+import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
+import { toRequestListItemDisplay } from '@/features/move-request/utils/move-request';
+import { Spacing } from '@/styles';
+
+import { RequestListCard } from '../components/requests-list/request-list-card';
+import { styles } from './requests-screen.styles';
+
+export type RequestsScope = 'SENT' | 'RECEIVED';
+
+export default function RequestsScreen() {
+  const [scope, setScope] = useState<RequestsScope>('SENT');
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const sentQuery = useMoveRequests('SENT');
+  const receivedQuery = useMoveRequests('RECEIVED');
+  const currentQuery = scope === 'SENT' ? sentQuery : receivedQuery;
+  const items = currentQuery.moveRequests.map(toRequestListItemDisplay);
+
+  const scopeOptions: { key: RequestsScope; label: string }[] = [
+    { key: 'SENT', label: `보낸 요청 ${sentQuery.moveRequests.length}` },
+    { key: 'RECEIVED', label: `받은 요청 ${receivedQuery.moveRequests.length}` },
+  ];
+
+  const statusMessage = currentQuery.isLoading
+    ? '이동 요청을 불러오는 중입니다'
+    : currentQuery.error
+      ? '이동 요청을 불러오지 못했습니다'
+      : items.length === 0
+        ? scope === 'SENT'
+          ? '보낸 이동 요청이 없습니다'
+          : '받은 이동 요청이 없습니다'
+        : undefined;
+
+  const handlePressItem = (requestId: number, viewMode: 'requester' | 'recipient') => {
+    router.push({
+      pathname: '/resident/request-detail',
+      params: { requestId: String(requestId), viewMode },
+    });
+  };
+
+  const refreshAll = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([sentQuery.refetch(), receivedQuery.refetch()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
+  return (
+    <GradientScreenBackground
+      contentContainerStyle={styles.content}
+      refreshing={isPullRefreshing}
+      onRefresh={() => void refreshAll()}
+    >
+      <ResponsiveContainer style={styles.container}>
+        <ScreenHeader title="요청" showBackButton={false} />
+
+        <Stack gap={Spacing.md}>
+          <SegmentedControl options={scopeOptions} value={scope} onChange={setScope} />
+
+          <AsyncStateView message={statusMessage}>
+            <Stack gap={Spacing.base}>
+              {items.map((item) => (
+                <RequestListCard
+                  key={item.requestId}
+                  item={item}
+                  onPress={() =>
+                    handlePressItem(item.requestId, scope === 'SENT' ? 'requester' : 'recipient')
+                  }
+                />
+              ))}
+            </Stack>
+          </AsyncStateView>
+        </Stack>
+      </ResponsiveContainer>
+    </GradientScreenBackground>
+  );
+}

@@ -1,0 +1,339 @@
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE
+from src.tracking.adapters.side_masking_detector import DEFAULT_MASK_MARGIN_RATIO
+
+
+class Settings(BaseSettings):
+    app_name: str = "Smart Parking Jetson API"
+    log_level: str = "INFO"
+
+    backend_base_url: str = "https://i15e202.p.ssafy.io/"
+    backend_hw_api_key: str = ""
+
+    internal_api_key: str = ""
+
+    # 실제 장치 설정을 검증한 뒤 후속 composition 계층에서 활성화한다.
+    tof_enabled: bool = False
+
+    # ToF sensor/I²C 및 occupancy runtime 설정. 물리 헤더 핀 번호로 bus를
+    # 추정하지 않으며 완전성과 의미 검증은 후속 core factory가 담당한다.
+    tof_i2c_bus: int | None = None
+    tof_shutdown_settle_seconds: float | None = None
+    tof_boot_settle_seconds: float | None = None
+    tof_io_timeout_seconds: float | None = None
+
+    tof_disabled_zone_id: int | None = None
+    tof_ev_charging_zone_id: int | None = None
+    tof_poll_interval_seconds: float | None = None
+    tof_enter_distance_mm: float | None = None
+    tof_exit_distance_mm: float | None = None
+    tof_enter_confirm_seconds: float | None = None
+    tof_exit_confirm_seconds: float | None = None
+    tof_trusted_sample_max_gap_seconds: float | None = None
+    tof_stale_after_seconds: float | None = None
+
+    # ToF authorization freshness 설정. 운영값과 완전성은 후속 core factory가
+    # 검증한 뒤 domain policy에 전달한다.
+    tof_occupancy_freshness_seconds: float | None = None
+    tof_monitoring_freshness_seconds: float | None = None
+    tof_max_pre_occupancy_observation_seconds: float | None = None
+
+    # OCCUPIED 구역 권한 재평가 backoff의 시연용 초기값.
+    # 실제 Jetson의 camera·SQLite 부하를 확인한 뒤 재조정한다.
+    tof_reevaluation_initial_backoff_seconds: float = 0.25
+    tof_reevaluation_max_backoff_seconds: float = 2.0
+    tof_reevaluation_backoff_multiplier: float = 2.0
+
+    # Optional local speaker 설정. Settings는 부분 설정도 보존하며 완전성 판단은
+    # 후속 composition에 위임한다. 누락·부분 설정·open 실패는 speaker에만
+    # 격리하고 sensor와 LED를 유지한다.
+    tof_disabled_zone_warning_wav_path: Path | None = None
+    tof_ev_zone_warning_wav_path: Path | None = None
+    tof_warning_audio_device: str | None = None
+
+    # Jetson local durable state. 요청 thread와 tracking worker는 각자
+    # connection을 열고 SQLite file만 공유한다.
+    database_path: Path
+
+    # Evidence binary는 DB BLOB이 아니라 동일 장치의 제한된 spool에 둔다.
+    # cap은 설치 완료 뒤 장치 여유공간을 확인해 배포가 직접 정하며, 일반
+    # restart에서 현재 free space를 새 baseline으로 저장하지 않는다.
+    evidence_spool_path: Path
+    evidence_spool_cap_bytes: int
+
+    # 아래 retention·filesystem 비율은 pilot 실측 전 제안값이다. 전역
+    # DB/WAL/log admission DRAIN은 write-size ADR과 application wiring 범위다.
+    evidence_filesystem_floor_ratio: float = 0.30
+    evidence_capture_stop_free_ratio: float = 0.35
+    evidence_ack_retention_seconds: float = 24 * 60 * 60
+    evidence_unacked_retention_seconds: float = 7 * 24 * 60 * 60
+
+    # 한 배포의 versioned ZoneDefinition JSON. 실행 중 hot replacement는 하지
+    # 않으며, 기동 조립 단계에서 ZoneRegistry가 파일 전체를 검증한다.
+    zone_definition_path: Path
+
+    # ZoneVisit·Assignment에 속하지 않는 이중주차 판정용
+    # egress aisle snapshot. ZoneDefinition과 version·calibration을 기동 시 대조한다.
+    egress_aisle_path: Path
+
+    # USB camera 장치와 요청 capture mode. width/height/fps의 0과 fourcc의
+    # None은 해당 항목을 요청하지 않고 장치 기본값을 사용한다는 계약이다.
+    camera_id: str
+    camera_index: int = Field(ge=0)
+    camera_width: int = Field(default=0, ge=0)
+    camera_height: int = Field(default=0, ge=0)
+    camera_fourcc: str | None = None
+    camera_fps: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+
+    # 데모용 라이브 오버레이 MJPEG 스트리밍. 운영 배포는 기본값(꺼짐)을
+    # 유지한다 — 켜면 매 프레임 JPEG 인코딩 비용이 판정 루프와 같은
+    # thread에서 발생한다.
+    live_stream_enabled: bool = False
+    live_stream_target_fps: float = Field(default=15.0, gt=0.0)
+    live_stream_jpeg_quality: int = Field(default=80, ge=1, le=100)
+
+    # 파일 존재·형식과 calibration 파일 SHA fingerprint 일치는 concrete
+    # factory의 기동 preflight에서 검증한다. remap balance와 zone 좌표계의
+    # 호환성은 현재 calibrationReference만으로 검증할 수 없으므로 배포
+    # 설정에서 zone 생성 시 사용한 값과 동일하게 유지해야 한다.
+    calibration_path: Path
+    remap_balance: float = Field(
+        default=DEFAULT_REMAP_BALANCE,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+    )
+    remap_backend: Literal["opencv", "vpi"] = "opencv"
+
+    # Model binary와 별도의 versioned manifest를 함께 지정한다.
+    # composition preflight은 manifest의 SHA-256으로 배포 binary를
+    # 검증하고, adapter.open()은 로드된 task·class map을 다시 검증한다.
+    vehicle_model_path: Path
+    vehicle_model_manifest_path: Path
+    vehicle_tracker_config: str = "bytetrack.yaml"
+    vehicle_tracking_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+    )
+
+    # SideMaskingDetector 마스크 경계가 실제 zone polygon x-범위에 더하는 여백
+    # 비율(537 코드리뷰 반영). 최종 경계는 항상 zone_definition_path에서 자동
+    # 계산하고, 이 값만 배포/검증 환경에서 조정한다.
+    mask_margin_ratio: float = DEFAULT_MASK_MARGIN_RATIO
+
+    # 구역 방문 확인시간(초). 기본값을 두지 않는 이유는 스펙 §4.7에 있다 —
+    # zone_entry_confirm_seconds가 전용구역 진입 즉시 판정의 유일한 오탐
+    # 방어선이고, 실측값은 T-18이 파일럿 영상 리플레이로 산출한다.
+    zone_entry_confirm_seconds: float
+    zone_exit_confirm_seconds: float
+
+    # 한 번 latch된 EXIT 외향 통과를 취소하려면 명시 기준선의 내향 쪽에서
+    # 연속으로 관측되어야 하는 시간(초). ZoneVisit 진입·이탈 debounce와는
+    # 의미가 다르므로 별도 정책으로 유지한다.
+    exit_reentry_confirmation_seconds: float = Field(
+        gt=0.0,
+        allow_inf_nan=False,
+    )
+
+    # EntryMatchCoordinator의 기존 domain 기본값.
+    entry_zone_min_overlap_ratio: float = 0.40
+
+    # 아키텍처 문서에서 아직 TBD인 재식별 정책. live viewer/replay 값은
+    # 운영 확정값이 아니므로 배포가 명시한다.
+    reidentification_max_gap_seconds: float
+    reidentification_min_score: float
+    reidentification_ambiguity_margin: float
+
+    # 아직 명시 정책이 없는 미래 규칙에만 적용하는 compatibility fallback.
+    # 현재 알려진 규칙은 아래 규칙별 값을 반드시 배포 설정으로 주입한다.
+    incident_confirm_seconds: float = 0.0
+    incident_clear_seconds: float = 0.0
+
+    incident_disabled_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_disabled_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_zone_unauthorized_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_ev_overstay_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_bad_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_out_of_zone_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_aisle_block_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_confirm_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+    incident_double_parking_clear_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+
+    # 서로 의미가 다른 parking 판단값이므로 독립 설정으로 유지한다.
+    zone_presence_min_overlap_ratio: float
+    assignment_min_overlap_ratio: float
+    assignment_ambiguous_margin: float
+    bad_parking_min_primary_overlap_ratio: float
+    bad_parking_min_secondary_overlap_ratio: float
+    out_of_zone_min_spot_overlap_ratio: float
+
+    # 저장소 예시가 1초와 3초로 충돌하고 domain 문서에도 TBD로 남아
+    # 있으므로 배포가 명시한다.
+    blocking_relation_confirm_seconds: float
+    blocking_relation_clear_seconds: float
+
+    # 별도 EgressAisle snapshot과 subject footprint 사이의 이중주차 geometry
+    # 기준. viewer/replay의 provisional 값을 배포가 명시한다.
+    blocking_min_subject_overlap_ratio: float
+    blocking_min_egress_coverage_ratio: float
+
+    # 입차 이벤트 매칭 대기 시간(초). 383의 기본값을 그대로 따른다 —
+    # 실측 튜닝이 필요해지면 zone_entry_confirm_seconds처럼 기본값을 없앨 수 있다.
+    entry_match_window_seconds: float = 10.0
+
+    # Tracker timeout과 분리된 PhysicalVehicle 부재 확정 시간(초).
+    # 정상 전체 구역 관측만 누적하며, 시연값도 배포별로 명시한다.
+    absence_confirmation_seconds: float
+
+    # 연속 trusted sample로 인정할 최대 프레임 간격. 이를 넘는
+    # capture·inference stall은 부재 확정 시간으로 보충하지 않는다.
+    trusted_sample_max_gap_seconds: float
+
+    # bbox 시간 창에서만 계산하는 ephemeral motion evidence 정책. 거리 임계값은
+    # median bbox diagonal 대비 비율이며, 아래 값은 파일럿 replay로 재조정한다.
+    # 이 owner는 identity·zone·parking lifecycle을 판단하지 않는다.
+    motion_window_seconds: float
+    motion_min_observation_span_seconds: float
+    motion_max_sample_gap_seconds: float
+    motion_stationary_threshold: float
+    motion_moving_threshold: float
+    motion_min_samples: int
+    motion_min_trend_consistency: float
+
+    # 주차 확정 임계값(초). 600초는 요구사항이 정한 값이고,
+    # parking_move_confirm_seconds는 파일럿 영상으로 산출해야 하는 값이다.
+    # MotionEstimator의 evidence 임계값과 별개인 ParkingEpisode lifecycle timer다.
+    parking_confirm_seconds: float
+    parking_move_confirm_seconds: float
+
+    @field_validator(
+        "camera_id",
+        "vehicle_tracker_config",
+    )
+    @classmethod
+    def _require_non_blank_string(
+        cls,
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("camera_fourcc")
+    @classmethod
+    def _normalize_camera_fourcc(cls, value: str | None) -> str | None:
+        """OpenCV VideoWriter_fourcc에 전달할 printable ASCII 4자를 정규화한다."""
+
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if len(normalized) != 4 or not all(
+            32 <= ord(char) <= 126 for char in normalized
+        ):
+            raise ValueError(
+                "camera_fourcc must be exactly four printable ASCII characters"
+            )
+        return normalized
+
+    @field_validator("remap_backend", mode="before")
+    @classmethod
+    def _normalize_remap_backend(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator(
+        "calibration_path",
+        "vehicle_model_path",
+        "vehicle_model_manifest_path",
+        "tof_disabled_zone_warning_wav_path",
+        "tof_ev_zone_warning_wav_path",
+        mode="before",
+    )
+    @classmethod
+    def _require_non_blank_path(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("tof_warning_audio_device")
+    @classmethod
+    def _require_optional_non_blank_string(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

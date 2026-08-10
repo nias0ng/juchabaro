@@ -1,0 +1,626 @@
+"""Jetson Pipeline Viewer의 입력 검증과 실제 workflow 실행을 담당한다.
+
+Viewer는 ``hw/jetson/src``의 운영 component를 직접 import한다. 입차 이벤트는
+실제 API payload와 ``EntryEventIntake``를 통과하고, 영상은 실제 camera·tracking
+adapter와 ``build_monitoring_pipeline``으로 처리한다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import timezone
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import sqlite3
+import sys
+import tempfile
+import time
+from typing import Any, Callable
+from uuid import UUID, uuid4
+
+
+VIEWER_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = VIEWER_DIR.parents[2]
+JETSON_ROOT = REPOSITORY_ROOT / "hw" / "jetson"
+if str(JETSON_ROOT) not in sys.path:
+    sys.path.insert(0, str(JETSON_ROOT))
+
+
+from src.api.entry_events_router import EntryEventPayload  # noqa: E402
+from src.application.entry_event_intake import EntryEventIntake  # noqa: E402
+from src.application.monitoring_factory import (  # noqa: E402
+    MonitoringDependencies,
+    MonitoringPolicy,
+    build_monitoring_pipeline,
+)
+from src.camera.calibration_utils import DEFAULT_REMAP_BALANCE  # noqa: E402
+from src.camera.frame_source import (  # noqa: E402
+    EPOCH,
+    EndOfVideo,
+    RemapFrameSource,
+    VideoFileFrameSource,
+    calibration_fingerprint,
+)
+from src.config.monitoring_policy import build_monitoring_policy  # noqa: E402
+from src.parking.egress_aisle_registry import EgressAisleRegistry  # noqa: E402
+from src.parking.zone_registry import ZoneRegistry  # noqa: E402
+from src.replay.publication_preparer import JsonlPublicationPreparer  # noqa: E402
+from src.session.entry_match_coordinator import EntryMatchCoordinator  # noqa: E402
+from src.storage.database import connect_database, open_database  # noqa: E402
+from src.tracking.adapters.side_masking_detector import (  # noqa: E402
+    DEFAULT_MASK_MARGIN_RATIO,
+    SideMaskingDetector,
+    compute_mask_ratios_from_zones,
+)
+from src.tracking.adapters.ultralytics_bytetrack import (  # noqa: E402
+    UltralyticsVehicleTracker,
+)
+from src.tracking.motion_estimator import MotionEstimator  # noqa: E402
+from src.tracking.protocols import Detector  # noqa: E402
+
+from .tracing import FrameTrace, TraceCollector, parse_entry_attempt_id  # noqa: E402
+
+
+DEFAULT_CAMERA_ID = "PIPELINE-VIEWER"
+DEFAULT_MODEL_PATH = JETSON_ROOT / "model" / "yolov8s.pt"
+DEFAULT_ZONES_PATH = JETSON_ROOT / "config" / "zone_definition.json"
+DEFAULT_EGRESS_AISLES_PATH = JETSON_ROOT / "config" / "egress_aisle.json"
+DEFAULT_CALIBRATION_PATH = REPOSITORY_ROOT / "ai" / "tracking" / "camera_calibration.json"
+ALLOWED_VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv"})
+
+
+class ViewerInputError(ValueError):
+    """Viewer 실행 전에 발견한 외부 입력·설정 오류."""
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerPaths:
+    model: Path = DEFAULT_MODEL_PATH
+    zones: Path = DEFAULT_ZONES_PATH
+    egress_aisles: Path = DEFAULT_EGRESS_AISLES_PATH
+    calibration: Path = DEFAULT_CALIBRATION_PATH
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerPolicy:
+    """화면에 모두 노출하는 monitoring 및 tracker 판단값."""
+
+    zone_entry_confirm_seconds: float = 1.0
+    zone_exit_confirm_seconds: float = 5.0
+    # EXIT 외향 통과 latch를 내향 재진입으로 취소하는 연속 관측 시간이다.
+    # ZoneVisit 진입·이탈 debounce와 별개의 Viewer 판정 테스트 정책이다.
+    exit_reentry_confirmation_seconds: float = 1.0
+    entry_zone_min_overlap_ratio: float = 0.40
+    # Viewer 판정 테스트의 명시적 override다. 일반 배포의 600초 정책은
+    # Settings/배포 계층이 계속 소유하며 이 기본값으로 바꾸지 않는다.
+    parking_confirm_seconds: float = 5.0
+    parking_move_confirm_seconds: float = 0.5
+    absence_confirmation_seconds: float = 5.0
+    trusted_sample_max_gap_seconds: float = 1.0
+    # geometry-only runtime re-identification의 provisional 기준이다. 모델과
+    # zone/parking 결론은 이 점수에 포함하지 않으며 replay로 재조정한다.
+    reidentification_max_gap_seconds: float = 4.0
+    reidentification_min_score: float = 0.42
+    reidentification_ambiguity_margin: float = 0.08
+    incident_confirm_seconds: float = 0.0
+    incident_clear_seconds: float = 0.0
+    # 위 두 값은 알려지지 않은 future rule의 compatibility fallback이다.
+    # 아래 값은 main 배포 설정과 같은 규칙별 시연 정책이다.
+    incident_disabled_zone_unauthorized_confirm_seconds: float = 0.0
+    incident_disabled_zone_unauthorized_clear_seconds: float = 0.0
+    incident_ev_zone_unauthorized_confirm_seconds: float = 0.0
+    incident_ev_zone_unauthorized_clear_seconds: float = 0.0
+    incident_ev_overstay_confirm_seconds: float = 0.0
+    incident_ev_overstay_clear_seconds: float = 0.0
+    incident_bad_parking_confirm_seconds: float = 0.5
+    incident_bad_parking_clear_seconds: float = 0.5
+    incident_out_of_zone_confirm_seconds: float = 0.5
+    incident_out_of_zone_clear_seconds: float = 0.5
+    incident_aisle_block_confirm_seconds: float = 0.5
+    incident_aisle_block_clear_seconds: float = 0.5
+    incident_double_parking_confirm_seconds: float = 0.0
+    incident_double_parking_clear_seconds: float = 0.0
+    zone_presence_min_overlap_ratio: float = 0.40
+    assignment_min_overlap_ratio: float = 0.50
+    assignment_ambiguous_margin: float = 0.05
+    bad_parking_min_primary_overlap_ratio: float = 0.75
+    bad_parking_min_secondary_overlap_ratio: float = 0.25
+    out_of_zone_min_spot_overlap_ratio: float = 0.50
+    blocking_relation_confirm_seconds: float = 1.0
+    blocking_relation_clear_seconds: float = 1.0
+    blocking_min_subject_overlap_ratio: float = 0.40
+    blocking_min_egress_coverage_ratio: float = 0.40
+    entry_match_window_seconds: float = 10.0
+    # bbox diagonal로 정규화한 time-window motion evidence의 provisional 값.
+    # 운영값으로 승격하기 전에 영상별 replay로 재조정한다.
+    motion_window_seconds: float = 0.75
+    motion_min_observation_span_seconds: float = 0.20
+    motion_max_sample_gap_seconds: float = 0.50
+    motion_stationary_threshold: float = 0.03
+    motion_moving_threshold: float = 0.10
+    motion_min_samples: int = 3
+    motion_min_trend_consistency: float = 0.60
+    # 모델 confidence 분포를 수집하기 위한 Viewer 진단용 provisional 기본값.
+    # 운영 threshold로 승격하기 전 영상별 precision/recall 재평가가 필요하다.
+    confidence: float = 0.01
+    tracker_config: str = "bytetrack.yaml"
+    remap_balance: float = DEFAULT_REMAP_BALANCE
+    mask_margin_ratio: float = DEFAULT_MASK_MARGIN_RATIO
+
+    def to_monitoring_policy(self) -> MonitoringPolicy:
+        """main·live·replay와 같은 config owner를 통해 정책을 조립한다."""
+
+        return build_monitoring_policy(self)
+
+
+@dataclass(frozen=True, slots=True)
+class VideoUpload:
+    file_name: str
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerRunRequest:
+    entry_event_json: str
+    idempotency_key: str
+    video: VideoUpload
+    paths: ViewerPaths = field(default_factory=ViewerPaths)
+    policy: ViewerPolicy = field(default_factory=ViewerPolicy)
+    end_seconds: float | None = None
+
+
+@dataclass(slots=True)
+class ViewerRun:
+    request_signature: str
+    workspace: Path
+    video_path: Path
+    database_path: Path
+    events_path: Path
+    entry_payload: EntryEventPayload
+    entry_created: bool
+    frames: tuple[FrameTrace, ...]
+    aliases: dict[Any, str]
+    video_fps: float
+    video_duration_seconds: float
+    zones: tuple[Any, ...]
+    model_path: Path
+    detection_confidence_threshold: float
+    tracker_config: str
+    policy_snapshot_json: str
+    asset_snapshot_json: str
+    error_type: str | None = None
+    error_message: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.error_type is None
+
+
+ProgressCallback = Callable[[int, int | None], None]
+
+
+def default_paths() -> ViewerPaths:
+    return ViewerPaths()
+
+
+def build_allow_example(*, entry_attempt_id: UUID | None = None) -> str:
+    """영상 00:00에 맞춘 현재 EntryDecision wire의 synthetic ALLOW 예시 JSON."""
+
+    payload = {
+        "entryAttemptId": str(entry_attempt_id or uuid4()),
+        "decisionRevision": 1,
+        "accessDecision": "ALLOW",
+        "entryTime": EPOCH.isoformat(),
+        "sessionContext": {
+            "sessionId": 1,
+            "vehicleId": 1,
+            "isDisabledVehicle": False,
+            "isElectric": False,
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def default_idempotency_key(entry_event_json: str) -> str:
+    payload = parse_entry_event(entry_event_json)
+    return (
+        f"viewer-entry-{payload.entry_attempt_id}"
+        f"-r{payload.decision_revision}"
+    )
+
+
+def parse_entry_event(raw_json: str) -> EntryEventPayload:
+    """실제 FastAPI payload 모델로 JSON과 영상 시작 시각 계약을 검증한다."""
+
+    try:
+        payload = EntryEventPayload.model_validate_json(raw_json)
+    except Exception as exc:
+        raise ViewerInputError(f"입차 이벤트 JSON이 실제 API 계약과 다릅니다: {exc}") from exc
+    if payload.entry_time.astimezone(timezone.utc) != EPOCH:
+        raise ViewerInputError(
+            "영상 첫 프레임은 입차 순간이어야 합니다. "
+            f"entryTime을 {EPOCH.isoformat()}로 맞추세요: "
+            f"actual={payload.entry_time.isoformat()}"
+        )
+    return payload
+
+
+def run_viewer_pipeline(
+    request: ViewerRunRequest,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    workspace_parent: Path | None = None,
+) -> ViewerRun:
+    """입차 접수 후 실제 Jetson monitoring workflow로 영상을 처리한다."""
+
+    payload, zones, egress_aisles = _validate_request(request)
+    workspace = Path(
+        tempfile.mkdtemp(
+            prefix="jetson-pipeline-viewer-",
+            dir=None if workspace_parent is None else str(workspace_parent),
+        )
+    )
+    video_suffix = Path(request.video.file_name).suffix.lower() or ".mp4"
+    video_path = workspace / f"input{video_suffix}"
+    database_path = workspace / "viewer.db"
+    events_path = workspace / "events.jsonl"
+    connection_factory = lambda: connect_database(database_path)
+    try:
+        video_path.write_bytes(request.video.content)
+        open_database(database_path).close()
+        entry_created = _receive_entry_event(
+            payload,
+            idempotency_key=request.idempotency_key,
+            zones=zones,
+            match_window_seconds=request.policy.entry_match_window_seconds,
+            connection_factory=connection_factory,
+        )
+    except ValueError as exc:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise ViewerInputError(
+            f"입차 이벤트가 실제 EntryEventIntake 계약을 위반했습니다: {exc}"
+        ) from exc
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+    entry_attempt_id = parse_entry_attempt_id(payload.entry_attempt_id)
+    collector = TraceCollector(
+        frames_directory=workspace / "frames",
+        zones=zones.all(),
+        entry_attempt_id=entry_attempt_id,
+        connection_factory=connection_factory,
+    )
+
+    inner = VideoFileFrameSource(
+        camera_id=DEFAULT_CAMERA_ID,
+        path=video_path,
+        start_seconds=0.0,
+        end_seconds=request.end_seconds,
+    )
+    frame_source = RemapFrameSource(
+        inner=inner,
+        calibration_path=str(request.paths.calibration),
+        balance=request.policy.remap_balance,
+    )
+    detector = _build_detector(
+        model_path=request.paths.model,
+        tracker_config=request.policy.tracker_config,
+        confidence=request.policy.confidence,
+        capture_detections=True,
+        zones=zones,
+        mask_margin_ratio=request.policy.mask_margin_ratio,
+    )
+
+    error_type: str | None = None
+    error_message: str | None = None
+    pipeline = None
+    opened = False
+    try:
+        with events_path.open("w", encoding="utf-8", newline="\n") as events_handle:
+            pipeline = build_monitoring_pipeline(
+                zones=zones,
+                egress_aisles=egress_aisles,
+                policy=request.policy.to_monitoring_policy(),
+                dependencies=MonitoringDependencies(
+                    camera_id=DEFAULT_CAMERA_ID,
+                    frame_source=frame_source,
+                    detector=detector,
+                    publication_preparer=JsonlPublicationPreparer(
+                        events_handle=events_handle
+                    ),
+                    connection_factory=connection_factory,
+                    motion_estimator=MotionEstimator(
+                        window_seconds=request.policy.motion_window_seconds,
+                        min_observation_span_seconds=(
+                            request.policy.motion_min_observation_span_seconds
+                        ),
+                        max_sample_gap_seconds=(
+                            request.policy.motion_max_sample_gap_seconds
+                        ),
+                        stationary_threshold=(
+                            request.policy.motion_stationary_threshold
+                        ),
+                        moving_threshold=request.policy.motion_moving_threshold,
+                        min_samples=request.policy.motion_min_samples,
+                        min_trend_consistency=(
+                            request.policy.motion_min_trend_consistency
+                        ),
+                    ),
+                ),
+            )
+            pipeline.open()
+            opened = True
+            total_frames = _analysis_frame_count(inner, request.end_seconds)
+            while True:
+                started = time.perf_counter()
+                try:
+                    pipeline.process_next_frame(frame_observer=collector.observe)
+                except EndOfVideo:
+                    break
+                collector.set_last_elapsed_ms(
+                    (time.perf_counter() - started) * 1000.0
+                )
+                if progress_callback is not None:
+                    progress_callback(len(collector.frames), total_frames)
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_message = str(exc)
+    finally:
+        if pipeline is not None and opened:
+            try:
+                pipeline.close()
+            except Exception as exc:
+                if error_type is None:
+                    error_type = type(exc).__name__
+                    error_message = str(exc)
+
+    return ViewerRun(
+        request_signature=_request_signature(request),
+        workspace=workspace,
+        video_path=video_path,
+        database_path=database_path,
+        events_path=events_path,
+        entry_payload=payload,
+        entry_created=entry_created,
+        frames=tuple(collector.frames),
+        aliases=collector.aliases,
+        video_fps=inner.fps,
+        video_duration_seconds=inner.duration_seconds,
+        zones=zones.all(),
+        model_path=request.paths.model,
+        detection_confidence_threshold=request.policy.confidence,
+        tracker_config=request.policy.tracker_config,
+        policy_snapshot_json=_policy_snapshot_json(request.policy),
+        asset_snapshot_json=_asset_snapshot_json(
+            paths=request.paths,
+            zones=zones,
+            egress_aisles=egress_aisles,
+            remap_balance=request.policy.remap_balance,
+        ),
+        error_type=error_type,
+        error_message=error_message,
+    )
+
+
+def cleanup_run(run: ViewerRun) -> None:
+    """현재 session이 소유한 viewer 임시 산출물을 제거한다."""
+
+    shutil.rmtree(run.workspace, ignore_errors=True)
+
+
+def _validate_request(
+    request: ViewerRunRequest,
+) -> tuple[EntryEventPayload, ZoneRegistry, EgressAisleRegistry]:
+    payload = parse_entry_event(request.entry_event_json)
+    if not request.idempotency_key.strip():
+        raise ViewerInputError("Idempotency-Key는 비어 있을 수 없습니다.")
+    if not request.video.content:
+        raise ViewerInputError("분석할 동영상이 비어 있습니다.")
+    suffix = Path(request.video.file_name).suffix.lower()
+    if suffix not in ALLOWED_VIDEO_SUFFIXES:
+        raise ViewerInputError(
+            "지원하는 영상 확장자는 mp4, avi, mov, mkv입니다: "
+            f"actual={suffix or '(none)'}"
+        )
+    for label, path in (
+        ("YOLO 모델", request.paths.model),
+        ("구역 정의", request.paths.zones),
+        ("egress aisle 정의", request.paths.egress_aisles),
+        ("카메라 calibration", request.paths.calibration),
+    ):
+        if not path.is_file():
+            raise ViewerInputError(f"{label} 파일을 찾을 수 없습니다: {path}")
+    if request.end_seconds is not None and request.end_seconds <= 0:
+        raise ViewerInputError("영상 종료 시각은 0초보다 커야 합니다.")
+    if not 0.0 <= request.policy.remap_balance <= 1.0:
+        raise ViewerInputError("remap balance는 0~1 범위여야 합니다.")
+
+    zones = ZoneRegistry.from_file(request.paths.zones)
+    egress_aisles = EgressAisleRegistry.from_file(
+        request.paths.egress_aisles,
+        zones=zones,
+    )
+    fingerprint = calibration_fingerprint(
+        request.paths.calibration,
+        request.policy.remap_balance,
+    )
+    expected_reference = fingerprint.get("calibrationSha256")
+    if zones.calibration_reference != expected_reference:
+        raise ViewerInputError(
+            "구역 정의와 calibration 좌표계가 다릅니다: "
+            f"zones={zones.calibration_reference}, "
+            f"calibration={expected_reference}"
+        )
+    # 실제 domain owner의 수치 검증을 실행 전에 한 번 통과시킨다.
+    request.policy.to_monitoring_policy()
+    MotionEstimator(
+        window_seconds=request.policy.motion_window_seconds,
+        min_observation_span_seconds=(
+            request.policy.motion_min_observation_span_seconds
+        ),
+        max_sample_gap_seconds=request.policy.motion_max_sample_gap_seconds,
+        stationary_threshold=request.policy.motion_stationary_threshold,
+        moving_threshold=request.policy.motion_moving_threshold,
+        min_samples=request.policy.motion_min_samples,
+        min_trend_consistency=request.policy.motion_min_trend_consistency,
+    )
+    UltralyticsVehicleTracker(
+        model_path=str(request.paths.model),
+        tracker_config=request.policy.tracker_config,
+        confidence=request.policy.confidence,
+    )
+    return payload, zones, egress_aisles
+
+
+def _receive_entry_event(
+    payload: EntryEventPayload,
+    *,
+    idempotency_key: str,
+    zones: ZoneRegistry,
+    match_window_seconds: float,
+    connection_factory: Callable[[], sqlite3.Connection],
+) -> bool:
+    intake = EntryEventIntake(
+        EntryMatchCoordinator(zones=zones),
+        match_window_seconds=match_window_seconds,
+    )
+    connection = connection_factory()
+    try:
+        return intake.receive(
+            payload.to_input(),
+            idempotency_key=idempotency_key,
+            connection=connection,
+        ).created
+    finally:
+        connection.close()
+
+
+def _build_detector(
+    *,
+    model_path: Path,
+    tracker_config: str,
+    confidence: float,
+    capture_detections: bool,
+    zones: ZoneRegistry,
+    mask_margin_ratio: float,
+) -> Detector:
+    """full-frame 경로의 YOLO delegate를 좌우 마스킹 decorator로 감싼다.
+
+    `zones`가 full-frame(`DEFAULT_ZONES_PATH`) 좌표계인 이 경로에서만 조립한다
+    (537 인수인계 §6). `UltralyticsVehicleTracker` 내부는 건드리지 않는다 —
+    같은 tracker가 pilot v6 crop 리플레이 등 다른 좌표계 경로에서도 쓰이기
+    때문이다. 마스크 경계는 항상 실제 `zones`에서 자동 계산하고,
+    `mask_margin_ratio`만 조정 가능하다(537 코드리뷰 반영).
+
+    `capture_detections`는 그대로 inner tracker에 전달한다 — 486이 도입한 pre-track
+    진단값은 bbox·confidence·class_id를 float/int로 복사해 보관하므로,
+    `SideMaskingDetector`가 재사용하는 프레임 버퍼를 참조로 붙들지 않는다.
+    """
+
+    raw_detector = UltralyticsVehicleTracker(
+        model_path=str(model_path),
+        tracker_config=tracker_config,
+        confidence=confidence,
+        capture_detections=capture_detections,
+    )
+    left_ratio, right_ratio = compute_mask_ratios_from_zones(
+        zones.all(), margin_ratio=mask_margin_ratio,
+    )
+    return SideMaskingDetector(
+        inner=raw_detector,
+        left_mask_end_ratio=left_ratio,
+        right_mask_start_ratio=right_ratio,
+    )
+
+
+def _analysis_frame_count(
+    source: VideoFileFrameSource,
+    end_seconds: float | None,
+) -> int | None:
+    if source.fps <= 0:
+        return None
+    duration = source.duration_seconds
+    selected_duration = duration if end_seconds is None else min(duration, end_seconds)
+    return max(1, int(selected_duration * source.fps))
+
+
+def _request_signature(request: ViewerRunRequest) -> str:
+    digest = hashlib.sha256()
+    digest.update(request.entry_event_json.encode("utf-8"))
+    digest.update(request.idempotency_key.encode("utf-8"))
+    digest.update(request.video.file_name.encode("utf-8"))
+    digest.update(request.video.content)
+    digest.update(str(request.paths).encode("utf-8"))
+    digest.update(str(request.policy).encode("utf-8"))
+    digest.update(str(request.end_seconds).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _policy_snapshot_json(policy: ViewerPolicy) -> str:
+    """실행에 실제 적용한 Viewer policy를 canonical JSON으로 고정한다."""
+
+    return json.dumps(
+        asdict(policy),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _asset_snapshot_json(
+    *,
+    paths: ViewerPaths,
+    zones: ZoneRegistry,
+    egress_aisles: EgressAisleRegistry,
+    remap_balance: float,
+) -> str:
+    """실행에 사용한 모델·기하 snapshot의 경로와 digest를 고정한다."""
+
+    payload = {
+        "schemaVersion": 1,
+        "model": {
+            "path": str(paths.model),
+            "sha256": _file_sha256(paths.model),
+        },
+        "zones": {
+            "path": str(paths.zones),
+            "sha256": _file_sha256(paths.zones),
+            "zoneDefinitionVersion": int(zones.zone_definition_version),
+            "calibrationReference": zones.calibration_reference,
+        },
+        "egressAisles": {
+            "path": str(paths.egress_aisles),
+            "sha256": _file_sha256(paths.egress_aisles),
+            "egressAisleDefinitionVersion": int(
+                egress_aisles.egress_aisle_definition_version
+            ),
+            "zoneDefinitionVersion": int(
+                egress_aisles.zone_definition_version
+            ),
+            "calibrationReference": egress_aisles.calibration_reference,
+        },
+        "calibration": {
+            "path": str(paths.calibration),
+            "sha256": _file_sha256(paths.calibration),
+            "runtimeFingerprint": calibration_fingerprint(
+                paths.calibration,
+                remap_balance,
+            ),
+        },
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

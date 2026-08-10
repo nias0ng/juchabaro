@@ -1,0 +1,34 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "baro-app-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--prefix",
+        "C:\\Users\\SSAFY\\Desktop\\S15P11E202\\frontend\\baro-app",
+        "--",
+        "--port",
+        "8093"
+      ],
+      "port": 8093
+    },
+    {
+      "name": "admin-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "C:\\Users\\SSAFY\\Desktop\\S15P11E202\\frontend\\baro-web\\admin-web",
+        "--",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "port": 5174
+    }
+  ]
+}

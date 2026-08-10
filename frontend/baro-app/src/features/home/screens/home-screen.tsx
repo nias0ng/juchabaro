@@ -1,0 +1,133 @@
+import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Text } from 'react-native';
+
+import { ResponsiveContainer, Screen } from '@/components/ui';
+import { ParkingStatusCard } from '@/features/parking/components/parking-status-card';
+import { VehicleStatusCarousel } from '@/features/parking/components/vehicle-status-carousel';
+import { useParkingSessions } from '@/features/parking/hooks/use-parking-sessions';
+import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
+import { toParkingStatusDisplay } from '@/features/parking/utils/parking-zone';
+import { useAuth } from '@/providers/auth-provider';
+import { Palette } from '@/styles';
+
+import { styles } from './home-screen.styles';
+import { HomeTopBar } from '../components/home-top-bar';
+import { QuickActionGrid, type QuickAction } from '../components/quick-action-grid';
+
+const DEFAULT_AVATAR_INITIAL = '바';
+const DEFAULT_UNIT_LABEL = '동/호수 정보 없음';
+const PARKING_STATUS_TITLE = '주차 현황';
+
+const quickActions: QuickAction[] = [
+  {
+    label: '이동\n요청',
+    background: Palette.mint100,
+    iconColor: Palette.emerald500,
+    onPress: () => router.push('/resident/request-compose'),
+  },
+  {
+    label: '내\n차량',
+    background: Palette.lavender100,
+    iconColor: Palette.violet500,
+    onPress: () => router.push('/resident/vehicles'),
+  },
+  {
+    label: '방문\n등록',
+    background: Palette.peach100,
+    iconColor: Palette.orange400,
+    onPress: () => router.push('/auth/register-car?carType=visitor'),
+  },
+  {
+    label: '위반\n이력',
+    background: Palette.sky100,
+    iconColor: Palette.blue500,
+    onPress: () => router.push('/resident/violation-history'),
+  },
+];
+
+export default function HomeScreen() {
+  const { user } = useAuth();
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const avatarInitial = user?.name?.trim().charAt(0) || DEFAULT_AVATAR_INITIAL;
+  // 관리자 계정 등 동/호수가 없는 경우(buildingNumber/unitNumber가 null) 대비.
+  const unitLabel =
+    user?.buildingNumber && user?.unitNumber
+      ? `${user.buildingNumber}동 ${user.unitNumber}호`
+      : DEFAULT_UNIT_LABEL;
+
+  const {
+    sessions,
+    isLoading: isSessionsLoading,
+    error: sessionsError,
+    refetch: refetchSessions,
+  } = useParkingSessions();
+  const myZoneNumbers = sessions.flatMap((session) =>
+    session.zoneNumber ? [session.zoneNumber] : [],
+  );
+
+  const {
+    summary,
+    isLoading: isSummaryLoading,
+    error: summaryError,
+    refetch: refetchSummary,
+  } = useParkingZoneSummary();
+  const parkingStatuses = {
+    B1: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null,
+    B2: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B2') : null,
+    B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
+  };
+
+  const handleRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([refetchSessions(), refetchSummary()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refetchSessions, refetchSummary]);
+
+  return (
+    <LinearGradient
+      colors={['#ddf3f0', '#eae7fb', '#f7f6fb']}
+      locations={[0, 0.46, 0.78]}
+      style={styles.gradient}
+    >
+      <Screen
+        scroll
+        edges={['top', 'right', 'left']}
+        backgroundColor="transparent"
+        refreshing={isPullRefreshing}
+        onRefresh={() => void handleRefresh()}
+      >
+        <ResponsiveContainer style={styles.content}>
+          <HomeTopBar
+            unitLabel={unitLabel}
+            avatarInitial={avatarInitial}
+            onPressNotification={() => router.push('/resident/notifications')}
+          />
+
+          <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
+
+          <VehicleStatusCarousel
+            sessions={sessions}
+            isLoading={isSessionsLoading}
+            hasError={Boolean(sessionsError)}
+          />
+
+          <QuickActionGrid actions={quickActions} />
+
+          <ParkingStatusCard
+            title={PARKING_STATUS_TITLE}
+            statuses={parkingStatuses}
+            isLoading={isSummaryLoading}
+            hasError={Boolean(summaryError)}
+            onPress={() => router.push('/resident/parking-map')}
+          />
+
+        </ResponsiveContainer>
+      </Screen>
+    </LinearGradient>
+  );
+}

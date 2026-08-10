@@ -1,0 +1,8 @@
+model_name: plate_detector
+base_model: yolov8n-pose.pt
+data: data/license-plate-dataset-v1.1-cleaned/data.yaml
+epochs: 5
+imgsz: 640
+batch: 5
+device: ""
+project: smart-parking-ai

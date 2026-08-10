@@ -1,0 +1,63 @@
+import type { ColorValue } from 'react-native';
+
+import { FormSectionLabel, Stack, TextField } from '@/components/ui';
+import { Spacing } from '@/styles';
+
+import type { HouseholdCarFormValues, RegisterCarType } from '../../types/register-car';
+import { isCarModelValid, isPlateNumberValid } from '../../validation/register-car';
+
+import { RegisterCarAvailabilitySection } from './register-car-availability-section';
+import { RegisterCarSummaryCard } from './register-car-summary-card';
+import { RegisterCarTypeSelector } from './register-car-type-selector';
+import { VehicleNumberField } from './vehicle-number-field';
+
+const SUMMARY_CARD_GRADIENT: readonly [ColorValue, ColorValue] = ['#dcd7fb', '#c9ece7'];
+
+type HouseholdCarFormProps = {
+  carType: RegisterCarType;
+  onChangeCarType: (type: RegisterCarType) => void;
+  values: HouseholdCarFormValues;
+  onChange: <K extends keyof HouseholdCarFormValues>(key: K, value: HouseholdCarFormValues[K]) => void;
+};
+
+export function HouseholdCarForm({ carType, onChangeCarType, values, onChange }: HouseholdCarFormProps) {
+  const plateValid = isPlateNumberValid(values.plateNumber);
+  const carModelValid = isCarModelValid(values.carModel);
+
+  return (
+    <Stack gap={Spacing.base}>
+      <RegisterCarSummaryCard
+        badgeLabel="세대 차량"
+        gradientColors={SUMMARY_CARD_GRADIENT}
+        plateNumber={values.plateNumber}
+      />
+
+      <Stack gap={Spacing.xs}>
+        <FormSectionLabel label="차량 성격" variant="muted" />
+        <RegisterCarTypeSelector value={carType} onChange={onChangeCarType} />
+      </Stack>
+
+      <VehicleNumberField
+        value={values.plateNumber}
+        onChangeText={(text) => onChange('plateNumber', text)}
+        errorMessage={values.plateNumber.length > 0 && !plateValid ? '차량 번호 형식을 확인해 주세요' : undefined}
+      />
+
+      <TextField
+        label="차종"
+        value={values.carModel}
+        onChangeText={(text) => onChange('carModel', text)}
+        placeholder="예 : 아이오닉 5"
+        error={values.carModel.length > 0 && !carModelValid ? '차종을 입력해 주세요' : undefined}
+      />
+
+      <RegisterCarAvailabilitySection
+        title="이용 가능 구역"
+        isElectric={values.isElectric}
+        onChangeElectric={(checked) => onChange('isElectric', checked)}
+        isDisabled={values.isDisabled}
+        onChangeDisabled={(checked) => onChange('isDisabled', checked)}
+      />
+    </Stack>
+  );
+}

@@ -38,5 +38,31 @@ coverage/
 # Python cache and virtual environments
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
+
+# AI training pipeline outputs
+ai/training/runs/
+ai/training/data/raw/
+ai/training/data/samples/
+ai/training/data/processed/
+*.pt
+*.onnx
+
+# W&B local cache
+wandb/
+
+# Hardware runtime outputs
+hw/**/captures/
+hw/**/models/
+hw/**/weights/
+hw/jetson/data/
+*.pth
+*.engine
+
+# Local git worktrees (scratch, per-branch isolated workspaces)
+.worktrees/
+
+# 리플레이 검증 산출물 (오버레이 mp4 / 이벤트 JSONL)
+/out/

@@ -1,0 +1,17 @@
+rpi-lgpio
+python-dotenv==1.2.2
+
+# OCR / vision runtime
+numpy==2.3.5
+# PaddleX requires the contrib build; keep Ultralytics' base build aligned.
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+paddleocr==3.7.0
+paddlex[ocr-core]==3.7.2
+onnxruntime==1.27.0
+# Raspberry Pi OS: CPython 3.13 / AArch64 CPU wheels
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp313-cp313-manylinux_2_28_aarch64.whl#sha256=3e532e553b37ee859205a9b2d1c7977fd6922f53bbb1b9bfdd5bdc00d1a60ed4
+torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.24.1-cp313-cp313-manylinux_2_28_aarch64.whl#sha256=59ddbe5779943af99a897fcd5894757ae7cffeb1c25a519b79cd9338188a8664
+ultralytics==8.4.108
+
+pytest
