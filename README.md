@@ -241,11 +241,11 @@ App(모바일 앱·백엔드) · AI · HW(임베디드) 세 영역으로 나누�
 
 ## **5. 레이아웃 및 디자인**
 
-- 앱 와이어프레임 (Figma)
+- 사용자 앱 실제 동작 화면
 
-![와이어프레임](./docs/images/Wireframe.png)
+![와이어프레임](./docs/images/baro_screenshot.png)
 
-- 웹 와이어프레임 (Figma)
+- 관리자 웹 실제 동작 화면
 
 ![와이어프레임](./docs/images/WireframeWeb.png)
 
