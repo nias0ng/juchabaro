@@ -1,9 +1,7 @@
+/** 모든 API 호출이 거치는 공통 HTTP 클라이언트. 백엔드 공통 응답 포맷을 해석해 성공 시 result만, 실패 시 ApiError를 던진다. */
 import { ApiError } from './api-error';
 import { handleUnauthorized } from './unauthorized-handler';
 
-/**
- * 백엔드 공통 응답 포맷
- */
 type ApiEnvelope<T> = {
   httpStatus: string;
   isSuccess: boolean;
@@ -23,8 +21,6 @@ function getErrorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
-// 모든 API 호출이 거치는 공통 통로. 여기 하나만 있으면
-// "요청 보내기 → 응답 JSON 파싱 → 성공/실패 판별"을 매번 화면마다 반복하지 않아도 된다.
 async function request<T>(path: string, init: RequestInit, requiresAuth = false): Promise<T> {
   if (!BASE_URL) {
     throw new ApiError(

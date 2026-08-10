@@ -353,7 +353,7 @@ def test_decode_projection_rejects_invalid_projection(
 
 
 @pytest.mark.parametrize(
-    "active,last_completed,expected",
+    "pending,expected",
     [
         (
             frozenset(
@@ -362,38 +362,24 @@ def test_decode_projection_rejects_invalid_projection(
                     EV_ZONE_WARNING_SPEAKER_ID,
                 }
             ),
-            None,
             DISABLED_ZONE_WARNING_SPEAKER_ID,
-        ),
-        (
-            frozenset(
-                {
-                    DISABLED_ZONE_WARNING_SPEAKER_ID,
-                    EV_ZONE_WARNING_SPEAKER_ID,
-                }
-            ),
-            DISABLED_ZONE_WARNING_SPEAKER_ID,
-            EV_ZONE_WARNING_SPEAKER_ID,
         ),
         (
             frozenset({DISABLED_ZONE_WARNING_SPEAKER_ID}),
-            EV_ZONE_WARNING_SPEAKER_ID,
             DISABLED_ZONE_WARNING_SPEAKER_ID,
         ),
         (
             frozenset({EV_ZONE_WARNING_SPEAKER_ID}),
-            None,
             EV_ZONE_WARNING_SPEAKER_ID,
         ),
-        (frozenset(), None, None),
+        (frozenset(), None),
     ],
 )
-def test_next_playback_id_uses_canonical_round_robin(
-    active: frozenset[str],
-    last_completed: str | None,
+def test_next_playback_id_uses_canonical_order(
+    pending: frozenset[str],
     expected: str | None,
 ) -> None:
-    assert _next_playback_id(active, last_completed) == expected
+    assert _next_playback_id(pending) == expected
 
 
 # [Open and startup]
@@ -554,11 +540,11 @@ def test_single_projection_starts_matching_wav(
     adapter.close()
 
 
-def test_single_id_repeats_and_two_ids_round_robin_without_gap(
+def test_two_ids_play_sequentially_once_each(
     tmp_path: Path,
 ) -> None:
     disabled, ev = _wav_paths(tmp_path)
-    backend = FakeAudioBackend(poll_results=[True, True, True])
+    backend = FakeAudioBackend(poll_results=[True, True])
     adapter, _, scheduler = _open_adapter(
         tmp_path=tmp_path,
         backend=backend,
@@ -571,11 +557,8 @@ def test_single_id_repeats_and_two_ids_round_robin_without_gap(
     _apply_and_wait(adapter, scheduler, commands)
     _poll_and_wait(scheduler)
     _poll_and_wait(scheduler)
-    _poll_and_wait(scheduler)
 
-    assert _start_paths(backend.events)[:4] == [
-        disabled.resolve(),
-        ev.resolve(),
+    assert _start_paths(backend.events) == [
         disabled.resolve(),
         ev.resolve(),
     ]
@@ -583,6 +566,33 @@ def test_single_id_repeats_and_two_ids_round_robin_without_gap(
     for index, name in enumerate(names[:-1]):
         if name == "poll":
             assert names[index + 1] == "start"
+    adapter.close()
+
+
+def test_same_warning_interval_plays_once_and_readd_plays_again(
+    tmp_path: Path,
+) -> None:
+    disabled, _ = _wav_paths(tmp_path)
+    backend = FakeAudioBackend(poll_results=[True, True])
+    adapter, _, scheduler = _open_adapter(
+        tmp_path=tmp_path,
+        backend=backend,
+    )
+    command = _command(DISABLED_ZONE_WARNING_SPEAKER_ID)
+    _apply_and_wait(adapter, scheduler, (command,))
+    _poll_and_wait(scheduler)
+
+    adapter.apply_projection((replace(command, reason="RETRY"),))
+    assert _start_paths(backend.events) == [disabled.resolve()]
+
+    _apply_and_wait(adapter, scheduler, ())
+    _apply_and_wait(adapter, scheduler, (command,))
+    _poll_and_wait(scheduler)
+
+    assert _start_paths(backend.events) == [
+        disabled.resolve(),
+        disabled.resolve(),
+    ]
     adapter.close()
 
 
@@ -632,7 +642,7 @@ def test_invalid_projection_preserves_existing_target(
     adapter.close()
 
 
-def test_adding_id_keeps_current_then_uses_next_round_robin_id(
+def test_adding_id_keeps_current_then_plays_new_id_once(
     tmp_path: Path,
 ) -> None:
     disabled, ev = _wav_paths(tmp_path)

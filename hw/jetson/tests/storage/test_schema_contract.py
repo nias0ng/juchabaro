@@ -175,6 +175,7 @@ def test_schema_keeps_each_restart_critical_accumulator_and_fact_timestamp(
         },
         "incidents": {
             "subject_physical_vehicle_id",
+            "related_zone_ids_payload",
             "confirm_trusted_duration_us",
             "clear_trusted_duration_us",
             "trusted_sample_max_gap_duration_us",

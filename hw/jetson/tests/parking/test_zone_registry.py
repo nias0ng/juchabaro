@@ -155,7 +155,7 @@ def test_loads_tracked_main_deployment_snapshot() -> None:
     assert registry.get(1).zone_type is ZoneType.GENERAL
     assert registry.get(1).egress_zone_ids == (ZoneId(7),)
     assert registry.get(5).zone_type is ZoneType.EV_CHARGING
-    assert registry.get(5).allowed_duration_seconds == 7200.0
+    assert registry.get(5).allowed_duration_seconds == 70.0
     assert registry.get(7).zone_type is ZoneType.AISLE
     assert registry.get(8).zone_type is ZoneType.ENTRY_EXIT
     assert registry.get(8).entry_exit_role is EntryExitRole.ENTRY

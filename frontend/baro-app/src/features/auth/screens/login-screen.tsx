@@ -17,7 +17,6 @@ import { useLoginForm } from '../hooks/use-login-form';
 import { styles } from './login-screen.styles';
 
 export default function LoginScreen() {
-  // TODO(auth-role): role(RESIDENT/ADMIN)에 따른 분기가 필요하면 여기서 처리.
   const form = useLoginForm(() => router.replace('/resident'));
 
   return (

@@ -5,7 +5,7 @@ import { FontWeight, Palette, Radius, Spacing } from '@/styles';
 export const styles = StyleSheet.create({
   container: {
     width: '100%',
-    aspectRatio: 16 / 9, // 4:3보다 세로가 짧은 가로형
+    aspectRatio: 16 / 9,
     backgroundColor: Palette.black,
     overflow: 'hidden',
   },

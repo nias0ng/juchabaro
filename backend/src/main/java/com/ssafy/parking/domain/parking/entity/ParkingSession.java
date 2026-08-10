@@ -67,8 +67,13 @@ public class ParkingSession extends BaseEntity {
             LocalDateTime entryTime,
             LocalDateTime parkedAt,
             LocalDateTime exitTime,
-            String idempotencyKey
+            String idempotencyKey,
+            int contextRevision
     ) {
+        if (contextRevision < 1) {
+            throw new IllegalArgumentException("contextRevision은 1 이상이어야 합니다.");
+        }
+
         this.vehicle = vehicle;
         this.zone = zone;
         this.recognizedPlateNumber = recognizedPlateNumber;
@@ -77,6 +82,7 @@ public class ParkingSession extends BaseEntity {
         this.parkedAt = parkedAt;
         this.exitTime = exitTime;
         this.idempotencyKey = idempotencyKey;
+        this.contextRevision = contextRevision;
     }
 
     public void assignZone(ParkingZone zone, LocalDateTime parkedAt) {

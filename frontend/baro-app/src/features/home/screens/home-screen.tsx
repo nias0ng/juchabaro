@@ -1,13 +1,13 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Text } from 'react-native';
 
 import { ResponsiveContainer, Screen } from '@/components/ui';
 import { ParkingStatusCard } from '@/features/parking/components/parking-status-card';
-import { VehicleStatusCard } from '@/features/parking/components/vehicle-status-card';
+import { VehicleStatusCarousel } from '@/features/parking/components/vehicle-status-carousel';
 import { useParkingSessions } from '@/features/parking/hooks/use-parking-sessions';
 import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
-import { pickPrimarySession, toVehicleStatusDisplay } from '@/features/parking/utils/parking-session';
 import { toParkingStatusDisplay } from '@/features/parking/utils/parking-zone';
 import { useAuth } from '@/providers/auth-provider';
 import { Palette } from '@/styles';
@@ -49,6 +49,7 @@ const quickActions: QuickAction[] = [
 
 export default function HomeScreen() {
   const { user } = useAuth();
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const avatarInitial = user?.name?.trim().charAt(0) || DEFAULT_AVATAR_INITIAL;
   // 관리자 계정 등 동/호수가 없는 경우(buildingNumber/unitNumber가 null) 대비.
   const unitLabel =
@@ -59,13 +60,9 @@ export default function HomeScreen() {
   const {
     sessions,
     isLoading: isSessionsLoading,
-    isRefreshing: isSessionsRefreshing,
     error: sessionsError,
     refetch: refetchSessions,
   } = useParkingSessions();
-  const primarySession = pickPrimarySession(sessions);
-  const vehicleStatus = primarySession ? toVehicleStatusDisplay(primarySession) : null;
-  const additionalSessionCount = Math.max(sessions.length - 1, 0);
   const myZoneNumbers = sessions.flatMap((session) =>
     session.zoneNumber ? [session.zoneNumber] : [],
   );
@@ -73,11 +70,23 @@ export default function HomeScreen() {
   const {
     summary,
     isLoading: isSummaryLoading,
-    isRefreshing: isSummaryRefreshing,
     error: summaryError,
     refetch: refetchSummary,
   } = useParkingZoneSummary();
-  const parkingStatus = summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null;
+  const parkingStatuses = {
+    B1: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B1') : null,
+    B2: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B2') : null,
+    B3: summary ? toParkingStatusDisplay(summary, myZoneNumbers, 'B3') : null,
+  };
+
+  const handleRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([refetchSessions(), refetchSummary()]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refetchSessions, refetchSummary]);
 
   return (
     <LinearGradient
@@ -89,8 +98,8 @@ export default function HomeScreen() {
         scroll
         edges={['top', 'right', 'left']}
         backgroundColor="transparent"
-        refreshing={isSessionsRefreshing || isSummaryRefreshing}
-        onRefresh={() => void Promise.all([refetchSessions(), refetchSummary()])}
+        refreshing={isPullRefreshing}
+        onRefresh={() => void handleRefresh()}
       >
         <ResponsiveContainer style={styles.content}>
           <HomeTopBar
@@ -101,9 +110,8 @@ export default function HomeScreen() {
 
           <Text style={styles.greeting}>{'주차,\n오늘도 편하게'}</Text>
 
-          <VehicleStatusCard
-            session={vehicleStatus}
-            additionalCount={additionalSessionCount}
+          <VehicleStatusCarousel
+            sessions={sessions}
             isLoading={isSessionsLoading}
             hasError={Boolean(sessionsError)}
           />
@@ -112,8 +120,7 @@ export default function HomeScreen() {
 
           <ParkingStatusCard
             title={PARKING_STATUS_TITLE}
-            status={parkingStatus}
-            floor="B1"
+            statuses={parkingStatuses}
             isLoading={isSummaryLoading}
             hasError={Boolean(summaryError)}
             onPress={() => router.push('/resident/parking-map')}

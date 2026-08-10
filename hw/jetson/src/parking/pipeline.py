@@ -114,6 +114,7 @@ class _VehicleFrame:
     vehicle: PhysicalVehicleSnapshot
     context: SessionContext | None
     entry_attempt_id: EntryAttemptId | None
+    entry_time: datetime | None
     observation: ObservationStatus
     parking_motion_observation: ObservationStatus
     parking_eligibility: ParkingEligibilityDecision
@@ -308,6 +309,7 @@ class ParkingPipeline:
         *,
         session_contexts: Mapping[PhysicalVehicleId, SessionContext] | None = None,
         entry_attempt_ids: Mapping[PhysicalVehicleId, EntryAttemptId] | None = None,
+        entry_times: Mapping[PhysicalVehicleId, datetime] | None = None,
         skip_unobserved_vehicle_ids: Collection[PhysicalVehicleId] = (),
     ) -> ParkingPipelineResult:
         """한 TrackingBatch를 nonterminal 주차 상태 변경 계획으로 변환한다.
@@ -315,6 +317,9 @@ class ParkingPipeline:
         ``session_contexts``는 active ContextBinding에서 조회한 authoritative
         projection이어야 한다. ``entry_attempt_ids``는 session이 없는 REVIEW/DENY
         차량도 local Incident를 공개할 수 있게 하는 authoritative correlation이다.
+        ``entry_times``는 같은 correlation의 wire entryTime이며, 그보다 먼저
+        확정된 Incident가 뒤늦게 OPEN으로 승격되지 않도록 publication 범위를
+        제한한다.
         ``not_present_confirmed_vehicle_ids``가 포함돼도
         이 메서드는 scope를 끝내지 않는다. 실제 출차 transaction을 소유한
         상위 workflow가 commit 계획을 만들 때 ``physical_exit()``을 호출한다.
@@ -322,6 +327,7 @@ class ParkingPipeline:
 
         contexts = {} if session_contexts is None else session_contexts
         attempts = {} if entry_attempt_ids is None else entry_attempt_ids
+        correlation_entry_times = {} if entry_times is None else entry_times
         zone_visit_updates: list[ZoneVisit] = []
         parking_episode_updates: list[ParkingEpisode] = []
         parking_transitions: list[ParkingTransition] = []
@@ -337,6 +343,7 @@ class ParkingPipeline:
         for vehicle in batch.vehicles:
             context = contexts.get(vehicle.physical_vehicle_id)
             entry_attempt_id = attempts.get(vehicle.physical_vehicle_id)
+            entry_time = correlation_entry_times.get(vehicle.physical_vehicle_id)
             observation = _effective_observation(batch, vehicle)
             ephemeral_evidence = assignment_resolver.analyze(
                 vehicle,
@@ -465,6 +472,7 @@ class ParkingPipeline:
                 vehicle=vehicle,
                 context=context,
                 entry_attempt_id=entry_attempt_id,
+                entry_time=entry_time,
                 observation=observation,
                 parking_motion_observation=motion_observation,
                 parking_eligibility=parking_eligibility,
@@ -521,6 +529,7 @@ class ParkingPipeline:
                 rule_context,
                 observation=frame.observation,
                 entry_attempt_id=frame.entry_attempt_id,
+                entry_time=frame.entry_time,
                 incident_updates=incident_updates,
                 incident_transitions=incident_transitions,
                 incident_signal_diagnostics=incident_signal_diagnostics,
@@ -604,12 +613,12 @@ class ParkingPipeline:
         tuple[BlockingRelation, ...],
         Mapping[BlockingRelationId, EgressBlockingEvidence],
     ]:
-        """PARKED 차량의 egress 후보와 기존 non-terminal 관계를 함께 갱신한다.
+        """양쪽 PARKED 차량의 egress 후보와 기존 관계를 함께 갱신한다.
 
-        이미 열린 관계는 victim이 더 이상 이번 frame의 새 후보 조건(PARKED +
-        egress 설정)을 만족하지 않아도 계속 재평가한다. 그러지 않으면
-        이동만으로 관계가 조용히 멈춰 있는 채로 남는, 이전에 잡았던
-        STOP_PENDING 누수와 같은 종류의 결함이 생긴다.
+        새 관계는 subject와 victim 모두 PARKED일 때만 만들고, 이미 열린
+        관계도 한쪽이 신뢰 가능한 frame에서 PARKED를 벗어나면 ABSENT로
+        재평가한다. 이렇게 해야 이동한 차량의 관계가 tracker에 남지 않고
+        clear timer를 거쳐 정상적으로 종료된다.
         """
 
         existing_keys: set[_BlockingCandidateKey] = {
@@ -633,8 +642,14 @@ class ParkingPipeline:
             for egress_aisle in self._egress_aisles.for_parking_zone(
                 victim_frame.assignment.zone_id
             ):
-                for subject_id in frames:
+                for subject_id, subject_frame in frames.items():
                     if subject_id == victim_id:
+                        continue
+                    if (
+                        subject_frame.episode is None
+                        or subject_frame.episode.state
+                        is not ParkingState.PARKED
+                    ):
                         continue
                     candidate_keys.add(
                         (subject_id, victim_id, egress_aisle.egress_zone_id)
@@ -665,6 +680,13 @@ class ParkingPipeline:
                 )
                 if observation.state is not ObservationState.OBSERVED:
                     signal = PresenceSignal.UNKNOWN
+                elif (
+                    subject_frame.episode is None
+                    or subject_frame.episode.state is not ParkingState.PARKED
+                    or victim_frame.episode is None
+                    or victim_frame.episode.state is not ParkingState.PARKED
+                ):
+                    signal = PresenceSignal.ABSENT
                 else:
                     egress_aisle = self._egress_aisles.get(egress_zone_id)
                     evidence = egress_blocking_resolver.analyze(
@@ -853,6 +875,7 @@ class ParkingPipeline:
         *,
         observation: ObservationStatus,
         entry_attempt_id: EntryAttemptId | None,
+        entry_time: datetime | None,
         incident_updates: list[Incident],
         incident_transitions: list[IncidentTransition],
         incident_signal_diagnostics: list[IncidentSignalDiagnostic],
@@ -905,6 +928,7 @@ class ParkingPipeline:
                     physical_vehicle_id=context.vehicle.physical_vehicle_id,
                     observation=observation,
                     entry_attempt_id=entry_attempt_id,
+                    entry_time=entry_time,
                     parking_session_id=parking_session_id,
                     zone_id=zone_id,
                     victim_physical_vehicle_id=victim_physical_vehicle_id,

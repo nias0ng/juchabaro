@@ -45,8 +45,7 @@ function ResidentBottomTabBar({ state, navigation }: BottomTabBarProps) {
 
 /*
   ResidentLayout : 입주민 앱의 탭바 레이아웃
-  - 홈, 요청, 주차 현황, 내 정보 탭으로 구성(Figma Z-02 개편 — 알림 탭은 빠지고 홈 화면 벨 아이콘으로만 진입)
-  - 로그인하지 않은 사용자는 이 레이아웃 하위 라우트(홈/요청/주차 현황/내정보/차량 등)에 들어올 수 없다.
+  - 홈, 요청, 주차 현황, 내 정보 탭으로 구성
 */
 export default function ResidentLayout() {
   const { status, user } = useAuth();
@@ -74,6 +73,7 @@ export default function ResidentLayout() {
       backBehavior="history"
       screenOptions={{
         headerShown: false,
+        tabBarHideOnKeyboard: true,
       }}
     >
       <Tabs.Screen

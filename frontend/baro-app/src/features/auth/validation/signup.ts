@@ -10,8 +10,6 @@ const UNIT_NUMBER_PATTERN = /^\d{1,4}$/;
 
 /**
  * 전화번호는 `010-1234-5678` 한 가지 형식만 허용한다.
- * 숫자만 입력해도 formatPhoneNumber가 하이픈을 채우므로 저장되는 값의 형식은 항상 같다.
- * 국내 휴대전화 번호는 모두 11자리라서 가운데 자리는 4자리로 고정한다.
  */
 const PHONE_PATTERN = /^01[016789]-\d{4}-\d{4}$/;
 const PHONE_DIGIT_COUNT = 11;
@@ -39,7 +37,6 @@ export function isUnitNumberValid(value: string) {
   return UNIT_NUMBER_PATTERN.test(value);
 }
 
-/** 입력 중에도 형식이 흔들리지 않도록 숫자만 남긴 뒤 3-4-4로 다시 끊는다. */
 export function formatPhoneNumber(input: string) {
   const digits = input.replace(/\D/g, '').slice(0, PHONE_DIGIT_COUNT);
 

@@ -50,7 +50,7 @@ export function eventTypeLabel(type: EventType): string {
 // REQUESTED 상태는 requestType(자동/수동)을 함께 받으면 "자동"/"수동"으로 세분화해서
 // 보여준다. requestType이 없는 호출(필터 드롭다운 등 특정 사건과 무관한 곳)은 기존
 // "이동 요청됨" 문구를 그대로 쓴다.
-export function eventStatusLabel(status: EventStatus, requestType?: RequestType): string {
+export function eventStatusLabel(status: EventStatus, requestType?: RequestType | null): string {
   if (status === 'REQUESTED' && requestType) {
     return requestTypeLabel(requestType);
   }
@@ -70,19 +70,19 @@ export function requestStatusDescription(status: RequestStatus | null): string {
   return REQUEST_STATUS_DESCRIPTIONS[status];
 }
 
+// 위험도 3단계로 묶어서 색을 정리한다: 불법 주차(가장 심각, 빨강) > 장애인 구역 위반·전기차
+// 구역 초과(중간, 주황) > 그 외(구역 외 주차, 이중 주차, 기타, 파랑).
 export function typeTone(type: EventType) {
-  if (type === 'DISABLED_ZONE_VIOLATION') return 'success' as const;
-  if (type === 'EV_OVERSTAY') return 'sky' as const;
-  if (type === 'ETC') return 'neutral' as const;
-  return 'danger' as const;
+  if (type === 'BAD_PARKING') return 'red' as const;
+  if (type === 'DISABLED_ZONE_VIOLATION' || type === 'EV_OVERSTAY') return 'orange' as const;
+  return 'blue' as const;
 }
 
-// REQUESTED 상태(자동/수동)는 배지 없이 일반 텍스트로 보여줘서 이 함수가 호출되지 않는다
-// (ParkingEventListView.vue, EventDetailCard.vue 참고). 그 외 상태만 배지 톤을 정한다.
 export function statusTone(status: EventStatus) {
   if (status === 'RESOLVED') return 'success' as const;
   if (status === 'DISMISSED') return 'neutral' as const;
   if (status === 'NEED_ADMIN') return 'info' as const;
+  if (status === 'REQUESTED') return 'primary' as const;
   return 'danger' as const;
 }
 
@@ -108,9 +108,7 @@ export function todayDateString(): string {
   return toDateString(new Date());
 }
 
-// 관리자 사건 목록 API(GET /api/admin/parking-events)는 date를 안 보내도 "전체 기간"이 아니라
-// 서버가 오늘 하루로 채워서 그 하루치만 돌려준다. 날짜 필터를 고르지 않았을 때 오늘 데이터가
-// 없으면 이 함수로 하루씩 과거로 거슬러 올라가며 데이터가 있는 날을 찾는 데 쓴다.
+// 오늘로부터 일정 일수 이전의 로컬 날짜를 계산할 때 사용한다.
 export function dateStringDaysAgo(daysAgo: number): string {
   const date = new Date();
   date.setDate(date.getDate() - daysAgo);
@@ -137,4 +135,26 @@ export function formatDateTime(iso: string): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}.${month}.${day} ${formatTime(iso)}`;
+}
+
+export function formatMonthDayTime(iso: string): string {
+  const date = new Date(iso);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${month}.${day} ${formatTime(iso)}`;
+}
+
+export function formatZoneNumber(zoneNumber: string | null): string {
+  if (!zoneNumber) return '-';
+
+  const aisle = zoneNumber.match(/^AISLES?(\d+)-(\d+)$/i);
+  if (aisle) return `B${aisle[1]} 통로 ${aisle[2]}`;
+
+  const electric = zoneNumber.match(/^EV(\d+)-(\d+)$/i);
+  if (electric) return `B${electric[1]} 전기차 ${electric[2]}`;
+
+  const disabled = zoneNumber.match(/^D(\d+)-(\d+)$/i);
+  if (disabled) return `B${disabled[1]} 장애인 ${disabled[2]}`;
+
+  return zoneNumber;
 }

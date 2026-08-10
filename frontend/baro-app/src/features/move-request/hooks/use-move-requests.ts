@@ -11,6 +11,10 @@ async function fetchMoveRequestListItems(scope: MoveRequestScope, accessToken: s
   return result.moveRequests;
 }
 
+/**
+ * 보낸/받은 이동 요청 목록을 scope별로 조회한다.
+ * API: GET /api/move-requests
+ */
 export function useMoveRequests(scope: MoveRequestScope) {
   const { accessToken, status } = useAuth();
 

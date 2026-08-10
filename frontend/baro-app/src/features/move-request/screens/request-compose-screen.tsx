@@ -37,6 +37,7 @@ export default function RequestComposeScreen() {
   return (
     <Screen
       scroll
+      avoidKeyboard
       edges={['top', 'right', 'left']}
       backgroundGradient={BACKGROUND_GRADIENT}
       backgroundGradientLocations={BACKGROUND_GRADIENT_LOCATIONS}

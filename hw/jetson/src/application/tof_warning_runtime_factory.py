@@ -32,6 +32,7 @@ from src.application.sensor_factory import (
 from src.application.sensor_worker import SensorWorker
 from src.application.tof_authorization_worker import (
     TofAuthorizationRequestMailbox,
+    TofAuthorizationReevaluationPolicy,
     TofAuthorizationWorker,
 )
 from src.application.tof_zone_authorization import (
@@ -54,6 +55,9 @@ class TofWarningRuntimePolicy:
 
     sensor: TofSensorRuntimePolicy
     authorization: TofAuthorizationPolicy
+    reevaluation: TofAuthorizationReevaluationPolicy = field(
+        default_factory=TofAuthorizationReevaluationPolicy,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -89,6 +93,21 @@ class TofWarningRuntime:
         """
 
         self._mailbox.request_after_monitoring_commit()
+
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        """정상 monitoring frame의 one-shot 재평가 신호를 등록한다.
+
+        semantic context 변경이 같은 frame에서 감지된 경우 두 mailbox
+        flag를 원자적으로 등록해 동일 frame 중복 평가를 방지한다.
+        """
+
+        self._mailbox.request_after_monitoring_frame_commit(
+            context_changed=context_changed,
+        )
 
 
 def build_tof_warning_runtime(
@@ -159,6 +178,7 @@ def build_tof_warning_runtime(
     authorization_worker = TofAuthorizationWorker(
         coordinator=authorization_coordinator,
         mailbox=mailbox,
+        policy=policy.reevaluation,
     )
 
     return TofWarningRuntime(

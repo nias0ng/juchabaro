@@ -20,7 +20,9 @@ export function toDisplayZoneNumber(zoneNumber: string | null): string | null {
   return zoneNumber.trim().toUpperCase().startsWith('AISLE') ? '통로주차' : zoneNumber;
 }
 
-export type ParkingFloorKey = 'B1' | 'B2' | 'B3';
+export const PARKING_FLOORS = ['B1', 'B2', 'B3'] as const;
+
+export type ParkingFloorKey = (typeof PARKING_FLOORS)[number];
 
 export type ParkingFloorLayout = {
   mainLayout: (string | null)[][];
@@ -31,6 +33,7 @@ export type ParkingStatusDisplay = {
   congestionLevel: CongestionLevel;
   congestionRateLabel: string;
   occupiedLabel: string;
+  availableCount: number;
   availableLabel: string;
   violationLabel: string;
   cells: SpotCell[];
@@ -91,6 +94,7 @@ export function toParkingStatusDisplay(
     congestionLevel,
     congestionRateLabel: `${congestionRate}%`,
     occupiedLabel: `주차 중 ${occupiedSpots}`,
+    availableCount: availableSpots,
     availableLabel: `비어 있음 ${availableSpots}`,
     violationLabel: `위반 ${violationCount}`,
     cells: spots.map((spot) => ({

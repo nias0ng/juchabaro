@@ -27,6 +27,14 @@ export const styles = StyleSheet.create({
     color: '#9599a7',
   },
   monthItems: {
-    gap: Spacing.md,
+    gap: Spacing.base,
+  },
+  historyItem: {
+    gap: Spacing.base,
+  },
+  itemDivider: {
+    height: 1,
+    marginLeft: 40 + Spacing.base,
+    backgroundColor: Palette.gray100,
   },
 });

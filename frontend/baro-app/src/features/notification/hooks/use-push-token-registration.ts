@@ -14,6 +14,10 @@ import { useAuth } from '@/providers/auth-provider';
 
 const PUSH_LOGS_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_API_LOGS === 'true';
 
+/**
+ * 로그인한 입주민 기기의 Expo 푸시 토큰을 발급받아 서버에 등록하고, 토큰이 바뀌면 이전 토큰은 해제한다.
+ * API: POST /api/users/me/device-tokens, DELETE /api/users/me/device-tokens
+ */
 export function usePushTokenRegistration(): void {
   const { accessToken, status, user } = useAuth();
   const attemptedAccessTokenRef = useRef<string | null>(null);

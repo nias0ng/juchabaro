@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from threading import (
@@ -21,14 +23,22 @@ from src.application.sensor_occupancy import (
     OccupancyTransition,
 )
 from src.application.tof_authorization_worker import (
+    _TofAuthorizationMailboxWake,
+    _TofAuthorizationMailboxWakeReason,
     _TofAuthorizationRequestBatch,
+    _ZoneReevaluationKind,
     TofAuthorizationRequestMailbox,
+    TofAuthorizationReevaluationPolicy,
     TofAuthorizationWorker,
+)
+from src.application.tof_zone_authorization import (
+    TofAuthorizationDecision,
 )
 from src.application.tof_zone_authorization_coordinator import (
     TofAuthorizationCoordinatorFailure,
     TofAuthorizationCoordinatorRun,
     TofAuthorizationCoordinatorStage,
+    TofAuthorizationRetryRequest,
 )
 from src.parking.models import ZoneId
 
@@ -76,7 +86,31 @@ def _run_with_failure(
                 error=error,
             ),
         ),
+        retry_requests=(
+            TofAuthorizationRetryRequest(
+                zone_id=ZONE_1,
+                minimum_occupancy_revision=1,
+            ),
+        ),
     )
+
+
+class _WaitObservedCondition(Condition):
+    """Consumer가 Condition wait에 진입한 시점을 테스트에 공개한다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_entered = Event()
+
+    def wait_for(
+        self,
+        predicate: Callable[[], bool],
+        timeout: float | None = None,
+    ) -> bool:
+        # Condition lock을 보유한 상태에서 Event를 설정한다. producer는
+        # super().wait_for()가 lock을 놓고 대기하기 전까지 진입할 수 없다.
+        self.wait_entered.set()
+        return super().wait_for(predicate, timeout)
 
 
 class _ObservedMailbox(TofAuthorizationRequestMailbox):
@@ -86,17 +120,22 @@ class _ObservedMailbox(TofAuthorizationRequestMailbox):
         super().__init__()
         self._wait_count_lock = Lock()
         self._wait_count = 0
+        self.wait_timeouts: list[float | None] = []
         self.second_wait_entered = Event()
         self.close_completed = Event()
 
     def _wait_and_take(
         self,
-    ) -> _TofAuthorizationRequestBatch | None:
+        timeout_seconds: float | None = None,
+    ) -> _TofAuthorizationMailboxWake:
         with self._wait_count_lock:
             self._wait_count += 1
+            self.wait_timeouts.append(timeout_seconds)
             if self._wait_count == 2:
                 self.second_wait_entered.set()
-        return super()._wait_and_take()
+        return super()._wait_and_take(
+            timeout_seconds=timeout_seconds,
+        )
 
     def close(self) -> None:
         super().close()
@@ -110,6 +149,10 @@ class _FakeCoordinator:
         runs: tuple[TofAuthorizationCoordinatorRun, ...] = (),
         drain_error: Exception | None = None,
         drain_gate: Event | None = None,
+        current_zone_states: tuple[
+            tuple[ZoneId, int, OccupancyState],
+            ...,
+        ] = (),
     ) -> None:
         self._condition = Condition()
         self._calls: list[tuple[object, ...]] = []
@@ -120,6 +163,7 @@ class _FakeCoordinator:
         self._runs = list(runs)
         self._drain_error = drain_error
         self._drain_gate = drain_gate
+        self._current_zone_states = current_zone_states
         self.drain_raised = Event()
         self.on_request_zone = None
 
@@ -174,6 +218,12 @@ class _FakeCoordinator:
     def request_occupied_zones(self) -> None:
         self._record(("request_occupied_zones",))
 
+    def zone_occupancy_revisions(
+        self,
+    ) -> tuple[tuple[ZoneId, int, OccupancyState], ...]:
+        self._record(("zone_occupancy_revisions",))
+        return self._current_zone_states
+
     def drain_pending(self) -> TofAuthorizationCoordinatorRun:
         self._record(("drain_pending",))
 
@@ -204,6 +254,186 @@ class _FakeCoordinator:
             self._condition.notify_all()
 
 
+@dataclass(frozen=True, kw_only=True)
+class _AssessmentView:
+    zone_id: ZoneId
+    occupancy_state: OccupancyState
+    decision: TofAuthorizationDecision | None
+
+
+class _FakeMonotonicClock:
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _ScriptedMailbox(TofAuthorizationRequestMailbox):
+    def __init__(
+        self,
+        *,
+        clock: _FakeMonotonicClock,
+        wakes: list[_TofAuthorizationMailboxWake],
+    ) -> None:
+        super().__init__()
+        self._clock = clock
+        self._wakes = wakes
+        self.wait_timeouts: list[float | None] = []
+        self.script_completed = Event()
+
+    def _wait_and_take(
+        self,
+        timeout_seconds: float | None = None,
+    ) -> _TofAuthorizationMailboxWake:
+        self.wait_timeouts.append(timeout_seconds)
+        if not self._wakes:
+            raise AssertionError(
+                "scripted mailbox wake가 모두 소비됐습니다."
+            )
+
+        wake = self._wakes.pop(0)
+        if wake.reason is _TofAuthorizationMailboxWakeReason.TIMEOUT:
+            if timeout_seconds is None:
+                raise AssertionError(
+                    "TIMEOUT wake에는 유한한 timeout이 필요합니다."
+                )
+            self._clock.advance(timeout_seconds)
+        elif wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED:
+            self.script_completed.set()
+        return wake
+
+
+class _ScheduledFakeCoordinator(_FakeCoordinator):
+    def __init__(
+        self,
+        *,
+        runs: tuple[TofAuthorizationCoordinatorRun, ...],
+        zone_states: tuple[
+            tuple[tuple[ZoneId, int, OccupancyState], ...],
+            ...,
+        ] = (),
+    ) -> None:
+        super().__init__(runs=runs)
+        self._zone_states = list(zone_states)
+        self._latest: dict[ZoneId, _AssessmentView] = {}
+
+    @property
+    def zone_requests(self) -> list[tuple[ZoneId, int | None]]:
+        return [
+            (call[1], call[2])
+            for call in self.calls
+            if call[0] == "request_zone"
+        ]
+
+    def drain_pending(self) -> TofAuthorizationCoordinatorRun:
+        run = super().drain_pending()
+        for assessment in run.published_assessments:
+            self._latest[assessment.zone_id] = assessment
+        return run
+
+    def latest_assessment(
+        self,
+        zone_id: ZoneId,
+    ) -> _AssessmentView | None:
+        return self._latest.get(zone_id)
+
+    def zone_occupancy_revisions(
+        self,
+    ) -> tuple[tuple[ZoneId, int, OccupancyState], ...]:
+        self._record(("zone_occupancy_revisions",))
+        if not self._zone_states:
+            raise AssertionError("zone state script가 모두 소비됐습니다.")
+        return self._zone_states.pop(0)
+
+
+_TEST_POLICY = TofAuthorizationReevaluationPolicy(
+    initial_backoff_seconds=0.25,
+    max_backoff_seconds=1.0,
+    backoff_multiplier=2.0,
+)
+
+
+def _request_wake(
+    zone_id: ZoneId,
+    *,
+    revision: int,
+) -> _TofAuthorizationMailboxWake:
+    return _TofAuthorizationMailboxWake(
+        reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+        batch=_TofAuthorizationRequestBatch(
+            zone_revisions=((zone_id, revision),),
+            monitoring_commit_requested=False,
+        ),
+    )
+
+
+def _frame_wake(
+    *,
+    context_changed: bool = False,
+) -> _TofAuthorizationMailboxWake:
+    return _TofAuthorizationMailboxWake(
+        reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+        batch=_TofAuthorizationRequestBatch(
+            zone_revisions=(),
+            monitoring_commit_requested=context_changed,
+            monitoring_frame_commit_requested=True,
+        ),
+    )
+
+
+def _timeout_wake() -> _TofAuthorizationMailboxWake:
+    return _TofAuthorizationMailboxWake(
+        reason=_TofAuthorizationMailboxWakeReason.TIMEOUT,
+    )
+
+
+def _closed_wake() -> _TofAuthorizationMailboxWake:
+    return _TofAuthorizationMailboxWake(
+        reason=_TofAuthorizationMailboxWakeReason.CLOSED,
+    )
+
+
+def _run_with_retry(
+    request: TofAuthorizationRetryRequest,
+) -> TofAuthorizationCoordinatorRun:
+    return TofAuthorizationCoordinatorRun(
+        published_assessments=(),
+        unchanged_zone_ids=(),
+        deferred_zone_ids=(),
+        failures=(),
+        retry_requests=(request,),
+    )
+
+
+def _run_with_assessment(
+    assessment: _AssessmentView,
+) -> TofAuthorizationCoordinatorRun:
+    return TofAuthorizationCoordinatorRun(
+        published_assessments=(assessment,),  # type: ignore[arg-type]
+        unchanged_zone_ids=(),
+        deferred_zone_ids=(),
+        failures=(),
+    )
+
+
+def _run_scripted_worker(
+    worker: TofAuthorizationWorker,
+    mailbox: _ScriptedMailbox,
+) -> None:
+    worker.start()
+    try:
+        assert mailbox.script_completed.wait(timeout=1.0)
+    finally:
+        worker.stop()
+
+    assert worker.is_running is False
+    assert worker.failure is None
+
+
 def test_mailbox_preserves_maximum_revision_and_merges_monitoring_signal(
 ) -> None:
     mailbox = TofAuthorizationRequestMailbox()
@@ -218,15 +448,186 @@ def test_mailbox_preserves_maximum_revision_and_merges_monitoring_signal(
     ) is None
     assert mailbox.request_after_monitoring_commit() is None
     assert mailbox.request_after_monitoring_commit() is None
+    assert mailbox.request_after_monitoring_frame_commit() is None
+    assert mailbox.request_after_monitoring_frame_commit(
+        context_changed=True,
+    ) is None
 
-    batch = mailbox._wait_and_take()
+    wake = mailbox._wait_and_take(timeout_seconds=0)
 
-    assert batch is not None
-    assert batch.zone_revisions == (
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.REQUEST
+    assert wake.batch is not None
+    assert wake.batch.zone_revisions == (
         (ZONE_1, 2),
         (ZONE_2, 3),
     )
-    assert batch.monitoring_commit_requested is True
+    assert wake.batch.monitoring_commit_requested is True
+    assert wake.batch.monitoring_frame_commit_requested is True
+
+
+def test_mailbox_zero_timeout_preserves_open_ingress() -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+
+    timed_out = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert (
+        timed_out.reason
+        is _TofAuthorizationMailboxWakeReason.TIMEOUT
+    )
+    assert timed_out.batch is None
+
+    mailbox.request_transitions((_transition(ZONE_1, revision=2),))
+    requested = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert (
+        requested.reason
+        is _TofAuthorizationMailboxWakeReason.REQUEST
+    )
+    assert requested.batch == _TofAuthorizationRequestBatch(
+        zone_revisions=((ZONE_1, 2),),
+        monitoring_commit_requested=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "batch"),
+    (
+        (_TofAuthorizationMailboxWakeReason.REQUEST, None),
+        (
+            _TofAuthorizationMailboxWakeReason.TIMEOUT,
+            _TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+        ),
+        (
+            _TofAuthorizationMailboxWakeReason.CLOSED,
+            _TofAuthorizationRequestBatch(
+                zone_revisions=((ZONE_1, 1),),
+                monitoring_commit_requested=False,
+            ),
+        ),
+    ),
+)
+def test_mailbox_wake_rejects_invalid_reason_batch_combination(
+    reason: _TofAuthorizationMailboxWakeReason,
+    batch: _TofAuthorizationRequestBatch | None,
+) -> None:
+    with pytest.raises(ValueError):
+        _TofAuthorizationMailboxWake(
+            reason=reason,
+            batch=batch,
+        )
+
+
+def test_mailbox_wake_rejects_invalid_reason() -> None:
+    with pytest.raises(ValueError, match="reason"):
+        _TofAuthorizationMailboxWake(
+            reason="REQUEST",
+            batch=_TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    (
+        -0.001,
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "1",
+        object(),
+    ),
+)
+def test_mailbox_rejects_invalid_timeout(
+    timeout_seconds: object,
+) -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        mailbox._wait_and_take(
+            timeout_seconds=timeout_seconds,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("signal_kind", "expected_batch"),
+    (
+        pytest.param(
+            "transition",
+            _TofAuthorizationRequestBatch(
+                zone_revisions=((ZONE_1, 1),),
+                monitoring_commit_requested=False,
+            ),
+            id="transition",
+        ),
+        pytest.param(
+            "monitoring",
+            _TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=True,
+            ),
+            id="monitoring",
+        ),
+        pytest.param(
+            "monitoring-frame",
+            _TofAuthorizationRequestBatch(
+                zone_revisions=(),
+                monitoring_commit_requested=False,
+                monitoring_frame_commit_requested=True,
+            ),
+            id="monitoring-frame",
+        ),
+    ),
+)
+def test_mailbox_signal_wakes_timed_waiting_consumer(
+    signal_kind: str,
+    expected_batch: _TofAuthorizationRequestBatch,
+) -> None:
+    mailbox = TofAuthorizationRequestMailbox()
+    observed_condition = _WaitObservedCondition()
+    mailbox._condition = observed_condition
+
+    consumer_finished = Event()
+    results: list[_TofAuthorizationMailboxWake] = []
+
+    def consume() -> None:
+        results.append(
+            mailbox._wait_and_take(timeout_seconds=60.0)
+        )
+        consumer_finished.set()
+
+    consumer = Thread(target=consume, daemon=True)
+    consumer.start()
+    try:
+        assert observed_condition.wait_entered.wait(timeout=1.0)
+
+        if signal_kind == "transition":
+            mailbox.request_transitions(
+                (_transition(ZONE_1, revision=1),)
+            )
+        elif signal_kind == "monitoring-frame":
+            mailbox.request_after_monitoring_frame_commit()
+        else:
+            mailbox.request_after_monitoring_commit()
+
+        assert consumer_finished.wait(timeout=1.0)
+    finally:
+        mailbox.close()
+        consumer.join(timeout=1.0)
+
+    assert consumer.is_alive() is False
+    assert len(results) == 1
+    assert (
+        results[0].reason
+        is _TofAuthorizationMailboxWakeReason.REQUEST
+    )
+    assert results[0].batch == expected_batch
 
 
 def test_mailbox_rejects_invalid_input_while_open() -> None:
@@ -246,11 +647,13 @@ def test_mailbox_close_wakes_waiting_consumer() -> None:
     mailbox = TofAuthorizationRequestMailbox()
     consumer_started = Event()
     consumer_finished = Event()
-    results = []
+    results: list[_TofAuthorizationMailboxWake] = []
 
     def consume() -> None:
         consumer_started.set()
-        results.append(mailbox._wait_and_take())
+        results.append(
+            mailbox._wait_and_take(timeout_seconds=60.0)
+        )
         consumer_finished.set()
 
     consumer = Thread(target=consume, daemon=True)
@@ -264,18 +667,27 @@ def test_mailbox_close_wakes_waiting_consumer() -> None:
         consumer.join(timeout=1.0)
 
     assert consumer.is_alive() is False
-    assert results == [None]
+    assert len(results) == 1
+    assert (
+        results[0].reason
+        is _TofAuthorizationMailboxWakeReason.CLOSED
+    )
+    assert results[0].batch is None
 
 
 def test_mailbox_close_discards_pending_and_is_idempotent() -> None:
     mailbox = TofAuthorizationRequestMailbox()
     mailbox.request_transitions((_transition(ZONE_1, revision=1),))
     mailbox.request_after_monitoring_commit()
+    mailbox.request_after_monitoring_frame_commit()
 
     mailbox.close()
     mailbox.close()
 
-    assert mailbox._wait_and_take() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
+    assert wake.batch is None
 
 
 def test_mailbox_requests_are_noop_after_close_before_validation() -> None:
@@ -285,7 +697,616 @@ def test_mailbox_requests_are_noop_after_close_before_validation() -> None:
     assert mailbox.request_transitions([]) is None
     assert mailbox.request_transitions((object(),)) is None
     assert mailbox.request_after_monitoring_commit() is None
-    assert mailbox._wait_and_take() is None
+    assert mailbox.request_after_monitoring_frame_commit() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
+    assert wake.batch is None
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"initial_backoff_seconds": True},
+        {"initial_backoff_seconds": 0},
+        {"initial_backoff_seconds": float("nan")},
+        {"max_backoff_seconds": 0.1},
+        {"max_backoff_seconds": float("inf")},
+        {"backoff_multiplier": 0.99},
+        {"backoff_multiplier": "2"},
+    ),
+)
+def test_reevaluation_policy_rejects_invalid_values(
+    updates: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "initial_backoff_seconds": 0.25,
+        "max_backoff_seconds": 2.0,
+        "backoff_multiplier": 2.0,
+    }
+    values.update(updates)
+
+    with pytest.raises(ValueError):
+        TofAuthorizationReevaluationPolicy(
+            **values,  # type: ignore[arg-type]
+        )
+
+
+def test_reevaluation_policy_normalizes_integer_values() -> None:
+    policy = TofAuthorizationReevaluationPolicy(
+        initial_backoff_seconds=1,
+        max_backoff_seconds=2,
+        backoff_multiplier=1,
+    )
+
+    assert policy.initial_backoff_seconds == 1.0
+    assert policy.max_backoff_seconds == 2.0
+    assert policy.backoff_multiplier == 1.0
+
+
+def test_vacant_failure_uses_completion_retry_until_success() -> None:
+    clock = _FakeMonotonicClock()
+    retry = TofAuthorizationRetryRequest(
+        zone_id=ZONE_1,
+        minimum_occupancy_revision=2,
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.UNAUTHORIZED,
+                )
+            ),
+            _run_with_retry(retry),
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.VACANT,
+                    decision=None,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 2, OccupancyState.VACANT),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _request_wake(ZONE_1, revision=2),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [
+        (ZONE_1, 1),
+        (ZONE_1, 2),
+        (ZONE_1, 2),
+    ]
+    assert coordinator.call_count("drain_pending") == 3
+    assert mailbox.wait_timeouts == [None, 1.0, 0.25, None]
+    assert ZONE_1 not in worker._reevaluation_states
+
+
+def test_periodic_schedule_is_removed_when_zone_becomes_vacant() -> None:
+    clock = _FakeMonotonicClock()
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.AUTHORIZED,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 2, OccupancyState.VACANT),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [(ZONE_1, 1)]
+    assert coordinator.call_count("drain_pending") == 1
+    assert mailbox.wait_timeouts == [None, 1.0, None]
+    assert ZONE_1 not in worker._reevaluation_states
+
+
+def test_completion_retry_preserves_minimum_until_vacant_catches_up(
+) -> None:
+    clock = _FakeMonotonicClock()
+    retry = TofAuthorizationRetryRequest(
+        zone_id=ZONE_1,
+        minimum_occupancy_revision=5,
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_retry(retry),
+            _run_with_retry(retry),
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.VACANT,
+                    decision=None,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 4, OccupancyState.VACANT),),
+            ((ZONE_1, 5, OccupancyState.VACANT),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=5),
+            _timeout_wake(),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [
+        (ZONE_1, 5),
+        (ZONE_1, 5),
+        (ZONE_1, 5),
+    ]
+    assert mailbox.wait_timeouts == [None, 0.25, 0.5, None]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_kind", "expected_timeout"),
+    (
+        (
+            TofAuthorizationDecision.UNKNOWN,
+            _ZoneReevaluationKind.OCCUPIED_UNRESOLVED,
+            0.5,
+        ),
+        (
+            TofAuthorizationDecision.AUTHORIZED,
+            _ZoneReevaluationKind.OCCUPIED_RESOLVED,
+            1.0,
+        ),
+        (
+            TofAuthorizationDecision.UNAUTHORIZED,
+            _ZoneReevaluationKind.OCCUPIED_RESOLVED,
+            1.0,
+        ),
+    ),
+)
+def test_completion_retry_success_transitions_to_periodic_schedule(
+    decision: TofAuthorizationDecision,
+    expected_kind: _ZoneReevaluationKind,
+    expected_timeout: float,
+) -> None:
+    clock = _FakeMonotonicClock()
+    retry = TofAuthorizationRetryRequest(
+        zone_id=ZONE_1,
+        minimum_occupancy_revision=1,
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_retry(retry),
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=decision,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    state = worker._reevaluation_states[ZONE_1]
+    assert state.kind is expected_kind
+    assert state.minimum_occupancy_revision is None
+    assert mailbox.wait_timeouts == [None, 0.25, expected_timeout]
+
+
+def test_missing_due_outcome_preserves_resolved_backoff() -> None:
+    clock = _FakeMonotonicClock()
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.AUTHORIZED,
+                )
+            ),
+            EMPTY_RUN,
+        ),
+        zone_states=(
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert mailbox.wait_timeouts == [None, 1.0, 1.0]
+    assert (
+        worker._reevaluation_states[ZONE_1].kind
+        is _ZoneReevaluationKind.COMPLETION_RETRY
+    )
+
+
+def test_completion_retry_backoff_is_capped() -> None:
+    clock = _FakeMonotonicClock()
+    retry = TofAuthorizationRetryRequest(
+        zone_id=ZONE_1,
+        minimum_occupancy_revision=1,
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_retry(retry),
+            _run_with_retry(retry),
+            _run_with_retry(retry),
+            _run_with_retry(retry),
+        ),
+        zone_states=(
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _timeout_wake(),
+            _timeout_wake(),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert mailbox.wait_timeouts == [None, 0.25, 0.5, 1.0, 1.0]
+    assert coordinator.call_count("drain_pending") == 4
+
+
+def test_two_due_completion_retries_share_one_drain() -> None:
+    clock = _FakeMonotonicClock()
+    first_run = TofAuthorizationCoordinatorRun(
+        published_assessments=(),
+        unchanged_zone_ids=(),
+        deferred_zone_ids=(),
+        failures=(),
+        retry_requests=(
+            TofAuthorizationRetryRequest(
+                zone_id=ZONE_1,
+                minimum_occupancy_revision=1,
+            ),
+            TofAuthorizationRetryRequest(
+                zone_id=ZONE_2,
+                minimum_occupancy_revision=2,
+            ),
+        ),
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(first_run, EMPTY_RUN),
+        zone_states=(
+            (
+                (ZONE_1, 1, OccupancyState.OCCUPIED),
+                (ZONE_2, 2, OccupancyState.VACANT),
+            ),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _TofAuthorizationMailboxWake(
+                reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+                batch=_TofAuthorizationRequestBatch(
+                    zone_revisions=(
+                        (ZONE_1, 1),
+                        (ZONE_2, 2),
+                    ),
+                    monitoring_commit_requested=False,
+                ),
+            ),
+            _timeout_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [
+        (ZONE_1, 1),
+        (ZONE_2, 2),
+        (ZONE_1, 1),
+        (ZONE_2, 2),
+    ]
+    assert coordinator.call_count("drain_pending") == 2
+    assert mailbox.wait_timeouts == [None, 0.25, 0.25]
+
+
+def test_unknown_is_reevaluated_once_on_next_frame() -> None:
+    clock = _FakeMonotonicClock()
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.UNKNOWN,
+                )
+            ),
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.UNKNOWN,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 1, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _frame_wake(),
+            _frame_wake(),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [
+        (ZONE_1, 1),
+        (ZONE_1, 1),
+    ]
+    assert coordinator.call_count("zone_occupancy_revisions") == 1
+    assert coordinator.call_count("drain_pending") == 2
+    assert (
+        worker._reevaluation_states[ZONE_1].next_frame_armed
+        is False
+    )
+
+
+def test_context_and_frame_commit_share_one_drain_and_arm_next_frame(
+) -> None:
+    clock = _FakeMonotonicClock()
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.UNKNOWN,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 4, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _frame_wake(context_changed=True),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.call_count("request_occupied_zones") == 0
+    assert coordinator.call_count("zone_occupancy_revisions") == 1
+    assert coordinator.zone_requests == [(ZONE_1, 4)]
+    assert coordinator.call_count("drain_pending") == 1
+    assert (
+        worker._reevaluation_states[ZONE_1].next_frame_armed
+        is True
+    )
+
+
+def test_vacant_zone_is_not_evaluated_by_frame_or_context_signal(
+) -> None:
+    clock = _FakeMonotonicClock()
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_assessment(
+                _AssessmentView(
+                    zone_id=ZONE_1,
+                    occupancy_state=OccupancyState.OCCUPIED,
+                    decision=TofAuthorizationDecision.UNKNOWN,
+                )
+            ),
+        ),
+        zone_states=(
+            ((ZONE_1, 2, OccupancyState.VACANT),),
+            ((ZONE_1, 2, OccupancyState.VACANT),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=1),
+            _frame_wake(),
+            _TofAuthorizationMailboxWake(
+                reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+                batch=_TofAuthorizationRequestBatch(
+                    zone_revisions=(),
+                    monitoring_commit_requested=True,
+                ),
+            ),
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [(ZONE_1, 1)]
+    assert coordinator.call_count("request_occupied_zones") == 0
+    assert coordinator.call_count("zone_occupancy_revisions") == 2
+    assert coordinator.call_count("drain_pending") == 1
+    assert ZONE_1 not in worker._reevaluation_states
+
+
+@pytest.mark.parametrize(
+    "trigger_wake",
+    (
+        pytest.param(
+            _frame_wake(),
+            id="monitoring-frame",
+        ),
+        pytest.param(
+            _TofAuthorizationMailboxWake(
+                reason=_TofAuthorizationMailboxWakeReason.REQUEST,
+                batch=_TofAuthorizationRequestBatch(
+                    zone_revisions=(),
+                    monitoring_commit_requested=True,
+                ),
+            ),
+            id="monitoring-context",
+        ),
+    ),
+)
+def test_early_monitoring_trigger_preserves_completion_minimum_revision(
+    trigger_wake: _TofAuthorizationMailboxWake,
+) -> None:
+    clock = _FakeMonotonicClock()
+    retry = TofAuthorizationRetryRequest(
+        zone_id=ZONE_1,
+        minimum_occupancy_revision=5,
+    )
+    coordinator = _ScheduledFakeCoordinator(
+        runs=(
+            _run_with_retry(retry),
+            EMPTY_RUN,
+        ),
+        zone_states=(
+            ((ZONE_1, 4, OccupancyState.OCCUPIED),),
+        ),
+    )
+    mailbox = _ScriptedMailbox(
+        clock=clock,
+        wakes=[
+            _request_wake(ZONE_1, revision=5),
+            trigger_wake,
+            _closed_wake(),
+        ],
+    )
+    worker = TofAuthorizationWorker(
+        coordinator=coordinator,
+        mailbox=mailbox,
+        policy=_TEST_POLICY,
+        monotonic_clock=clock,
+    )
+
+    _run_scripted_worker(worker, mailbox)
+
+    assert coordinator.zone_requests == [
+        (ZONE_1, 5),
+        (ZONE_1, 5),
+    ]
+    assert coordinator.call_count("zone_occupancy_revisions") == 1
+    assert coordinator.call_count("request_occupied_zones") == 0
+    assert coordinator.call_count("drain_pending") == 2
 
 
 def test_worker_processes_prestart_combined_batch_on_dedicated_thread(
@@ -311,11 +1332,12 @@ def test_worker_processes_prestart_combined_batch_on_dedicated_thread(
         assert coordinator.wait_for_call_count("drain_pending", 1)
 
         assert coordinator.calls == (
+            ("zone_occupancy_revisions",),
             ("request_zone", ZONE_1, 1),
             ("request_zone", ZONE_2, 2),
-            ("request_occupied_zones",),
             ("drain_pending",),
         )
+        assert coordinator.call_count("request_occupied_zones") == 0
         assert all(
             thread_id != producer_thread_id
             for _name, thread_id, _thread_name, _daemon
@@ -373,8 +1395,10 @@ def test_blocked_coordinator_does_not_block_producer_and_uses_next_batch(
         drain_gate.set()
         assert coordinator.wait_for_call_count("drain_pending", 2)
 
+        assert ("zone_occupancy_revisions",) in coordinator.calls
         assert ("request_zone", ZONE_2, 2) in coordinator.calls
-        assert ("request_occupied_zones",) in coordinator.calls
+        assert coordinator.call_count("request_occupied_zones") == 0
+        assert coordinator.call_count("zone_occupancy_revisions") == 1
         assert coordinator.call_count("drain_pending") == 2
     finally:
         drain_gate.set()
@@ -396,11 +1420,19 @@ def test_recoverable_failure_is_logged_and_waits_for_external_signal(
         runs=(
             _run_with_failure(recoverable_error),
             EMPTY_RUN,
-        )
+        ),
+        current_zone_states=(
+            (ZONE_1, 1, OccupancyState.OCCUPIED),
+        ),
     )
     worker = TofAuthorizationWorker(
         coordinator=coordinator,
         mailbox=mailbox,
+        policy=TofAuthorizationReevaluationPolicy(
+            initial_backoff_seconds=60.0,
+            max_backoff_seconds=60.0,
+            backoff_multiplier=1.0,
+        ),
     )
     mailbox.request_transitions((_transition(ZONE_1, revision=1),))
 
@@ -411,6 +1443,7 @@ def test_recoverable_failure_is_logged_and_waits_for_external_signal(
         worker.start()
         try:
             assert mailbox.second_wait_entered.wait(timeout=1.0)
+            assert mailbox.wait_timeouts[:2] == [None, 60.0]
             assert coordinator.call_count("drain_pending") == 1
             assert worker.failure is None
             assert worker.is_running is True
@@ -422,6 +1455,12 @@ def test_recoverable_failure_is_logged_and_waits_for_external_signal(
             mailbox.request_after_monitoring_commit()
             assert coordinator.wait_for_call_count("drain_pending", 2)
             assert coordinator.call_count("drain_pending") == 2
+            assert coordinator.call_count("request_occupied_zones") == 0
+            assert (
+                coordinator.call_count("zone_occupancy_revisions")
+                == 1
+            )
+            assert ("request_zone", ZONE_1, 1) in coordinator.calls
         finally:
             worker.stop()
 
@@ -494,7 +1533,8 @@ def test_thread_start_failure_rolls_back_worker_and_mailbox(
         (_transition(ZONE_1, revision=1),)
     ) is None
     assert mailbox.request_after_monitoring_commit() is None
-    assert mailbox._wait_and_take() is None
+    wake = mailbox._wait_and_take(timeout_seconds=0)
+    assert wake.reason is _TofAuthorizationMailboxWakeReason.CLOSED
 
     with pytest.raises(RuntimeError, match="only be started once"):
         worker.start()

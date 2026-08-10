@@ -1,4 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/ui';
@@ -9,8 +10,6 @@ import { Palette } from '@/styles';
 
 import { styles } from './request-detail-screen.styles';
 
-// 그라데이션은 화면(스크롤 영역) 전체 높이에 걸쳐 퍼지므로, 세 번째 지점에 같은 색을 한 번 더 넣어서
-// 위쪽 일부(Figma 기준 42~45%)에서 색이 다 바뀌고 그 아래는 옅은 색으로 고정되게 만든다.
 const WAITING_GRADIENT = ['#ede9fd', '#f7f6fb', '#f7f6fb'] as const;
 const WAITING_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
 const COMPLETED_GRADIENT = ['#eae7fb', '#f7f6fb', '#f7f6fb'] as const;
@@ -20,6 +19,7 @@ const OVERDUE_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
 const REMINDER_GRADIENT = ['#fbe0dc', '#f7f6fb', '#f7f6fb'] as const;
 const REMINDER_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
 
+/** 이동 요청 상태(대기/미이동/이관/완료 등)에 따라 다른 레이아웃을 그리는 상세 화면. 분기는 useRequestDetailViewModel이 계산한다. */
 export default function RequestDetailScreen() {
   const { requestId: requestIdParam, viewMode: viewModeParam } = useLocalSearchParams<{
     requestId?: string;
@@ -29,6 +29,16 @@ export default function RequestDetailScreen() {
   const normalizedRequestId = requestId !== null && !Number.isNaN(requestId) ? requestId : null;
   const viewMode = viewModeParam === 'requester' ? 'requester' : 'recipient';
   const vm = useRequestDetailViewModel(normalizedRequestId, viewMode);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await vm.refetch();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   const statusMessage = vm.isLoading
     ? '이동 요청 정보를 불러오는 중입니다'
@@ -55,8 +65,8 @@ export default function RequestDetailScreen() {
       backgroundColor={background ? undefined : Palette.gray50}
       backgroundGradient={background?.gradient}
       backgroundGradientLocations={background?.locations}
-      refreshing={vm.isRefreshing}
-      onRefresh={() => void vm.refetch()}
+      refreshing={isPullRefreshing}
+      onRefresh={() => void handleRefresh()}
     >
       <View style={styles.content}>
         <ScreenHeader

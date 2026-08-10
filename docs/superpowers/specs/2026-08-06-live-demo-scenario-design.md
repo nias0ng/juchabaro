@@ -12,25 +12,27 @@
 
 ## 시연 구성 결정
 
-### 선택: "즉시 경고 + 이중주차" 2사건 구성
+### 선택: "전용구역 무자격 주차 + 이중주차" 2사건 구성
 
 시연의 대부분(챕터 1~3)은 **AI 판정 과정**을 주인공으로 하고, 사건 하나(챕터 4,
 이중주차)만 **AI 뷰와 사용자 뷰 양쪽**에서 보여준다.
 
 ### 왜 이 구성인가
 
-**전용구역 위반이 시연에서 유일하게 "공짜"인 임팩트다.** 판정 규칙마다 확정 조건이
-다르다.
+전용구역 위반도 단순 진입이 아니라 주차 확정 뒤 공개한다. 판정 규칙마다 확정 조건이
+다르며, 시연에서는 동일한 PARKED 경계를 먼저 설명한다.
 
 | 규칙 | 확정 조건 | 라이브 시연 |
 |---|---|---|
-| `DISABLED_ZONE_UNAUTHORIZED` / `EV_ZONE_UNAUTHORIZED` | `ZoneVisit INSIDE` (`ZONE_ENTRY_CONFIRM_SECONDS=1.0`) | 1초 만에 확정 |
-| `EV_OVERSTAY` | `ZoneVisit` 점유 시간 > `allowedDurationSeconds` (zone 5는 7200초) | 임계값 하향 필요 |
-| `BAD_PARKING` / `OUT_OF_ZONE` / `AISLE_BLOCK` / `DOUBLE_PARKING` | `ParkingEpisode`가 `PARKED` (`PARKING_CONFIRM_SECONDS=600.0`) | 임계값 하향 필요 |
+| `DISABLED_ZONE_UNAUTHORIZED` / `EV_ZONE_UNAUTHORIZED` | `ZoneVisit INSIDE` + 같은 zone에 `PARKED` + 자격 `false` | 통과·주차 조작 중에는 미확정 |
+| `EV_OVERSTAY` | 같은 EV zone에 `PARKED` + `observedAt - parkedAt >= allowedDurationSeconds` (zone 5는 7200초) | 임계값 하향 필요 |
+| `BAD_PARKING` / `OUT_OF_ZONE` / `AISLE_BLOCK` | `ParkingEpisode`가 `PARKED` + 규칙별 geometry | 같은 PARKED 경계 사용 |
+| `DOUBLE_PARKING` | 피해·방해 차량 모두 PARKED이고 `BlockingRelation`이 `BLOCKING` | 양쪽 주차·관계 확인 시간 필요 |
 
-전용구역 위반만 `PARKED`를 기다리지 않으므로, 임계값을 낮췄다는 설명 없이 그 자체로
-"AI가 즉각 반응했다"는 증거가 된다. 반면 이중주차는 서비스의 대표 문제(README §1)라
-사용자 서사를 감당한다. 이 둘의 역할이 겹치지 않아 10분 안에 함께 들어간다.
+전용구역은 넓은 polygon을 차량이 통과하거나 주차를 조작하는 동안 bbox가 잠시
+겹칠 수 있으므로 `ZoneVisit INSIDE`만으로 사건을 만들지 않는다. PARKED와 동일 zone
+assignment를 함께 요구해 Backend 사건의 "주차 위반" 의미를 보존한다. 이중주차는
+서비스의 대표 문제(README §1)라 사용자 서사를 감당한다.
 
 `EV_OVERSTAY`는 제외한다. 화면상 아무 움직임 없이 사건만 뜨는 형태라 라이브에서
 "지금 판정한 게 맞나"는 의심을 사고, 차량 이동 횟수만 늘린다.
@@ -92,12 +94,12 @@
 
 | 설정 | 운영값 | 시연값 | 근거 |
 |---|---|---|---|
-| `PARKING_CONFIRM_SECONDS` | 600.0 | 15~20 (D-5 리허설에서 확정) | 10분 대기는 시연 불가 |
+| `PARKING_CONFIRM_SECONDS` | 600.0 | 5.0 | 전용구역을 포함한 주차 기반 사건을 시연 시간 안에 확정 |
 | `BLOCKING_RELATION_CONFIRM_SECONDS` | `.env.example`에 기본값 없는 필수 설정 | 하향 (D-5에서 확정) | 이중주차 확정 대기 단축 |
 
 `ZONE_ENTRY_CONFIRM_SECONDS=1.0`과 `ZONE_EXIT_CONFIRM_SECONDS=5.0`은 **바꾸지
-않는다.** 파일럿 영상으로 오탐 0건을 확인해 정한 값이고, 챕터 3의 즉시 판정은 이
-값 그대로 1초에 확정된다.
+않는다.** ZoneVisit은 구역 관측을 안정화하고, 전용구역 Incident는 별도의 PARKED
+경계를 통과해야 하므로 1초 진입만으로 공개되지 않는다.
 
 ### 임계값 하향은 시연 중 먼저 밝힌다
 
@@ -147,12 +149,12 @@
 | 2:00–2:20 | B | 차1 zone 2 정차 | `zone2 ENTERING` → `INSIDE` | 진입 확정 1초는 오탐 0건으로 실측한 값 |
 | 2:20–2:50 | B | 대기 | `MOVE_PENDING` → `PARKED` | 임계값 하향 사실을 먼저 밝힌다 |
 | 2:50–3:30 | D | 차2 리셋 이동 | 파이프라인 도식 | tracking은 `STATIONARY`까지, `PARKED` 확정은 parking의 책임 |
-| **챕터 3 — 전용구역 즉시 위반 (3:30–5:10)** |
+| **챕터 3 — 전용구역 무자격 주차 (3:30–5:10)** |
 | 3:30–3:55 | B | 차2 zone 6 → zone 4(장애인) | `UNPARKED` → 이동 → `zone4 ENTERING` | |
-| 3:55–4:05 | B | — | `DISABLED_ZONE_UNAUTHORIZED` 배지 + 상단 배너 | **10분을 기다리지 않는다** — `ZoneVisit INSIDE`만으로 확정 |
+| 3:55–4:05 | B | zone 4에 정차 | `zone4 INSIDE` → `PARKED` → `DISABLED_ZONE_UNAUTHORIZED` 배지 + 상단 배너 | 동일 zone 주차 확정 뒤에만 공개 |
 | 4:05–4:15 | B | LED·스피커 현장 경고 | 경고 동작 | 감지와 동시에 현장에서 알린다 |
 | 4:15–4:45 | B | 설명 | | 자격 정보가 없으면 `confirmable=false` — 모르면 확정하지 않는다 |
-| 4:45–5:10 | B | 차2 zone 4 이탈 | `EXITING` → `ENDED` → `RESOLVE` | 해소도 자동 |
+| 4:45–5:10 | B | 차2 zone 4 이탈 | `MOVE_PENDING` → `UNPARKED` → `RESOLVE` | 이동 후보 중에는 유지하고 이동 확정 뒤 해소 |
 | **챕터 4 — 이중주차 종단 (5:10–8:40)** |
 | 5:10–5:35 | B | 차2를 차1 앞 통행로(zone 7)로 | `zone7 INSIDE` | |
 | 5:35–6:00 | B | 정차 대기 | `PARKED` → `AISLE_BLOCK` → `BlockingRelation CANDIDATE`→`BLOCKING` → `DOUBLE_PARKING` OPEN | 단순 겹침이 아니라 출차 경로 차단 관계로 판정 |

@@ -47,7 +47,7 @@ export type MoveRequestDetail = {
   requestStatus: MoveRequestStatus;
   requestedAt: string;
   dueAt: string | null; // 응답 전에는 null
-  requester: unknown | null; // TODO(move-request): AUTO 요청만 다루는 화면이라 항상 null. MANUAL 지원 시 실제 필드 확인 필요.
+  resolvedAt: string | null; // 사건이 종료되지 않았으면 null
   targetVehicle: {
     vehicleId: number;
     plateNumber: string;

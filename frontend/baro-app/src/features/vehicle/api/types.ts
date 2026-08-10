@@ -26,8 +26,6 @@ export type VehicleResult = {
   userId?: number;
   createdAt?: string;
   updatedAt?: string;
-  // TODO(vehicle-api): 위치(parkingSpotCode), 방문 시작/종료(visitStartAt/visitEndAt)는
-  // 목록/상세/등록 응답 어디에도 없다. 다른 API가 있는지 확인 전까지는 카드에 "-"로 표시한다.
   visitDate?: string | null;
   parkingSpotCode?: string | null;
   visitStartAt?: string | null;

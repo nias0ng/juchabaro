@@ -98,6 +98,7 @@ export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDet
               : '확인 중'
         }
         countdownCaption={vm.isNeedAdmin ? '관리사무소 처리 중' : '관리사무소 이관까지'}
+        countdownProgress={vm.isNeedAdmin ? 1 : vm.escalationCountdown.progress}
         plateNumber={display.plateNumber}
         actionLabel={vm.isNeedAdmin ? '이관 완료' : '이관 대기'}
         timeline={vm.escalationDisplay.timeline}

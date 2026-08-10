@@ -9,11 +9,6 @@ export const styles = StyleSheet.create({
     borderRadius: Radius.input - 2,
     paddingHorizontal: Spacing.base + 3,
     paddingVertical: Spacing.base + 1,
-    shadowColor: Palette.gray975,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 9,
-    elevation: 2,
   },
   cardError: {
     borderWidth: 1,
@@ -23,6 +18,8 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: FontWeight.bold,
     color: Palette.gray975,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     padding: 0,
   },
   errorText: {

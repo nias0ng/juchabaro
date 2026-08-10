@@ -1,6 +1,6 @@
 # 주차바로 입주민 앱
 
-Expo와 React Native로 개발하는 주차바로 입주민용 애플리케이션입니다.
+Expo와 React Native로 개발한 주차바로 입주민용 애플리케이션입니다. 이중 주차, 위반 주차 등으로 발생하는 이동 요청을 앱에서 주고받고, 우리 세대 차량과 단지 주차 현황을 관리합니다.
 
 ## 실행 방법
 
@@ -23,43 +23,6 @@ Expo 개발 서버가 실행되면 다음 키를 사용할 수 있습니다.
 ```powershell
 npm.cmd start -- --clear
 ```
-
-## 현재 화면 주소
-
-| 주소 | 파일 | 설명 |
-| --- | --- | --- |
-| `/` | `src/app/index.tsx` | `/resident`로 이동 |
-| `/auth/login` | `src/app/auth/login.tsx` | 로그인 |
-| `/auth/signup` | `src/app/auth/signup.tsx` | 회원가입 |
-| `/resident` | `src/app/resident/index.tsx` | 입주민 홈 |
-| `/resident/notifications` | `src/app/resident/notifications.tsx` | 알림 |
-| `/resident/vehicles` | `src/app/resident/vehicles.tsx` | 차량 관리 |
-| `/resident/my-page` | `src/app/resident/my-page.tsx` | 마이페이지 |
-
-웹 개발 서버의 기본 주소는 `http://localhost:8081`입니다.
-
-예를 들어 로그인 화면은 다음 주소에서 확인할 수 있습니다.
-
-```text
-http://localhost:8081/auth/login
-```
-
-## 라우트 확인 방법
-
-Expo Router에서는 `src/app` 아래 파일 경로가 그대로 화면 주소가 됩니다.
-
-```text
-src/app/resident/vehicles.tsx
-→ /resident/vehicles
-```
-
-실행 중인 전체 라우트는 브라우저에서 다음 주소를 열어 확인할 수 있습니다.
-
-```text
-http://localhost:8081/_sitemap
-```
-
-`Unmatched Route`가 나오면 먼저 `_sitemap`에서 원하는 주소가 생성됐는지 확인합니다.
 
 ## 코드 검사
 
@@ -86,3 +49,87 @@ src/
 ```
 
 기능 전용 `api`, `components`, `hooks`, `screens`, `types`, `utils`는 해당 `features/<기능>` 안에 둡니다.
+
+## 기능 및 화면
+
+아래 화면들은 웹 프리뷰(`npm run web`)에서 캡처한 실제 화면입니다.
+
+### 1. 온보딩 / 인증
+
+비로그인 상태에서 접근할 수 있는 화면입니다.
+
+| 시작 화면 | 로그인 (기본) | 로그인 (오류) |
+| --- | --- | --- |
+| ![시작 화면](docs/screenshots/00-welcome.png) | ![로그인 기본](docs/screenshots/01-login-empty.png) | ![로그인 오류](docs/screenshots/01-login-error.png) |
+
+회원가입은 계정 → 세대 → 확인 → 완료 4단계로 진행합니다.
+
+| 1단계: 계정 입력 | 2단계: 세대 입력 |
+| --- | --- |
+| ![회원가입 1단계](docs/screenshots/02-signup-step1-filled.png) | ![회원가입 2단계](docs/screenshots/03-signup-step2-household.png) |
+
+### 2. 홈
+
+로그인 후 첫 화면입니다. 현재 주차 중인 내 차량, 빠른 메뉴(이동 요청/내 차량/방문 등록/위반 이력), 단지 주차 현황 미리보기를 보여줍니다.
+
+![홈 화면](docs/screenshots/04-home.png)
+
+### 3. 차량 관리
+
+세대 차량과 방문 차량을 등록하고 관리합니다.
+
+| 차량 목록 | 세대 차량 등록 | 방문 차량 등록 | 차량 삭제 확인 |
+| --- | --- | --- | --- |
+| ![차량 목록](docs/screenshots/05-vehicles-list.png) | ![세대 차량 등록](docs/screenshots/06-register-car-household.png) | ![방문 차량 등록](docs/screenshots/25-register-car-visitor.png) | ![차량 삭제 확인](docs/screenshots/26-vehicle-delete-confirm.png) |
+
+### 4. 주차 현황
+
+지하 1~3층 주차 구역을 층별 탭으로 전환해 확인합니다.
+
+| B1 | B2 | B3 |
+| --- | --- | --- |
+| ![주차 현황 B1](docs/screenshots/07-parking-b1.png) | ![주차 현황 B2](docs/screenshots/23-parking-b2.png) | ![주차 현황 B3](docs/screenshots/24-parking-b3.png) |
+
+### 5. 이동 요청
+
+다른 세대 차량에 이동을 요청하고, 요청 상태를 실시간으로 확인합니다.
+
+**작성 / 목록**
+
+| 요청 작성 | 구역 선택 | 요청 목록 (보낸 요청 없음) | 요청 목록 (받은 요청) |
+| --- | --- | --- | --- |
+| ![이동 요청 작성](docs/screenshots/15-request-compose.png) | ![구역 선택 모달](docs/screenshots/28-request-compose-zone-picker.png) | ![보낸 요청 없음](docs/screenshots/08-requests-sent-empty.png) | ![받은 요청 목록](docs/screenshots/22-requests-received.png) |
+
+**요청 상세 / 전송 완료**
+
+| 완료된 요청 상세 (받는 사람) | 요청 전송 완료 |
+| --- | --- |
+| ![완료된 요청 상세](docs/screenshots/19-request-detail-completed.png) | ![이동 요청 전송 완료](docs/screenshots/33-request-sent.png) |
+
+> 요청 상태는 대기 → 약속 시간 경과 → 재알림 → 관리사무소 이관 → 완료 순으로 진행되고, AI가 자동으로 감지하는 위반(장애인 구역 위반, 전기차 충전구역 장기 점유)은 요청자 없이 자동으로 생성됩니다. 이 상태들은 실제로 시간이 지나거나 위반이 발생해야 나타나서, 정리된 데모 계정에서는 재현하지 않았습니다.
+
+**요청 내역**
+
+보낸 요청과 받은 요청을 날짜순으로 모아 보는 화면입니다.
+
+![요청 내역](docs/screenshots/14-request-history.png)
+
+### 6. 알림
+
+| 알림 목록 | 알림 설정 | 방해 금지 시간 설정 |
+| --- | --- | --- |
+| ![알림 목록](docs/screenshots/09-notifications.png) | ![알림 설정](docs/screenshots/10-notification-settings.png) | ![방해 금지 시간 모달](docs/screenshots/27-notification-settings-quiet-hours-modal.png) |
+
+### 7. 내 정보
+
+| 마이페이지 | 내 정보 수정 | 위반 이력 |
+| --- | --- | --- |
+| ![마이페이지](docs/screenshots/11-my-page.png) | ![내 정보 수정](docs/screenshots/12-profile-edit.png) | ![위반 이력](docs/screenshots/13-violation-history.png) |
+
+### 8. 다른 계정으로 본 화면
+
+같은 화면이라도 로그인한 세대에 따라 데이터가 다르게 보입니다. (`resident2` 계정 예시)
+
+| 홈 | 차량 목록 | 요청 목록 | 마이페이지 |
+| --- | --- | --- | --- |
+| ![resident2 홈](docs/screenshots/29-test2-home.png) | ![resident2 차량 목록](docs/screenshots/30-test2-vehicles.png) | ![resident2 요청 목록](docs/screenshots/31-test2-requests.png) | ![resident2 마이페이지](docs/screenshots/32-test2-my-page.png) |

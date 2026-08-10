@@ -13,8 +13,6 @@ import { queryKeys } from '@/services/query-keys';
 
 export type NotificationTab = 'all' | 'moveRequest';
 
-// 백엔드 notificationType 필터는 값 1개만 받으므로, "이동 요청" 탭은 서버에 다시 요청하지 않고
-// 전체 목록을 한 번만 받아 이 타입들로 클라이언트에서 걸러낸다.
 const MOVE_REQUEST_TAB_TYPES = new Set(['MOVE_REQUEST', 'MOVE_RESPONSE', 'REMINDER']);
 
 async function fetchNotifications(accessToken: string): Promise<NotificationSummary[]> {
@@ -22,6 +20,10 @@ async function fetchNotifications(accessToken: string): Promise<NotificationSumm
   return result.notifications;
 }
 
+/**
+ * 알림 목록을 조회하고, 스와이프로 숨긴 알림(기기 로컬 기록)을 걸러내 탭별로 보여준다.
+ * API: GET /api/notifications
+ */
 export function useNotifications() {
   const { accessToken, status } = useAuth();
   const [tab, setTab] = useState<NotificationTab>('all');

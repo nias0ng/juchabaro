@@ -12,6 +12,7 @@ type RequestReminderSectionProps = {
   description: string;
   countdownLabel: string;
   countdownCaption: string;
+  countdownProgress: number;
   plateNumber: string;
   actionLabel: string;
   timeline: RequestTimelineStep[];
@@ -23,6 +24,7 @@ export function RequestReminderSection({
   description,
   countdownLabel,
   countdownCaption,
+  countdownProgress,
   plateNumber,
   actionLabel,
   timeline,
@@ -36,7 +38,7 @@ export function RequestReminderSection({
 
       <Text style={styles.description}>{description}</Text>
 
-      <RequestReminderCountdown label={countdownLabel} caption={countdownCaption} />
+      <RequestReminderCountdown label={countdownLabel} caption={countdownCaption} progress={countdownProgress} />
       <RequestStatCardRow leftLabel="차량 번호" leftValue={plateNumber} rightLabel="조치" rightValue={actionLabel} />
       <RequestTimelineCard title="진행 기록" timeline={timeline} pendingStep={pendingStep} />
     </View>

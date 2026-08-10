@@ -2,6 +2,7 @@
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { Car, ChevronDown, Gauge, History, LogOut, Settings, SquareDot, User } from '@lucide/vue';
 
+import { useDropdownFilter } from '@/composables/use-dropdown-filter';
 import { useAuthStore } from '@/stores/auth-store';
 
 defineProps<{ title: string; breadcrumb: string }>();
@@ -16,6 +17,8 @@ const NAV = [
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
+const { filterBarRef: userMenuRef, openDropdown: openUserMenu, toggleDropdown: toggleUserMenu } =
+  useDropdownFilter<'user'>();
 
 function isActive(to: string) {
   return route.path === to || route.path.startsWith(`${to}/`);
@@ -68,14 +71,20 @@ function handleLogout() {
           <span class="topbar-divider" />
           <p class="breadcrumb">{{ breadcrumb }}</p>
         </div>
-        <div class="topbar-right">
-          <button type="button" class="user-btn">
+        <div ref="userMenuRef" class="topbar-right user-menu-wrap">
+          <button type="button" class="user-btn" @click="toggleUserMenu('user')">
             <span class="avatar">
               <User :size="16" />
             </span>
             <span class="user-name">관리자</span>
             <ChevronDown :size="16" />
           </button>
+          <div v-if="openUserMenu === 'user'" class="user-menu">
+            <button type="button" class="user-menu-item" @click="handleLogout">
+              <LogOut :size="16" />
+              로그아웃
+            </button>
+          </div>
         </div>
       </header>
       <main class="main">
@@ -284,6 +293,42 @@ function handleLogout() {
 .user-name {
   font-size: var(--font-size-md);
   font-weight: 500;
+}
+
+.user-menu-wrap {
+  position: relative;
+}
+
+.user-menu {
+  position: absolute;
+  top: calc(100% + var(--spacing-sm));
+  right: 0;
+  z-index: 10;
+  width: 144px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  background: var(--panel-card);
+  padding: 6px;
+  box-shadow: var(--panel-shadow-card);
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  padding: var(--spacing-sm) var(--spacing-base);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--panel-danger);
+  cursor: pointer;
+}
+
+.user-menu-item:hover {
+  background: var(--panel-muted);
 }
 
 .main {

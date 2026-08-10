@@ -66,9 +66,23 @@ class _Requester:
         errors: list[Exception] | None = None,
     ) -> None:
         self.calls = 0
+        self.frame_context_flags: list[bool] = []
         self.errors = list(errors or ())
 
     def request_after_monitoring_context_change(self) -> None:
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+
+    def request_after_monitoring_frame_commit(
+        self,
+        *,
+        context_changed: bool = False,
+    ) -> None:
+        self.frame_context_flags.append(context_changed)
+        if not context_changed:
+            return
+
         self.calls += 1
         if self.errors:
             raise self.errors.pop(0)
@@ -204,6 +218,7 @@ def test_irrelevant_frame_does_not_request_reevaluation() -> None:
     _observe(observer, _result())
 
     assert requester.calls == 0
+    assert requester.frame_context_flags == [False]
 
 
 def test_first_target_zone_visit_requests_once() -> None:
@@ -212,6 +227,18 @@ def test_first_target_zone_visit_requests_once() -> None:
 
     _observe(observer, _result(_visit()))
 
+    assert requester.calls == 1
+    assert requester.frame_context_flags == [True]
+
+
+def test_observer_sends_heartbeat_and_combines_semantic_change() -> None:
+    requester = _Requester()
+    observer = _observer(requester)
+
+    _observe(observer, _result())
+    _observe(observer, _result(_visit()))
+
+    assert requester.frame_context_flags == [False, True]
     assert requester.calls == 1
 
 

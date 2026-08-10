@@ -36,7 +36,7 @@ export default function ProfileEditScreen() {
     : '위치 정보 없음';
 
   return (
-    <GradientScreenBackground>
+    <GradientScreenBackground avoidKeyboard>
       <ResponsiveContainer>
         <ScreenHeader title="내 정보 수정" />
 

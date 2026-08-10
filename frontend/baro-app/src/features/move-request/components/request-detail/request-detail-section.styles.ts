@@ -40,7 +40,6 @@ export const styles = StyleSheet.create({
   autoEscalation: {
     gap: Spacing.base + 1,
   },
-  // "위반 유형" 박스(request-info-card)와 같은 톤으로 맞춘 흰 배경 라벨+값 박스.
   timerRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -226,12 +226,20 @@ def test_factory_wires_components_in_required_order(
         def __init__(self) -> None:
             construction_order.append("mailbox")
             self.monitoring_requests = 0
+            self.frame_requests: list[bool] = []
 
         def request_transitions(self, _transitions) -> None:
             raise AssertionError("factory must not publish transitions")
 
         def request_after_monitoring_commit(self) -> None:
             self.monitoring_requests += 1
+
+        def request_after_monitoring_frame_commit(
+            self,
+            *,
+            context_changed: bool = False,
+        ) -> None:
+            self.frame_requests.append(context_changed)
 
     class _SensorWorkerDouble:
         def __init__(self) -> None:
@@ -436,10 +444,26 @@ def test_factory_wires_components_in_required_order(
     worker_arguments = captured["authorization_worker"]
     assert worker_arguments["coordinator"] is runtime.authorization_coordinator
     assert worker_arguments["mailbox"] is mailbox
+    assert worker_arguments["policy"] is policy.reevaluation
+    assert (
+        worker_arguments["policy"].initial_backoff_seconds
+        == 0.25
+    )
+    assert worker_arguments["policy"].max_backoff_seconds == 2.0
+    assert worker_arguments["policy"].backoff_multiplier == 2.0
 
     calls_before_signal = construction_order.copy()
     assert runtime.request_after_monitoring_context_change() is None
     assert mailbox.monitoring_requests == 1
+    assert mailbox.frame_requests == []
+    assert runtime.request_after_monitoring_frame_commit() is None
+    assert mailbox.monitoring_requests == 1
+    assert mailbox.frame_requests == [False]
+    assert runtime.request_after_monitoring_frame_commit(
+        context_changed=True,
+    ) is None
+    assert mailbox.monitoring_requests == 1
+    assert mailbox.frame_requests == [False, True]
     assert construction_order == calls_before_signal
     assert runtime.authorization_coordinator.drain_calls == 0
     assert connection_factory.calls == 0

@@ -1,8 +1,9 @@
 """ToF 전용구역 권한 재평가와 process-local 최신 결과를 조정한다.
 
 이 모듈은 재평가 요청 병합, zone별 평가 직렬화, assessment revision 부여,
-의미가 같은 결과의 publication 억제와 실패 재시도를 담당한다. worker,
-polling loop, Incident 처리와 결과의 durable 저장은 담당하지 않는다.
+의미가 같은 결과의 publication 억제와 명시적 retry 결과 생성을 담당한다.
+retry timer, polling loop, Incident 처리와 결과의 durable 저장은 담당하지
+않는다.
 """
 
 from __future__ import annotations
@@ -87,11 +88,28 @@ class TofAuthorizationCoordinatorFailure:
 
 
 @dataclass(frozen=True, kw_only=True)
+class TofAuthorizationRetryRequest:
+    """Worker가 이후 재평가해야 하는 zone 요청."""
+
+    zone_id: ZoneId
+    minimum_occupancy_revision: int | None
+
+    def __post_init__(self) -> None:
+        _validate_zone_id(self.zone_id)
+        _validate_revision(
+            self.minimum_occupancy_revision,
+            field_name="minimum_occupancy_revision",
+            allow_none=True,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class TofAuthorizationCoordinatorRun:
     published_assessments: tuple[TofZoneAuthorizationAssessment, ...]
     unchanged_zone_ids: tuple[ZoneId, ...]
     deferred_zone_ids: tuple[ZoneId, ...]
     failures: tuple[TofAuthorizationCoordinatorFailure, ...]
+    retry_requests: tuple[TofAuthorizationRetryRequest, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +145,7 @@ class _ZoneOutcome:
     unchanged: bool = False
     deferred: bool = False
     failure: TofAuthorizationCoordinatorFailure | None = None
+    retry_request: TofAuthorizationRetryRequest | None = None
 
 
 def _causal_scope(snapshot: ZoneOccupancySnapshot) -> _CausalScope:
@@ -273,13 +292,43 @@ class TofZoneAuthorizationCoordinator:
     def request_occupied_zones(self) -> None:
         """현재 snapshot 중 OCCUPIED zone만 pending에 추가한다."""
 
-        snapshots = self._validated_snapshots()
-        self._merge_requests(
-            tuple(
-                (snapshot.zone_id, snapshot.revision)
-                for snapshot in snapshots
-                if snapshot.stable_state is OccupancyState.OCCUPIED
+        self._merge_requests(self.occupied_zone_revisions())
+
+    def zone_occupancy_revisions(
+        self,
+    ) -> tuple[tuple[ZoneId, int, OccupancyState], ...]:
+        """모든 zone의 현재 occupancy revision과 stable state를 반환한다.
+
+        Snapshot supplier를 한 번만 호출한다. DB를 조회하거나 coordinator
+        pending 상태를 변경하지 않는다. 정상 sensor read failure는 snapshot
+        observation 상태로 표현돼야 한다. supplier 예외나 malformed snapshot은
+        이를 호출한 authorization worker의 terminal failure가 된다.
+        """
+
+        return tuple(
+            sorted(
+                (
+                    (
+                        snapshot.zone_id,
+                        snapshot.revision,
+                        snapshot.stable_state,
+                    )
+                    for snapshot in self._validated_snapshots()
+                ),
+                key=lambda item: item[0],
             )
+        )
+
+    def occupied_zone_revisions(
+        self,
+    ) -> tuple[tuple[ZoneId, int], ...]:
+        """현재 OCCUPIED zone과 revision을 정렬해 반환한다."""
+
+        return tuple(
+            (zone_id, revision)
+            for zone_id, revision, state
+            in self.zone_occupancy_revisions()
+            if state is OccupancyState.OCCUPIED
         )
 
     def request_all_snapshots(self) -> None:
@@ -304,7 +353,8 @@ class TofZoneAuthorizationCoordinator:
     def drain_pending(self) -> TofAuthorizationCoordinatorRun:
         """호출 시작 시점의 pending batch를 zone ID 순서로 한 번 처리한다.
 
-        처리 중 등록되거나 실패로 재등록된 요청은 다음 호출에서 처리한다.
+        처리 중 다른 thread가 등록한 요청은 다음 호출에서 처리한다. 실패와
+        deferred 결과는 내부 재등록하지 않고 명시적인 retry request로 반환한다.
         한 zone의 실패는 다른 zone 처리를 중단시키지 않는다.
 
         `assessment_consumer`는 이 메서드나
@@ -317,6 +367,7 @@ class TofZoneAuthorizationCoordinator:
         unchanged: list[ZoneId] = []
         deferred: list[ZoneId] = []
         failures: list[TofAuthorizationCoordinatorFailure] = []
+        retry_requests: list[TofAuthorizationRetryRequest] = []
 
         for zone_id in sorted(batch):
             with zone_locks[zone_id]:
@@ -333,12 +384,15 @@ class TofZoneAuthorizationCoordinator:
                 deferred.append(zone_id)
             if outcome.failure is not None:
                 failures.append(outcome.failure)
+            if outcome.retry_request is not None:
+                retry_requests.append(outcome.retry_request)
 
         return TofAuthorizationCoordinatorRun(
             published_assessments=tuple(published),
             unchanged_zone_ids=tuple(unchanged),
             deferred_zone_ids=tuple(deferred),
             failures=tuple(failures),
+            retry_requests=tuple(retry_requests),
         )
 
     def latest_assessment(
@@ -419,25 +473,31 @@ class TofZoneAuthorizationCoordinator:
                 minimum_revision=minimum_revision,
             )
         except Exception as exc:
-            self._requeue(zone_id, minimum_revision)
             return _ZoneOutcome(
                 failure=TofAuthorizationCoordinatorFailure(
                     zone_id=zone_id,
                     stage=TofAuthorizationCoordinatorStage.SNAPSHOT,
                     error=exc,
-                )
+                ),
+                retry_request=TofAuthorizationRetryRequest(
+                    zone_id=zone_id,
+                    minimum_occupancy_revision=minimum_revision,
+                ),
             )
 
         try:
             assessment = self._evaluate(snapshot)
         except Exception as exc:
-            self._requeue(zone_id, minimum_revision)
             return _ZoneOutcome(
                 failure=TofAuthorizationCoordinatorFailure(
                     zone_id=zone_id,
                     stage=TofAuthorizationCoordinatorStage.EVALUATION,
                     error=exc,
-                )
+                ),
+                retry_request=TofAuthorizationRetryRequest(
+                    zone_id=zone_id,
+                    minimum_occupancy_revision=minimum_revision,
+                ),
             )
 
         try:
@@ -450,18 +510,26 @@ class TofZoneAuthorizationCoordinator:
                     "평가 후 occupancy revision이 평가 입력보다 감소했습니다."
                 )
         except Exception as exc:
-            self._requeue(zone_id, minimum_revision)
             return _ZoneOutcome(
                 failure=TofAuthorizationCoordinatorFailure(
                     zone_id=zone_id,
                     stage=TofAuthorizationCoordinatorStage.SNAPSHOT,
                     error=exc,
-                )
+                ),
+                retry_request=TofAuthorizationRetryRequest(
+                    zone_id=zone_id,
+                    minimum_occupancy_revision=minimum_revision,
+                ),
             )
 
         if _causal_scope(current_snapshot) != _causal_scope(snapshot):
-            self._requeue(zone_id, current_snapshot.revision)
-            return _ZoneOutcome(deferred=True)
+            return _ZoneOutcome(
+                deferred=True,
+                retry_request=TofAuthorizationRetryRequest(
+                    zone_id=zone_id,
+                    minimum_occupancy_revision=current_snapshot.revision,
+                ),
+            )
 
         return self._publish_or_suppress(
             assessment,
@@ -531,13 +599,16 @@ class TofZoneAuthorizationCoordinator:
         try:
             self._assessment_consumer(publication)
         except Exception as exc:
-            self._requeue(zone_id, minimum_revision)
             return _ZoneOutcome(
                 failure=TofAuthorizationCoordinatorFailure(
                     zone_id=zone_id,
                     stage=TofAuthorizationCoordinatorStage.PUBLICATION,
                     error=exc,
-                )
+                ),
+                retry_request=TofAuthorizationRetryRequest(
+                    zone_id=zone_id,
+                    minimum_occupancy_revision=minimum_revision,
+                ),
             )
 
         self._complete_publication(publication)
@@ -556,13 +627,6 @@ class TofZoneAuthorizationCoordinator:
 
             self._latest_assessments[assessment.zone_id] = assessment
             del self._pending_publications[assessment.zone_id]
-
-    def _requeue(
-        self,
-        zone_id: ZoneId,
-        minimum_revision: int | None,
-    ) -> None:
-        self._merge_requests(((zone_id, minimum_revision),))
 
     def _snapshot_for_zone(
         self,

@@ -752,6 +752,26 @@ class IncidentKey:
 
 
 @dataclass(frozen=True)
+class IncidentZoneContext:
+    """Incident가 최초 OPEN될 때 고정할 대표·추가 구역 문맥."""
+
+    zone_id: ZoneId
+    related_zone_ids: tuple[ZoneId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if int(self.zone_id) <= 0:
+            raise ValueError("Incident zone_id must be positive")
+        if len(self.related_zone_ids) > 2:
+            raise ValueError("Incident related_zone_ids supports at most two zones")
+        if any(int(zone_id) <= 0 for zone_id in self.related_zone_ids):
+            raise ValueError("Incident related zone ids must be positive")
+        if len(self.related_zone_ids) != len(set(self.related_zone_ids)):
+            raise ValueError("Incident related zone ids must be unique")
+        if self.zone_id in self.related_zone_ids:
+            raise ValueError("Incident representative zone cannot be related")
+
+
+@dataclass(frozen=True)
 class IncidentSignal:
     """상태 없는 RuleEvaluator가 IncidentReducer에 전달하는 결과."""
 
@@ -760,11 +780,16 @@ class IncidentSignal:
     confirmable: bool
     observed_at: datetime
     evidence: Mapping[str, object] = field(default_factory=dict)
+    open_zone_context: IncidentZoneContext | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.observed_at, "observed_at")
         if self.value is not IncidentSignalValue.MATCHED and self.confirmable:
             raise ValueError("confirmable applies only to MATCHED IncidentSignal")
+        if self.open_zone_context is not None and not self.confirmable:
+            raise ValueError(
+                "Incident open_zone_context requires a confirmable MATCHED signal"
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -858,6 +883,7 @@ class Incident:
     entry_attempt_id: EntryAttemptId | None = None
     parking_session_id: ParkingSessionId | None = None
     zone_id: ZoneId | None = None
+    related_zone_ids: tuple[ZoneId, ...] = ()
     victim_physical_vehicle_id: PhysicalVehicleId | None = None
     confirmed_at: datetime | None = None
     resolved_at: datetime | None = None
@@ -909,6 +935,18 @@ class Incident:
             raise ValueError("terminal Incident must have termination_reason")
         if (self.state is IncidentState.RESOLVED) != (self.resolved_at is not None):
             raise ValueError("only RESOLVED Incident has resolved_at")
+        if self.related_zone_ids:
+            if self.zone_id is None:
+                raise ValueError("related Incident zones require zone_id")
+            IncidentZoneContext(
+                zone_id=self.zone_id,
+                related_zone_ids=self.related_zone_ids,
+            )
+        if self.state in {IncidentState.CANDIDATE, IncidentState.CANCELED}:
+            if self.related_zone_ids:
+                raise ValueError(
+                    "Candidate and Canceled Incident cannot latch related zones"
+                )
 
 
 @dataclass(frozen=True)

@@ -9,10 +9,20 @@ export const styles = StyleSheet.create({
     gap: Spacing.base,
     width: '100%',
   },
-  icon: {
+  rowPressed: {
+    opacity: 0.65,
+  },
+  iconOuter: {
     width: 40,
     height: 40,
     borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconInner: {
+    width: 16,
+    height: 16,
+    borderRadius: 5,
   },
   content: {
     flex: 1,

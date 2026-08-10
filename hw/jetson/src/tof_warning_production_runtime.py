@@ -32,6 +32,7 @@ from src.actuators.ports import ActuatorPort
 from src.application.sensor_factory import TofSensorRuntimePolicy
 from src.application.sensor_worker import SensorWorker
 from src.application.tof_authorization_worker import (
+    TofAuthorizationReevaluationPolicy,
     TofAuthorizationWorker,
 )
 from src.application.tof_warning_runtime_factory import (
@@ -143,6 +144,7 @@ class _ResolvedCoreSettings:
     occupancy_freshness_seconds: float
     monitoring_freshness_seconds: float
     max_pre_occupancy_observation_seconds: float
+    reevaluation_policy: TofAuthorizationReevaluationPolicy
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -651,6 +653,7 @@ def build_jetson_tof_warning_runtime(
             policy=TofWarningRuntimePolicy(
                 sensor=sensor_policy,
                 authorization=authorization_policy,
+                reevaluation=core.reevaluation_policy,
             ),
             dependencies=TofWarningRuntimeDependencies(
                 sensor_array=sensor_array,
@@ -687,6 +690,27 @@ def _resolve_core_settings(
             "ToF core 설정이 누락되어 runtime을 비활성화합니다. "
             "missing=%s",
             ",".join(missing),
+        )
+        return None
+
+    try:
+        reevaluation_policy = TofAuthorizationReevaluationPolicy(
+            initial_backoff_seconds=(
+                settings.tof_reevaluation_initial_backoff_seconds
+            ),
+            max_backoff_seconds=(
+                settings.tof_reevaluation_max_backoff_seconds
+            ),
+            backoff_multiplier=(
+                settings.tof_reevaluation_backoff_multiplier
+            ),
+        )
+    except ValueError:
+        logger.exception(
+            "ToF 재평가 backoff 설정이 유효하지 않아 "
+            "runtime을 비활성화합니다. "
+            "component=tof_authorization_reevaluation "
+            "stage=settings_validation"
         )
         return None
 
@@ -749,6 +773,7 @@ def _resolve_core_settings(
             float,
             settings.tof_max_pre_occupancy_observation_seconds,
         ),
+        reevaluation_policy=reevaluation_policy,
     )
 
 
