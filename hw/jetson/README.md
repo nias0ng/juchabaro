@@ -169,9 +169,60 @@ cp .env.example .env
 기존 `.env`를 계속 사용하는 환경은 `.env.example`과 비교해 카메라·
 calibration·차량 tracking·`EGRESS_AISLE_PATH` 및 MonitoringPolicy 필수값을
 추가해야 한다.
-기본값 없는 항목은 누락하거나 빈 값으로 두면 시작 단계에서 설정 오류로
-중단한다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤
-배포 환경에 맞게 명시한다.
+핵심 monitoring의 기본값 없는 항목은 누락하거나 빈 값으로 두면 시작 단계에서
+설정 오류로 중단한다. optional ToF runtime의 필수값과 격리 동작은 아래 계약을
+따른다. provisional 값은 각 주석의 출처와 재측정 조건을 확인한 뒤 배포 환경에
+맞게 명시한다.
+
+### ToF 현장 경고 runtime 활성화
+
+`src.main:app`은 production ToF factory를 연결한다. 환경 변수를 제공하지
+않았을 때 `Settings`의 기본값은 `TOF_ENABLED=false`이며, 이 경우 실제
+센서·LED·speaker runtime을 구성하지 않는다. 현재 `.env.example`은 현장
+시연 배포를 위해 `true`와 provisional 측정값을 명시한다. `true`로
+활성화하려면 다음 core 설정을 모두 명시해야 한다.
+
+```text
+TOF_I2C_BUS
+TOF_SHUTDOWN_SETTLE_SECONDS
+TOF_BOOT_SETTLE_SECONDS
+TOF_IO_TIMEOUT_SECONDS
+TOF_DISABLED_ZONE_ID
+TOF_EV_CHARGING_ZONE_ID
+TOF_POLL_INTERVAL_SECONDS
+TOF_ENTER_DISTANCE_MM
+TOF_EXIT_DISTANCE_MM
+TOF_ENTER_CONFIRM_SECONDS
+TOF_EXIT_CONFIRM_SECONDS
+TOF_TRUSTED_SAMPLE_MAX_GAP_SECONDS
+TOF_STALE_AFTER_SECONDS
+TOF_OCCUPANCY_FRESHNESS_SECONDS
+TOF_MONITORING_FRESHNESS_SECONDS
+TOF_MAX_PRE_OCCUPANCY_OBSERVATION_SECONDS
+```
+
+두 zone ID는 각각 배포된 `DISABLED`, `EV_CHARGING` ZoneDefinition을 가리켜야
+한다. `.env.example`의 freshness와 재평가 backoff는 현장 시연용
+provisional 값이므로 camera frame 처리율·SQLite 부하·허용 경고 지연을
+실측한 뒤 재조정한다. core 설정이
+누락됐거나 의미 검증에 실패하면 FastAPI·camera monitoring은 계속 실행하고
+ToF runtime만 비활성화하며 application log에 원인을 남긴다.
+
+speaker는 다음 세 값을 모두 제공할 때만 활성화한다. 모두 없으면 speaker만
+사용하지 않고, 일부만 있거나 초기화에 실패해도 sensor와 LED는 계속 동작한다.
+
+```text
+TOF_DISABLED_ZONE_WARNING_WAV_PATH
+TOF_EV_ZONE_WARNING_WAV_PATH
+TOF_WARNING_AUDIO_DEVICE
+```
+
+장애인·EV 전용구역의 현장 경고는 stable ToF `OCCUPIED`로 시작한 점유 구간만
+활성화할 수 있다. 차량·binding·자격·monitoring 갱신은 활성 점유 구간의
+재평가 신호이며 독립적인 경고 trigger가 아니다. Incident OPEN·RESOLVE는
+LED·speaker를 제어하지 않고 기존 durable 기록·Backend 전파만 담당한다.
+자세한 계약은 [Jetson 도메인 설계](../../docs/architecture/jetson/README.md)를
+따른다.
 
 단일 USB 카메라를 사용하는 Jetson 운영 배치는 `hw/jetson`을 하나의 배포
 단위로 사용한다. 모델 binary를 제외한 calibration·manifest·WAV는 저장소에서
@@ -317,10 +368,14 @@ downtime을 trusted timer에 더하지 않는다. 현재 기본
 실제 재식별 근거와 구현은 후속 범위다.
 
 `main.py`는 migration, ZoneDefinition 검증, inbound application 조립,
-outbox publisher, evidence publication worker와 단일 monitoring thread의 시작·정상 종료 생명주기를
-소유한다. 종료 시 monitoring·MoveVerification producer를 먼저 멈춘 뒤 publication
-worker를 회수한다. 진행 중 작업은 완료까지 기다리지만 queue 전체를 drain하지
-않으며, 남은 durable 작업은 다음 기동의 recovery에서 이어간다.
+outbox publisher, evidence publication worker, 단일 monitoring thread와 optional
+ToF runtime의 시작·정상 종료 생명주기를 소유한다. ToF를 활성화하면 actuator를
+준비하고 monitoring 시작 뒤 authorization worker, sensor worker 순서로 시작한다.
+종료 시 신규 ToF 입력을 막기 위해 sensor worker와 authorization worker를 먼저
+정지한 뒤 monitoring·MoveVerification producer와 publication worker를 회수하고,
+마지막으로 ToF projection을 비우고 speaker와 LED를 닫는다. 진행 중 durable
+작업은 완료까지 기다리지만 queue 전체를 drain하지 않으며, 남은 durable 작업은
+다음 기동의 recovery에서 이어간다.
 `BACKEND_HW_API_KEY`가 비어 있으면 outbound publisher를 기동하지 않으며,
 값이 있으면 `BACKEND_BASE_URL`로 전송하는 두 worker를 기동한다. outbox publisher는
 API 6·7·10·12의 exact JSON bytes를, evidence publication worker는 API 8·9를
@@ -444,12 +499,17 @@ stall로 보고 그 wall-clock을 부재 확정에 더하지 않는다.
 Camera·보정 실패는 `FrameSourceError`의 `UNKNOWN` 또는 `DEGRADED`
 관측과 구체적인 reason으로 변환된다. `MonitoringPipeline`은 이 비신뢰
 관측을 active scope에 commit해 timer chain을 끊은 뒤 원래 오류를
-호출자에게 전달한다. Jetson 경고 LED GPIO adapter는 구현되어 있지만 speaker
-adapter, `ActuatorCommandPlanner`, `CompositeActuatorPort` 및 `main` lifecycle
-배선은 아직 제공하지 않는다. `MonitoringPipeline`의 `ActuatorPort` 주입 경계와
-durable commit 이후 전체 active Incident projection 적용 계약은 유지된다.
-따라서 현재 `main` 실행만으로 경고 LED가 자동 연동되지는 않는다.
-`src/sensors`는 독립된 센서 입력 경계이며 현재 실행 pipeline에는 연결하지 않는다.
+호출자에게 전달한다. `TOF_ENABLED=true`이고 core 설정이 완전하면
+`src.main:app`은 듀얼 VL53L0X 점유, authorization worker와
+`LocalWarningCoordinator`를 연결해 LED와 optional USB speaker에 전체 projection을
+적용한다. monitoring frame commit과 Backend review·session context 적용은 활성
+ToF 점유 구역의 권한 재평가를 요청하지만 그 자체로 경고를 켜지 않는다.
+
+ToF 경고 상태는 process-local이며 durable Incident에서 복원하지 않는다.
+구성·startup·actuator 실패는 ToF 또는 해당 장치에 격리되므로 FastAPI와 camera
+monitoring이 계속 실행될 수 있다. 현재 `/health`는 SQLite durable admission만
+확인하므로 ToF worker·sensor·LED·speaker의 정상 상태는 application log도 함께
+확인해야 한다.
 
 ## PC 개발 환경에서 실행
 
@@ -669,6 +729,11 @@ http://localhost:8000/docs
 http://<JETSON_IP>:8000/health
 http://<JETSON_IP>:8000/docs
 ```
+
+`/health` 성공은 SQLite가 durable input을 접수할 수 있다는 뜻이며 ToF runtime,
+sensor·authorization worker, LED 또는 speaker의 정상 상태를 보장하지 않는다.
+별도 ToF health가 구현되기 전에는 application log에서 구성·시작·장치 실패를
+함께 확인한다.
 
 ## 파일럿 영상 리플레이
 
