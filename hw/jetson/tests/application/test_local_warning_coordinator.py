@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
+import logging
 from threading import Event, Lock, Thread
 from uuid import UUID
 
@@ -542,6 +543,35 @@ def test_disabled_unauthorized_activates_disabled_outputs() -> None:
             ),
         )
     ]
+
+
+def test_logs_only_successful_local_warning_state_changes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator, _led_port, _speaker_port = _coordinator()
+    unauthorized = _unauthorized(
+        DISABLED_ZONE_ID,
+        ZoneType.DISABLED,
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.local_warning_coordinator",
+    ):
+        coordinator.consume_assessment(unauthorized)
+        coordinator.consume_assessment(unauthorized)
+        coordinator.consume_assessment(
+            _authorized(DISABLED_ZONE_ID, ZoneType.DISABLED)
+        )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Jetson ToF local warning changed." in record.getMessage()
+    ]
+    assert len(messages) == 2
+    assert "activeZoneIds=1" in messages[0]
+    assert "activeZoneIds=-" in messages[1]
 
 
 def test_ev_unauthorized_activates_ev_outputs() -> None:

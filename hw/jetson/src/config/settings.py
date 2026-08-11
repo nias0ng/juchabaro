@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     tof_exit_confirm_seconds: float | None = None
     tof_trusted_sample_max_gap_seconds: float | None = None
     tof_stale_after_seconds: float | None = None
+    tof_diagnostic_interval_seconds: float = 5.0
 
     # ToF authorization freshness 설정. 운영값과 완전성은 후속 core factory가
     # 검증한 뒤 domain policy에 전달한다.
