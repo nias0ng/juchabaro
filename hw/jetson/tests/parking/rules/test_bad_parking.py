@@ -382,6 +382,50 @@ def test_bad_parking_and_aisle_block_can_match_independently_together() -> None:
     assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.NOT_MATCHED
 
 
+def test_aisle_block_suppresses_out_of_zone_residual_rule() -> None:
+    signals = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(
+                primary=0.30,
+                secondary=0.00,
+                union=0.30,
+            ),
+            parking_assignment=make_assignment(AssignmentState.UNASSIGNED),
+            aisle_visit=make_aisle_visit(),
+        )
+    )
+
+    assert signals["AISLE_BLOCK"].value is IncidentSignalValue.MATCHED
+    assert signals["AISLE_BLOCK"].open_zone_context == IncidentZoneContext(
+        zone_id=ZoneId(3)
+    )
+    assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.NOT_MATCHED
+    assert signals["OUT_OF_ZONE"].evidence["reasons"] == (
+        "CLASSIFIED_AS_AISLE_BLOCK",
+    )
+
+
+def test_uncertain_aisle_classification_pauses_out_of_zone_residual_rule() -> None:
+    signals = signals_by_rule(
+        make_context(
+            placement_evidence=make_evidence(
+                primary=0.30,
+                secondary=0.00,
+                union=0.30,
+            ),
+            parking_assignment=make_assignment(AssignmentState.UNASSIGNED),
+            aisle_visit=make_aisle_visit(observation=unknown()),
+        )
+    )
+
+    assert signals["AISLE_BLOCK"].value is IncidentSignalValue.UNKNOWN
+    assert signals["OUT_OF_ZONE"].value is IncidentSignalValue.UNKNOWN
+    assert signals["OUT_OF_ZONE"].confirmable is False
+    assert signals["OUT_OF_ZONE"].evidence["reasons"] == (
+        "AISLE_CLASSIFICATION_UNAVAILABLE",
+    )
+
+
 def test_matching_predicate_is_not_confirmable_before_parked() -> None:
     signals = signals_by_rule(
         make_context(

@@ -512,6 +512,13 @@ reducer가 선택한 값을 조회해 실제 `IncidentSignal`과 함께 내보�
 | BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK | PARKED 의존성과 유효한 placement 입력을 만족한 위반 술어가 연속으로 신뢰됨 | 유효한 재평가 sample에서 위반 술어가 연속으로 false임 |
 | DOUBLE_PARKING | subject·victim 모두 PARKED인 상태에서 BlockingRelation owner가 confirm한 관계 신호가 연속으로 신뢰됨 | 한쪽이 PARKED를 벗어나거나 geometry가 비성립인 신호가 연속으로 신뢰됨 |
 
+OUT_OF_ZONE은 이 규칙 그룹의 전역 우선순위가 아니라 공간 배치 축의 잔여
+분류다. spot union 미달과 PARKED를 만족하더라도 confirmed AISLE 점유가 있으면
+AISLE_BLOCK으로 분류하고 OUT_OF_ZONE은 `NOT_MATCHED`로 평가한다. AISLE
+분류가 `UNKNOWN`이면 OUT_OF_ZONE도 `UNKNOWN`으로 유지하여 confirm·clear
+timer를 진행하지 않는다. BAD_PARKING·AISLE_BLOCK의 동시 성립과
+DOUBLE_PARKING 같은 관계 scope 사건은 이 잔여 분류의 영향을 받지 않는다.
+
 ZoneVisit ENDED, BlockingRelation RESOLVED, `PHYSICAL_VEHICLE_LEFT`처럼 상위
 owner가 이미 확정한 직접 종료 입력은 rule의 clear debounce를 다시 적용하지
 않는다. 이는 관측 기반 `NOT_MATCHED`와 scope 종료 사실을 구분하기 위함이다.
@@ -592,8 +599,8 @@ UNKNOWN
 | `EV_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | 장애인 전용구역과 같은 PARKED·동일 zone assignment 경계를 사용한다. |
 | `EV_OVERSTAY` | `0.0s` | `0.0s` | PARKED 확정 뒤 allowed-duration 임계 통과 자체가 누적 사실이고 movement·ZoneVisit 종료가 재평가 또는 직접 종료를 만든다. |
 | `BAD_PARKING` | `0.5s` | `0.5s` | PARKED `5.0s` 뒤의 placement 신호를 한 번 더 짧게 안정화하되 실제 위반 신호 `4.833s/5.533s`는 보존한다. |
-| `OUT_OF_ZONE` | `0.5s` | `0.5s` | 복도 주차의 최초 confirmable 신호가 `10.501s` 유지되어 `0.5s` debounce로 실제 사건을 보존한다. |
-| `AISLE_BLOCK` | `0.5s` | `0.5s` | OUT_OF_ZONE과 같은 PARKED/placement 경계를 사용하고 단일 frame geometry 전이를 걸러낸다. |
+| `OUT_OF_ZONE` | `0.5s` | `0.5s` | PARKED 뒤 AISLE로 분류되지 않은 주차면 외부 배치를 짧게 안정화하고 단일 frame geometry 전이를 걸러낸다. |
+| `AISLE_BLOCK` | `0.5s` | `0.5s` | PARKED와 confirmed AISLE 점유 경계를 사용하고 단일 frame ZoneVisit 전이를 걸러낸다. |
 | `DOUBLE_PARKING` | `0.0s` | `0.0s` | BlockingRelation owner의 `1.0s/1.0s`를 소비하므로 Incident에서 이중 지연하지 않는다. |
 
 placement 규칙을 실제 `IncidentReducer`에 재적용했을 때 `0.5s/0.5s`는 두
