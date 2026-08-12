@@ -33,6 +33,7 @@ from src.application.tof_authorization_worker import (
 )
 from src.application.tof_zone_authorization import (
     TofAuthorizationDecision,
+    TofAuthorizationReason,
 )
 from src.application.tof_zone_authorization_coordinator import (
     TofAuthorizationCoordinatorFailure,
@@ -259,6 +260,12 @@ class _AssessmentView:
     zone_id: ZoneId
     occupancy_state: OccupancyState
     decision: TofAuthorizationDecision | None
+    sensor_id: str = "tof-test"
+    reason: TofAuthorizationReason | None = None
+    physical_vehicle_id: object | None = None
+    parking_session_id: object | None = None
+    context_revision: int | None = None
+    assessment_revision: int = 1
 
 
 class _FakeMonotonicClock:
@@ -418,6 +425,35 @@ def _run_with_assessment(
         deferred_zone_ids=(),
         failures=(),
     )
+
+
+def test_logs_only_published_authorization_changes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assessment = _AssessmentView(
+        zone_id=ZONE_1,
+        occupancy_state=OccupancyState.OCCUPIED,
+        decision=TofAuthorizationDecision.UNKNOWN,
+        reason=TofAuthorizationReason.VEHICLE_NOT_IDENTIFIED,
+        assessment_revision=3,
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.tof_authorization_worker",
+    ):
+        TofAuthorizationWorker._log_published_assessments((assessment,))
+        TofAuthorizationWorker._log_published_assessments(())
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Jetson ToF authorization changed." in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "zoneId=1" in messages[0]
+    assert "decision=UNKNOWN" in messages[0]
+    assert "assessmentRevision=3" in messages[0]
 
 
 def _run_scripted_worker(

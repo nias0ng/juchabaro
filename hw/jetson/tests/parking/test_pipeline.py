@@ -705,6 +705,14 @@ def test_aisle_block_open_latches_aisle_zone_id() -> None:
         IncidentTransitionType.OPEN
     ]
     assert opened[0].incident.zone_id == AISLE_ZONE.zone_id
+    assert transitions_for(result, OUT_OF_ZONE) == ()
+    out_signal = next(
+        diagnostic.signal
+        for diagnostic in result.incident_signal_diagnostics
+        if diagnostic.signal.key.rule_code == OUT_OF_ZONE
+    )
+    assert out_signal.value is IncidentSignalValue.NOT_MATCHED
+    assert out_signal.evidence["reasons"] == ("CLASSIFIED_AS_AISLE_BLOCK",)
 
 
 def test_pre_entry_incident_is_not_opened_when_context_arrives_late() -> None:

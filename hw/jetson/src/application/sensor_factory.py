@@ -45,6 +45,7 @@ class TofSensorRuntimePolicy:
     exit_confirm_seconds: float
     trusted_sample_max_gap_seconds: float
     stale_after_seconds: float
+    diagnostic_interval_seconds: float = 5.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -115,6 +116,7 @@ def build_tof_sensor_worker(
         occupancy_manager=occupancy_manager,
         poll_interval_seconds=policy.poll_interval_seconds,
         transition_consumer=dependencies.transition_consumer,
+        diagnostic_interval_seconds=policy.diagnostic_interval_seconds,
     )
 
 

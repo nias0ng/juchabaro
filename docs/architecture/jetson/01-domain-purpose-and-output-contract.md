@@ -493,12 +493,23 @@ BAD_PARKING과 OUT_OF_ZONE은 Assignment 상태를 위반 술어로 재사용하
 | `spotUnion >= θout && (primary < θbadPrimary || secondary >= θbadSecondary)` | `NOT_MATCHED` | `MATCHED` |
 | `spotUnion >= θout && primary >= θbadPrimary && secondary < θbadSecondary` | `NOT_MATCHED` | `NOT_MATCHED` |
 
-OUT_OF_ZONE을 먼저 분류하여 두 rule은 한 신뢰 sample에서 동시
-`MATCHED`가 되지 않는다. `spotUnion == θout`은 OUT_OF_ZONE이 아니고,
+spot union 미달을 먼저 분류하여 BAD_PARKING과 OUT_OF_ZONE은 한 신뢰
+sample에서 동시에 `MATCHED`가 되지 않는다. `spotUnion == θout`은
+OUT_OF_ZONE이 아니고,
 `primary == θbadPrimary`는 primary 미달이 아니며,
 `secondary == θbadSecondary`는 BAD_PARKING이다. Assignment 임계값과 위반
 임계값 사이의 대소 관계를 강제하지 않는다. 따라서 `AMBIGUOUS`나
 `UNASSIGNED` 자체가 BAD_PARKING·OUT_OF_ZONE의 근거가 아니다.
+
+OUT_OF_ZONE은 전체 Incident의 fallback이 아니라 공간 배치 축의 잔여
+분류다. spot union 미달이더라도 confirmed INSIDE인 AISLE ZoneVisit이 있으면
+AISLE_BLOCK이 그 배치를 설명하므로 OUT_OF_ZONE은 `NOT_MATCHED`다. AISLE
+분류에 필요한 visit이 `UNKNOWN`이면 OUT_OF_ZONE도 `UNKNOWN`으로 timer를
+멈추고, 신뢰 가능한 AISLE 비성립이 확인된 경우에만 기존 OUT_OF_ZONE
+`MATCHED`를 유지한다. 이 우선순위는 OUT_OF_ZONE에만 적용한다.
+BAD_PARKING과 AISLE_BLOCK은 각각 주차면 배치 위반과 통행 방해라는 서로
+다른 피해를 표현하므로 동시에 `MATCHED`일 수 있고, DOUBLE_PARKING 같은
+관계 scope 사건도 억제하지 않는다.
 
 `BAD_PARKING` Incident가 최초 OPEN될 때 해당 `PARKED_SNAPSHOT`의
 1순위 candidate를 대표 `zoneId`로 고정한다. 2·3순위 candidate 중
@@ -559,7 +570,7 @@ ParkingEpisode, ParkingAssignment와 spot·zone 변경은 parking rule의 평가
 | `EV_ZONE_UNAUTHORIZED` | `zoneVisitId` | confirmed INSIDE + 같은 zone에 PARKED + EV 자격 `false` | MOVEMENT_CONFIRMED, ZoneVisit ENDED 또는 자격 정정 뒤 NOT_MATCHED |
 | `EV_OVERSTAY` | `zoneVisitId` | confirmed INSIDE + 같은 zone에 PARKED + `observedAt - parkedAt`이 허용 시간 이상 | MOVEMENT_CONFIRMED 또는 ZoneVisit ENDED |
 | `BAD_PARKING` | `physicalVehicleId` | PARKED + 안정된 PlacementEvidence의 primary 미달 또는 secondary 침범 | 이동 후 confirmed NOT_MATCHED 또는 confirmed vehicle departure |
-| `OUT_OF_ZONE` | `physicalVehicleId` | PARKED + 안정된 PlacementEvidence의 spot union overlap 미달 | 충분한 spot union overlap 또는 confirmed vehicle departure |
+| `OUT_OF_ZONE` | `physicalVehicleId` | PARKED + 안정된 PlacementEvidence의 spot union overlap 미달 + 신뢰 가능한 AISLE 비성립 | 충분한 spot union overlap, confirmed AISLE 분류 또는 confirmed vehicle departure |
 | `AISLE_BLOCK` | `physicalVehicleId` | PARKED + 통행로 침범 술어 성립 | 침범 불성립 또는 confirmed vehicle departure |
 | `DOUBLE_PARKING` | `blockingRelationId` | subject·victim 모두 PARKED + confirmed BlockingRelation | 둘 중 하나가 PARKED를 벗어나 관계가 RESOLVED되거나 관련 차량이 confirmed departure |
 

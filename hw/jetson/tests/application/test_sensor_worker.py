@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import logging
 import math
 from threading import Condition, Event, Thread, get_ident
 
@@ -213,12 +214,14 @@ def _worker(
     poll_interval_seconds: float = 60.0,
     transition_consumer=None,
     monotonic_clock=None,
+    diagnostic_interval_seconds: float = 5.0,
 ) -> SensorWorker:
     arguments = {
         "sensor_array": sensor_array,
         "occupancy_manager": manager or _manager(),
         "poll_interval_seconds": poll_interval_seconds,
         "transition_consumer": transition_consumer,
+        "diagnostic_interval_seconds": diagnostic_interval_seconds,
     }
     if monotonic_clock is not None:
         arguments["monotonic_clock"] = monotonic_clock
@@ -244,6 +247,63 @@ def test_constructor_accepts_positive_poll_interval() -> None:
     )
 
     assert worker.snapshots()[0].revision == 0
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [0.0, -0.1, math.nan, math.inf, -math.inf, True],
+)
+def test_constructor_rejects_invalid_diagnostic_interval(interval) -> None:
+    with pytest.raises(ValueError, match="diagnostic_interval_seconds"):
+        _worker(
+            _FakeSensorArray((_observed_batch(),)),
+            diagnostic_interval_seconds=interval,
+        )
+
+
+def test_logs_transitions_immediately_and_heartbeat_at_configured_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    worker = _worker(
+        _FakeSensorArray((_observed_batch(),)),
+        diagnostic_interval_seconds=5.0,
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="src.application.sensor_worker",
+    ):
+        worker._process_batch(
+            _observed_batch(seconds=0.0),
+            completed_monotonic=10.0,
+        )
+        worker._process_batch(
+            _observed_batch(seconds=1.0),
+            completed_monotonic=11.0,
+        )
+        worker._process_batch(
+            _observed_batch(seconds=5.0),
+            completed_monotonic=15.0,
+        )
+
+    transition_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Jetson ToF occupancy transition." in record.getMessage()
+    ]
+    heartbeat_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Jetson ToF sensor heartbeat." in record.getMessage()
+    ]
+
+    assert len(transition_messages) == 2
+    assert len(heartbeat_messages) == 4
+    assert any(
+        "sensorId=tof_disabled_zone" in message
+        and "distanceMm=100.0" in message
+        for message in heartbeat_messages
+    )
 
 
 def test_constructor_rejects_non_callable_dependencies() -> None:
