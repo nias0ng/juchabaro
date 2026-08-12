@@ -32,7 +32,7 @@ durable domain·workflow state, dedup, outbox와 evidence metadata는 SQLite에
 
 | 등급 | 대상 | 장애 뒤 의미 |
 |---|---|---|
-| Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal, MotionEstimator window·motion anchor | 복구하지 않고 새 관측으로 생성 |
+| Ephemeral | raw frame, bbox, TrackSegment, 반복 frame signal, MotionEstimator window·motion anchor, ToF stable occupancy·authorization pending·retry schedule·local warning projection | 복구하지 않고 새 관측으로 생성 |
 | Checkpointed | PhysicalVehicle 관측 연결, ZoneVisit·ParkingEpisode trusted timer | 마지막 안전한 하한부터 재개 |
 | Immediately durable | entry input과 dedup key, ContextBinding, ParkingSessionMirror, PARKED·UNPARKED, BlockingRelation Candidate·BLOCKING·RESOLVED, Incident Candidate·OPEN·RESOLVE, EXIT, verification command/result, outbox, evidence metadata | 성공 응답 또는 공개 전이 전에 commit |
 
@@ -229,8 +229,19 @@ confirmedAt
     전체 관측 뒤 재식별·규칙 재평가를 시작한다. DRAIN에서는 기존
     PhysicalVehicle과 scope만 관측·종료하는 drain-only mode로 시작하며
     새 scope·Candidate는 만들지 않는다.
+11. `[결정]` ToF local warning projection은 비활성 상태로 준비한다. authorization
+    consumer가 재평가를 받을 수 있게 된 뒤 sensor producer를 시작하고, 첫
+    신뢰 가능한 sample부터 confirmation chain을 새로 시작한다. 설정된 확인
+    시간을 충족해 `OCCUPIED`가 확정되면 최신 durable 차량 문맥으로 새 점유
+    구간을 평가하되 durable Incident에서 경고 상태를 복원하지 않는다.
 
 TrackSegment와 raw frame은 복구하지 않는다. 복구된 OPEN Incident를 새 incidentId로 만들거나 PARKED 차량이 이동했다고 추정하지 않는다.
+
+ToF stable occupancy, authorization pending, retry schedule과 local warning
+projection도 process-local이며 복구하지 않는다. 재시작 전 `OCCUPIED` 또는
+경고 상태를 Incident·ZoneVisit·ParkingSessionMirror만으로 추론하지 않는다.
+센서가 새로 확정한 stable `OCCUPIED`가 있을 때만 최신 차량 문맥을 결합해
+현장 경고를 재구성한다.
 
 MotionEstimator history도 재시작 후 복구하지 않는다. 모든 차량은 첫 정상 bbox를
 `UNKNOWN / FIRST_SAMPLE`로 시작하고 최소 sample 수와 관측 span을 새로 충족할
@@ -410,9 +421,19 @@ prospective check를 구현하려면 저장소 ADR에서 `maxSerializedOutboxPay
 - frame queue 최대 2장
 - evidence encoder concurrency 1
 - raw frame과 반복 bbox 비영속
-- LED·speaker는 event-driven projection
+- LED·speaker는 ToF local warning owner 하나가 전체 projection으로 제어
+- ToF 재평가는 활성 점유 구간에만 존재하고 구역별 latest 요청으로 병합
 
 입력 해상도, TensorRT FP16 여부와 목표 FPS는 실측 전 `[제안값]`이다. 같은 process 또는 장치에서 model worker를 복제하지 않는다. queue가 가득 차면 가장 오래된 ephemeral frame을 drop하고 counter를 올리며 queue를 확장하지 않는다.
+
+활성 ToF 점유 구간의 reconciliation은 bounded safety wake-up을 자체 예약하고,
+authorization·actuator의 일시 실패는 stop-aware bounded backoff로 다시 평가한다.
+context·monitoring commit은 대기 중 재평가를 앞당길 수 있지만 정확성이 외부
+wake-up 유실에 의존해서는 안 된다. 영구 장애 중 busy loop를 돌거나 구역별
+요청을 무한 queue로 쌓지 않는다. 이 retry는 process-local reconciliation이며
+outbox delivery retry나 Incident revision을 만들지 않는다. 정상 wake-up 간격과
+backoff 상한은 실제 SQLite·장치 부하와 허용 경고 지연을 측정해 `[제안값]`으로
+확정한다.
 
 ## 11. Health와 검증 기준
 
@@ -424,6 +445,9 @@ filesystem free bytes와 watermark
 camera heartbeat
 model loaded
 last valid inference time
+ToF requested / configured / running
+ToF sensor·authorization worker heartbeat와 terminal failure
+LED·speaker availability와 마지막 성공 projection 시각
 oldest pending outbox age와 개수
 evidence spool bytes
 active UNKNOWN count와 최장 지속 시간
@@ -444,6 +468,12 @@ frame drop counter
 8. model/engine hash, input size, precision과 camera 수를 고정한 실제 Jetson 24시간 soak test
 9. `[제안값]` OOM 0회, 지속 swap 증가 없음, thermal throttle 0회, soak 전체 sample의 `min(MemAvailable) ≥ 1GiB`
 10. `baselineEvidenceBytes + pilotPeakDailyArtifactBytes × 7 + maxNextEvidenceSetBytes ≤ effectiveEvidenceCap × 0.85`
+11. stable `OCCUPIED` 중 authorization·actuator 일시 실패 뒤 외부 사건 없이
+    bounded retry로 최종 projection에 수렴
+12. 늦은 ContextBinding과 정상 monitoring 관측 복구가 활성 점유 구간만
+    재평가하고 동일 경고음을 반복 시작시키지 않음
+13. ToF `VACANT` 확정과 process restart가 pending retry를 회수하며, restart
+    뒤 Incident가 아니라 새 sensor state와 최신 차량 문맥으로 경고를 재구성
 
 이 측정 전까지 8GB 적합성은 설계 가정이며 검증 완료로 표시하지 않는다.
 
@@ -458,5 +488,7 @@ frame drop counter
 5. restart와 downtime은 새 domain 사실이나 trusted time이 아니다.
 6. raw frame과 반복 signal을 durable store에 쓰지 않는다.
 7. evidence eviction은 Incident RESOLVE나 delivery 성공을 만들지 않는다.
-8. storage pressure에서는 evidence capture 중지 후 admission DRAIN 순서로 축소한다.
-9. device replacement와 Backend snapshot 복구를 이 계약에 암묵적으로 포함하지 않는다.
+8. ToF stable occupancy·authorization pending·local warning projection을
+   durable Incident에서 복원하지 않는다.
+9. storage pressure에서는 evidence capture 중지 후 admission DRAIN 순서로 축소한다.
+10. device replacement와 Backend snapshot 복구를 이 계약에 암묵적으로 포함하지 않는다.

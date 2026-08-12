@@ -270,6 +270,7 @@ def _settings(**overrides):
         "tof_exit_confirm_seconds": 0.2,
         "tof_trusted_sample_max_gap_seconds": 1.0,
         "tof_stale_after_seconds": 2.0,
+        "tof_diagnostic_interval_seconds": 5.0,
         "tof_occupancy_freshness_seconds": 5.0,
         "tof_monitoring_freshness_seconds": 6.0,
         "tof_max_pre_occupancy_observation_seconds": 2.0,
@@ -382,6 +383,7 @@ def test_complete_settings_are_mapped_without_io(
     assert policy.sensor.exit_confirm_seconds == 0.2
     assert policy.sensor.trusted_sample_max_gap_seconds == 1.0
     assert policy.sensor.stale_after_seconds == 2.0
+    assert policy.sensor.diagnostic_interval_seconds == 5.0
     assert policy.authorization.occupancy_freshness_seconds == 5.0
     assert policy.authorization.monitoring_freshness_seconds == 6.0
     assert (

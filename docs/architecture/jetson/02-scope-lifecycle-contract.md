@@ -122,6 +122,11 @@ immutable ephemeral value이며 domain scope, lifecycle, timer가 아니다.
 EvidenceArtifact와 outbox는 domain scope가 아니라 저장·전달 workflow이며
 `04`에서 정의한다.
 
+`ZoneOccupancySnapshot`, 활성 ToF 점유 구간,
+`TofZoneAuthorizationAssessment`와 local warning projection은 process-local
+observation·application state다. durable scope, 외부 식별자 또는 outbox
+aggregate로 추가하지 않으며 별도 `occupancyEpochId`를 만들지 않는다.
+
 ## 5. TrackSegment
 
 ```text
@@ -507,6 +512,13 @@ reducer가 선택한 값을 조회해 실제 `IncidentSignal`과 함께 내보�
 | BAD_PARKING·OUT_OF_ZONE·AISLE_BLOCK | PARKED 의존성과 유효한 placement 입력을 만족한 위반 술어가 연속으로 신뢰됨 | 유효한 재평가 sample에서 위반 술어가 연속으로 false임 |
 | DOUBLE_PARKING | subject·victim 모두 PARKED인 상태에서 BlockingRelation owner가 confirm한 관계 신호가 연속으로 신뢰됨 | 한쪽이 PARKED를 벗어나거나 geometry가 비성립인 신호가 연속으로 신뢰됨 |
 
+OUT_OF_ZONE은 이 규칙 그룹의 전역 우선순위가 아니라 공간 배치 축의 잔여
+분류다. spot union 미달과 PARKED를 만족하더라도 confirmed AISLE 점유가 있으면
+AISLE_BLOCK으로 분류하고 OUT_OF_ZONE은 `NOT_MATCHED`로 평가한다. AISLE
+분류가 `UNKNOWN`이면 OUT_OF_ZONE도 `UNKNOWN`으로 유지하여 confirm·clear
+timer를 진행하지 않는다. BAD_PARKING·AISLE_BLOCK의 동시 성립과
+DOUBLE_PARKING 같은 관계 scope 사건은 이 잔여 분류의 영향을 받지 않는다.
+
 ZoneVisit ENDED, BlockingRelation RESOLVED, `PHYSICAL_VEHICLE_LEFT`처럼 상위
 owner가 이미 확정한 직접 종료 입력은 rule의 clear debounce를 다시 적용하지
 않는다. 이는 관측 기반 `NOT_MATCHED`와 scope 종료 사실을 구분하기 위함이다.
@@ -565,6 +577,10 @@ UNKNOWN
 | `badParkingMinPrimaryOverlap` | `[제안값] TBD` | OUT_OF_ZONE이 아닌 sample에서 단일 주차면이 확보해야 할 최소 overlap |
 | `badParkingMinSecondaryOverlap` | `[제안값] TBD` | 두 번째 주차면 침범으로 BAD_PARKING을 시작하는 overlap |
 | `outOfZoneMinSpotOverlap` | `[제안값] TBD` | 전체 주차면 합집합 안에 있음을 인정할 최소 overlap |
+| ToF enter/exit distance | `[제안값] 현장 실측 필요` | `enter < exit` hysteresis로 `OCCUPIED / VACANT` 거리 evidence를 구분 |
+| ToF enter/exit confirmation duration | `[제안값] 현장 실측 필요` | stable `OCCUPIED` 시작과 stable `VACANT` 종료에 필요한 trusted 시간 |
+| ToF trusted sample max gap / stale duration | `[제안값] 현장 실측 필요` | candidate 연속성과 observation `DEGRADED / UNKNOWN` 경계 |
+| ToF occupancy / monitoring freshness | `[제안값] 현장 실측 필요` | 권한 평가에서 센서와 camera 관측 시점을 함께 신뢰할 수 있는 범위 |
 | rule별 incident confirm/clear duration | `[제안값] 아래 표` | 새 Incident에 snapshot하는 OPEN·RESOLVE debounce; 직접 종료 입력에는 미적용 |
 | entry match deadline | `[후속 계약] TBD` | 입차 문맥과 차량 매칭 제한 시간 |
 | EV allowed duration·clock | `[결정] parkedAt 기준 wall-clock, 값의 법령 근거는 후속 계약` | 같은 EV zone의 `ParkingEpisode.parkedAt`부터 계산; UNKNOWN 중 확정은 멈추되 복구 뒤 실제 경과 반영 |
@@ -583,8 +599,8 @@ UNKNOWN
 | `EV_ZONE_UNAUTHORIZED` | `0.0s` | `0.0s` | 장애인 전용구역과 같은 PARKED·동일 zone assignment 경계를 사용한다. |
 | `EV_OVERSTAY` | `0.0s` | `0.0s` | PARKED 확정 뒤 allowed-duration 임계 통과 자체가 누적 사실이고 movement·ZoneVisit 종료가 재평가 또는 직접 종료를 만든다. |
 | `BAD_PARKING` | `0.5s` | `0.5s` | PARKED `5.0s` 뒤의 placement 신호를 한 번 더 짧게 안정화하되 실제 위반 신호 `4.833s/5.533s`는 보존한다. |
-| `OUT_OF_ZONE` | `0.5s` | `0.5s` | 복도 주차의 최초 confirmable 신호가 `10.501s` 유지되어 `0.5s` debounce로 실제 사건을 보존한다. |
-| `AISLE_BLOCK` | `0.5s` | `0.5s` | OUT_OF_ZONE과 같은 PARKED/placement 경계를 사용하고 단일 frame geometry 전이를 걸러낸다. |
+| `OUT_OF_ZONE` | `0.5s` | `0.5s` | PARKED 뒤 AISLE로 분류되지 않은 주차면 외부 배치를 짧게 안정화하고 단일 frame geometry 전이를 걸러낸다. |
+| `AISLE_BLOCK` | `0.5s` | `0.5s` | PARKED와 confirmed AISLE 점유 경계를 사용하고 단일 frame ZoneVisit 전이를 걸러낸다. |
 | `DOUBLE_PARKING` | `0.0s` | `0.0s` | BlockingRelation owner의 `1.0s/1.0s`를 소비하므로 Incident에서 이중 지연하지 않는다. |
 
 placement 규칙을 실제 `IncidentReducer`에 재적용했을 때 `0.5s/0.5s`는 두
@@ -617,7 +633,47 @@ PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `tru
 
 `[결정]` 일반 배포의 `parkingConfirmationDurationSeconds`는 600이다. 시연에서는 같은 scalar를 명시적으로 override할 수 있으며 시연 뒤 600으로 복귀한다. 이를 위해 별도 profile 상태를 만들지 않는다.
 
-## 15. Owner 경계
+## 15. ToF 점유와 현장 경고 수명주기
+
+`ZoneOccupancySnapshot.stable_state`는 한 ToF 센서가 결속된 구역의 안정된
+점유 사실이고 `observation`은 그 사실을 현재 얼마나 신뢰할 수 있는지 나타내는
+독립 상태다.
+
+```text
+UNKNOWN → VACANT
+UNKNOWN → OCCUPIED
+VACANT ↔ OCCUPIED
+```
+
+- `[결정]` 확인 시간을 충족한 `OCCUPIED` 전이부터 확인 시간을 충족한 `VACANT`
+  전이까지를 하나의 활성 점유 구간으로 본다. 이 구간은 별도 durable
+  aggregate나 Incident가 아니라 process-local sensor lifecycle이다.
+- sensor read 실패는 진행 중 candidate를 끊고 observation을
+  `DEGRADED / UNKNOWN`으로 바꾸지만, 마지막으로 확정한 stable state와 활성
+  점유 구간을 종료하지 않는다. 신뢰 가능한 `VACANT`만 물리 점유 종료
+  근거가 된다.
+- 안정된 `OCCUPIED`는 현장 경고 활성화의 필수 조건이지만 충분조건은 아니다.
+  최신 PhysicalVehicle·ZoneVisit·ContextBinding·차량 자격과 관측 신뢰도를
+  함께 평가해야 한다.
+- 활성 점유 구간 전체에서 구역별 reconciliation lifecycle을 유지한다. 확정
+  판정 뒤에는 대기할 수 있지만 최신 상태로 다시 수렴할 경로를 닫지 않으며,
+  미확정 판정이나 projection 실패는 pending으로 유지한다. 재평가 wake-up과
+  실패 backoff의 상세 전파는 `03`, runtime retry 경계는 `04`가 정의한다.
+- `VACANT`가 확정되면 해당 구역의 pending 재평가와 retry를 취소하고 현장
+  경고를 해제한다. 권한이 `AUTHORIZED`로 정정되면 같은 점유 구간 안에서도
+  경고를 해제할 수 있다.
+- 활성 점유 구간의 `UNAUTHORIZED`는 경고를 활성화하고 `AUTHORIZED`는
+  해제한다. `UNKNOWN` 또는 미적용 평가는 새 경고를 활성화하지 않으며 관측
+  불확실성만으로 이미 활성화한 경고를 해제하지도 않는다.
+- 동일한 desired projection을 반복 적용하는 것은 새 경고 전이가 아니다.
+  음성은 local warning이 비활성에서 활성으로 바뀌는 경계에서만 시작하며,
+  actuator retry나 동일한 context 재적용은 음성을 다시 시작시키지 않는다.
+
+sensor observation이 `DEGRADED / UNKNOWN`이면 권한 판정도 확정할 수 없으므로
+새 경고를 활성화하거나 기존 경고를 해제하지 않는다. 어느 경우에도 observation
+불신뢰만으로 `VACANT`를 추론하지 않는다.
+
+## 16. Owner 경계
 
 1. tracking adapter는 TrackSegment만 생성·종료한다. MotionEstimator는 resolved
    PhysicalVehicle의 bbox·관측 시각으로 ephemeral motion evidence만 만들며
@@ -635,3 +691,8 @@ PhysicalVehicle은 생성 당시의 `absenceConfirmationDurationSeconds`와 `tru
 6. IncidentReducer만 Incident를 생성·OPEN·RESOLVE한다.
 7. PhysicalPresenceCoordinator만 bound·unbound physical departure의 다중-scope 종료 transaction을 조정한다.
 8. publisher는 domain state를 바꾸지 않는다.
+9. `OccupancyStateManager`만 ToF stable occupancy와 candidate를 변경한다.
+10. `TofZoneAuthorizationService`는 한 occupancy snapshot과 최신 차량 문맥을
+    상태 없이 평가하며 ZoneVisit·ContextBinding·Incident를 변경하지 않는다.
+11. ToF local warning owner만 장애인·EV 전용구역 LED·speaker projection을
+    변경한다. IncidentReducer와 publisher는 actuator를 제어하지 않는다.

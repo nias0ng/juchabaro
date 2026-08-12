@@ -2,7 +2,9 @@
 
 > 상태: Draft · 관련 이슈: S15P11E202-461 · 범위: Jetson target domain contract
 
-이 문서 묶음은 카메라와 tracker의 불완전한 관측을 Jetson이 어떤 시간적 도메인 사실로 해석하고, 그 사실을 Backend가 사용할 수 있는 전이로 어떻게 표현할지를 정의한다.
+이 문서 묶음은 카메라·tracker·ToF 센서의 불완전한 관측을 Jetson이 어떤
+시간적 도메인 사실과 현장 경고로 해석하고, Backend가 사용할 수 있는 전이를
+어떻게 표현할지를 정의한다.
 
 ## 설계 기준
 
@@ -14,6 +16,8 @@
 6. 공개 전이와 outbox 기록은 하나의 영속 transaction으로 확정한다.
 7. Jetson의 현장 판정과 Backend의 업무 처리·관리자 판단을 구분한다.
 8. 보존 기간과 저장량은 8GB 통합 메모리·64GB SD의 상한 안에서 제한한다.
+9. 장애인·EV 전용구역의 LED·speaker 현장 경고는 안정된 ToF 점유를
+   활성화 근거로 사용하며 Incident lifecycle과 분리한다.
 
 ## 대상 장치 가정
 
@@ -22,6 +26,7 @@
 - CPU와 GPU가 8GB 메모리를 공유하는 Jetson 한 대
 - 64GB SD 저장장치
 - 카메라 한 대와 사각지대가 없는 모형 주차 구역
+- 장애인·EV 전용구역에 결속된 VL53L0X ToF 센서 두 개
 - fine-tuned YOLOv8n, batch 1, 단일 inference pipeline
 - LED 두 개와 speaker 한 개
 
@@ -54,6 +59,7 @@
 이 문서 묶음은 다음을 다룬다.
 
 - 물리 차량, 구역 방문, 주차, 차단 관계와 Incident lifecycle
+- ToF 안정 점유 구간과 장치 내 LED·speaker 경고 lifecycle
 - `UNKNOWN`과 신뢰 가능한 차량 부재의 구분
 - 입차 문맥과 물리 차량의 비동기 연결
 - PARKED·UNPARKED·Incident·EXIT·이동 확인 결과의 의미

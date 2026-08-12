@@ -96,10 +96,15 @@ class SensorWorker:
         poll_interval_seconds: float,
         transition_consumer: SensorTransitionConsumer | None = None,
         monotonic_clock: MonotonicClock = time.monotonic,
+        diagnostic_interval_seconds: float = 5.0,
     ) -> None:
         normalized_interval = _positive_finite_number(
             poll_interval_seconds,
             field_name="poll_interval_seconds",
+        )
+        normalized_diagnostic_interval = _positive_finite_number(
+            diagnostic_interval_seconds,
+            field_name="diagnostic_interval_seconds",
         )
         if not callable(monotonic_clock):
             raise ValueError("monotonic_clock은 callable이어야 합니다.")
@@ -135,6 +140,8 @@ class SensorWorker:
         self._poll_interval_seconds = normalized_interval
         self._transition_consumer = transition_consumer
         self._monotonic_clock = monotonic_clock
+        self._diagnostic_interval_seconds = normalized_diagnostic_interval
+        self._next_diagnostic_at: float | None = None
 
         self._expected_sensor_order = sensor_ids
         self._expected_sensor_ids = frozenset(sensor_ids)
@@ -397,10 +404,86 @@ class SensorWorker:
                 transitions.append(update.transition)
 
         self._publish_snapshots()
+        self._log_transitions(tuple(transitions))
+        self._log_diagnostic_heartbeat(
+            completed_monotonic=completed_monotonic,
+        )
 
         if transitions and self._transition_consumer is not None:
             # callback은 최신 cache를 조회할 수 있고 lock 밖에서 실행된다.
             self._transition_consumer(tuple(transitions))
+
+    @staticmethod
+    def _log_transitions(
+        transitions: tuple[OccupancyTransition, ...],
+    ) -> None:
+        for transition in transitions:
+            logger.info(
+                "Jetson ToF occupancy transition. "
+                "sensorId=%s zoneId=%d previousState=%s "
+                "currentState=%s distanceMm=%.1f revision=%d",
+                transition.sensor_id,
+                int(transition.zone_id),
+                transition.previous_state.value,
+                transition.current_state.value,
+                transition.confirming_distance_mm,
+                transition.revision,
+            )
+
+    def _log_diagnostic_heartbeat(
+        self,
+        *,
+        completed_monotonic: float,
+    ) -> None:
+        next_diagnostic_at = self._next_diagnostic_at
+        if (
+            next_diagnostic_at is not None
+            and completed_monotonic < next_diagnostic_at
+        ):
+            return
+
+        self._next_diagnostic_at = (
+            completed_monotonic + self._diagnostic_interval_seconds
+        )
+        for snapshot in self._occupancy_manager.snapshots():
+            distance_mm = (
+                "-"
+                if snapshot.last_distance_mm is None
+                else f"{snapshot.last_distance_mm:.1f}"
+            )
+            candidate_state = (
+                "-"
+                if snapshot.candidate_target is None
+                else snapshot.candidate_target.value
+            )
+            failure_reason = (
+                "-"
+                if snapshot.last_failure is None
+                else snapshot.last_failure.reason.value
+            )
+            observation_reason = (
+                "-"
+                if snapshot.observation.reason is None
+                else snapshot.observation.reason.value
+            )
+            logger.info(
+                "Jetson ToF sensor heartbeat. "
+                "sensorId=%s zoneId=%d distanceMm=%s "
+                "occupancyState=%s observationState=%s "
+                "observationReason=%s candidateState=%s "
+                "candidateElapsedSeconds=%.3f failureReason=%s "
+                "revision=%d",
+                snapshot.sensor_id,
+                int(snapshot.zone_id),
+                distance_mm,
+                snapshot.stable_state.value,
+                snapshot.observation.state.value,
+                observation_reason,
+                candidate_state,
+                snapshot.candidate_elapsed_seconds,
+                failure_reason,
+                snapshot.revision,
+            )
 
     def _publish_snapshots(self) -> None:
         snapshots = self._occupancy_manager.snapshots()

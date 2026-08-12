@@ -140,6 +140,7 @@ class _ResolvedCoreSettings:
     exit_confirm_seconds: float
     trusted_sample_max_gap_seconds: float
     stale_after_seconds: float
+    diagnostic_interval_seconds: float
 
     occupancy_freshness_seconds: float
     monitoring_freshness_seconds: float
@@ -601,6 +602,7 @@ def build_jetson_tof_warning_runtime(
                 core.trusted_sample_max_gap_seconds
             ),
             stale_after_seconds=core.stale_after_seconds,
+            diagnostic_interval_seconds=core.diagnostic_interval_seconds,
         )
         authorization_policy = TofAuthorizationPolicy(
             occupancy_freshness_seconds=(
@@ -760,6 +762,9 @@ def _resolve_core_settings(
         stale_after_seconds=cast(
             float,
             settings.tof_stale_after_seconds,
+        ),
+        diagnostic_interval_seconds=(
+            settings.tof_diagnostic_interval_seconds
         ),
         occupancy_freshness_seconds=cast(
             float,

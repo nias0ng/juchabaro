@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
@@ -22,6 +23,8 @@ from src.application.tof_zone_authorization import (
 from src.domain.models import require_aware
 from src.parking.models import ZoneId, ZoneType
 
+
+logger = logging.getLogger(__name__)
 
 _WARNING_REASON = "TOF_ZONE_UNAUTHORIZED"
 _SUPPORTED_ZONE_TYPES = frozenset(
@@ -258,6 +261,7 @@ class LocalWarningCoordinator:
             acceptance = self._accept_assessment(assessment)
             if acceptance is _AssessmentAcceptance.STALE:
                 return
+            previous_active_zone_ids = self._active_zone_ids_unlocked()
             if acceptance is _AssessmentAcceptance.NEW:
                 self._update_state(assessment)
 
@@ -287,6 +291,24 @@ class LocalWarningCoordinator:
                     tuple(failures)
                 )
                 raise delivery_error from delivery_error.primary_error
+
+            active_zone_ids = self._active_zone_ids_unlocked()
+            if active_zone_ids != previous_active_zone_ids:
+                logger.info(
+                    "Jetson ToF local warning changed. "
+                    "zoneId=%d decision=%s activeZoneIds=%s "
+                    "ledCommandCount=%d speakerCommandCount=%d",
+                    int(assessment.zone_id),
+                    (
+                        assessment.decision.value
+                        if assessment.decision is not None
+                        else "-"
+                    ),
+                    ",".join(str(int(zone_id)) for zone_id in active_zone_ids)
+                    or "-",
+                    len(led_projection),
+                    len(speaker_projection),
+                )
 
     def active_zone_ids(self) -> tuple[ZoneId, ...]:
         """현재 로컬 경고가 활성화된 zone ID를 정렬해 반환한다."""

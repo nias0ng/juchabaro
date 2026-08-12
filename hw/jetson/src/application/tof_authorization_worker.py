@@ -769,6 +769,7 @@ class TofAuthorizationWorker:
         arm_next_frame: bool,
     ) -> None:
         now = self._monotonic_now()
+        self._log_published_assessments(run.published_assessments)
         retry_by_zone = {
             request.zone_id: request
             for request in run.retry_requests
@@ -874,6 +875,42 @@ class TofAuthorizationWorker:
             raise RuntimeError(
                 "OCCUPIED assessment에 지원하지 않는 decision이 있습니다: "
                 f"zone_id={zone_id!r}, decision={assessment.decision!r}"
+            )
+
+    @staticmethod
+    def _log_published_assessments(
+        assessments: tuple[TofZoneAuthorizationAssessment, ...],
+    ) -> None:
+        for assessment in assessments:
+            reason = (
+                "-"
+                if assessment.reason is None
+                else assessment.reason.value
+            )
+            decision = (
+                "-"
+                if assessment.decision is None
+                else assessment.decision.value
+            )
+            logger.info(
+                "Jetson ToF authorization changed. "
+                "sensorId=%s zoneId=%d occupancyState=%s "
+                "decision=%s reason=%s physicalVehicleId=%s "
+                "parkingSessionId=%s contextRevision=%s "
+                "assessmentRevision=%d",
+                assessment.sensor_id,
+                int(assessment.zone_id),
+                assessment.occupancy_state.value,
+                decision,
+                reason,
+                assessment.physical_vehicle_id or "-",
+                assessment.parking_session_id or "-",
+                (
+                    assessment.context_revision
+                    if assessment.context_revision is not None
+                    else "-"
+                ),
+                assessment.assessment_revision,
             )
 
     def _schedule_completion_retry(

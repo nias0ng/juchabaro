@@ -27,6 +27,9 @@ from src.application.tof_authorization_worker import (
     TofAuthorizationRequestMailbox,
     TofAuthorizationWorker,
 )
+from src.application.tof_monitoring_projection import (
+    LatestTofMonitoringProjectionStore,
+)
 from src.application.tof_warning_runtime_factory import (
     TofWarningRuntimeDependencies,
     TofWarningRuntimePolicy,
@@ -269,8 +272,9 @@ def test_factory_wires_components_in_required_order(
             raise AssertionError("factory must not consume assessments")
 
     class _QueryDouble:
-        def __init__(self) -> None:
+        def __init__(self, **arguments) -> None:
             construction_order.append("query")
+            captured["query"] = arguments
 
     class _ServiceDouble:
         def __init__(self, **arguments) -> None:
@@ -415,6 +419,14 @@ def test_factory_wires_components_in_required_order(
     assert service_arguments["zones"] is zones
     assert service_arguments["policy"] is policy.authorization
     assert isinstance(service_arguments["query"], _QueryDouble)
+    assert isinstance(
+        captured["query"]["projection_store"],
+        LatestTofMonitoringProjectionStore,
+    )
+    assert (
+        runtime._monitoring_projection_store
+        is captured["query"]["projection_store"]
+    )
 
     coordinator_arguments = captured["coordinator"]
     snapshots = coordinator_arguments["occupancy_snapshots"]

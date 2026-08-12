@@ -246,15 +246,41 @@ Backend의 행정 `CLOSED`, 취소, 데이터 정정은 실제 출차가 아니�
 
 camera unavailable, tracker 소실과 restart gap은 UNKNOWN 근거이지 RESOLVED 근거가 아니다.
 
-## 11. Local actuator
+## 11. ToF local actuator
 
-LED와 speaker는 domain owner가 아니라 현재 활성 Incident의 local projection이다.
+`[결정]` 장애인·EV 전용구역의 LED와 speaker는 ToF local warning owner가
+독점하는 장치 내 projection이다. 현재 활성 Incident의 projection이 아니며
+Incident OPEN·RESOLVE는 actuator command를 만들지 않는다.
 
-- Incident OPEN·RESOLVE에 따라 projection을 다시 계산한다.
-- publication retry는 같은 경고음을 반복 시작시키는 새 domain event가 아니다.
-- 한 Incident가 RESOLVE돼도 같은 actuator를 요구하는 다른 OPEN Incident가 있으면 경고를 유지한다.
-- 재시작 뒤 durable OPEN Incident에서 projection을 재구성한다.
-- rule별 LED·speaker pattern과 반복 시간은 `[후속 계약]`이다.
+`MonitoringPipeline`의 범용 `ActuatorPort` 주입 경계를 이 전용 LED·speaker에
+연결해서는 안 된다. 다른 현장 actuator를 Incident projection에 사용하려면
+ToF 전용 장치와 물리·설정 identity를 분리하고 별도 소유 계약을 정의한다.
+
+```text
+ToF stable OCCUPIED
+→ 활성 점유 구간 시작
+→ 최신 점유 snapshot과 차량 문맥으로 권한 재평가
+→ local warning 전체 projection
+→ LED·speaker
+```
+
+| 발생한 변화 | ToF local warning 영향 | 금지되는 전파 |
+|---|---|---|
+| stable state가 `OCCUPIED`로 확정 | 점유 구간을 시작하고 즉시 권한 재평가 | 차량 자격을 센서 거리에서 추론 |
+| authorization 관련 `ContextBinding`·session·차량 자격 변경 | 활성 점유 구역만 재평가 | 비점유 구역 경고 활성화 |
+| 평가 가능성을 회복시키는 신뢰 가능한 monitoring frame commit | 활성 점유 구역의 stale·temporal `UNKNOWN` 재평가 | frame commit 자체를 경고 근거로 사용 |
+| authorization·actuator 일시 실패 | 같은 점유 구간에서 bounded backoff 뒤 재평가 | 외부 사건이 올 때까지 pending을 무기한 방치 |
+| stable state가 `VACANT`로 확정 | 점유 구간과 pending retry를 종료하고 projection 해제 | 불신뢰 관측을 `VACANT`로 추론 |
+| Incident OPEN·RESOLVE | 직접 영향 없음 | Incident에서 LED·speaker command 생성 |
+
+context와 monitoring 갱신은 독립적인 경고 trigger가 아니라 활성 ToF 점유
+구간의 재평가 wake-up이다. 모든 재평가는 최신 점유 snapshot을 다시 읽으며,
+그 사이 `VACANT`가 확정됐으면 계산 결과를 actuator에 적용하지 않는다.
+
+local warning owner는 구역별 최신 desired state의 전체 projection을 멱등적으로
+적용한다. 같은 점유 구간의 retry, 동일 context 재적용 또는 actuator 부분 실패
+복구는 같은 경고음을 반복 시작시키는 새 전이가 아니다. 음성 pattern과 명시적인
+반복 정책은 `[후속 계약]`이지만 retry 자체를 반복 정책으로 사용하지 않는다.
 
 ## 12. Restart 전파
 
@@ -272,6 +298,12 @@ durable scope state 복원
 
 미완료 outbox와 evidence는 domain 재평가와 독립적으로 재개한다. 동일 장치 재시작의 상세 순서는 `04`가 정의한다.
 
+ToF stable occupancy, pending authorization과 local warning projection은
+Incident에서 복원하지 않는다. 재시작 뒤 첫 신뢰 가능한 센서 sample부터
+confirmation chain을 새로 시작하고, 설정된 확인 시간을 충족해 `OCCUPIED`가
+확정되면 최신 차량 문맥으로 새 점유 구간을 재평가한다. 상세 startup 순서와
+영속 경계는 `04`가 정의한다.
+
 ## 13. 전파 불변조건
 
 1. TrackSegment 소실은 물리적 종료가 아니다.
@@ -283,3 +315,7 @@ durable scope state 복원
 7. actual Session EXIT와 Backend 행정 종료를 구분한다.
 8. UNKNOWN 기간을 confirmation 시간에 합산하지 않는다.
 9. 하나의 source 변화가 여러 공개 전이를 만들면 원자적으로 기록한다.
+10. 활성 ToF 점유 구간이 없으면 차량 문맥·monitoring·Incident만으로 현장
+    경고를 활성화하지 않는다.
+11. Incident OPEN·RESOLVE는 장애인·EV 전용구역 LED·speaker를 직접 제어하지
+    않는다.

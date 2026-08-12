@@ -1,7 +1,8 @@
 """lifecycle 상태를 만들지 않고 geometry evidence의 공간 위반을 평가한다.
 
-Assignment와 위반은 하나의 immutable ``PlacementEvidence``를 서로 독립적으로
-해석한다. 이 evaluator는 삼상태 signal만 만들며 confirm/clear lifecycle은
+Assignment와 위반은 하나의 immutable ``PlacementEvidence``를 해석한다.
+OUT_OF_ZONE은 확인된 AISLE 점유로 설명되지 않는 주차면 외부 배치에만 남긴다.
+이 evaluator는 삼상태 signal만 만들며 confirm/clear lifecycle은
 ``IncidentReducer``만 소유한다.
 """
 
@@ -28,7 +29,7 @@ _RULES = (BAD_PARKING, OUT_OF_ZONE, AISLE_BLOCK)
 
 
 def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
-    """모든 placement rule의 독립적인 삼상태 signal을 반환한다."""
+    """placement 분류와 통행로 침범의 삼상태 signal을 반환한다."""
 
     if context.parking_eligibility.value is not ParkingEligibilityValue.ELIGIBLE:
         return tuple(
@@ -74,6 +75,11 @@ def evaluate(context: RuleContext) -> tuple[IncidentSignal, ...]:
         context
     )
     aisle_value, aisle_zone_context = _aisle_predicate(context)
+    out_value, out_reasons = _apply_out_of_zone_fallback(
+        out_value=out_value,
+        out_reasons=out_reasons,
+        aisle_value=aisle_value,
+    )
     return (
         _signal(
             context,
@@ -193,6 +199,29 @@ def _aisle_predicate(
         ),
         None,
     )
+
+
+def _apply_out_of_zone_fallback(
+    *,
+    out_value: IncidentSignalValue,
+    out_reasons: tuple[str, ...],
+    aisle_value: IncidentSignalValue,
+) -> tuple[IncidentSignalValue, tuple[str, ...]]:
+    """주차면 외부 배치를 AISLE로 설명할 수 없을 때만 OUT으로 남긴다."""
+
+    if out_value is not IncidentSignalValue.MATCHED:
+        return out_value, out_reasons
+    if aisle_value is IncidentSignalValue.MATCHED:
+        return (
+            IncidentSignalValue.NOT_MATCHED,
+            ("CLASSIFIED_AS_AISLE_BLOCK",),
+        )
+    if aisle_value is IncidentSignalValue.UNKNOWN:
+        return (
+            IncidentSignalValue.UNKNOWN,
+            ("AISLE_CLASSIFICATION_UNAVAILABLE",),
+        )
+    return out_value, out_reasons
 
 
 def _signal(

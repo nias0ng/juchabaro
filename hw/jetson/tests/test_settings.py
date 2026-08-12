@@ -73,6 +73,7 @@ def test_tof_is_disabled_and_optional_settings_are_absent_by_default(
         monkeypatch.delenv(environment_name, raising=False)
     for environment_name, _field_name in TOF_REEVALUATION_ENV_FIELDS:
         monkeypatch.delenv(environment_name, raising=False)
+    monkeypatch.delenv("TOF_DIAGNOSTIC_INTERVAL_SECONDS", raising=False)
 
     settings = Settings(_env_file=None)
 
@@ -84,6 +85,7 @@ def test_tof_is_disabled_and_optional_settings_are_absent_by_default(
     assert settings.tof_reevaluation_initial_backoff_seconds == 0.25
     assert settings.tof_reevaluation_max_backoff_seconds == 2.0
     assert settings.tof_reevaluation_backoff_multiplier == 2.0
+    assert settings.tof_diagnostic_interval_seconds == 5.0
 
 
 @pytest.mark.parametrize(
@@ -131,6 +133,7 @@ def test_tof_settings_parse_environment_variable_types(
         "1.0",
     )
     monkeypatch.setenv("TOF_STALE_AFTER_SECONDS", "2.0")
+    monkeypatch.setenv("TOF_DIAGNOSTIC_INTERVAL_SECONDS", "4.0")
     monkeypatch.setenv("TOF_OCCUPANCY_FRESHNESS_SECONDS", "5")
     monkeypatch.setenv("TOF_MONITORING_FRESHNESS_SECONDS", "6")
     monkeypatch.setenv(
@@ -182,6 +185,7 @@ def test_tof_settings_parse_environment_variable_types(
         "tof_exit_confirm_seconds",
         "tof_trusted_sample_max_gap_seconds",
         "tof_stale_after_seconds",
+        "tof_diagnostic_interval_seconds",
         "tof_occupancy_freshness_seconds",
         "tof_monitoring_freshness_seconds",
         "tof_max_pre_occupancy_observation_seconds",
@@ -200,6 +204,7 @@ def test_tof_settings_parse_environment_variable_types(
     assert settings.tof_exit_confirm_seconds == 0.0
     assert settings.tof_trusted_sample_max_gap_seconds == 1.0
     assert settings.tof_stale_after_seconds == 2.0
+    assert settings.tof_diagnostic_interval_seconds == 4.0
     assert settings.tof_occupancy_freshness_seconds == 5.0
     assert settings.tof_monitoring_freshness_seconds == 6.0
     assert settings.tof_max_pre_occupancy_observation_seconds == 2.0

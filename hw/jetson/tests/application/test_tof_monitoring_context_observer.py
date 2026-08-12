@@ -14,6 +14,9 @@ from src.application.tof_monitoring_context_observer import (
     TofMonitoringContextObserverPolicy,
     compose_frame_observers,
 )
+from src.application.tof_monitoring_projection import (
+    TofMonitoringProjectionUpdate,
+)
 from src.camera.models import CapturedFrame
 from src.domain.models import (
     ObservationReason,
@@ -64,10 +67,21 @@ class _Requester:
         self,
         *,
         errors: list[Exception] | None = None,
+        projection_errors: list[Exception] | None = None,
     ) -> None:
         self.calls = 0
         self.frame_context_flags: list[bool] = []
+        self.projection_updates: list[TofMonitoringProjectionUpdate] = []
         self.errors = list(errors or ())
+        self.projection_errors = list(projection_errors or ())
+
+    def publish_monitoring_projection(
+        self,
+        update: TofMonitoringProjectionUpdate,
+    ) -> None:
+        if self.projection_errors:
+            raise self.projection_errors.pop(0)
+        self.projection_updates.append(update)
 
     def request_after_monitoring_context_change(self) -> None:
         self.calls += 1
@@ -218,6 +232,7 @@ def test_irrelevant_frame_does_not_request_reevaluation() -> None:
     _observe(observer, _result())
 
     assert requester.calls == 0
+    assert len(requester.projection_updates) == 1
     assert requester.frame_context_flags == [False]
 
 
@@ -520,6 +535,33 @@ def test_failed_visit_signal_is_retried_without_new_change(
     _observe(observer, _result())
 
     assert requester.calls == 2
+
+
+def test_failed_projection_publish_is_retried_before_signaling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requester = _Requester(
+        projection_errors=[RuntimeError("projection unavailable")],
+    )
+    observer = _observer(requester)
+
+    with caplog.at_level(logging.ERROR):
+        _observe(observer, _result(_visit()))
+
+    assert requester.calls == 0
+    assert requester.projection_updates == []
+    assert observer._request_pending is True
+    assert "stage=projection_publish" in caplog.text
+
+    _observe(observer, _result(_visit()))
+
+    assert requester.calls == 1
+    assert len(requester.projection_updates) == 1
+    assert observer._request_pending is False
+
+    _observe(observer, _result())
+
+    assert requester.calls == 1
 
 
 def test_failed_entry_match_signal_is_retried_on_empty_result() -> None:
