@@ -14,6 +14,11 @@ from uuid import UUID
 import pytest
 
 from src.application.sensor_occupancy import OccupancyState, ZoneOccupancySnapshot
+from src.application.tof_monitoring_projection import (
+    LatestTofMonitoringProjectionStore,
+    TofMonitoringProjectionUpdate,
+    TofVehicleObservationProjection,
+)
 from src.application.tof_zone_authorization import (
     RepositoryTofZoneAuthorizationQuery,
     TofAuthorizationDecision,
@@ -299,6 +304,55 @@ def _store_candidate_graph(
         ZoneVisitRepository(connection).add(stored_visit)
 
     return binding, mirror
+
+
+def _projection_store(
+    *visits: ZoneVisit,
+    observed_at: datetime = NOW,
+) -> LatestTofMonitoringProjectionStore:
+    store = LatestTofMonitoringProjectionStore(
+        target_zone_ids=(ZONE_ID, ZoneId(8)),
+    )
+    _publish_projection(store, *visits, observed_at=observed_at)
+    return store
+
+
+def _publish_projection(
+    store: LatestTofMonitoringProjectionStore,
+    *visits: ZoneVisit,
+    observed_at: datetime = NOW,
+    frame_id: int = 1,
+) -> None:
+    vehicle_ids = tuple(
+        dict.fromkeys(visit.physical_vehicle_id for visit in visits)
+    )
+    store.publish(
+        TofMonitoringProjectionUpdate(
+            camera_id="camera-1",
+            frame_id=frame_id,
+            observed_at=observed_at,
+            vehicles=tuple(
+                TofVehicleObservationProjection(
+                    physical_vehicle_id=physical_vehicle_id,
+                    observation=_observed(observed_at),
+                )
+                for physical_vehicle_id in vehicle_ids
+            ),
+            zone_visits=visits,
+        )
+    )
+
+
+def _repository_query(
+    *visits: ZoneVisit,
+    observed_at: datetime = NOW,
+) -> RepositoryTofZoneAuthorizationQuery:
+    return RepositoryTofZoneAuthorizationQuery(
+        projection_store=_projection_store(
+            *visits,
+            observed_at=observed_at,
+        ),
+    )
 
 
 class FakeQuery:
@@ -964,7 +1018,7 @@ def test_repository_query_loads_the_complete_candidate_graph(
             visit_repository.add(other_visit)
             visit_repository.add(visit)
 
-        candidates = RepositoryTofZoneAuthorizationQuery().load_candidates(
+        candidates = _repository_query(visit, other_visit).load_candidates(
             ZONE_ID,
             connection=connection,
         )
@@ -982,6 +1036,58 @@ def test_repository_query_loads_the_complete_candidate_graph(
         connection.close()
 
 
+def test_repository_query_does_not_fallback_to_durable_visit_observation(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(_vehicle())
+            ZoneVisitRepository(connection).add(_visit())
+
+        candidates = _repository_query().load_candidates(
+            ZONE_ID,
+            connection=connection,
+        )
+
+        assert candidates == ()
+    finally:
+        connection.close()
+
+
+def test_repository_query_overlays_latest_projected_observations(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "jetson.db")
+    stale_at = NOW - timedelta(seconds=10)
+    durable_vehicle = _vehicle(observation=_observed(stale_at))
+    durable_visit = _visit(observation=_observed(stale_at))
+    projected_visit = replace(
+        durable_visit,
+        observation=_observed(NOW),
+        updated_at=NOW,
+        record_version=durable_visit.record_version + 1,
+    )
+
+    try:
+        with UnitOfWork(connection):
+            PhysicalVehicleRepository(connection).ensure(durable_vehicle)
+            ZoneVisitRepository(connection).add(durable_visit)
+
+        candidate, = _repository_query(projected_visit).load_candidates(
+            ZONE_ID,
+            connection=connection,
+        )
+
+        assert candidate.visit == projected_visit
+        assert candidate.vehicle == replace(
+            durable_vehicle,
+            observation=_observed(NOW),
+        )
+    finally:
+        connection.close()
+
+
 def test_repository_query_preserves_zone_visit_order(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "jetson.db")
     first_visit = _visit(
@@ -995,11 +1101,6 @@ def test_repository_query_preserves_zone_visit_order(tmp_path: Path) -> None:
 
     try:
         with (
-            patch.object(
-                ZoneVisitRepository,
-                "list_active_by_zone",
-                return_value=(first_visit, second_visit),
-            ),
             patch.object(PhysicalVehicleRepository, "get", return_value=None),
             patch.object(
                 ContextBindingRepository,
@@ -1012,7 +1113,10 @@ def test_repository_query_preserves_zone_visit_order(tmp_path: Path) -> None:
                 return_value=None,
             ),
         ):
-            candidates = RepositoryTofZoneAuthorizationQuery().load_candidates(
+            candidates = _repository_query(
+                first_visit,
+                second_visit,
+            ).load_candidates(
                 ZONE_ID,
                 connection=connection,
             )
@@ -1031,7 +1135,7 @@ def test_repository_query_owns_successful_read_transaction(
 ) -> None:
     connection = open_database(tmp_path / "jetson.db")
     try:
-        result = RepositoryTofZoneAuthorizationQuery().load_candidates(
+        result = _repository_query().load_candidates(
             ZoneId(999),
             connection=connection,
         )
@@ -1048,12 +1152,12 @@ def test_repository_query_rolls_back_its_failed_transaction(
     connection = open_database(tmp_path / "jetson.db")
     try:
         with patch.object(
-            ZoneVisitRepository,
-            "list_active_by_zone",
+            PhysicalVehicleRepository,
+            "get",
             side_effect=RuntimeError("forced failure"),
         ):
             with pytest.raises(RuntimeError, match="forced failure"):
-                RepositoryTofZoneAuthorizationQuery().load_candidates(
+                _repository_query(_visit()).load_candidates(
                     ZONE_ID,
                     connection=connection,
                 )
@@ -1070,7 +1174,7 @@ def test_repository_query_preserves_caller_owned_transaction(
     try:
         connection.execute("BEGIN")
 
-        assert RepositoryTofZoneAuthorizationQuery().load_candidates(
+        assert _repository_query().load_candidates(
             ZoneId(999),
             connection=connection,
         ) == ()
@@ -1089,12 +1193,12 @@ def test_repository_query_does_not_roll_back_failed_caller_transaction(
         connection.execute("BEGIN")
 
         with patch.object(
-            ZoneVisitRepository,
-            "list_active_by_zone",
+            PhysicalVehicleRepository,
+            "get",
             side_effect=RuntimeError("forced failure"),
         ):
             with pytest.raises(RuntimeError, match="forced failure"):
-                RepositoryTofZoneAuthorizationQuery().load_candidates(
+                _repository_query(_visit()).load_candidates(
                     ZONE_ID,
                     connection=connection,
                 )
@@ -1121,6 +1225,7 @@ def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
     def clock() -> datetime:
         return current_time[0]
 
+    projection_store = _projection_store()
     service = TofZoneAuthorizationService(
         zones=ZoneRegistry(
             (
@@ -1128,7 +1233,9 @@ def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
             )
         ),
         policy=_policy(),
-        query=RepositoryTofZoneAuthorizationQuery(),
+        query=RepositoryTofZoneAuthorizationQuery(
+            projection_store=projection_store,
+        ),
     )
     coordinator = TofZoneAuthorizationCoordinator(
         authorization_service=service,
@@ -1154,19 +1261,31 @@ def test_coordinator_reevaluates_when_durable_vehicle_context_arrives(
         assert setup_connection.in_transaction is False
 
         context = _context(disabled=True, electric=False)
+        entering_visit = _visit(
+            state=ZoneVisitState.ENTERING,
+            entry_trusted_seconds=0.0,
+            entered_at=None,
+        )
         binding, _ = _store_candidate_graph(
             setup_connection,
             context=context,
-            visit=_visit(
-                state=ZoneVisitState.ENTERING,
-                entry_trusted_seconds=0.0,
-                entered_at=None,
-            ),
+            visit=entering_visit,
         )
 
         assert setup_connection.in_transaction is False
 
         current_time[0] = NOW + timedelta(seconds=1)
+        _publish_projection(
+            projection_store,
+            replace(
+                entering_visit,
+                observation=_observed(current_time[0]),
+                updated_at=current_time[0],
+                record_version=entering_visit.record_version + 1,
+            ),
+            observed_at=current_time[0],
+            frame_id=2,
+        )
         current_snapshot[0] = replace(
             current_snapshot[0],
             revision=current_snapshot[0].revision + 1,
@@ -1224,7 +1343,7 @@ def test_coordinator_reevaluates_when_session_qualification_is_updated(
             )
         ),
         policy=_policy(),
-        query=RepositoryTofZoneAuthorizationQuery(),
+        query=_repository_query(_visit()),
     )
     coordinator = TofZoneAuthorizationCoordinator(
         authorization_service=service,

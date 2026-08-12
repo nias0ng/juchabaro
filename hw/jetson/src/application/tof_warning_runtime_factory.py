@@ -35,6 +35,10 @@ from src.application.tof_authorization_worker import (
     TofAuthorizationReevaluationPolicy,
     TofAuthorizationWorker,
 )
+from src.application.tof_monitoring_projection import (
+    LatestTofMonitoringProjectionStore,
+    TofMonitoringProjectionUpdate,
+)
 from src.application.tof_zone_authorization import (
     RepositoryTofZoneAuthorizationQuery,
     TofAuthorizationPolicy,
@@ -82,6 +86,18 @@ class TofWarningRuntime:
         repr=False,
         compare=False,
     )
+    _monitoring_projection_store: LatestTofMonitoringProjectionStore = field(
+        repr=False,
+        compare=False,
+    )
+
+    def publish_monitoring_projection(
+        self,
+        update: TofMonitoringProjectionUpdate,
+    ) -> None:
+        """최신 camera monitoring 상태를 ToF 전용 volatile projection에 반영한다."""
+
+        self._monitoring_projection_store.publish(update)
 
     def request_after_monitoring_context_change(self) -> None:
         """ToF 판정 문맥 변경이 commit된 뒤 재평가 신호만 등록한다.
@@ -119,6 +135,12 @@ def build_tof_warning_runtime(
     """검증된 정책과 주입된 port로 시작하지 않은 runtime을 조립한다."""
 
     mailbox = TofAuthorizationRequestMailbox()
+    monitoring_projection_store = LatestTofMonitoringProjectionStore(
+        target_zone_ids=(
+            policy.sensor.disabled_zone_id,
+            policy.sensor.ev_charging_zone_id,
+        ),
+    )
     sensor_worker = build_tof_sensor_worker(
         zones=zones,
         policy=policy.sensor,
@@ -153,7 +175,9 @@ def build_tof_warning_runtime(
         speaker_port=dependencies.speaker_port,
     )
 
-    authorization_query = RepositoryTofZoneAuthorizationQuery()
+    authorization_query = RepositoryTofZoneAuthorizationQuery(
+        projection_store=monitoring_projection_store,
+    )
     authorization_service = TofZoneAuthorizationService(
         zones=zones,
         policy=policy.authorization,
@@ -187,4 +211,5 @@ def build_tof_warning_runtime(
         authorization_worker=authorization_worker,
         local_warning_coordinator=local_warning_coordinator,
         _mailbox=mailbox,
+        _monitoring_projection_store=monitoring_projection_store,
     )

@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from src.application.tof_monitoring_projection import (
+    TofMonitoringProjectionUpdate,
+)
 from src.config.settings import Settings
 from src.parking.models import ZoneId
 
@@ -15,6 +18,13 @@ class _RuntimeRequester:
     def __init__(self) -> None:
         self.request_count = 0
         self.frame_requests: list[bool] = []
+        self.projection_updates: list[TofMonitoringProjectionUpdate] = []
+
+    def publish_monitoring_projection(
+        self,
+        update: TofMonitoringProjectionUpdate,
+    ) -> None:
+        self.projection_updates.append(update)
 
     def request_after_monitoring_context_change(self) -> None:
         self.request_count += 1

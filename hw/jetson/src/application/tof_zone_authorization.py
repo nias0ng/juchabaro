@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import Enum
 import math
@@ -18,6 +18,9 @@ import sqlite3
 from typing import Iterator, Protocol
 
 from src.application.sensor_occupancy import OccupancyState, ZoneOccupancySnapshot
+from src.application.tof_monitoring_projection import (
+    LatestTofMonitoringProjectionStore,
+)
 from src.domain.models import ObservationState, ObservationStatus, require_aware
 from src.parking.models import (
     ZoneId,
@@ -34,7 +37,6 @@ from src.session.models import (
     PhysicalPresenceState,
     SessionAdministrativeState,
 )
-from src.storage.aggregate_repositories import ZoneVisitRepository
 from src.storage.repositories import (
     ContextBindingRepository,
     ParkingSessionMirrorRepository,
@@ -265,7 +267,28 @@ def _read_transaction(connection: sqlite3.Connection) -> Iterator[None]:
 
 
 class RepositoryTofZoneAuthorizationQuery:
-    """관련 repository를 하나의 짧은 SQLite read snapshot에서 조합한다."""
+    """최신 camera 관측과 durable session 문맥을 조합한다.
+
+    ZoneVisit과 PhysicalVehicle observation은 process-memory projection에서 읽고,
+    차량 수명주기·ContextBinding·ParkingSessionMirror는 SQLite를 권위 저장소로
+    유지한다. projection이 아직 없거나 일관되지 않으면 DB의 오래된 관측으로
+    fallback하지 않고 fail-safe UNKNOWN 판정을 유도한다.
+    """
+
+    def __init__(
+        self,
+        *,
+        projection_store: LatestTofMonitoringProjectionStore,
+    ) -> None:
+        if not isinstance(
+            projection_store,
+            LatestTofMonitoringProjectionStore,
+        ):
+            raise TypeError(
+                "projection_store must be "
+                "LatestTofMonitoringProjectionStore"
+            )
+        self._projection_store = projection_store
 
     def load_candidates(
         self,
@@ -273,15 +296,38 @@ class RepositoryTofZoneAuthorizationQuery:
         *,
         connection: sqlite3.Connection,
     ) -> tuple[TofZoneVehicleCandidate, ...]:
+        projection = self._projection_store.snapshot()
+        if projection is None:
+            return ()
+
+        visits = projection.visits_for_zone(zone_id)
+        if not visits:
+            return ()
+
         with _read_transaction(connection):
-            visits = ZoneVisitRepository(connection).list_active_by_zone(zone_id)
             vehicle_repository = PhysicalVehicleRepository(connection)
             binding_repository = ContextBindingRepository(connection)
             mirror_repository = ParkingSessionMirrorRepository(connection)
             candidates: list[TofZoneVehicleCandidate] = []
 
             for visit in visits:
-                vehicle = vehicle_repository.get(visit.physical_vehicle_id)
+                durable_vehicle = vehicle_repository.get(
+                    visit.physical_vehicle_id
+                )
+                projected_observation = projection.vehicle_observation(
+                    visit.physical_vehicle_id
+                )
+                vehicle = (
+                    replace(
+                        durable_vehicle,
+                        observation=projected_observation,
+                    )
+                    if (
+                        durable_vehicle is not None
+                        and projected_observation is not None
+                    )
+                    else None
+                )
                 binding = binding_repository.get_active_by_physical_vehicle_id(
                     visit.physical_vehicle_id
                 )

@@ -20,6 +20,10 @@ from uuid import UUID
 
 from src.application.frame_observation_workflow import FrameObservationResult
 from src.application.monitoring_pipeline import FrameObserver
+from src.application.tof_monitoring_projection import (
+    TofMonitoringProjectionUpdate,
+    TofVehicleObservationProjection,
+)
 from src.camera.models import CapturedFrame
 from src.domain.models import ObservationReason, ObservationState
 from src.parking.models import (
@@ -55,6 +59,14 @@ class TofMonitoringContextReevaluationRequester(Protocol):
         context_changed: bool = False,
     ) -> None:
         """정상 frame heartbeat와 선택적 context 변경을 요청한다."""
+
+        ...
+
+    def publish_monitoring_projection(
+        self,
+        update: TofMonitoringProjectionUpdate,
+    ) -> None:
+        """최신 frame 관측을 ToF 전용 process-memory projection에 반영한다."""
 
         ...
 
@@ -166,6 +178,16 @@ class TofMonitoringContextObserver:
                 "requester must provide a callable "
                 "request_after_monitoring_frame_commit"
             )
+        projection_method = getattr(
+            requester,
+            "publish_monitoring_projection",
+            None,
+        )
+        if not callable(projection_method):
+            raise TypeError(
+                "requester must provide a callable "
+                "publish_monitoring_projection"
+            )
         if not isinstance(
             policy,
             TofMonitoringContextObserverPolicy,
@@ -189,10 +211,14 @@ class TofMonitoringContextObserver:
         batch: TrackingBatch,
         result: FrameObservationResult,
     ) -> None:
-        del frame, batch
+        del frame
 
         try:
             plan = self._inspect_result(result)
+            projection_update = self._build_projection_update(
+                batch=batch,
+                result=result,
+            )
         except Exception:
             _LOGGER.exception(
                 "ToF monitoring context observer failed "
@@ -206,6 +232,17 @@ class TofMonitoringContextObserver:
             _LOGGER.exception(
                 "ToF monitoring context observer failed "
                 "stage=state_update"
+            )
+            return
+
+        try:
+            self._requester.publish_monitoring_projection(
+                projection_update
+            )
+        except Exception:
+            _LOGGER.exception(
+                "ToF monitoring context observer failed "
+                "stage=projection_publish"
             )
             return
 
@@ -226,6 +263,32 @@ class TofMonitoringContextObserver:
             return
 
         self._request_pending = False
+
+    @staticmethod
+    def _build_projection_update(
+        *,
+        batch: TrackingBatch,
+        result: FrameObservationResult,
+    ) -> TofMonitoringProjectionUpdate:
+        if not isinstance(batch, TrackingBatch):
+            raise TypeError("batch must be TrackingBatch")
+
+        return TofMonitoringProjectionUpdate(
+            camera_id=batch.camera_id,
+            frame_id=batch.frame_id,
+            observed_at=batch.observed_at,
+            vehicles=tuple(
+                TofVehicleObservationProjection(
+                    physical_vehicle_id=vehicle.physical_vehicle_id,
+                    observation=vehicle.observation,
+                )
+                for vehicle in batch.vehicles
+            ),
+            zone_visits=result.parking_result.zone_visit_updates,
+            retired_physical_vehicle_ids=(
+                result.retired_physical_vehicle_ids
+            ),
+        )
 
     def _inspect_result(
         self,
