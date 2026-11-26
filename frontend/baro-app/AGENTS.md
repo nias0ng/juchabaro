@@ -94,13 +94,30 @@ login-screen.styles.ts
 // 피한다.
 padding: 17,
 color: '#5144d3',
+color: Palette.violet600,
 height: 56,
 
 // 권장한다.
 padding: Spacing.md,
-color: theme.primary,
+color: t.text.brand,
 minHeight: ControlHeight.lg,
 ```
+
+- 색은 용도 기반 토큰(`src/styles/color-tokens.ts`)으로 쓴다. 이름 규칙은 `요소.톤.강조`이고, 자세한 내용은 `docs/design-system/tokens.md`에 있다.
+- 색을 쓰는 스타일 파일은 토큰을 받는 함수를 내보내고, 컴포넌트는 훅으로 받는다.
+
+```ts
+// foo.styles.ts
+export const createStyles = (t: ColorTokens) =>
+  StyleSheet.create({ label: { color: t.text.weak } });
+
+// foo.tsx
+const styles = useThemedStyles(createStyles);
+```
+
+- 화면의 색을 모두 토큰으로 옮겼으면 `export default withAdaptiveColors(Screen)`으로 감싼다. 감싼 화면만 다크 모드를 따른다.
+- 색상 값을 직접 적거나 `Palette`를 가져다 쓰면 ESLint가 알린다. 이미 옮긴 폴더는 오류, 나머지는 경고다. 기능을 옮기면 `eslint.config.js`의 `TOKENIZED_FILES`에 경로를 추가한다.
+- 색을 추가하거나 바꾼 뒤에는 `npm run check:contrast`로 대비(WCAG AA)를 확인한다.
 
 - 반복되는 디자인 값을 화면마다 직접 작성하지 않는다.
 - 인라인 스타일은 화면 크기나 상태에 따른 동적 값에만 제한적으로 사용한다.
