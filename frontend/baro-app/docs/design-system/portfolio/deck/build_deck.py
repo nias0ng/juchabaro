@@ -1,17 +1,39 @@
 """주차바로 템플릿.pptx를 채워 포트폴리오 덱을 만든다.
 
-사용법: python build_deck.py <템플릿.pptx> <출력.pptx>
+사용법: python build_deck.py <템플릿.pptx> <출력.pptx> [색 조합]
 템플릿의 서식은 그대로 두고 글자만 바꾼다. 이미지 자리의 점선 상자와 안내 문구는 지우고 assets/의 그림을 넣는다.
+색 조합(PALETTES의 키)을 주면 템플릿의 코랄 테마를 주차바로 서비스 색으로 바꾼다. 생략하면 템플릿 색 그대로.
 """
 import copy
+import io
+import re
 import sys
+import zipfile
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.util import Pt
 
 HERE = Path(__file__).parent
 A = HERE / "assets"
+
+# 앱 토큰(src/styles/color-tokens.ts)에서 가져온 색. accent1이 템플릿의 코랄 자리다.
+_BRAND_THEME = {
+    "dk1": "1A1D29", "lt1": "FFFFFF", "dk2": "5B6070", "lt2": "F7F6FB",
+    "accent1": "5144D3",   # violet600 = text.brand, fill.brand.strong
+    "accent2": "EDE9FD",   # fill.brand.weak
+    "accent3": "ECEAF8",   # 오른쪽 패널
+    "accent4": "8B7FF0", "accent5": "262B3F", "accent6": "A3A8B8",
+    "hlink": "A59CFF",     # 어두운 마지막 장 위 링크
+    "folHlink": "6FCFC4",
+}
+PALETTES = {
+    # 표지 패널: (채우기, 제목 글자색, 부제 글자색). 채우기는 단색 hex 또는 (시작, 끝) 그라데이션
+    "violet": {"theme": _BRAND_THEME, "cover": ("5144D3", "FFFFFF", "EDE9FD")},
+    "gradient": {"theme": _BRAND_THEME, "cover": (("6FCFC4", "8B7FF0"), "14161C", "14161C")},
+    "deep": {"theme": _BRAND_THEME, "cover": ("231F45", "FFFFFF", "C3BCFF")},
+}
 
 
 # ---------- 도우미 ----------
@@ -281,14 +303,97 @@ def slide7(sl):
                   "오른쪽은 앱 설치 파일, 관리자 웹, 팀 문서 링크입니다.")
 
 
-def main(template, out):
+# ---------- 색 조합 ----------
+
+TEMPLATE_CORAL = (0xF8, 0x58, 0x48)  # 템플릿 아이콘 PNG의 코랄 (테마 accent1 FF5A4E를 칠해 둔 그림)
+
+
+def color_cover_text(prs, pal):
+    """표지 제목·부제 글자색은 패널 색에 맞춰 슬라이드에서 직접 정한다."""
+    _, title_c, sub_c = pal["cover"]
+    sl = prs.slides[0]
+    for sid, c in ((2, title_c), (3, sub_c)):
+        for p in find(sl, sid).text_frame.paragraphs:
+            for r in p.runs:
+                r.font.color.rgb = RGBColor.from_string(c)
+
+
+def _hex(c):
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _recolor_icon(data, rgb):
+    """코랄로 칠한 아이콘 PNG를 같은 모양(알파) 그대로 새 색으로 칠한다. 코랄 아이콘이 아니면 None."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(data)).convert("RGBA")
+    px = [p for p in im.getdata() if p[3] > 200]
+    if not px:
+        return None
+    coral = sum(1 for r, g, b, _ in px if abs(r - TEMPLATE_CORAL[0]) < 16 and abs(g - TEMPLATE_CORAL[1]) < 24 and abs(b - TEMPLATE_CORAL[2]) < 24)
+    if coral < len(px) * 0.6:
+        return None
+    alpha = im.getchannel("A")
+    out = Image.new("RGBA", im.size, rgb + (0,))
+    out.putalpha(alpha)
+    buf = io.BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _cover_fill_xml(fill):
+    if isinstance(fill, tuple):
+        a, b = fill
+        return ('<a:gradFill rotWithShape="1"><a:gsLst>'
+                f'<a:gs pos="0"><a:srgbClr val="{a}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{b}"/></a:gs>'
+                '</a:gsLst><a:lin ang="2700000" scaled="0"/></a:gradFill>')
+    return f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>'
+
+
+def apply_palette(path, pal):
+    """저장된 pptx의 테마 색, 코랄 아이콘, 표지 패널 채우기를 바꾼다."""
+    src = zipfile.ZipFile(path)
+    items = {n: src.read(n) for n in src.namelist()}
+    infos = {n: src.getinfo(n) for n in src.namelist()}
+    src.close()
+
+    theme = items["ppt/theme/theme1.xml"].decode("utf8")
+    for key, val in pal["theme"].items():
+        theme = re.sub(rf'(<a:{key}>\s*<a:srgbClr val=")[0-9A-Fa-f]{{6}}', rf"\g<1>{val}", theme)
+    theme = re.sub(r'<a:clrScheme name="[^"]*"', '<a:clrScheme name="Parkingbaro Violet"', theme)
+    items["ppt/theme/theme1.xml"] = theme.encode("utf8")
+
+    accent = _hex(pal["theme"]["accent1"])
+    for n in list(items):
+        if n.startswith("ppt/media/") and n.endswith(".png"):
+            new = _recolor_icon(items[n], accent)
+            if new is not None:
+                items[n] = new
+
+    # 표지 패널: OVERVIEW 레이아웃의 "Text 1"이 accent1로 칠해진 둥근 사각형이다
+    layout = items["ppt/slideLayouts/slideLayout2.xml"].decode("utf8")
+    i = layout.index('name="Text 1"')
+    j = layout.index("</p:spPr>", i)
+    seg = layout[i:j]
+    seg = re.sub(r'<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>', _cover_fill_xml(pal["cover"][0]), seg, count=1)
+    items["ppt/slideLayouts/slideLayout2.xml"] = (layout[:i] + seg + layout[j:]).encode("utf8")
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as dst:
+        for n, data in items.items():
+            dst.writestr(infos[n], data)
+
+
+def main(template, out, palette=None):
     prs = Presentation(template)
     fill_layouts(prs)
     s = prs.slides
     slide1(s[0]); slide2(s[1]); slide3(s[2]); slide4(s[3]); slide5(s[4]); slide6(s[5]); slide7(s[6])
+    if palette:
+        color_cover_text(prs, PALETTES[palette])
     prs.save(out)
-    print("saved", out)
+    if palette:
+        apply_palette(out, PALETTES[palette])
+    print("saved", out, palette or "(템플릿 색)")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)

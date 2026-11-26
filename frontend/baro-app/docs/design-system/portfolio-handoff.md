@@ -138,7 +138,8 @@ admin-web 쪽: `frontend/baro-web/admin-web/src/styles/tokens.css`, `src/compone
   - 이름 규칙 도식 (`naming-rule.png`), 구조 도식 (`structure.png`)
 - [x] 기여 범위 서술을 사용자에게 확인받기 (2026-11-26 "맞음")
 - [ ] 초안 문장 검토 (사용자). 특히 프로젝트 기간 "2026년 7~8월"은 커밋 날짜로 적은 것
-- [x] 정한 형식으로 옮기기 → PPT (2026-11-26). 사용자의 `주차바로 템플릿.pptx`(7장)를 채운 [`portfolio/deck/주차바로-포트폴리오.pptx`](portfolio/deck/주차바로-포트폴리오.pptx). 다시 만들기: `python portfolio/deck/build_deck.py <템플릿.pptx> <출력.pptx>`
+- [x] 정한 형식으로 옮기기 → PPT (2026-11-26). 사용자의 `주차바로 템플릿.pptx`(7장)를 채운 [`portfolio/deck/주차바로-포트폴리오.pptx`](portfolio/deck/주차바로-포트폴리오.pptx). 다시 만들기: `python portfolio/deck/build_deck.py <템플릿.pptx> <출력.pptx> gradient`
+  - 색: 템플릿의 코랄 테마를 앱 브랜드 보라로 바꿨다 (2026-11-26 사용자 선택: 표지 "B. 앱 아이콘 그라데이션" 민트 #6fcfc4 → 보라 #8b7ff0). 빌드할 때 세 번째 인자 `gradient`를 준다. 다른 시안은 `violet`(단색 #5144d3), `deep`(#231f45)
   - 구성: 개요 → POINT 01 관리자 웹 사건 처리 → 02 관리자 웹 테이블 공용화 → 03 테마를 받는 스타일 구조 → 04 용도 기반 색 토큰 → 회고 → 성과·링크
   - 관리자 웹은 커밋 기준 본인이 대부분(화면·composable·공용 컴포넌트). 이동 요청 기능은 팀원이 주로 만들었으므로 덱에서도 "옮겼다"로만 쓴다
   - 관리자 웹 공용화 수치: 세 화면(`ParkingEventListView`, `HistoryView`, `ParkingZoneManagementView`) 2,006 → 1,220줄 (b700eea~1 → d117449). 로직이 composable로 옮겨간 것이지 전체 코드가 준 것은 아니다
