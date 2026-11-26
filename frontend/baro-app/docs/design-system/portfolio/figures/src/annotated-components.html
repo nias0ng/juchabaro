@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>토큰 주석 그림</title>
+<link rel="stylesheet" href="figure.css">
+<style>
+  .stage { position: relative; width: 1000px; height: 640px; margin-top: 20px; }
+  .card { position: absolute; left: 250px; width: 500px; }
+  .card img { display: block; width: 500px; }
+  svg { position: absolute; inset: 0; overflow: visible; }
+  svg line, svg polyline { stroke: var(--brand); stroke-width: 1.4; fill: none; }
+  svg circle { fill: var(--brand); }
+  .label { position: absolute; transform: translateY(-50%); }
+  .label.left { right: 770px; text-align: right; }
+  .label.right { left: 770px; }
+  .label .token { border-color: #c8c2f5; }
+</style>
+</head>
+<body>
+<div class="figure" style="width:1072px">
+  <h1>이름만 보고 쓸 곳을 안다</h1>
+  <p class="sub">이동 요청 화면의 실제 컴포넌트(라이트 모드)에 쓰인 토큰. <span class="mono">요소.톤.강조</span> 규칙을 따른다.</p>
+  <div class="stage" id="stage">
+    <div class="card" style="top:20px"><img src="assets/list-card-light.png" alt="요청 목록 카드"></div>
+    <div class="card" style="top:176px"><img src="assets/reminder-card-light.png" alt="재알림 타임라인"></div>
+    <div class="card" style="top:392px"><img src="assets/overdue-card-light.png" alt="기한 초과 타임라인"></div>
+    <svg id="lines" width="1000" height="660"></svg>
+  </div>
+</div>
+<script>
+  // [쪽, 라벨 y, 대상 x, 대상 y, 토큰]
+  const notes = [
+    ['left', 50, 282, 56, 'fill.warning.weak'],
+    ['left', 76, 300, 64, 'text.warning'],
+    ['right', 63, 722, 63, 'text.weaker'],
+    ['left', 104, 279, 98, 'text.strong'],
+    ['left', 130, 279, 120, 'text.weaker'],
+    ['right', 120, 700, 125, 'background.raised'],
+    ['left', 214, 279, 214, 'text.weaker'],
+    ['right', 214, 722, 214, 'text.strong'],
+    ['left', 243, 279, 243, 'fill.brand.strong'],
+    ['left', 284, 279, 288, 'fill.warning.strong'],
+    ['right', 292, 370, 292, 'text.warning'],
+    ['right', 318, 412, 310, 'text.weaker'],
+    ['left', 318, 283, 316, 'stroke.weak'],
+    ['left', 454, 279, 454, 'fill.success.strong'],
+    ['left', 545, 279, 545, 'fill.error.strong'],
+    ['right', 549, 392, 549, 'text.error'],
+  ];
+  const stage = document.getElementById('stage');
+  const svg = document.getElementById('lines');
+  const NS = 'http://www.w3.org/2000/svg';
+  for (const [side, ly, tx, ty, token] of notes) {
+    const el = document.createElement('div');
+    el.className = `label ${side}`;
+    el.style.top = `${ly}px`;
+    el.innerHTML = `<span class="token">${token}</span>`;
+    stage.appendChild(el);
+    const x0 = side === 'left' ? 236 : 764;
+    const pl = document.createElementNS(NS, 'polyline');
+    const elbow = side === 'left' ? 248 : 752;
+    pl.setAttribute('points', `${x0},${ly} ${elbow},${ly} ${tx},${ty}`);
+    svg.appendChild(pl);
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', tx); c.setAttribute('cy', ty); c.setAttribute('r', 2.6);
+    svg.appendChild(c);
+  }
+</script>
+</body>
+</html>

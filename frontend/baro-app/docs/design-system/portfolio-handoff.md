@@ -129,14 +129,21 @@ admin-web 쪽: `frontend/baro-web/admin-web/src/styles/tokens.css`, `src/compone
 
 ### 포폴 작업 (다음 세션의 본 작업)
 
-- [ ] 포폴 페이지 형식 정하기 (사용자의 기존 포폴 사이트/노션/PDF 중 어디에 싣는지 확인)
-- [ ] 위 "이야기 흐름" 순서로 초안 작성
-- [ ] 그림 만들기
-  - 토큰 이름 주석 그림: 미리보기 화면의 이동 요청 카드나 타임라인에 토큰 이름을 붙인다
-  - 다크 모드 전후: `before-dark.png` vs `after-dark.png`
-  - 대비 전후 색 견본
-  - 이름 규칙 도식
-- [ ] 기여 범위 서술을 사용자에게 확인받기
+- [ ] 포폴 페이지 형식 정하기 (2026-11-26: 미정. 형식과 무관한 마크다운 초안과 그림을 먼저 만들었다. PPT도 후보)
+- [x] 위 "이야기 흐름" 순서로 초안 작성 → [`portfolio/case-study.md`](portfolio/case-study.md)
+- [x] 그림 만들기 → `portfolio/figures/*.png`. 원본은 `portfolio/figures/src/*.html`, 다시 만들기는 `bash portfolio/figures/render.sh`
+  - 토큰 이름 주석 그림 (`annotated-components.png`), 라이트/다크 나란히 (`light-dark-pair.png`)
+  - 다크 모드 전후 (`dark-mode-before-after.png`)
+  - 대비 전후 색 견본 (`contrast-before-after.png`)
+  - 이름 규칙 도식 (`naming-rule.png`), 구조 도식 (`structure.png`)
+- [x] 기여 범위 서술을 사용자에게 확인받기 (2026-11-26 "맞음")
+- [ ] 초안 문장 검토 (사용자). 특히 프로젝트 기간 "2026년 7~8월"은 커밋 날짜로 적은 것
+- [ ] 정한 형식으로 옮기기
+
+그림 메모:
+- 주석·라이트/다크 그림은 미리보기 화면을 2배 해상도(폭 500px)로 다시 찍어 잘라 썼다 (`figures/src/assets/`).
+- 다크 전후 그림은 기존 `screenshots/before-dark.png`, `after-dark.png`(1배)를 잘라 썼다. 작업 전 화면에서 안 보이는 제목은 미리보기 화면의 섹션 제목이다(테마를 따르는 글자만 흰색으로 바뀐 것).
+- 관리자 웹 `StatusTag`는 본인이 만들고(2026-08-02) 팀원이 톤을 추가했다(2026-08-07). 글에 그렇게 적었다.
 
 ### 코드 쪽 (선택)
 

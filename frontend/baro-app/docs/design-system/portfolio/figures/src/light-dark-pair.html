@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>라이트 다크 비교</title>
+<link rel="stylesheet" href="figure.css">
+<style>
+  .pair { display: flex; gap: 28px; margin-top: 22px; }
+  .col { width: 500px; border-radius: 16px; padding: 14px 0 6px; }
+  .col.light { background: #f7f6fb; border: 1px solid var(--line); }
+  .col.dark { background: #14161c; }
+  .col img { display: block; width: 100%; }
+  .col h2 { font-size: 14px; font-weight: 700; padding: 0 18px 6px; }
+  .dark h2 { color: #fff; }
+  table { margin-top: 18px; border-collapse: collapse; font-size: 13px; width: 1028px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-weak); font-weight: 600; }
+  .sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 6px; border: 1px solid rgba(0,0,0,.12); }
+</style>
+</head>
+<body>
+<div class="figure" style="width:1144px">
+  <h1>이름 하나, 값 두 벌</h1>
+  <p class="sub">컴포넌트 코드는 그대로이고, 토큰이 모드에 맞는 값으로 풀린다. 다크 값은 역할마다 라이트와 같은 대비 수준을 갖도록 정했다.</p>
+  <div class="pair">
+    <div class="col light">
+      <h2>라이트</h2>
+      <img src="assets/list-card-light.png" alt=""><img src="assets/reminder-card-light.png" alt="">
+    </div>
+    <div class="col dark">
+      <h2>다크</h2>
+      <img src="assets/list-card-dark.png" alt=""><img src="assets/reminder-card-dark.png" alt="">
+    </div>
+  </div>
+  <table>
+    <tr><th>토큰</th><th>라이트</th><th>다크</th><th>다크 대비 (가장 불리한 배경)</th></tr>
+    <tr><td class="mono">text.weaker</td><td><span class="sw" style="background:#666b79"></span><span class="mono">#666b79</span></td><td><span class="sw" style="background:#979ba8"></span><span class="mono">#979ba8</span></td><td>5.73</td></tr>
+    <tr><td class="mono">text.warning</td><td><span class="sw" style="background:#a35b3d"></span><span class="mono">#a35b3d</span></td><td><span class="sw" style="background:#f5a97f"></span><span class="mono">#f5a97f</span></td><td>7.52</td></tr>
+    <tr><td class="mono">fill.warning.weak</td><td><span class="sw" style="background:#fff2ef"></span><span class="mono">#fff2ef</span></td><td><span class="sw" style="background:#3a2418"></span><span class="mono">#3a2418</span></td><td>—</td></tr>
+    <tr><td class="mono">background.raised</td><td><span class="sw" style="background:#ffffff"></span><span class="mono">#ffffff</span> + 그림자</td><td><span class="sw" style="background:#212225"></span><span class="mono">#212225</span> (바탕보다 밝게)</td><td>—</td></tr>
+  </table>
+</div>
+</body>
+</html>

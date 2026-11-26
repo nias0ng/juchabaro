@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>대비 전후</title>
+<link rel="stylesheet" href="figure.css">
+<style>
+  table { margin-top: 22px; border-collapse: separate; border-spacing: 0 8px; width: 928px; }
+  th { text-align: left; font-size: 12px; font-weight: 600; color: var(--ink-weak); padding: 0 12px; }
+  td { padding: 0 12px; vertical-align: middle; font-size: 14px; }
+  .name { font-family: var(--mono); font-size: 14px; width: 170px; }
+  .sample { display: flex; align-items: center; gap: 12px; border-radius: 10px; padding: 10px 14px; border: 1px solid var(--line); width: 330px; }
+  .sample .txt { font-size: 14px; font-weight: 600; flex: 1; }
+  .sample .meta { font-family: var(--mono); font-size: 12px; color: var(--ink-weak); text-align: right; }
+  .ratio { font-weight: 700; font-family: var(--mono); font-size: 13px; }
+  .bad { color: var(--bad); }
+  .good { color: var(--good); }
+  .arrow { color: var(--line); font-size: 20px; width: 20px; padding: 0; }
+  .total { margin-top: 14px; display: flex; gap: 14px; }
+  .stat { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 18px; font-size: 14px; }
+  .stat b { font-size: 22px; margin-right: 4px; }
+</style>
+</head>
+<body>
+<div class="figure" style="width:1000px">
+  <h1>대비 기준(WCAG 2.1 AA) 미달 24개 조합 → 0</h1>
+  <p class="sub">라이트 모드. 실제로 놓이는 배경 위에서 잰 값이다. 기준은 글자 4.5:1, 아이콘 3:1(icon.weak 행). 같은 색 계열에서 기준을 넘는 가장 가까운 값으로 옮겼다.</p>
+  <table>
+    <tr><th>토큰</th><th>작업 전</th><th></th><th>작업 후</th></tr>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="total">
+    <div class="stat"><b class="bad">24 / 37</b> 작업 전 미달 조합</div>
+    <div class="stat"><b class="good">0 / 39</b> 작업 후 (라이트)</div>
+    <div class="stat"><b class="good">0 / 39</b> 작업 후 (다크)</div>
+  </div>
+</div>
+<script>
+  // [토큰, 배경, 옛 값, 옛 대비, 새 값, 새 대비, 보기 글자, 글자를 면 위에 놓는지]
+  const rows = [
+    ['text.weaker', '#ffffff', '#9599a7', 2.84, '#666b79', 5.32, '오후 2:45 · 응답 없음'],
+    ['text.error', '#fff2ef', '#d4553a', 3.72, '#c2412b', 4.70, '약속 시간 경과'],
+    ['text.warning', '#fff2ef', '#d4553a', 3.72, '#a35b3d', 4.66, '응답 대기'],
+    ['text.success', '#dff3ef', '#1e8d80', 3.52, '#177568', 4.81, '응답 완료'],
+    ['text.info', '#d5e6ff', '#3f7bd6', 3.31, '#2a5fb3', 4.90, '종료'],
+    ['fill.error.strong', null, '#e5484d', 3.91, '#d63a40', 4.63, '알림 배지 3'],
+    ['icon.weak', '#ffffff', '#9ca3af', 2.54, '#878d9b', 3.33, '● 비활성 아이콘'],
+  ];
+  const sample = (bg, fg, onFill, text, ratio, ok) => {
+    const style = onFill ? `background:${fg};color:#fff` : `background:${bg};color:${fg}`;
+    const meta = onFill ? `${fg} 위 #ffffff` : `${fg} / ${bg}`;
+    return `<div class="sample" style="${style}"><span class="txt">${text}</span>
+      <span class="meta" style="${onFill ? 'color:#fff' : ''}">${meta}<br><span class="ratio ${ok ? 'good' : 'bad'}" style="${onFill ? 'color:#fff' : ''}">${ratio.toFixed(2)}:1</span></span></div>`;
+  };
+  document.getElementById('rows').innerHTML = rows.map(([name, bg, oldV, oldR, newV, newR, text]) => {
+    const onFill = bg === null;
+    return `<tr><td class="name">${name}</td><td>${sample(bg, oldV, onFill, text, oldR, false)}</td>
+      <td class="arrow">→</td><td>${sample(bg, newV, onFill, text, newR, true)}</td></tr>`;
+  }).join('');
+</script>
+</body>
+</html>

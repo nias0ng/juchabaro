@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>다크 모드 전후</title>
+<link rel="stylesheet" href="figure.css">
+<style>
+  .pair { display: flex; gap: 28px; margin-top: 22px; }
+  .col { width: 500px; }
+  .col h2 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .col p { font-size: 13px; color: var(--ink-weak); margin-bottom: 10px; height: 36px; }
+  .shot { position: relative; width: 500px; height: 1250px; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); }
+  .shot img { display: block; width: 500px; }
+  .tag { position: absolute; font-size: 12px; font-weight: 700; color: #fff; background: var(--bad); border-radius: 999px; padding: 3px 9px; }
+</style>
+</head>
+<body>
+<div class="figure" style="width:1144px">
+  <h1>기기를 다크 모드로 두었을 때</h1>
+  <p class="sub">같은 미리보기 화면(<span class="mono">/dev/design-system</span>)을 작업 전 코드와 작업 후 코드로 찍었다. 폭 500px, 웹.</p>
+  <div class="pair">
+    <div class="col">
+      <h2>작업 전</h2>
+      <p>고정 스타일이 기기 모드를 따르지 않는다. 화면은 라이트로 남고, 스스로 배경을 칠하는 하단 탭만 어두워진다.</p>
+      <div class="shot">
+        <img src="assets/components-before-dark.png" alt="작업 전 다크 모드">
+        <span class="tag" style="left:150px; top:6px">테마를 따르는 제목만 흰 글자 → 안 보임</span>
+        <span class="tag" style="left:140px; top:396px">하단 탭만 어두움</span>
+        <span class="tag" style="left:150px; top:516px">같은 이유로 안 보임</span>
+      </div>
+    </div>
+    <div class="col">
+      <h2>작업 후</h2>
+      <p>같은 토큰 이름이 다크 값으로 풀린다. 카드는 그림자 대신 바탕보다 밝은 면(<span class="mono">background.raised</span>)으로 높이를 나타낸다.</p>
+      <div class="shot"><img src="assets/components-after-dark.png" alt="작업 후 다크 모드"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

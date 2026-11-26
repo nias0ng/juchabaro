@@ -1,0 +1,35 @@
+/* 포트폴리오 그림 공통 스타일. render.sh가 Chrome으로 PNG를 만든다. */
+:root {
+  --ink: #14161c;
+  --ink-weak: #60646c;
+  --line: #d1d2dc;
+  --paper: #ffffff;
+  --canvas: #f7f6fb;
+  --brand: #5144d3;
+  --bad: #c2412b;
+  --good: #177568;
+  --mono: Consolas, 'Cascadia Mono', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: Pretendard, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+.figure { padding: 32px 36px; }
+.figure h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
+.figure .sub { margin-top: 6px; font-size: 14px; color: var(--ink-weak); }
+.mono { font-family: var(--mono); }
+.token {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
