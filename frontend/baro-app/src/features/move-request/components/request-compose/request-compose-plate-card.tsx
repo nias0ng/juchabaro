@@ -2,8 +2,10 @@ import { Text, TextInput, View } from 'react-native';
 
 // 차량 등록(G-01/G-02)에서 쓰던 것과 같은 포맷/검증 로직을 그대로 재사용한다.
 import { formatPlateNumberInput, isPlateNumberValid } from '@/features/vehicle/validation/register-car';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-compose-plate-card.styles';
+import { createStyles } from './request-compose-plate-card.styles';
 
 const PLATE_NUMBER_PLACEHOLDER = 'ex. 12가 3456';
 
@@ -13,6 +15,8 @@ type RequestComposePlateCardProps = {
 };
 
 export function RequestComposePlateCard({ plateNumber, onChangeText }: RequestComposePlateCardProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const showError = plateNumber.length > 0 && !isPlateNumberValid(plateNumber);
 
   return (
@@ -22,7 +26,7 @@ export function RequestComposePlateCard({ plateNumber, onChangeText }: RequestCo
           value={plateNumber}
           onChangeText={(text) => onChangeText(formatPlateNumberInput(text))}
           placeholder={PLATE_NUMBER_PLACEHOLDER}
-          placeholderTextColor="#b6bac7"
+          placeholderTextColor={t.text.weaker}
           autoComplete="off"
           importantForAutofill="no"
           autoCorrect={false}

@@ -1,9 +1,10 @@
 import { Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
-import { Palette } from '@/styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-reminder-countdown.styles';
+import { createStyles } from './request-reminder-countdown.styles';
 
 const SIZE = 150;
 const STROKE_WIDTH = 10;
@@ -18,6 +19,8 @@ type RequestReminderCountdownProps = {
 };
 
 export function RequestReminderCountdown({ label, caption, progress }: RequestReminderCountdownProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const clamped = Math.min(1, Math.max(0, progress));
   const dashoffset = CIRCUMFERENCE * (1 - clamped);
 
@@ -28,7 +31,7 @@ export function RequestReminderCountdown({ label, caption, progress }: RequestRe
           cx={SIZE / 2}
           cy={SIZE / 2}
           r={RADIUS}
-          stroke={Palette.peach100}
+          stroke={t.fill.warning.weak}
           strokeWidth={STROKE_WIDTH}
           fill="none"
         />
@@ -36,7 +39,7 @@ export function RequestReminderCountdown({ label, caption, progress }: RequestRe
           cx={SIZE / 2}
           cy={SIZE / 2}
           r={RADIUS}
-          stroke="#c8492e"
+          stroke={t.text.error}
           strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           strokeDasharray={`${CIRCUMFERENCE} ${CIRCUMFERENCE}`}

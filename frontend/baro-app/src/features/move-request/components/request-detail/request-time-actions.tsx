@@ -1,6 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-time-actions.styles';
+import { createStyles } from './request-time-actions.styles';
 
 type RequestTimeActionsProps = {
   onPressImmediate?: () => void;
@@ -17,6 +18,7 @@ export function RequestTimeActions({
   onPressDecline,
   disabled = false,
 }: RequestTimeActionsProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={[styles.container, disabled && styles.containerDisabled]}>
       <Text style={styles.heading}>언제 이동하실 수 있나요?</Text>

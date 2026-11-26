@@ -7,10 +7,11 @@ import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests
 import { toRequestSummaryDisplay } from '@/features/move-request/utils/move-request';
 import { useAuth } from '@/providers/auth-provider';
 import { Spacing } from '@/styles';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
 
 import { styles } from './request-history-screen.styles';
 
-export default function RequestHistoryScreen() {
+function RequestHistoryScreen() {
   const { user } = useAuth();
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const { moveRequests, isLoading, error, refetch } = useMoveRequests('ALL');
@@ -65,3 +66,5 @@ export default function RequestHistoryScreen() {
     </GradientScreenBackground>
   );
 }
+
+export default withAdaptiveColors(RequestHistoryScreen);

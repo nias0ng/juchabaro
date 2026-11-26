@@ -1,10 +1,11 @@
 import { Pressable, Text, View } from 'react-native';
 
 import type { RequestTimelineStep } from '@/features/move-request/utils/move-request';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestTimelineCard } from '../request-timeline-card';
 import { RequestOverdueTimerRing } from './request-overdue-timer-ring';
-import { styles } from './request-overdue-section.styles';
+import { createStyles } from './request-overdue-section.styles';
 
 type RequestOverdueSectionProps = {
   elapsedLabel: string;
@@ -13,6 +14,7 @@ type RequestOverdueSectionProps = {
 };
 
 export function RequestOverdueSection({ elapsedLabel, timeline, onPressDetail }: RequestOverdueSectionProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <View style={styles.textBlock}>

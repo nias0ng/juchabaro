@@ -1,9 +1,10 @@
 import { Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
-import { Palette } from '@/styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-countdown-ring.styles';
+import { createStyles } from './request-countdown-ring.styles';
 
 const SIZE = 170;
 const STROKE_WIDTH = 10;
@@ -17,6 +18,8 @@ type RequestCountdownRingProps = {
 };
 
 export function RequestCountdownRing({ label, progress }: RequestCountdownRingProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const clamped = Math.min(1, Math.max(0, progress));
   const dashoffset = CIRCUMFERENCE * (1 - clamped);
 
@@ -27,7 +30,7 @@ export function RequestCountdownRing({ label, progress }: RequestCountdownRingPr
           cx={SIZE / 2}
           cy={SIZE / 2}
           r={RADIUS}
-          stroke={Palette.violet100}
+          stroke={t.fill.brand.weak}
           strokeWidth={STROKE_WIDTH}
           fill="none"
         />
@@ -35,7 +38,7 @@ export function RequestCountdownRing({ label, progress }: RequestCountdownRingPr
           cx={SIZE / 2}
           cy={SIZE / 2}
           r={RADIUS}
-          stroke="#5c4fe0"
+          stroke={t.fill.brand.strong}
           strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           strokeDasharray={`${CIRCUMFERENCE} ${CIRCUMFERENCE}`}

@@ -12,13 +12,14 @@ import {
 import { useMoveRequests } from '@/features/move-request/hooks/use-move-requests';
 import { toRequestListItemDisplay } from '@/features/move-request/utils/move-request';
 import { Spacing } from '@/styles';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
 
 import { RequestListCard } from '../components/requests-list/request-list-card';
 import { styles } from './requests-screen.styles';
 
 export type RequestsScope = 'SENT' | 'RECEIVED';
 
-export default function RequestsScreen() {
+function RequestsScreen() {
   const [scope, setScope] = useState<RequestsScope>('SENT');
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const sentQuery = useMoveRequests('SENT');
@@ -87,3 +88,5 @@ export default function RequestsScreen() {
     </GradientScreenBackground>
   );
 }
+
+export default withAdaptiveColors(RequestsScreen);

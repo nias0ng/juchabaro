@@ -11,14 +11,16 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-photo.styles';
+import { createStyles } from './request-photo.styles';
 
 type RequestPhotoProps = {
   photos: { imageId: number; imageUrl: string }[];
 };
 
 export function RequestPhoto({ photos }: RequestPhotoProps) {
+  const styles = useThemedStyles(createStyles);
   const scrollRef = useRef<ScrollView>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [index, setIndex] = useState(0);
@@ -124,6 +126,7 @@ type RequestPhotoViewerProps = {
 
 // 크게 보기 모드에서는 잘리지 않게 비율 그대로 다 보여준다(contain).
 function RequestPhotoViewer({ visible, photos, index, onChangeIndex, onClose }: RequestPhotoViewerProps) {
+  const styles = useThemedStyles(createStyles);
   const { width, height } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
 

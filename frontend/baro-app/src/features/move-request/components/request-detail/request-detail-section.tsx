@@ -1,12 +1,13 @@
 import { Text, View } from 'react-native';
 
 import { FormErrorBanner } from '@/components/ui';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestInfoCard } from './request-info-card';
 import { RequestPhoto } from './request-photo';
 import { RequestReminderNotice } from './request-reminder-notice';
 import { RequestTimeActions } from './request-time-actions';
-import { styles } from './request-detail-section.styles';
+import { createStyles } from './request-detail-section.styles';
 
 const AUTO_ESCALATION_MESSAGE = '관리자에게 신고 데이터가 자동으로 전송되었습니다.';
 
@@ -54,6 +55,7 @@ export function RequestDetailSection({
   onPress60Min,
   onPressDecline,
 }: RequestDetailSectionProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.root}>
       <RequestPhoto photos={photos} />

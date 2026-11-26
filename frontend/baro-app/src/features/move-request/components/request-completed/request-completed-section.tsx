@@ -1,10 +1,11 @@
 import { Pressable, Text, View } from 'react-native';
 
 import type { RequestTimelineStep } from '@/features/move-request/utils/move-request';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestTimelineCard } from '../request-timeline-card';
 import { RequestCompletedBadge } from './request-completed-badge';
-import { styles } from './request-completed-section.styles';
+import { createStyles } from './request-completed-section.styles';
 
 type RequestCompletedSectionProps = {
   endTimeLabel: string | null;
@@ -19,6 +20,7 @@ export function RequestCompletedSection({
   timeline,
   onPressHome,
 }: RequestCompletedSectionProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <RequestCompletedBadge />

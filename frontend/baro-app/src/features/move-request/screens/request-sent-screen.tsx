@@ -2,15 +2,19 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
 import { InfoRowCard, ResponsiveContainer, Screen } from '@/components/ui';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestCheckBadge } from '../components/request-check-badge';
 import { formatTime24 } from '../utils/move-request';
-import { styles } from './request-sent-screen.styles';
+import { createStyles } from './request-sent-screen.styles';
 
-const BACKGROUND_GRADIENT = ['#eae7fb', '#f7f6fb'] as const;
-const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.5] as const;
+const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.5, 1] as const;
 
-export default function RequestSentScreen() {
+function RequestSentScreen() {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const params = useLocalSearchParams<{
     requestId: string;
     plateNumber: string;
@@ -29,7 +33,7 @@ export default function RequestSentScreen() {
     <Screen
       scroll
       edges={['top', 'right', 'left']}
-      backgroundGradient={BACKGROUND_GRADIENT}
+      backgroundGradient={t.gradient.brand}
       backgroundGradientLocations={BACKGROUND_GRADIENT_LOCATIONS}
     >
       <ResponsiveContainer style={styles.content}>
@@ -63,3 +67,5 @@ export default function RequestSentScreen() {
     </Screen>
   );
 }
+
+export default withAdaptiveColors(RequestSentScreen);

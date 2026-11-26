@@ -1,53 +1,54 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette, Spacing } from '@/styles';
+import { FontWeight, Spacing, type ColorTokens } from '@/styles';
 
-export const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(20, 22, 28, 0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.lg,
-  },
-  sheet: {
-    width: '100%',
-    maxWidth: 360,
-    maxHeight: '85%',
-    overflow: 'hidden',
-    borderRadius: 26,
-    backgroundColor: Palette.white,
-    padding: Spacing.lg,
-    gap: Spacing.base,
-    shadowColor: 'rgba(20, 22, 28, 0.18)',
-    shadowOffset: { width: 0, height: 20 },
-    shadowOpacity: 1,
-    shadowRadius: 22,
-    elevation: 6,
-  },
-  scrollArea: {
-    flexShrink: 1,
-  },
-  scrollContent: {
-    gap: Spacing.base,
-    paddingBottom: Spacing.xs,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  title: {
-    fontSize: 16,
-    fontWeight: FontWeight.bold,
-    color: Palette.gray975,
-  },
-  closeIcon: {
-    fontSize: 16,
-    color: Palette.gray500,
-  },
-  subtitle: {
-    fontSize: 12,
-    color: Palette.gray500,
-  },
-});
+export const createStyles = (t: ColorTokens) =>
+  StyleSheet.create({
+    overlay: {
+      flex: 1,
+      backgroundColor: t.overlay.scrim,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: Spacing.lg,
+    },
+    sheet: {
+      width: '100%',
+      maxWidth: 360,
+      maxHeight: '85%',
+      overflow: 'hidden',
+      borderRadius: 26,
+      backgroundColor: t.background.raised,
+      padding: Spacing.lg,
+      gap: Spacing.base,
+      shadowColor: t.shadow,
+      shadowOffset: { width: 0, height: 20 },
+      shadowOpacity: 0.18,
+      shadowRadius: 22,
+      elevation: 6,
+    },
+    scrollArea: {
+      flexShrink: 1,
+    },
+    scrollContent: {
+      gap: Spacing.base,
+      paddingBottom: Spacing.xs,
+    },
+    headerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    title: {
+      fontSize: 16,
+      fontWeight: FontWeight.bold,
+      color: t.text.strong,
+    },
+    closeIcon: {
+      fontSize: 16,
+      color: t.text.weaker,
+    },
+    subtitle: {
+      fontSize: 12,
+      color: t.text.weaker,
+    },
+  });

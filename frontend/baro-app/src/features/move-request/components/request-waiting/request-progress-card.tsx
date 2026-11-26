@@ -1,6 +1,7 @@
 import { Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-progress-card.styles';
+import { createStyles } from './request-progress-card.styles';
 
 type RequestProgressCardProps = {
   dueTimeLabel: string;
@@ -8,6 +9,7 @@ type RequestProgressCardProps = {
 };
 
 export function RequestProgressCard({ dueTimeLabel, respondedTimeLabel }: RequestProgressCardProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.card}>
       <View style={styles.row}>

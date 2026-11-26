@@ -2,18 +2,26 @@ import { Pressable, Text, View } from 'react-native';
 
 import type { MoveRequestStatus } from '@/features/move-request/api/types';
 import type { RequestSummaryDisplay } from '@/features/move-request/utils/move-request';
-import { Palette } from '@/styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
+import type { ColorTokens } from '@/styles';
 
-import { styles } from './request-history-card.styles';
+import { createStyles } from './request-history-card.styles';
 
-const STATUS_COLOR: Record<MoveRequestStatus, { bg: string; text: string }> = {
-  SENT: { bg: Palette.lavender100, text: Palette.violet600 },
-  RESPONDED: { bg: Palette.lavender100, text: Palette.violet600 },
-  REMINDER_SENT: { bg: Palette.orange50, text: Palette.orange600 },
-  COMPLETED: { bg: Palette.teal100, text: Palette.teal600 },
-  NEED_ADMIN: { bg: Palette.orange50, text: Palette.orange600 },
-  CANCELLED: { bg: Palette.gray100, text: Palette.gray500 },
-};
+function getStatusColor(status: MoveRequestStatus, t: ColorTokens): { bg: string; text: string } {
+  switch (status) {
+    case 'SENT':
+    case 'RESPONDED':
+      return { bg: t.fill.brand.weak, text: t.text.brand };
+    case 'REMINDER_SENT':
+    case 'NEED_ADMIN':
+      return { bg: t.fill.warning.weak, text: t.text.warning };
+    case 'COMPLETED':
+      return { bg: t.fill.success.weak, text: t.text.success };
+    case 'CANCELLED':
+      return { bg: t.fill.neutral.weak, text: t.text.weaker };
+  }
+}
 
 type RequestHistoryCardProps = {
   display: RequestSummaryDisplay;
@@ -22,7 +30,8 @@ type RequestHistoryCardProps = {
 };
 
 export function RequestHistoryCard({ display, status, onPress }: RequestHistoryCardProps) {
-  const color = STATUS_COLOR[status];
+  const styles = useThemedStyles(createStyles);
+  const color = getStatusColor(status, useColorTokens());
 
   return (
     <Pressable accessibilityRole="button" style={styles.container} onPress={onPress}>

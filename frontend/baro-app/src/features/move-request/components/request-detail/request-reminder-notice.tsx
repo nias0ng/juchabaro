@@ -1,8 +1,8 @@
 import { Text, View } from 'react-native';
 
-import { useTheme } from '@/hooks/use-theme';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-reminder-notice.styles';
+import { createStyles } from './request-reminder-notice.styles';
 
 type RequestReminderNoticeProps = {
   message: string;
@@ -10,20 +10,12 @@ type RequestReminderNoticeProps = {
 };
 
 export function RequestReminderNotice({ message, tone = 'warning' }: RequestReminderNoticeProps) {
-  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
   const isDanger = tone === 'danger';
 
   return (
-    <View
-      style={[
-        styles.container,
-        isDanger && {
-          borderColor: theme.dangerBorder,
-          backgroundColor: theme.dangerSurface,
-        },
-      ]}
-    >
-      <Text style={[styles.text, isDanger && { color: theme.text }]}>{message}</Text>
+    <View style={[styles.container, isDanger && styles.containerDanger]}>
+      <Text style={[styles.text, isDanger && styles.textDanger]}>{message}</Text>
     </View>
   );
 }

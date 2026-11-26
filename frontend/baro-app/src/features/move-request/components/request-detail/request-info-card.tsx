@@ -1,6 +1,7 @@
 import { Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-info-card.styles';
+import { createStyles } from './request-info-card.styles';
 
 type RequestInfoCardProps = {
   violationType: string;
@@ -9,6 +10,7 @@ type RequestInfoCardProps = {
 };
 
 export function RequestInfoCard({ violationType, plateNumber, location }: RequestInfoCardProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <View style={styles.violationRow}>

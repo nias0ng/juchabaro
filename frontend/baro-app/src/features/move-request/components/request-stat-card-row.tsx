@@ -1,6 +1,7 @@
 import { Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-stat-card-row.styles';
+import { createStyles } from './request-stat-card-row.styles';
 
 type RequestStatCardRowProps = {
   leftLabel: string;
@@ -17,6 +18,7 @@ export function RequestStatCardRow({
   rightValue,
   rightValueColor,
 }: RequestStatCardRowProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.row}>
       <View style={styles.card}>

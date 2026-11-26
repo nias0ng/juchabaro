@@ -6,21 +6,19 @@ import { Screen, ScreenHeader } from '@/components/ui';
 import { RequestDetailBody } from '@/features/move-request/components/request-detail-body';
 import { RequestHeaderRight } from '@/features/move-request/components/request-header-right';
 import { useRequestDetailViewModel } from '@/features/move-request/hooks/use-request-detail-view-model';
-import { Palette } from '@/styles';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
+import { useColorTokens } from '@/hooks/use-color-tokens';
 
 import { styles } from './request-detail-screen.styles';
 
-const WAITING_GRADIENT = ['#ede9fd', '#f7f6fb', '#f7f6fb'] as const;
 const WAITING_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
-const COMPLETED_GRADIENT = ['#eae7fb', '#f7f6fb', '#f7f6fb'] as const;
 const COMPLETED_GRADIENT_LOCATIONS = [0, 0.45, 1] as const;
-const OVERDUE_GRADIENT = ['#ffe9e2', '#f7f6fb', '#f7f6fb'] as const;
 const OVERDUE_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
-const REMINDER_GRADIENT = ['#fbe0dc', '#f7f6fb', '#f7f6fb'] as const;
 const REMINDER_GRADIENT_LOCATIONS = [0, 0.42, 1] as const;
 
 /** 이동 요청 상태(대기/미이동/이관/완료 등)에 따라 다른 레이아웃을 그리는 상세 화면. 분기는 useRequestDetailViewModel이 계산한다. */
-export default function RequestDetailScreen() {
+function RequestDetailScreen() {
+  const t = useColorTokens();
   const { requestId: requestIdParam, viewMode: viewModeParam } = useLocalSearchParams<{
     requestId?: string;
     viewMode?: string;
@@ -49,20 +47,20 @@ export default function RequestDetailScreen() {
         : undefined;
 
   const background = vm.isCompleted
-    ? { gradient: COMPLETED_GRADIENT, locations: COMPLETED_GRADIENT_LOCATIONS }
+    ? { gradient: t.gradient.brand, locations: COMPLETED_GRADIENT_LOCATIONS }
     : vm.isOverdueWaiting
-      ? { gradient: OVERDUE_GRADIENT, locations: OVERDUE_GRADIENT_LOCATIONS }
+      ? { gradient: t.gradient.error, locations: OVERDUE_GRADIENT_LOCATIONS }
       : vm.showEscalationView
-        ? { gradient: REMINDER_GRADIENT, locations: REMINDER_GRADIENT_LOCATIONS }
+        ? { gradient: t.gradient.warning, locations: REMINDER_GRADIENT_LOCATIONS }
         : vm.isWaiting
-          ? { gradient: WAITING_GRADIENT, locations: WAITING_GRADIENT_LOCATIONS }
+          ? { gradient: t.gradient.brand, locations: WAITING_GRADIENT_LOCATIONS }
           : null;
 
   return (
     <Screen
       scroll
       edges={['top', 'right', 'left']}
-      backgroundColor={background ? undefined : Palette.gray50}
+      backgroundColor={background ? undefined : t.background.weak}
       backgroundGradient={background?.gradient}
       backgroundGradientLocations={background?.locations}
       refreshing={isPullRefreshing}
@@ -89,3 +87,5 @@ export default function RequestDetailScreen() {
     </Screen>
   );
 }
+
+export default withAdaptiveColors(RequestDetailScreen);

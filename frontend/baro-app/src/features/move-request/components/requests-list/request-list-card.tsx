@@ -2,9 +2,10 @@ import { Pressable, Text, View } from 'react-native';
 
 import { useCountdown } from '@/features/move-request/hooks/use-countdown';
 import { formatMinutesLabel } from '@/features/move-request/utils/move-request';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestStatusBadge, type RequestListStatus } from './request-status-badge';
-import { styles } from './request-list-card.styles';
+import { createStyles } from './request-list-card.styles';
 
 export type { RequestListStatus };
 
@@ -27,6 +28,7 @@ type RequestListCardProps = {
 };
 
 export function RequestListCard({ item, onPress }: RequestListCardProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <Pressable
       accessibilityRole="button"
@@ -61,6 +63,7 @@ type RequestListCountdownBoxProps = {
 // 카드 여러 개가 각자 다른 dueAt으로 매초 갱신되어야 해서, 카운트다운은 카드 안에서 직접 계산한다.
 // 진행률 링(progress)은 목록 카드에서 쓰지 않으므로 startAt(respondedAt)은 넘기지 않는다.
 function RequestListCountdownBox({ dueAt, estimatedMinutes }: RequestListCountdownBoxProps) {
+  const styles = useThemedStyles(createStyles);
   const countdown = useCountdown(dueAt);
   const message = estimatedMinutes ? `${formatMinutesLabel(estimatedMinutes)} 이내 이동 예정` : '이동 예정';
 

@@ -4,9 +4,10 @@ import { ParkingLegend } from '@/features/parking/components/parking-legend';
 import { ParkingSpotMap } from '@/features/parking/components/parking-spot-map';
 import { useParkingZoneSummary } from '@/features/parking/hooks/use-parking-zone-summary';
 import { toParkingStatusDisplay, type ParkingFloorKey } from '@/features/parking/utils/parking-zone';
-import { Palette } from '@/styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-compose-zone-picker-modal.styles';
+import { createStyles } from './request-compose-zone-picker-modal.styles';
 
 type RequestComposeZonePickerModalProps = {
   visible: boolean;
@@ -19,6 +20,8 @@ const ZONE_FLOOR: ParkingFloorKey = 'B1';
 
 /** "차량 구역"의 "선택"을 누르면 뜨는 팝업. 홈 화면 주차 현황 카드와 같은 실제 층 배치 지도에서 자리를 골라 고른다. */
 export function RequestComposeZonePickerModal({ visible, onClose, onSelectSpot }: RequestComposeZonePickerModalProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const { summary, isLoading, error } = useParkingZoneSummary();
   const status = summary ? toParkingStatusDisplay(summary, [], ZONE_FLOOR) : null;
 
@@ -53,10 +56,10 @@ export function RequestComposeZonePickerModal({ visible, onClose, onSelectSpot }
 
             <ParkingLegend
               items={[
-                { label: '주차 중', color: Palette.violet300 },
-                { label: '비어 있음', color: Palette.gray100 },
-                { label: '충전구역', color: Palette.teal100 },
-                { label: '장애인구역', color: Palette.sky100 },
+                { label: '주차 중', color: t.parkingMap.occupied },
+                { label: '비어 있음', color: t.parkingMap.empty },
+                { label: '충전구역', color: t.parkingMap.charging },
+                { label: '장애인구역', color: t.parkingMap.accessible },
               ]}
             />
           </ScrollView>

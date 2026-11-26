@@ -2,6 +2,9 @@ import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
 import { FormErrorBanner, FormSectionLabel, ResponsiveContainer, Screen, ScreenHeader, Stack } from '@/components/ui';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 import { Spacing } from '@/styles';
 
 import { RequestComposePhotoPicker } from '../components/request-compose/request-compose-photo-picker';
@@ -11,12 +14,13 @@ import { RequestComposeSituationSelector } from '../components/request-compose/r
 import { RequestComposeZonePickerModal } from '../components/request-compose/request-compose-zone-picker-modal';
 import { RequestComposeZoneSelector } from '../components/request-compose/request-compose-zone-selector';
 import { useRequestComposeForm } from '../hooks/use-request-compose-form';
-import { styles } from './request-compose-screen.styles';
+import { createStyles } from './request-compose-screen.styles';
 
-const BACKGROUND_GRADIENT = ['#f0edfb', '#f7f6fb'] as const;
-const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.4] as const;
+const BACKGROUND_GRADIENT_LOCATIONS = [0, 0.4, 1] as const;
 
-export default function RequestComposeScreen() {
+function RequestComposeScreen() {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const form = useRequestComposeForm();
 
   const handleSubmit = async () => {
@@ -39,7 +43,7 @@ export default function RequestComposeScreen() {
       scroll
       avoidKeyboard
       edges={['top', 'right', 'left']}
-      backgroundGradient={BACKGROUND_GRADIENT}
+      backgroundGradient={t.gradient.brand}
       backgroundGradientLocations={BACKGROUND_GRADIENT_LOCATIONS}
     >
       <ResponsiveContainer style={styles.content}>
@@ -105,3 +109,5 @@ export default function RequestComposeScreen() {
     </Screen>
   );
 }
+
+export default withAdaptiveColors(RequestComposeScreen);

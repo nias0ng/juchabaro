@@ -1,7 +1,8 @@
 import { Image } from 'expo-image';
 import { Pressable, Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-compose-photo-picker.styles';
+import { createStyles } from './request-compose-photo-picker.styles';
 
 type RequestComposePhotoPickerProps = {
   photos: string[];
@@ -11,6 +12,7 @@ type RequestComposePhotoPickerProps = {
 };
 
 export function RequestComposePhotoPicker({ photos, maxPhotos, onPressAdd, onRemove }: RequestComposePhotoPickerProps) {
+  const styles = useThemedStyles(createStyles);
   const canAddMore = photos.length < maxPhotos;
 
   return (

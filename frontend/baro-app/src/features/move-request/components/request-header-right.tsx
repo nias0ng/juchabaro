@@ -1,6 +1,7 @@
 import { Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-header-right.styles';
+import { createStyles } from './request-header-right.styles';
 
 type RequestSource = {
   label: string;
@@ -12,6 +13,7 @@ type RequestHeaderRightProps = {
 };
 
 export function RequestHeaderRight({ requestSource }: RequestHeaderRightProps) {
+  const styles = useThemedStyles(createStyles);
   if (!requestSource) return null;
 
   const isManual = requestSource.variant === 'manual';

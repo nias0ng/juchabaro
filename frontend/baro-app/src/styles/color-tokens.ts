@@ -72,6 +72,13 @@ export type ColorTokens = {
     mediaBackdrop: string;
   };
   shadow: string;
+  /** 주차 도면 범례. 도면의 칸 색과 짝이라 모드와 무관하게 같은 값이다(도면은 아직 테마를 따르지 않는다). */
+  parkingMap: {
+    occupied: string;
+    empty: string;
+    charging: string;
+    accessible: string;
+  };
 };
 
 const onMedia = {
@@ -83,6 +90,13 @@ const onMedia = {
 } as const;
 
 const accentGradient = [Palette.mint300, Palette.violet400] as const;
+
+const parkingMap = {
+  occupied: Palette.violet300,
+  empty: Palette.gray100,
+  charging: Palette.teal100,
+  accessible: Palette.sky100,
+} as const;
 
 const light = {
   text: {
@@ -133,6 +147,7 @@ const light = {
     ...onMedia,
   },
   shadow: Palette.gray975,
+  parkingMap,
 } as const satisfies ColorTokens;
 
 const dark = {
@@ -184,6 +199,7 @@ const dark = {
     ...onMedia,
   },
   shadow: Palette.black,
+  parkingMap,
 } as const satisfies ColorTokens;
 
 export const Tokens: { light: ColorTokens; dark: ColorTokens } = { light, dark };

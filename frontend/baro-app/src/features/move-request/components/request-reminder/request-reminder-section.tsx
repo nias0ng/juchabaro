@@ -3,9 +3,10 @@ import { Text, View } from 'react-native';
 import { RequestTimelineCard } from '@/features/move-request/components/request-timeline-card';
 import { RequestStatCardRow } from '@/features/move-request/components/request-stat-card-row';
 import type { RequestTimelineStep } from '@/features/move-request/utils/move-request';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestReminderCountdown } from './request-reminder-countdown';
-import { styles } from './request-reminder-section.styles';
+import { createStyles } from './request-reminder-section.styles';
 
 type RequestReminderSectionProps = {
   badgeLabel: string;
@@ -30,6 +31,7 @@ export function RequestReminderSection({
   timeline,
   pendingStep,
 }: RequestReminderSectionProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <View style={styles.pill}>

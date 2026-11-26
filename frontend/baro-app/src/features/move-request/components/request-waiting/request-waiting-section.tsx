@@ -1,8 +1,9 @@
 import { Pressable, Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import { RequestCountdownRing } from './request-countdown-ring';
 import { RequestProgressCard } from './request-progress-card';
-import { styles } from './request-waiting-section.styles';
+import { createStyles } from './request-waiting-section.styles';
 
 type RequestWaitingSectionProps = {
   countdownLabel: string;
@@ -20,6 +21,7 @@ export function RequestWaitingSection({
   respondedTimeLabel,
   onPressDetail,
 }: RequestWaitingSectionProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <View style={styles.pill}>

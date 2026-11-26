@@ -1,9 +1,10 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { Text, View } from 'react-native';
 
-import { styles } from './request-check-badge.styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-const DEFAULT_GRADIENT = ['#6fcfc4', '#8b7ff0'] as const;
+import { createStyles } from './request-check-badge.styles';
 
 type RequestCheckBadgeProps = {
   outerSize?: number;
@@ -18,8 +19,11 @@ type RequestCheckBadgeProps = {
 export function RequestCheckBadge({
   outerSize = 64,
   innerSize = 26,
-  gradientColors = DEFAULT_GRADIENT,
+  gradientColors,
 }: RequestCheckBadgeProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
+
   return (
     <View
       style={[
@@ -28,7 +32,7 @@ export function RequestCheckBadge({
       ]}
     >
       <LinearGradient
-        colors={gradientColors}
+        colors={gradientColors ?? t.gradient.accent}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={[

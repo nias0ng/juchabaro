@@ -1,6 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-compose-zone-selector.styles';
+import { createStyles } from './request-compose-zone-selector.styles';
 
 type RequestComposeZoneSelectorProps = {
   zoneLabel: string | null;
@@ -8,6 +9,7 @@ type RequestComposeZoneSelectorProps = {
 };
 
 export function RequestComposeZoneSelector({ zoneLabel, onPress }: RequestComposeZoneSelectorProps) {
+  const styles = useThemedStyles(createStyles);
   return (
     <Pressable accessibilityRole="button" style={styles.row} onPress={onPress}>
       <View style={styles.radioOuter} />

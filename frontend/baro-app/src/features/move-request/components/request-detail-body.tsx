@@ -3,8 +3,9 @@ import { Text, View } from 'react-native';
 
 import type { MoveResponseType } from '@/features/move-request/api/types';
 import type { RequestDetailViewModel } from '@/features/move-request/hooks/use-request-detail-view-model';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
-import { styles } from './request-detail-body.styles';
+import { createStyles } from './request-detail-body.styles';
 import { RequestCompletedSection } from './request-completed/request-completed-section';
 import { RequestDetailSection } from './request-detail/request-detail-section';
 import { RequestOverdueSection } from './request-overdue/request-overdue-section';
@@ -36,6 +37,7 @@ type RequestDetailBodyProps = {
 // request-detail-screen이 requestStatus/파생 상태에 따라 골라 그리는 본문(E-11~E-16). 화면 하나가
 // 아주 많은 상태를 가지므로, 어떤 섹션을 보여줄지 고르는 로직만 이 컴포넌트에 모아둔다.
 export function RequestDetailBody({ vm, statusMessage, onPressHome }: RequestDetailBodyProps) {
+  const styles = useThemedStyles(createStyles);
   const { display } = vm;
 
   // WILL_MOVE 응답이 성공하면 F-02(응답 완료)로 넘어간다. F-02의 10초 카운트다운이 끝나면

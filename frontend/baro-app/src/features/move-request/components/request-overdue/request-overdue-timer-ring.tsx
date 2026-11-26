@@ -2,7 +2,10 @@ import { useEffect, useRef } from 'react';
 import { Animated, Easing, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
-import { styles } from './request-overdue-timer-ring.styles';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
+
+import { createStyles } from './request-overdue-timer-ring.styles';
 
 const SIZE = 150;
 const STROKE_WIDTH = 8;
@@ -16,6 +19,8 @@ type RequestOverdueTimerRingProps = {
 };
 
 export function RequestOverdueTimerRing({ label }: RequestOverdueTimerRingProps) {
+  const styles = useThemedStyles(createStyles);
+  const t = useColorTokens();
   const spin = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -37,12 +42,12 @@ export function RequestOverdueTimerRing({ label }: RequestOverdueTimerRingProps)
     <View style={styles.wrapper}>
       <Animated.View style={[styles.spinner, { transform: [{ rotate }] }]}>
         <Svg width={SIZE} height={SIZE}>
-          <Circle cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} stroke="#f6dcd0" strokeWidth={STROKE_WIDTH} fill="none" />
+          <Circle cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} stroke={t.fill.error.weak} strokeWidth={STROKE_WIDTH} fill="none" />
           <Circle
             cx={SIZE / 2}
             cy={SIZE / 2}
             r={RADIUS}
-            stroke="#d4553a"
+            stroke={t.text.error}
             strokeWidth={STROKE_WIDTH}
             strokeLinecap="round"
             strokeDasharray={`${CIRCUMFERENCE * ARC_FRACTION} ${CIRCUMFERENCE}`}
