@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>이름 규칙 (작게)</title>
+<link rel="stylesheet" href="../../figures/src/figure.css">
+<style>
+  body { background: #fff; }
+  .wrap { width: 460px; height: 400px; padding: 26px 24px; display: flex; flex-direction: column; justify-content: center; gap: 16px; }
+  .rule { display: flex; align-items: center; justify-content: center; gap: 4px; font-family: var(--mono); font-size: 24px; font-weight: 700; }
+  .rule .slot { background: #ede9fd; color: #3b2fb0; border-radius: 8px; padding: 6px 10px; }
+  .rule .dot { color: var(--ink-weak); }
+  .legend { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; text-align: center; font-size: 13px; color: var(--ink-weak); margin-top: -6px; }
+  .ex { display: grid; grid-template-columns: 26px 1fr; row-gap: 9px; column-gap: 10px; align-items: center; margin-top: 6px; }
+  .sw { width: 26px; height: 26px; border-radius: 6px; border: 1px solid rgba(0,0,0,.1); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+  .name { font-family: var(--mono); font-size: 16px; }
+  .name span { font-family: inherit; color: var(--ink-weak); font-size: 13px; margin-left: 6px; font-family: Pretendard, 'Malgun Gothic', sans-serif; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="rule"><span class="slot">요소</span><span class="dot">.</span><span class="slot">톤</span><span class="dot">.</span><span class="slot">강조</span></div>
+  <div class="legend"><div>어디에 칠하나</div><div>무슨 뜻인가</div><div>얼마나 강한가</div></div>
+  <div class="ex">
+    <span class="sw" style="color:#666b79">가</span><span class="name">text.weaker<span>보조 글자</span></span>
+    <span class="sw" style="color:#c2412b">가</span><span class="name">text.error<span>오류 글자</span></span>
+    <span class="sw" style="color:#a35b3d">가</span><span class="name">text.warning<span>대기·재알림</span></span>
+    <span class="sw" style="background:#d63a40"></span><span class="name">fill.error.strong<span>오류 면</span></span>
+    <span class="sw" style="background:#ede9fd"></span><span class="name">fill.brand.weak<span>옅은 브랜드 면</span></span>
+  </div>
+</div>
+</body>
+</html>

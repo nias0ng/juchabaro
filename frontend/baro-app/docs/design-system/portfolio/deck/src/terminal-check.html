@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>대비 검사 출력</title>
+<link rel="stylesheet" href="../../figures/src/figure.css">
+<style>
+  body { background: #fff; }
+  .term { width: 576px; height: 396px; background: #1b1b23; color: #e1e1e8; font-family: var(--mono); font-size: 14px; line-height: 1.6; padding: 18px 22px; display: flex; flex-direction: column; justify-content: center; }
+  .dim { color: #979ba8; } .ok { color: #6fcfc4; font-weight: 700; } .cmd { color: #c3bcff; }
+  table { border-collapse: collapse; margin-top: 4px; }
+  td { padding: 1px 14px 1px 0; }
+  .gap { height: 10px; }
+</style>
+</head>
+<body>
+<div class="term">
+<div><span class="cmd">$</span> npm run check:contrast</div>
+<div>[light] 조합 39개, 최저 대비 3.09</div>
+<div>  <span class="ok">모두 통과</span></div>
+<div>[dark] 조합 39개, 최저 대비 4.04</div>
+<div>  <span class="ok">모두 통과</span></div>
+<div class="gap"></div>
+<div><span class="cmd">$</span> npm run count:colors -- src/features/move-request</div>
+<table>
+  <tr class="dim"><td></td><td>전</td><td>후</td></tr>
+  <tr><td>Palette.* 직접 사용</td><td>130</td><td class="ok">0</td></tr>
+  <tr><td>색상 값 하드코딩</td><td>86</td><td class="ok">0</td></tr>
+</table>
+<div class="gap"></div>
+<div class="dim"># 토큰 정의 파일의 값을 직접 읽어 검사한다.</div>
+<div class="dim"># 토큰을 바꾸면 검사도 같이 바뀐다.</div>
+</div>
+</body>
+</html>

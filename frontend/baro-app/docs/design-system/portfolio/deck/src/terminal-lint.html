@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>린트 출력</title>
+<link rel="stylesheet" href="../../figures/src/figure.css">
+<style>
+  body { background: #fff; }
+  .term { width: 576px; height: 412px; background: #1b1b23; color: #e1e1e8; font-family: var(--mono); font-size: 14px; line-height: 1.6; padding: 18px 22px; display: flex; flex-direction: column; justify-content: center; border-radius: 0; }
+  .dim { color: #979ba8; } .err { color: #ff8f6b; font-weight: 700; } .warn { color: #f5c97f; font-weight: 700; } .ok { color: #6fcfc4; }
+  .cmd { color: #c3bcff; }
+  .msg { white-space: pre-wrap; }
+  .gap { height: 10px; }
+</style>
+</head>
+<body>
+<div class="term">
+<div class="dim"># 옮긴 기능(move-request)에 색을 직접 적으면</div>
+<div><span class="cmd">$</span> npx eslint src/features/move-request</div>
+<div class="msg">  2:10  <span class="err">error</span>  'Palette' import from '@/styles' is restricted.
+        용도 기반 토큰을 useColorTokens / useThemedStyles로
+        받아 사용하세요</div>
+<div class="msg">  5:20  <span class="err">error</span>  색상 값 대신 src/styles의 토큰을 사용하세요</div>
+<div class="gap"></div>
+<div class="dim"># 아직 옮기지 않은 기능(vehicle)에서는</div>
+<div class="msg">  1:37  <span class="warn">warning</span>  색상 값 대신 src/styles의 토큰을 사용하세요</div>
+<div class="gap"></div>
+<div><span class="cmd">$</span> npx eslint .</div>
+<div>  <span class="ok">오류 0</span> · 경고 151 (<span class="warn">색 규칙 146</span> = 남은 부채)</div>
+</div>
+</body>
+</html>

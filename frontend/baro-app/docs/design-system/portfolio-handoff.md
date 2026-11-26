@@ -138,7 +138,12 @@ admin-web 쪽: `frontend/baro-web/admin-web/src/styles/tokens.css`, `src/compone
   - 이름 규칙 도식 (`naming-rule.png`), 구조 도식 (`structure.png`)
 - [x] 기여 범위 서술을 사용자에게 확인받기 (2026-11-26 "맞음")
 - [ ] 초안 문장 검토 (사용자). 특히 프로젝트 기간 "2026년 7~8월"은 커밋 날짜로 적은 것
-- [ ] 정한 형식으로 옮기기
+- [x] 정한 형식으로 옮기기 → PPT (2026-11-26). 사용자의 `주차바로 템플릿.pptx`(7장)를 채운 [`portfolio/deck/주차바로-포트폴리오.pptx`](portfolio/deck/주차바로-포트폴리오.pptx). 다시 만들기: `python portfolio/deck/build_deck.py <템플릿.pptx> <출력.pptx>`
+  - 구성: 개요 → POINT 01 관리자 웹 사건 처리 → 02 관리자 웹 테이블 공용화 → 03 테마를 받는 스타일 구조 → 04 용도 기반 색 토큰 → 회고 → 성과·링크
+  - 관리자 웹은 커밋 기준 본인이 대부분(화면·composable·공용 컴포넌트). 이동 요청 기능은 팀원이 주로 만들었으므로 덱에서도 "옮겼다"로만 쓴다
+  - 관리자 웹 공용화 수치: 세 화면(`ParkingEventListView`, `HistoryView`, `ParkingZoneManagementView`) 2,006 → 1,220줄 (b700eea~1 → d117449). 로직이 composable로 옮겨간 것이지 전체 코드가 준 것은 아니다
+- [ ] 덱에 없는 것: 수상 이력, 시연 영상, 공개 저장소 링크(GitLab은 SSAFY 내부). 있으면 성과 장에 추가
+- [ ] 관리자 웹 주소(i15e202.p.ssafy.io)가 지금도 열리는지 확인
 
 그림 메모:
 - 주석·라이트/다크 그림은 미리보기 화면을 2배 해상도(폭 500px)로 다시 찍어 잘라 썼다 (`figures/src/assets/`).

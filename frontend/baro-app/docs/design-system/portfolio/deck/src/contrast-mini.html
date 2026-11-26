@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>대비 전후 (작게)</title>
+<link rel="stylesheet" href="../../figures/src/figure.css">
+<style>
+  body { background: #fff; }
+  .wrap { width: 460px; height: 400px; padding: 22px 22px; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+  .row { display: grid; grid-template-columns: 1fr 20px 1fr; align-items: center; gap: 6px; }
+  .s { border-radius: 9px; padding: 9px 11px; border: 1px solid var(--line); }
+  .s .t { font-size: 15px; font-weight: 700; }
+  .s .r { font-family: var(--mono); font-size: 13px; font-weight: 700; margin-top: 2px; }
+  .bad { color: var(--bad); } .good { color: var(--good); }
+  .arrow { color: var(--ink-weak); text-align: center; }
+  .head { display: grid; grid-template-columns: 1fr 20px 1fr; gap: 6px; font-size: 12px; color: var(--ink-weak); font-weight: 600; }
+  .total { margin-top: 4px; font-size: 15px; font-weight: 700; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head"><div>작업 전</div><div></div><div>작업 후</div></div>
+  <div class="row">
+    <div class="s" style="background:#fff"><div class="t" style="color:#9599a7">오후 2:45 · 응답 없음</div><div class="r bad">2.84:1</div></div><div class="arrow">→</div>
+    <div class="s" style="background:#fff"><div class="t" style="color:#666b79">오후 2:45 · 응답 없음</div><div class="r good">5.32:1</div></div>
+  </div>
+  <div class="row">
+    <div class="s" style="background:#fff2ef"><div class="t" style="color:#d4553a">약속 시간 경과</div><div class="r bad">3.72:1</div></div><div class="arrow">→</div>
+    <div class="s" style="background:#fff2ef"><div class="t" style="color:#c2412b">약속 시간 경과</div><div class="r good">4.70:1</div></div>
+  </div>
+  <div class="row">
+    <div class="s" style="background:#d5e6ff"><div class="t" style="color:#3f7bd6">종료</div><div class="r bad">3.31:1</div></div><div class="arrow">→</div>
+    <div class="s" style="background:#d5e6ff"><div class="t" style="color:#2a5fb3">종료</div><div class="r good">4.90:1</div></div>
+  </div>
+  <div class="total"><span class="bad">24 / 37 미달</span> → <span class="good">0 / 39</span> <span style="color:var(--ink-weak);font-weight:400;font-size:13px">(WCAG AA, 라이트)</span></div>
+</div>
+</body>
+</html>
