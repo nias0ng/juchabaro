@@ -32,3 +32,36 @@
 | `theme.*` (기존 의미 토큰) | 3 | 3 | 1 |
 | `Palette.*` 직접 사용 | 130 | 124 | 34 |
 | 색상 값 하드코딩 | 86 | 75 | 29 |
+
+### 작업 전 대비 (라이트)
+
+새 토큰 구조에 **옮기기 전 값**(`#9599a7`, `#d4553a`, `#1e8d80`, `#3f7bd6`, `#9ca3af`, `#e5484d`)을 넣고 같은 검사를 돌린 결과다. 조합 37개 중 아래가 기준 미달이다.
+
+| 조합 | 대비 | 기준 |
+|---|---|---|
+| `text.weaker on background.neutral` | 2.84 | 4.5 |
+| `text.weaker on background.weak` | 2.64 | 4.5 |
+| `text.weaker on background.raised` | 2.84 | 4.5 |
+| `text.error on background.neutral` | 4.07 | 4.5 |
+| `text.error on background.weak` | 3.78 | 4.5 |
+| `text.error on background.raised` | 4.07 | 4.5 |
+| `text.warning on background.neutral` | 4.07 | 4.5 |
+| `text.warning on background.weak` | 3.78 | 4.5 |
+| `text.warning on background.raised` | 4.07 | 4.5 |
+| `text.success on background.neutral` | 4.06 | 4.5 |
+| `text.success on background.weak` | 3.77 | 4.5 |
+| `text.success on background.raised` | 4.06 | 4.5 |
+| `text.info on background.neutral` | 4.19 | 4.5 |
+| `text.info on background.weak` | 3.89 | 4.5 |
+| `text.info on background.raised` | 4.19 | 4.5 |
+| `text.error on fill.error.weak` | 3.72 | 4.5 |
+| `text.warning on fill.warning.weak` | 3.72 | 4.5 |
+| `text.success on fill.success.weak` | 3.52 | 4.5 |
+| `text.info on fill.info.weak` | 3.31 | 4.5 |
+| `text.weaker on fill.neutral.weak` | 2.50 | 4.5 |
+| `text.inverse on fill.error.strong` | 3.91 | 4.5 |
+| `icon.weak on background.neutral` | 2.54 | 3 |
+| `icon.weak on background.weak` | 2.36 | 3 |
+| `icon.weak on background.raised` | 2.54 | 3 |
+
+다크 모드는 작업 전에 해당 화면이 테마를 따르지 않았으므로 비교할 값이 없다.
