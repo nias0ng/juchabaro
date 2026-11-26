@@ -11,14 +11,14 @@ export const TIMELINE_DEFAULT: RequestTimelineStep[] = [
 ];
 
 export const TIMELINE_REMINDER: RequestTimelineStep[] = [
-  { label: '이동 요청 전송', detail: '오후 2:30', dotColor: '#7a6ff0' },
-  { label: '1차 재알림', detail: '오후 2:45 · 응답 없음', dotColor: '#ff8f6b', labelColor: '#d4553a' },
+  { label: '이동 요청 전송', detail: '오후 2:30', tone: 'brand' },
+  { label: '1차 재알림', detail: '오후 2:45 · 응답 없음', tone: 'warning' },
 ];
 
 export const TIMELINE_OVERDUE: RequestTimelineStep[] = [
   { label: '요청 접수', detail: '14:30' },
-  { label: '이동 예정 시간', detail: '오후 2:50 (20분)', dotColor: '#7a6ff0' },
-  { label: '약속 시간 경과', detail: '15분 지남', dotColor: '#e5493d', labelColor: '#c8492e' },
+  { label: '이동 예정 시간', detail: '오후 2:50 (20분)', tone: 'brand' },
+  { label: '약속 시간 경과', detail: '15분 지남', tone: 'error' },
 ];
 
 export const LIST_ITEM_PENDING: RequestListItemDisplay = {

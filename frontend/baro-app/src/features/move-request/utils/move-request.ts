@@ -102,11 +102,14 @@ export function toRequestWaitingDisplay(detail: MoveRequestDetail): RequestWaiti
   };
 }
 
+/** 타임라인 단계의 의미. 색은 컴포넌트가 테마 토큰으로 정한다. */
+export type TimelineTone = 'brand' | 'warning' | 'error';
+
 export type RequestTimelineStep = {
   label: string;
   detail: string;
-  dotColor?: string;
-  labelColor?: string;
+  /** 없으면 기본(완료된 일반 단계) 모양으로 그린다. */
+  tone?: TimelineTone;
   isFinal?: boolean;
 };
 
@@ -170,8 +173,7 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
       label: `${roundLabel} 전송`,
       detail: formatTime24(reminder.sentAt),
       isFinal: false,
-      dotColor: '#e5493d',
-      labelColor: '#c8492e',
+      tone: 'error',
     });
   });
 
@@ -184,8 +186,7 @@ export function toRequestCompletedDisplay(detail: MoveRequestDetail): RequestCom
     timeline.push({
       label: '관리사무소 이관',
       detail: formatTime24(escalationDueAt),
-      dotColor: '#d4553a',
-      labelColor: '#c8492e',
+      tone: 'error',
     });
   }
 
@@ -204,20 +205,19 @@ function buildOverdueLeadingSteps(
 ): RequestTimelineStep[] {
   const latestResponse = detail.responses[detail.responses.length - 1];
   const steps: RequestTimelineStep[] = [
-    { label: '이동 요청 전송', detail: firstStepDetail, dotColor: '#7a6ff0' },
+    { label: '이동 요청 전송', detail: firstStepDetail, tone: 'brand' },
   ];
 
   if (latestResponse && detail.dueAt) {
     const minutesLabel = latestResponse.estimatedMinutes ? ` · ${latestResponse.estimatedMinutes}분 이내` : '';
-    steps.push({ label: '이동 예정 시간', detail: `${formatTime12(detail.dueAt)}${minutesLabel}`, dotColor: '#7a6ff0' });
+    steps.push({ label: '이동 예정 시간', detail: `${formatTime12(detail.dueAt)}${minutesLabel}`, tone: 'brand' });
   }
 
   if (detail.dueAt) {
     steps.push({
       label: '미이동 확인',
       detail: `${formatTime12(detail.dueAt)} · 재알림 대상`,
-      dotColor: '#ff8f6b',
-      labelColor: '#d4553a',
+      tone: 'warning',
     });
   }
 
@@ -251,8 +251,7 @@ export function toRequestEscalationDisplay(detail: MoveRequestDetail): RequestEs
     timeline.push({
       label: `${roundLabel} 전송`,
       detail: formatTime12(reminder.sentAt),
-      dotColor: '#e5493d',
-      labelColor: '#c8492e',
+      tone: 'error',
     });
   });
 
@@ -265,8 +264,7 @@ export function toRequestEscalationDisplay(detail: MoveRequestDetail): RequestEs
       timeline.push({
         label: '상대방 응답',
         detail: `${formatTime12(latestResponse.respondedAt)} · 지금 이동 어려움`,
-        dotColor: '#ff8f6b',
-        labelColor: '#d4553a',
+        tone: 'warning',
       });
     }
 
@@ -275,8 +273,7 @@ export function toRequestEscalationDisplay(detail: MoveRequestDetail): RequestEs
       label: '관리사무소 이관',
       detail: transferredAt ? formatTime12(transferredAt) : '이관 완료',
       isFinal: true,
-      dotColor: '#d4553a',
-      labelColor: '#c8492e',
+      tone: 'error',
     });
   }
 
