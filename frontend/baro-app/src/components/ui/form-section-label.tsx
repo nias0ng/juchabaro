@@ -1,6 +1,8 @@
 import { Text } from 'react-native';
 
-import { styles } from './form-section-label.styles';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
+
+import { createStyles } from './form-section-label.styles';
 
 type FormSectionLabelVariant = 'default' | 'muted';
 
@@ -11,6 +13,7 @@ type FormSectionLabelProps = {
 };
 
 export function FormSectionLabel({ label, suffix, variant = 'default' }: FormSectionLabelProps) {
+  const styles = useThemedStyles(createStyles);
   const isMuted = variant === 'muted';
 
   return (

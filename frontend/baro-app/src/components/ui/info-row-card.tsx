@@ -1,6 +1,8 @@
 import { Text, View } from 'react-native';
 
-import { styles } from './info-row-card.styles';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
+
+import { createStyles } from './info-row-card.styles';
 
 export type InfoRow = {
   label: string;
@@ -24,6 +26,8 @@ type InfoRowCardProps = {
  * 완료/확인 화면에서 반복되는 패턴이라 공용 컴포넌트로 둔다.
  */
 export function InfoRowCard({ rows, statusRow }: InfoRowCardProps) {
+  const styles = useThemedStyles(createStyles);
+
   return (
     <View style={styles.container}>
       {rows.map((row) => (

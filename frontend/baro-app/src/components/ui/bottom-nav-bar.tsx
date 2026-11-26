@@ -1,6 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { useTheme } from '@/hooks/use-theme';
+import { useColorTokens } from '@/hooks/use-color-tokens';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 
 import {
   PARKING_ICON_PATHS,
@@ -10,7 +11,7 @@ import {
   STROKE_ICON_PATHS,
 } from './bottom-nav-bar-icons';
 import { IconGlyph } from './icon-glyph';
-import { styles } from './bottom-nav-bar.styles';
+import { createStyles } from './bottom-nav-bar.styles';
 
 type NavIconKey = 'home' | 'request' | 'parking' | 'user';
 
@@ -29,10 +30,6 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { key: 'user', label: '내 정보', icon: 'user' },
 ];
 
-// Figma 실측값(비활성 아이콘/라벨 색상, 상단 구분선 색상) — 현재 테마 토큰과 정확히 일치하지 않는다.
-const INACTIVE_COLOR = '#9ca3af';
-const BORDER_COLOR = '#f3f4f6';
-
 type BottomNavBarProps = {
   items?: NavItem[];
   activeKey: string;
@@ -47,15 +44,16 @@ export function BottomNavBar({
   onPressItem,
   bottomInset = 0,
 }: BottomNavBarProps) {
-  const theme = useTheme();
+  const t = useColorTokens();
+  const styles = useThemedStyles(createStyles);
 
   return (
     <View
       style={[
         styles.container,
         {
-          borderTopColor: BORDER_COLOR,
-          backgroundColor: theme.surface,
+          borderTopColor: t.stroke.weak,
+          backgroundColor: t.background.raised,
           paddingBottom: Math.max(styles.container.paddingBottom, bottomInset),
         },
       ]}
@@ -63,7 +61,9 @@ export function BottomNavBar({
       <View style={styles.tabsRow}>
         {items.map((item) => {
           const focused = item.key === activeKey;
-          const color = focused ? theme.primary : INACTIVE_COLOR;
+          // 라벨은 본문 글자 기준(4.5), 아이콘은 아이콘 기준(3)을 따르므로 비활성 색을 따로 둔다.
+          const iconColor = focused ? t.text.brand : t.icon.weak;
+          const labelColor = focused ? t.text.brand : t.text.weaker;
 
           return (
             <Pressable
@@ -78,7 +78,7 @@ export function BottomNavBar({
                 {item.icon === 'request' ? (
                   <IconGlyph
                     d={REQUEST_ICON_PATH}
-                    color={color}
+                    color={iconColor}
                     variant="fill"
                     viewBoxSize={REQUEST_ICON_VIEWBOX_SIZE}
                     fillOutlineWidth={0.6}
@@ -86,7 +86,7 @@ export function BottomNavBar({
                 ) : item.icon === 'parking' ? (
                   <IconGlyph
                     d={PARKING_ICON_PATHS}
-                    color={color}
+                    color={iconColor}
                     variant="fill"
                     size={24}
                     viewBoxSize={PARKING_ICON_VIEWBOX_SIZE}
@@ -94,13 +94,13 @@ export function BottomNavBar({
                 ) : (
                   <IconGlyph
                     d={STROKE_ICON_PATHS[item.icon]}
-                    color={color}
+                    color={iconColor}
                     size={item.icon === 'home' ? 23 : undefined}
                   />
                 )}
                 {item.badge ? <View style={styles.badge} /> : null}
               </View>
-              <Text style={[styles.label, { color }]}>{item.label}</Text>
+              <Text style={[styles.label, { color: labelColor }]}>{item.label}</Text>
             </Pressable>
           );
         })}

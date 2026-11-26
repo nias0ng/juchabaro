@@ -2,10 +2,11 @@ import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
+import { useThemedStyles } from '@/hooks/use-themed-styles';
 import { Spacing } from '@/styles';
 
 import { BackButton } from './back-button';
-import { styles } from './screen-header.styles';
+import { createStyles } from './screen-header.styles';
 import { Stack } from './stack';
 
 type ScreenHeaderProps = {
@@ -20,6 +21,8 @@ type ScreenHeaderProps = {
 };
 
 export function ScreenHeader({ title, onBack, right, showBackButton = true, style, titleStyle }: ScreenHeaderProps) {
+  const styles = useThemedStyles(createStyles);
+
   return (
     <Stack direction="row" align="center" gap={Spacing.base} style={[styles.container, style]}>
       {showBackButton ? <BackButton onPress={onBack ?? (() => router.back())} /> : null}

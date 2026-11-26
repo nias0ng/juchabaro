@@ -1,7 +1,10 @@
+import { useIsAdaptiveColorScope } from '@/hooks/adaptive-color-scope';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Tokens, type ColorTokens } from '@/styles';
+import type { ColorTokens } from '@/styles';
 
-/** 현재 모드(라이트/다크)의 용도 기반 색상 토큰. */
+import { resolveColorTokens } from './resolve-color-tokens';
+
+/** 용도 기반 색상 토큰. 다크 값은 AdaptiveColorScope 안에서만 나온다. */
 export function useColorTokens(): ColorTokens {
-  return useColorScheme() === 'dark' ? Tokens.dark : Tokens.light;
+  return resolveColorTokens(useIsAdaptiveColorScope(), useColorScheme());
 }

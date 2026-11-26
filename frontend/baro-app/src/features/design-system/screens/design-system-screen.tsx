@@ -14,6 +14,7 @@ import { RequestTimelineCard } from '@/features/move-request/components/request-
 import { RequestProgressCard } from '@/features/move-request/components/request-waiting/request-progress-card';
 import { RequestListCard } from '@/features/move-request/components/requests-list/request-list-card';
 import { RequestStatusBadge } from '@/features/move-request/components/requests-list/request-status-badge';
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
 import { useColorTokens } from '@/hooks/use-color-tokens';
 import { useThemedStyles } from '@/hooks/use-themed-styles';
 
@@ -46,7 +47,7 @@ const TABS: { key: TabKey; label: string }[] = [
  * 개발 전용 미리보기. 서버 없이 토큰과 컴포넌트를 라이트/다크로 확인하기 위한 화면이다.
  * 웹 배포가 src/app의 모든 라우트를 내보내므로 배포 빌드에서는 홈으로 돌려보낸다.
  */
-export default function DesignSystemScreen() {
+function DesignSystemScreen() {
   const tokens = useColorTokens();
   const styles = useThemedStyles(createStyles);
   const [tab, setTab] = useState<TabKey>('received');
@@ -127,3 +128,5 @@ export default function DesignSystemScreen() {
     </GradientScreenBackground>
   );
 }
+
+export default withAdaptiveColors(DesignSystemScreen);

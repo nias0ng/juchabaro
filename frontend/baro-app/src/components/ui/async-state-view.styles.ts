@@ -1,19 +1,20 @@
 import { StyleSheet } from 'react-native';
 
-import { Palette, Spacing } from '@/styles';
+import { Spacing, type ColorTokens } from '@/styles';
 
-export const styles = StyleSheet.create({
-  container: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: Spacing.xxl,
-  },
-  fill: {
-    flex: 1,
-  },
-  text: {
-    fontSize: 13.5,
-    color: Palette.gray500,
-    textAlign: 'center',
-  },
-});
+export const createStyles = (t: ColorTokens) =>
+  StyleSheet.create({
+    container: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: Spacing.xxl,
+    },
+    fill: {
+      flex: 1,
+    },
+    text: {
+      fontSize: 13.5,
+      color: t.text.weaker,
+      textAlign: 'center',
+    },
+  });

@@ -1,6 +1,8 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { styles } from './segmented-control.styles';
+import { useThemedStyles } from '@/hooks/use-themed-styles';
+
+import { createStyles } from './segmented-control.styles';
 
 export type SegmentedControlOption<T extends string> = {
   key: T;
@@ -20,6 +22,8 @@ export function SegmentedControl<T extends string>({
   onChange,
   wrap = false,
 }: SegmentedControlProps<T>) {
+  const styles = useThemedStyles(createStyles);
+
   return (
     <View style={[styles.row, wrap && styles.rowWrap]}>
       {options.map((option) => {

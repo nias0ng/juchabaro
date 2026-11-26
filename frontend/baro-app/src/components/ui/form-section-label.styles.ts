@@ -1,22 +1,23 @@
 import { StyleSheet } from 'react-native';
 
-import { FontWeight, Palette } from '@/styles';
+import { FontWeight, type ColorTokens } from '@/styles';
 
-export const styles = StyleSheet.create({
-  label: {
-    fontSize: 13,
-    fontWeight: FontWeight.bold,
-    color: Palette.gray975,
-  },
-  labelMuted: {
-    fontSize: 12,
-    color: Palette.gray600,
-  },
-  suffix: {
-    fontWeight: FontWeight.regular,
-    color: Palette.gray400,
-  },
-  suffixMuted: {
-    fontSize: 12,
-  },
-});
+export const createStyles = (t: ColorTokens) =>
+  StyleSheet.create({
+    label: {
+      fontSize: 13,
+      fontWeight: FontWeight.bold,
+      color: t.text.strong,
+    },
+    labelMuted: {
+      fontSize: 12,
+      color: t.text.weak,
+    },
+    suffix: {
+      fontWeight: FontWeight.regular,
+      color: t.text.weaker,
+    },
+    suffixMuted: {
+      fontSize: 12,
+    },
+  });
