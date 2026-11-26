@@ -33,7 +33,7 @@ export const createStyles = (t: ColorTokens) =>
     },
     divider: {
       height: 1,
-      backgroundColor: t.stroke.weak,
+      backgroundColor: t.fill.neutral.weak,
     },
     statusRow: {
       flexDirection: 'row',

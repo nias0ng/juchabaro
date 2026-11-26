@@ -1,5 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
+import { withAdaptiveColors } from '@/hooks/adaptive-color-scope';
 import { useColorTokens } from '@/hooks/use-color-tokens';
 import { useThemedStyles } from '@/hooks/use-themed-styles';
 
@@ -37,8 +38,7 @@ type BottomNavBarProps = {
   bottomInset?: number;
 };
 
-/** Figma Z-02. 네비게이터와 분리된 하단 탭 UI. activeKey와 onPressItem으로 실제 라우팅에 연결한다. */
-export function BottomNavBar({
+function BottomNavBarView({
   items = DEFAULT_NAV_ITEMS,
   activeKey,
   onPressItem,
@@ -108,3 +108,9 @@ export function BottomNavBar({
     </View>
   );
 }
+
+/**
+ * Figma Z-02. 네비게이터와 분리된 하단 탭 UI. activeKey와 onPressItem으로 실제 라우팅에 연결한다.
+ * 자기 배경을 스스로 칠하는 독립된 면이라, 화면이 옮겨졌는지와 상관없이 기기의 라이트/다크 모드를 따른다.
+ */
+export const BottomNavBar = withAdaptiveColors(BottomNavBarView);

@@ -71,6 +71,15 @@ export const CONTRAST_PAIRS: ContrastPair[] = [
     bg: (t) => t.fill.neutral.weak,
     min: 4.5,
   },
+  // 안내 상자: 본문 글자가 옅은 상태색 면 위에 놓인다.
+  ...(['error', 'warning'] as const).map(
+    (tone): ContrastPair => ({
+      name: `text.strong on fill.${tone}.weak`,
+      fg: (t) => t.text.strong,
+      bg: (t) => t.fill[tone].weak,
+      min: 4.5,
+    }),
+  ),
   ...STRONG_FILLS.map(
     (tone): ContrastPair => ({
       name: `text.inverse on fill.${tone}.strong`,
