@@ -177,9 +177,9 @@ def point_common(sl, label, title, sub, problem, solution, result):
 def slide2(sl):
     point_common(
         sl, "POINT 01", "관리자 사건 처리 화면", "AI 감지 사건을 관리자가 최종 판단하도록",
-        "AI 자동 감지에는 오탐이 섞여, 관리자가 사건을 확인하고 처리할 화면이 필요했다",
-        "Vue 3 관리자 웹을 맡아 사건 확인·오탐·완료 처리와 진행 이력을 구현했다",
-        "화면 7개를 만들고 사건·구역 API를 연동해 배포했다. 자동 감지 요청과 입주민 요청도 구분해 보여준다",
+        "AI 자동 감지에 섞이는 오탐, 관리자가 사건을 확인하고 처리할 화면 필요",
+        "Vue 3 관리자 웹 전담, 사건 확인·오탐·완료 처리와 진행 이력 구현",
+        "화면 7개 구현, 사건·구역 API 연동 후 배포. 자동 감지 요청과 입주민 요청 구분 표시",
     )
     for sid in (18, 19, 20, 21):
         remove(find(sl, sid))
@@ -193,9 +193,9 @@ def slide2(sl):
 def slide3(sl):
     point_common(
         sl, "POINT 02", "테이블 화면 공용화", "세 화면의 중복 로직을 한 곳으로",
-        "사건 목록·이력·구역 관리 화면이 필터, 페이지네이션, CSV 내보내기를 각자 구현했다",
-        "로직은 composable로, 검색창·표·페이지 하단 등은 공용 컴포넌트 7개로 추출했다",
-        "세 화면 파일이 2,006줄에서 1,220줄로 줄고, 같은 수정을 한 곳에서 하게 됐다",
+        "세 화면마다 필터, 페이지네이션, CSV 내보내기를 따로 구현한 상태",
+        "로직은 composable로, 검색창·표·페이지 하단 등은 공용 컴포넌트 7개로 추출",
+        "세 화면 파일 2,006줄 → 1,220줄, 같은 수정을 한 곳에서 처리하는 구조",
     )
     for sid in (19, 20, 21):
         remove(find(sl, sid))
@@ -213,9 +213,9 @@ def slide3(sl):
 def slide4(sl):
     point_common(
         sl, "POINT 03", "테마를 받는 스타일 구조", "회고에서 찾은 다크 모드 미동작 원인 해결",
-        "화면이 토큰 대신 팔레트를 463회 직접 써서(토큰은 26회) 다크 모드가 반만 동작했다",
-        "고정 스타일 파일을 토큰을 받는 함수 createStyles(t)로 바꾸고 화면 단위로 켰다",
-        "이동 요청 기능의 팔레트 직접 사용 130→0, 하드코딩 86→0. 이동 요청 화면 5개가 다크 모드를 지원한다",
+        "토큰 대신 팔레트 직접 사용 463회(토큰은 26회), 다크 모드가 반만 동작하던 상태",
+        "스타일 파일을 토큰을 받는 함수 createStyles(t)로 전환, 화면 단위 적용",
+        "이동 요청 기능의 팔레트 직접 사용 130→0, 하드코딩 86→0. 이동 요청 화면 5개 다크 모드 지원",
     )
     slot = find(sl, 18, "image-slot")
     solid_outline(slot)
@@ -235,9 +235,9 @@ def slide4(sl):
 def slide5(sl):
     point_common(
         sl, "POINT 04", "용도 기반 색 토큰", "이름은 쓰임새로, 대비는 자동 검사로",
-        "같은 오류색이 네 가지 값으로 흩어졌고, 37개 조합 중 24개가 대비 기준 미달이었다",
-        "요소.톤.강조 규칙으로 토큰을 다시 짓고, 미달 색은 같은 계열의 통과 값으로 옮겼다",
-        "대비 미달 0 (라이트·다크 각 39개 조합). 린트와 대비 검사로 같은 실수가 다시 들어오지 못한다",
+        "같은 오류색이 네 가지 값으로 분산, 37개 조합 중 24개 대비 기준 미달",
+        "요소.톤.강조 규칙으로 토큰 재설계, 미달 색은 같은 계열의 통과 값으로 교체",
+        "대비 미달 0 (라이트·다크 각 39개 조합). 린트와 대비 검사로 재발 차단",
     )
     phone = find(sl, 18, "image-slot")
     solid_outline(phone)
@@ -256,12 +256,12 @@ def slide5(sl):
 
 
 def slide6(sl):
-    set_text(find(sl, 2), "규칙은 도구에 둔다")
+    set_text(find(sl, 2), "규칙은 도구에")
     set_text(find(sl, 3), "종료 후 회고에서 문제를 직접 찾아 개선")
-    set_text(find(sl, 8, "Text 5"), "끝난 앱을 다크 모드로 켜 보고, 색을 쓰는 방식을 세어 원인을 구조에서 찾았다")
-    set_text(find(sl, 12, "Text 8"), "구조가 막으면 토큰은 쓰이지 않고, 규칙은 문서보다 도구에 있어야 지켜진다")
+    set_text(find(sl, 8, "Text 5"), "끝난 앱을 다크 모드로 점검, 색 사용 방식을 세어 구조에서 원인 발견")
+    set_text(find(sl, 12, "Text 8"), "구조가 막으면 쓰이지 않는 토큰, 문서보다 도구에 있어야 지켜지는 규칙")
     r = find(sl, 16, "Text 11")
-    set_text(r, "범위를 기능 하나로 끊어 끝까지 옮기고, 남은 곳은 린트 경고 146개로 드러냈다")
+    set_text(r, "범위를 기능 하나로 한정해 끝까지 이전, 남은 곳은 린트 경고 146개로 가시화")
     r.height = Pt(66)
     for sid in (18, 19, 20, 23, 24, 25):
         remove(find(sl, sid))
@@ -294,8 +294,8 @@ def slide7(sl):
     set_text(find(sl, 26, "Text 21"), "Android 앱")
     link(find(sl, 27, "Text 22"), "APK 내려받기 (Google Drive)",
          "https://drive.google.com/drive/folders/1m4rUBzDPmmm41PEe1OWc4jHygtWS2sUb?usp=sharing")
-    set_text(find(sl, 31, "Text 25"), "관리자 웹")
-    link(find(sl, 32, "Text 26"), "i15e202.p.ssafy.io/admin", "https://i15e202.p.ssafy.io/admin/")
+    set_text(find(sl, 31, "Text 25"), "GitHub")
+    link(find(sl, 32, "Text 26"), "github.com/nias0ng/juchabaro", "https://github.com/nias0ng/juchabaro")
     set_text(find(sl, 36, "Text 29"), "팀 문서")
     link(find(sl, 37, "Text 30"), "Notion · 기획·API 명세",
          "https://app.notion.com/p/SSAFY-2-1-396967bab5a4804faef3f3def764090a?source=copy_link")
